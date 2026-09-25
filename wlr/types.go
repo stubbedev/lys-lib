@@ -1,0 +1,21 @@
+package wlr
+
+//go:generate go run github.com/neurlang/wayland/cmd/wayland-scanner -i wlr-layer-shell-unstable-v1.xml
+//go:generate gofmt -w wlr-layer-shell-unstable-v1.xml.go
+
+import (
+	"github.com/neurlang/wayland/wl"
+	"github.com/neurlang/wayland/xdg"
+)
+
+// Aliases the generated bindings in wlr-layer-shell-unstable-v1.xml.go
+// reference. Keep in lockstep with the scanner's expectations.
+type (
+	BaseProxy = wl.BaseProxy
+	Context   = wl.Context
+	Event     = wl.Event
+	Surface   = wl.Surface
+	Output    = wl.Output
+	// Popups created from a layer surface use the xdg_popup type.
+	XdgPopup = xdg.Popup
+)
