@@ -159,6 +159,34 @@ func TestBorderRect(t *testing.T) {
 	})
 }
 
+func TestRoundedRectEdgeBlending(t *testing.T) {
+	cv, data := newTestCanvas(40, 40)
+	cv.Clear(cv.Rect(), RGB(255, 255, 255))
+	src := RGB(137, 180, 250)
+	cv.RoundedRect(Rect{X: 5, Y: 5, W: 30, H: 30}, 15, src)
+
+	for _, p := range [][2]int{{9, 9}, {30, 9}, {9, 30}, {30, 30}, {12, 8}} {
+		got := pxAt(data, Stride(40), p[0], p[1])
+		for _, ch := range []struct {
+			name     string
+			got, src uint8
+		}{
+			{"R", got.R(), src.R()},
+			{"G", got.G(), src.G()},
+			{"B", got.B(), src.B()},
+		} {
+			// A partially covered pixel must blend src and bg in premul
+			// space, so every channel stays within [bg-or-src] bounds.
+			lo := int(min(ch.src, 255)) - 1
+			hi := int(max(ch.src, 255)) + 1
+			if int(ch.got) < lo || int(ch.got) > hi {
+				t.Errorf("corner pixel %v channel %s = %d, outside [src..bg] = [%d, %d] (coverage must scale the premultiplied channels)",
+					p, ch.name, ch.got, lo, hi)
+			}
+		}
+	}
+}
+
 func TestRoundedRect(t *testing.T) {
 	cv, data := newTestCanvas(40, 40)
 	cv.Clear(cv.Rect(), RGB(255, 255, 255))

@@ -122,7 +122,10 @@ func (c *Canvas) RoundedRect(r Rect, radius int, col Color) {
 				cov = 1
 			}
 			a := uint8(math.Round(cov * 255))
-			partial := Color(uint32(a)<<24 | uint32(col.R())<<16 | uint32(col.G())<<8 | uint32(col.B()))
+			partial := Color(uint32(a)<<24 |
+				(uint32(col.R())*uint32(a)/255)<<16 |
+				(uint32(col.G())*uint32(a)/255)<<8 |
+				(uint32(col.B())*uint32(a))/255)
 			c.set(x, y, partial.over(c.get(x, y)))
 		}
 	}
@@ -159,6 +162,30 @@ func (c *Canvas) LinearGradient(r Rect, from, to Color, horizontal bool) {
 			}
 			c.set(x, y, lerp(from, to, t).over(c.get(x, y)))
 		}
+	}
+}
+
+// Line blends col along the segment from (x0, y0) to (x1, y1) with the
+// given thickness in pixels. The segment is sampled at half-pixel steps
+// and each sample stamps a thickness-square, so endpoints are included
+// and short segments are never dropped.
+func (c *Canvas) Line(x0, y0, x1, y1, width int, col Color) {
+	if width < 1 || c.clip.Empty() {
+		return
+	}
+	dx := float64(x1 - x0)
+	dy := float64(y1 - y0)
+	length := math.Max(math.Abs(dx), math.Abs(dy))
+	steps := int(math.Ceil(length * 2))
+	half := width / 2
+	for i := range steps + 1 {
+		t := 0.0
+		if steps > 0 {
+			t = float64(i) / float64(steps)
+		}
+		px := int(math.Round(float64(x0) + dx*t))
+		py := int(math.Round(float64(y0) + dy*t))
+		c.FillRect(Rect{X: px - half, Y: py - half, W: width, H: width}, col)
 	}
 }
 
