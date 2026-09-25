@@ -2,6 +2,7 @@ package render
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"image"
 	"image/color"
@@ -31,6 +32,20 @@ func LoadFont(data []byte) (*Typeface, error) {
 		return nil, fmt.Errorf("render: parse font: %w", err)
 	}
 	return &Typeface{face: face, upem: float64(face.Upem())}, nil
+}
+
+// NewTypeface wraps an already-resolved face, as returned by a font
+// matcher.
+func NewTypeface(face *font.Face) (*Typeface, error) {
+	if face == nil {
+		return nil, errors.New("render: nil face")
+	}
+	return &Typeface{face: face, upem: float64(face.Upem())}, nil
+}
+
+// Family returns the resolved face's family name.
+func (t *Typeface) Family() string {
+	return t.face.Describe().Family
 }
 
 // ShapedText is text shaped at a fixed pixel size. Glyph positions are
@@ -69,6 +84,14 @@ func (s *ShapedText) Ascent() float64 {
 // (positive).
 func (s *ShapedText) Descent() float64 {
 	return -f64(s.run.LineBounds.Descent)
+}
+
+// LineHeight returns the rounded line height: the smallest integer box
+// height that fits the run's ascent and descent. Measure and drawing
+// guards must both use this so a label's natural height is never smaller
+// than the height its own painter requires.
+func (s *ShapedText) LineHeight() int {
+	return int(math.Ceil(s.Ascent() + s.Descent()))
 }
 
 // Text returns the string the run was shaped from.
@@ -213,10 +236,11 @@ const (
 )
 
 // DrawAligned draws text inside box with the given alignment, skipping it
-// entirely when the box cannot hold one line of the font.
+// entirely when the box cannot hold one line of the font. The guard uses
+// the same rounded LineHeight the measurement reports.
 func (t *Typeface) DrawAligned(cv *Canvas, text string, box Rect, px float64, col Color, h Alignment) *ShapedText {
 	s := t.Shape(text, px)
-	lineH := s.Ascent() + s.Descent()
+	lineH := float64(s.LineHeight())
 	if float64(box.H) < lineH {
 		return nil
 	}
