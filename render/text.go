@@ -8,6 +8,7 @@ import (
 	"image/color"
 	"math"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/go-text/typesetting/di"
 	"github.com/go-text/typesetting/font"
@@ -92,6 +93,67 @@ func (s *ShapedText) Descent() float64 {
 // than the height its own painter requires.
 func (s *ShapedText) LineHeight() int {
 	return int(math.Ceil(s.Ascent() + s.Descent()))
+}
+
+// carets builds the caret x position for every rune boundary 0..n. The
+// x values are monotone in LTR runs; boundaries inside a shaping cluster
+// (a base rune plus its combining marks) snap to the cluster start, so a
+// caret can never land inside a grapheme.
+func (s *ShapedText) carets() []float64 {
+	n := utf8.RuneCountInString(s.text)
+	xs := make([]float64, n+1)
+	for i := range xs {
+		xs[i] = -1
+	}
+	xs[0] = 0
+	var x float64
+	prev := -1
+	for i := range s.run.Glyphs {
+		g := &s.run.Glyphs[i]
+		ti := g.TextIndex()
+		if ti != prev && ti <= n && xs[ti] < 0 {
+			xs[ti] = x
+		}
+		prev = ti
+		x += f64(g.Advance)
+	}
+	xs[n] = x
+	last := xs[0]
+	for i := 1; i < len(xs); i++ {
+		if xs[i] < 0 {
+			xs[i] = last
+		} else {
+			last = xs[i]
+		}
+	}
+	return xs
+}
+
+// CaretX returns the x offset of the caret placed before rune index
+// caret, clamped to [0, rune count].
+func (s *ShapedText) CaretX(caret int) float64 {
+	xs := s.carets()
+	if caret < 0 {
+		caret = 0
+	}
+	if caret > len(xs)-1 {
+		caret = len(xs) - 1
+	}
+	return xs[caret]
+}
+
+// CaretAt returns the rune boundary nearest x: the inverse of CaretX for
+// hit-testing clicks in a text field.
+func (s *ShapedText) CaretAt(x float64) int {
+	xs := s.carets()
+	best := 0
+	bestD := math.Abs(x - xs[0])
+	for i := 1; i < len(xs); i++ {
+		if d := math.Abs(x - xs[i]); d < bestD {
+			best, bestD = i, d
+		}
+	}
+	return best
 }
 
 // Text returns the string the run was shaped from.

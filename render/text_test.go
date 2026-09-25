@@ -208,3 +208,65 @@ func TestEllipsize(t *testing.T) {
 		}
 	})
 }
+
+func TestCaretMapping(t *testing.T) {
+	face := testTypeface(t)
+
+	t.Run("caret positions advance monotonically and round-trip", func(t *testing.T) {
+		s := face.Shape("hello", 14)
+		n := len([]rune("hello"))
+		prev := 0.0
+		for c := range n + 1 {
+			x := s.CaretX(c)
+			if x < prev-0.001 {
+				t.Fatalf("CaretX(%d) = %.2f went backwards (prev %.2f)", c, x, prev)
+			}
+			prev = x
+		}
+		if s.CaretX(0) != 0 {
+			t.Errorf("CaretX(0) = %.2f, want 0", s.CaretX(0))
+		}
+		if got := s.CaretX(n); got < s.CaretX(n-1) {
+			t.Errorf("CaretX(end) = %.2f, want at or after last glyph", got)
+		}
+	})
+
+	t.Run("click position maps to the nearest caret", func(t *testing.T) {
+		s := face.Shape("ab", 14)
+		if got := s.CaretAt(s.CaretX(0)); got != 0 {
+			t.Errorf("click at caret 0 gave %d", got)
+		}
+		if got := s.CaretAt(s.CaretX(1)); got != 1 {
+			t.Errorf("click between a and b gave %d, want 1", got)
+		}
+		if got := s.CaretAt(s.CaretX(2) + 100); got != 2 {
+			t.Errorf("click past the end gave %d, want 2", got)
+		}
+		if got := s.CaretAt(s.CaretX(2) / 2); got != 1 {
+			t.Errorf("click midway gave %d, want 1", got)
+		}
+	})
+
+	t.Run("caret never lands inside a combining cluster", func(t *testing.T) {
+		// "e" plus combining acute: one grapheme, two runes. The only
+		// valid carets are before and after the pair.
+		s := face.Shape("e\u0301", 14)
+		for c := range 3 {
+			x := s.CaretX(c)
+			if got := s.CaretAt(x + 0.1); got != 0 && got != 2 {
+				t.Errorf("caret %d at x=%.2f resolved to %d, want cluster edge", c, x, got)
+			}
+		}
+		if s.CaretX(1) != s.CaretX(0) {
+			t.Errorf("caret before the combining mark = %.2f, want snapped to the base %.2f",
+				s.CaretX(1), s.CaretX(0))
+		}
+	})
+
+	t.Run("out-of-range carets clamp", func(t *testing.T) {
+		s := face.Shape("hi", 14)
+		if s.CaretX(-5) != 0 || s.CaretX(99) < s.CaretX(1) {
+			t.Errorf("clamping broken: %.2f %.2f", s.CaretX(-5), s.CaretX(99))
+		}
+	})
+}
