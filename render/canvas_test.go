@@ -219,6 +219,50 @@ func TestRoundedRect(t *testing.T) {
 	})
 }
 
+func TestLine(t *testing.T) {
+	cv, data := newTestCanvas(20, 20)
+	cv.Line(2, 10, 18, 10, 3, RGB(255, 0, 0))
+
+	t.Run("horizontal line spans its endpoints", func(t *testing.T) {
+		hits := 0
+		for x := range 20 {
+			if pxAt(data, Stride(20), x, 10).A() > 0 {
+				hits++
+			}
+		}
+		if hits < 15 {
+			t.Errorf("horizontal line only %d px wide, want >= 15", hits)
+		}
+	})
+
+	t.Run("diagonal strokes carry anti-aliased edge pixels", func(t *testing.T) {
+		cv2, data2 := newTestCanvas(24, 24)
+		cv2.Clear(cv2.Rect(), RGB(255, 255, 255))
+		cv2.Line(1, 1, 22, 22, 2, RGB(255, 0, 0))
+		partial, full := 0, 0
+		for y := range 24 {
+			for x := range 24 {
+				c := pxAt(data2, Stride(24), x, y)
+				if c.G() == 255 {
+					continue
+				}
+				if c.G() > 10 && c.G() < 245 && c.R() > c.G() {
+					partial++
+				}
+				if c.G() <= 10 {
+					full++
+				}
+			}
+		}
+		if full == 0 {
+			t.Error("diagonal line has no fully covered pixels")
+		}
+		if partial == 0 {
+			t.Error("diagonal line has no anti-aliased edge pixels (strokes must blend partial coverage)")
+		}
+	})
+}
+
 func TestLinearGradient(t *testing.T) {
 	cv, data := newTestCanvas(10, 10)
 	from, to := RGB(0, 0, 0), RGB(100, 100, 100)

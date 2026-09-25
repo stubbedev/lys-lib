@@ -166,27 +166,54 @@ func (c *Canvas) LinearGradient(r Rect, from, to Color, horizontal bool) {
 }
 
 // Line blends col along the segment from (x0, y0) to (x1, y1) with the
-// given thickness in pixels. The segment is sampled at half-pixel steps
-// and each sample stamps a thickness-square, so endpoints are included
-// and short segments are never dropped.
+// given thickness in pixels, anti-aliased with per-pixel signed-distance
+// coverage. Caps are round.
 func (c *Canvas) Line(x0, y0, x1, y1, width int, col Color) {
 	if width < 1 || c.clip.Empty() {
 		return
 	}
-	dx := float64(x1 - x0)
-	dy := float64(y1 - y0)
-	length := math.Max(math.Abs(dx), math.Abs(dy))
-	steps := int(math.Ceil(length * 2))
-	half := width / 2
-	for i := range steps + 1 {
-		t := 0.0
-		if steps > 0 {
-			t = float64(i) / float64(steps)
-		}
-		px := int(math.Round(float64(x0) + dx*t))
-		py := int(math.Round(float64(y0) + dy*t))
-		c.FillRect(Rect{X: px - half, Y: py - half, W: width, H: width}, col)
+	bx := Rect{
+		X: min(x0, x1) - width - 1,
+		Y: min(y0, y1) - width - 1,
+		W: abs(x1-x0) + 2*width + 2,
+		H: abs(y1-y0) + 2*width + 2,
 	}
+	bx = c.clip.Intersect(bx)
+	if bx.Empty() {
+		return
+	}
+
+	half := float64(width) / 2
+	ax, ay := float64(x0)+0.5, float64(y0)+0.5
+	dx, dy := float64(x1)+0.5-ax, float64(y1)+0.5-ay
+	len2 := dx*dx + dy*dy
+	for y := bx.Y; y < bx.Y+bx.H; y++ {
+		for x := bx.X; x < bx.X+bx.W; x++ {
+			px, py := float64(x)+0.5-ax, float64(y)+0.5-ay
+			t := 0.0
+			if len2 > 0 {
+				t = math.Min(1, math.Max(0, (px*dx+py*dy)/len2))
+			}
+			d := math.Hypot(px-dx*t, py-dy*t)
+			cov := math.Min(1, math.Max(0, half+0.5-d))
+			if cov == 0 {
+				continue
+			}
+			a := uint32(math.Round(cov * 255))
+			partial := Color(a<<24 |
+				(uint32(col.R())*a/255)<<16 |
+				(uint32(col.G())*a/255)<<8 |
+				uint32(col.B())*a/255)
+			c.set(x, y, partial.over(c.get(x, y)))
+		}
+	}
+}
+
+func abs(v int) int {
+	if v < 0 {
+		return -v
+	}
+	return v
 }
 
 // DrawImage blends img onto the canvas with its top-left corner at (x, y).
