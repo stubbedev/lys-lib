@@ -120,6 +120,35 @@ func TestClear(t *testing.T) {
 	})
 }
 
+// TestTouchedCountsDrawnPixels pins the paint-count primitive the
+// damage-restricted repaint tests lean on: every pixel a draw writes,
+// blended or overwritten, counts exactly once per write.
+func TestTouchedCountsDrawnPixels(t *testing.T) {
+	cv, _ := newTestCanvas(20, 10)
+	if cv.Touched() != 0 {
+		t.Fatalf("fresh canvas reports %d touched pixels, want 0", cv.Touched())
+	}
+	cv.Clear(Rect{X: 0, Y: 0, W: 10, H: 10}, RGB(1, 1, 1))
+	if got := cv.Touched(); got != 100 {
+		t.Errorf("after clearing 10x10, touched = %d, want 100", got)
+	}
+	cv.FillRect(Rect{X: 12, Y: 0, W: 5, H: 4}, RGB(2, 2, 2))
+	if got := cv.Touched(); got != 120 {
+		t.Errorf("after a 5x4 fill, touched = %d, want 120", got)
+	}
+	// Clipped-away draws count nothing.
+	cv.FillRect(Rect{X: 25, Y: 0, W: 10, H: 10}, RGB(3, 3, 3))
+	if got := cv.Touched(); got != 120 {
+		t.Errorf("out-of-canvas fill changed the count to %d, want 120", got)
+	}
+	if prev := cv.ResetTouched(); prev != 120 {
+		t.Errorf("ResetTouched returned %d, want 120", prev)
+	}
+	if cv.Touched() != 0 {
+		t.Errorf("touched after reset = %d, want 0", cv.Touched())
+	}
+}
+
 func TestFillRectClipsToCanvas(t *testing.T) {
 	cv, data := newTestCanvas(8, 8)
 	cv.FillRect(Rect{X: -5, Y: -5, W: 20, H: 20}, RGB(9, 9, 9))

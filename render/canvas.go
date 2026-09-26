@@ -15,6 +15,23 @@ type Canvas struct {
 	stride int
 	w, h   int
 	clip   Rect
+	// touched counts the pixels drawn so far. Paint-count tests read
+	// it through Touched to pin how much of a frame damage-restricted
+	// repainting actually wrote.
+	touched int
+}
+
+// Touched returns the number of pixels written since the last
+// ResetTouched (or since the canvas was created). Blends count even
+// when their source color equals the destination.
+func (c *Canvas) Touched() int { return c.touched }
+
+// ResetTouched zeroes the drawn-pixel counter and returns the previous
+// value.
+func (c *Canvas) ResetTouched() int {
+	n := c.touched
+	c.touched = 0
+	return n
 }
 
 // Stride returns the row stride in bytes for a width in pixels
@@ -56,6 +73,7 @@ func (c *Canvas) get(x, y int) Color {
 
 // set overwrites the pixel at (x, y).
 func (c *Canvas) set(x, y int, v Color) {
+	c.touched++
 	o := y*c.stride + x*4
 	binary.LittleEndian.PutUint32(c.data[o:o+4], uint32(v))
 }
@@ -73,6 +91,7 @@ func (c *Canvas) Clear(r Rect, col Color) {
 			binary.LittleEndian.PutUint32(row[x*4:x*4+4], px)
 		}
 	}
+	c.touched += r.W * r.H
 }
 
 func colBytes(c Color) []byte {
