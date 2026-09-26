@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"image/color"
 	"image/png"
 	"math"
 
@@ -67,6 +68,34 @@ func (i *Icon) Size() (int, int) {
 	b := i.img.Bounds()
 	return b.Dx(), b.Dy()
 }
+
+// Tint returns a copy of the icon recolored to tint: every pixel keeps
+// its alpha (anti-aliasing, opacity) and takes tint's color, so the
+// source works as a mask. This is how symbolic icons follow the theme
+// accent. The limits are the mask approach's limits: ink comes out one
+// flat color, gradient hue variation collapses to its alpha ramp, and
+// multi-color art goes monochrome - which is the symbolic-icon
+// contract. A translucent tint yields a translucent result.
+func (i *Icon) Tint(tint Color) *Icon {
+	src := i.img
+	w, h := src.Bounds().Dx(), src.Bounds().Dy()
+	out := image.NewRGBA(image.Rect(0, 0, w, h))
+	tr, tg, tb, ta := uint32(tint.R()), uint32(tint.G()), uint32(tint.B()), uint32(tint.A())
+	for y := range h {
+		for x := range w {
+			a := uint32(src.RGBAAt(x, y).A)
+			o := out.PixOffset(x, y)
+			out.Pix[o+0] = uint8(tr * a / 255)
+			out.Pix[o+1] = uint8(tg * a / 255)
+			out.Pix[o+2] = uint8(tb * a / 255)
+			out.Pix[o+3] = uint8(ta * a / 255)
+		}
+	}
+	return &Icon{img: out}
+}
+
+// At returns the pixel at (x, y) in icon coordinates.
+func (i *Icon) At(x, y int) color.Color { return i.img.At(x, y) }
 
 // Draw blends the icon with its top-left corner at (x, y).
 func (i *Icon) Draw(cv *Canvas, x, y int) {
