@@ -159,16 +159,19 @@ func (s *ShapedText) CaretAt(x float64) int {
 // Text returns the string the run was shaped from.
 func (s *ShapedText) Text() string { return s.text }
 
-// Draw paints the run with its baseline at (x, baselineY), clipped to the
-// canvas like every other primitive.
+// Draw paints the run with its baseline at logical (x, baselineY),
+// clipped to the canvas like every other primitive. The run was shaped
+// at its logical pixel size; rasterization scales the glyph outlines to
+// the canvas's device scale, so text stays crisp at any factor.
 func (t *Typeface) Draw(cv *Canvas, s *ShapedText, x, baselineY int, col Color) {
 	clip := cv.clip
 	if clip.Empty() {
 		return
 	}
-	scale := s.px / t.upem
-	dotX := float64(x)
-	base := float64(baselineY)
+	dev := float64(cv.num) / float64(cv.denom)
+	scale := s.px * dev / t.upem
+	dotX := float64(x) * dev
+	base := float64(baselineY) * dev
 	for i := range s.run.Glyphs {
 		g := &s.run.Glyphs[i]
 		penX := dotX + f64(g.XOffset) + f64(g.XBearing)
