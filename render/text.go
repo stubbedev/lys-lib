@@ -129,6 +129,13 @@ func (s *ShapedText) carets() []float64 {
 	return xs
 }
 
+// CaretPositions returns the caret x for every rune boundary 0..n at
+// once - the table CaretX indexes. Callers composing several runs into
+// one line (rich labels) offset each run's table by its line x.
+func (s *ShapedText) CaretPositions() []float64 {
+	return s.carets()
+}
+
 // CaretX returns the x offset of the caret placed before rune index
 // caret, clamped to [0, rune count].
 func (s *ShapedText) CaretX(caret int) float64 {
