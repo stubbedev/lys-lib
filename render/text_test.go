@@ -7,11 +7,11 @@ import (
 	"golang.org/x/image/font/gofont/goregular"
 )
 
-func testTypeface(t *testing.T) *Typeface {
-	t.Helper()
+func testTypeface(tb testing.TB) *Typeface {
+	tb.Helper()
 	tf, err := LoadFont(goregular.TTF)
 	if err != nil {
-		t.Fatalf("load Go font: %v", err)
+		tb.Fatalf("load Go font: %v", err)
 	}
 	return tf
 }

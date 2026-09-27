@@ -13,11 +13,8 @@ import (
 
 	"github.com/go-text/typesetting/di"
 	"github.com/go-text/typesetting/font"
-	ot "github.com/go-text/typesetting/font/opentype"
 	"github.com/go-text/typesetting/shaping"
-	"golang.org/x/image/draw"
 	"golang.org/x/image/math/fixed"
-	"golang.org/x/image/vector"
 )
 
 // Font shapes and paints text: a single Typeface, or a Chain that
@@ -96,10 +93,18 @@ func (t *Typeface) Covers(r rune) bool {
 // baseline. Glyph positions are relative to the line origin. A single
 // face produces a single run; fallback chains produce one run per face
 // change.
+//
+// ShapedText is immutable once built - the process-wide shaping cache
+// shares one instance between every caller that shapes the same
+// (font, size, string) - so readers may hold and consult it freely but
+// never write it.
 type ShapedText struct {
 	runs []shapedRun
 	text string
 	px   float64
+	// carets is the per-rune-boundary x table carets() serves, built
+	// once at shape time so repeated paint passes never rebuild it.
+	carets []float64
 }
 
 // shapedRun is one face's shaped slice of the line: the runes starting
@@ -111,9 +116,25 @@ type shapedRun struct {
 	start int // rune offset of the run's first rune within Text
 }
 
-// Shape lays text out at the given pixel size.
+// Shape lays text out at the given pixel size. Results are served from
+// the process-wide shaping cache: the second Shape of the same
+// (face, size, string) is a map hit returning the identical ShapedText,
+// so per-frame re-shapes - Entry's selection band, text, and caret, or
+// a per-event click mapping - cost a lookup.
 func (t *Typeface) Shape(text string, px float64) *ShapedText {
-	return &ShapedText{text: text, px: px, runs: []shapedRun{t.shapeRun(text, px, 0)}}
+	return cachedShape(t, px, text, func() *ShapedText { return t.shapeUncached(text, px) })
+}
+
+// shapeUncached does the actual shaping work, bypassing the cache.
+func (t *Typeface) shapeUncached(text string, px float64) *ShapedText {
+	return newShapedText(text, px, []shapedRun{t.shapeRun(text, px, 0)})
+}
+
+// newShapedText builds an immutable ShapedText, caret table included.
+func newShapedText(text string, px float64, runs []shapedRun) *ShapedText {
+	s := &ShapedText{text: text, px: px, runs: runs}
+	s.carets = s.buildCarets()
+	return s
 }
 
 // shapeRun shapes text as one run positioned at rune index start of
@@ -187,12 +208,14 @@ func (s *ShapedText) LineHeight() int {
 	return int(math.Ceil(s.Ascent() + s.Descent()))
 }
 
-// carets builds the caret x position for every rune boundary 0..n. The
-// x values are monotone in LTR runs; boundaries inside a shaping cluster
-// (a base rune plus its combining marks) snap to the cluster start, so a
-// caret can never land inside a grapheme. Runs continue each other's
-// x, like the runs of a rich label on one shared baseline.
-func (s *ShapedText) carets() []float64 {
+// buildCarets computes the caret x position for every rune boundary
+// 0..n of the line. The x values are monotone in LTR runs; boundaries
+// inside a shaping cluster (a base rune plus its combining marks) snap
+// to the cluster start, so a caret can never land inside a grapheme.
+// Runs continue each other's x, like the runs of a rich label on one
+// shared baseline. Built once at shape time - the table is shared with
+// every reader of the cached ShapedText, which never writes it.
+func (s *ShapedText) buildCarets() []float64 {
 	n := utf8.RuneCountInString(s.text)
 	xs := make([]float64, n+1)
 	for i := range xs {
@@ -228,16 +251,17 @@ func (s *ShapedText) carets() []float64 {
 }
 
 // CaretPositions returns the caret x for every rune boundary 0..n at
-// once - the table CaretX indexes. Callers composing several runs into
-// one line (rich labels) offset each run's table by its line x.
+// once - the table CaretX indexes, shared with every other reader of
+// this line: read it, never modify it. Callers composing several runs
+// into one line (rich labels) offset each run's table by its line x.
 func (s *ShapedText) CaretPositions() []float64 {
-	return s.carets()
+	return s.carets
 }
 
 // CaretX returns the x offset of the caret placed before rune index
 // caret, clamped to [0, rune count].
 func (s *ShapedText) CaretX(caret int) float64 {
-	xs := s.carets()
+	xs := s.carets
 	if caret < 0 {
 		caret = 0
 	}
@@ -250,7 +274,7 @@ func (s *ShapedText) CaretX(caret int) float64 {
 // CaretAt returns the rune boundary nearest x: the inverse of CaretX for
 // hit-testing clicks in a text field.
 func (s *ShapedText) CaretAt(x float64) int {
-	xs := s.carets()
+	xs := s.carets
 	best := 0
 	bestD := math.Abs(x - xs[0])
 	for i := 1; i < len(xs); i++ {
@@ -297,75 +321,43 @@ func (t *Typeface) Draw(cv *Canvas, s *ShapedText, x, baselineY int, col Color) 
 	s.Draw(cv, x, baselineY, col)
 }
 
-// drawGlyph rasterizes one glyph with its baseline pen at (penX, penY)
-// into the clip: the vector outline when the face has one, the
-// embedded bitmap (color emoji) otherwise.
+// drawGlyph paints one glyph with its baseline pen at (penX, penY)
+// into the clip: the cached 8bpp coverage raster when the face has an
+// outline, the cached scaled bitmap strike (color emoji) otherwise.
 func drawGlyph(cv *Canvas, clip Rect, t *Typeface, gid font.GID, scale, penX, penY float64, col Color) {
-	outline, ok := t.face.GlyphDataOutline(gid)
-	if ok && len(outline.Segments) > 0 {
-		drawOutline(cv, clip, outline, scale, penX, penY, col)
+	g, ok := cachedOutlineRaster(t, gid, scale, penX, penY)
+	if ok {
+		// The mask sits at the integer pen plus the raster's own
+		// origin offset (its bounds relative to that pen).
+		blitMask(cv, clip, g,
+			int(math.Floor(penX))+g.ox,
+			int(math.Floor(penY))+g.oy, col)
 		return
 	}
 	drawBitmapGlyph(cv, clip, t, gid, scale, penX, penY, col)
 }
 
-// drawOutline rasterizes one vector glyph outline with its baseline pen
-// at (penX, penY) into the clip.
-func drawOutline(cv *Canvas, clip Rect, outline font.GlyphOutline, scale, penX, penY float64, col Color) {
-	// Bounds of the glyph in canvas pixels, grown a pixel for AA.
-	minX, minY, maxX, maxY := math.Inf(1), math.Inf(1), math.Inf(-1), math.Inf(-1)
-	for _, seg := range outline.Segments {
-		for _, p := range seg.Args {
-			x := penX + float64(p.X)*scale
-			y := penY - float64(p.Y)*scale
-			minX, minY = math.Min(minX, x), math.Min(minY, y)
-			maxX, maxY = math.Max(maxX, x), math.Max(maxY, y)
-		}
-	}
-	gb := Rect{X: int(math.Floor(minX)) - 1, Y: int(math.Floor(minY)) - 1, W: 0, H: 0}
-	gb.W = int(math.Ceil(maxX)) + 1 - gb.X
-	gb.H = int(math.Ceil(maxY)) + 1 - gb.Y
-	gb = gb.Intersect(clip)
-	if gb.Empty() {
-		return
-	}
-
-	rast := vector.NewRasterizer(gb.W, gb.H)
-	toRaster := func(p ot.SegmentPoint) (float32, float32) {
-		return float32(penX+float64(p.X)*scale) - float32(gb.X),
-			float32(penY-float64(p.Y)*scale) - float32(gb.Y)
-	}
-	for _, seg := range outline.Segments {
-		switch seg.Op {
-		case ot.SegmentOpMoveTo:
-			x, y := toRaster(seg.Args[0])
-			rast.MoveTo(x, y)
-		case ot.SegmentOpLineTo:
-			x, y := toRaster(seg.Args[0])
-			rast.LineTo(x, y)
-		case ot.SegmentOpQuadTo:
-			cx, cy := toRaster(seg.Args[0])
-			ex, ey := toRaster(seg.Args[1])
-			rast.QuadTo(cx, cy, ex, ey)
-		case ot.SegmentOpCubeTo:
-			c1x, c1y := toRaster(seg.Args[0])
-			c2x, c2y := toRaster(seg.Args[1])
-			ex, ey := toRaster(seg.Args[2])
-			rast.CubeTo(c1x, c1y, c2x, c2y, ex, ey)
-		}
-	}
-	mask := image.NewAlpha(image.Rect(0, 0, gb.W, gb.H))
-	rast.Draw(mask, mask.Bounds(), image.NewUniform(color.Alpha{A: 255}), image.Point{})
-	for y := gb.Y; y < gb.Y+gb.H; y++ {
-		for x := gb.X; x < gb.X+gb.W; x++ {
-			m := uint32(mask.AlphaAt(x-gb.X, y-gb.Y).A)
+// blitMask tints one 8bpp coverage raster with col and blends it at
+// device (ox, oy), the atlas's blit half. Coverage ramps the
+// premultiplied channels exactly as the per-draw rasterizer always
+// did, and every write goes through cv.blend, so the PushAlpha stack
+// and source-over discipline hold by construction.
+func blitMask(cv *Canvas, clip Rect, g *glyphRaster, ox, oy int, col Color) {
+	x0, y0 := max(ox, clip.X), max(oy, clip.Y)
+	x1, y1 := min(ox+g.w, clip.X+clip.W), min(oy+g.h, clip.Y+clip.H)
+	ar, ag, ab := uint32(col.A()), uint32(col.R()), uint32(col.G())
+	abB := uint32(col.B())
+	for y := y0; y < y1; y++ {
+		row := (y - oy) * g.w
+		for x := x0; x < x1; x++ {
+			m := uint32(g.mask[row+x-ox])
 			if m == 0 {
 				continue
 			}
-			src := Color((uint32(col.A())*m/255)<<24 |
-				(uint32(col.R())*m/255)<<16 |
-				(uint32(col.G())*m/255)<<8 |
-				(uint32(col.B())*m)/255)
+			src := Color((ar*m/255)<<24 |
+				(ag*m/255)<<16 |
+				(ab*m/255)<<8 |
+				(abB*m)/255)
 			cv.blend(x, y, src)
 		}
 	}
@@ -381,10 +373,10 @@ type bitmapGlyph struct {
 
 // drawBitmapGlyph blits an embedded bitmap glyph - a CBDT/sbix color
 // emoji, or a black-and-white strike tinted with col - with its origin
-// box at the baseline pen. The bitmap scales from its strike
-// resolution to the glyph's device size, preserving the device-scale
-// rasterization contract; PNG and black-and-white formats decode,
-// others skip.
+// box at the baseline pen. The scaled strike comes from the atlas (the
+// CatmullRom resample is the expensive half; see cachedScaledBitmap),
+// preserving the device-scale rasterization contract; PNG and
+// black-and-white formats decode, others skip.
 func drawBitmapGlyph(cv *Canvas, clip Rect, t *Typeface, gid font.GID, scale, penX, penY float64, col Color) {
 	bg, ok := t.bitmap(gid)
 	if !ok {
@@ -402,10 +394,9 @@ func drawBitmapGlyph(cv *Canvas, clip Rect, t *Typeface, gid font.GID, scale, pe
 	if w <= 0 || h <= 0 {
 		return
 	}
+	scaled := cachedScaledBitmap(t, gid, bg, w, h)
 	// Bitmaps sit on the baseline, left edge at the pen.
 	x0, y0 := int(math.Floor(penX)), int(math.Ceil(penY))-h
-	scaled := image.NewRGBA(image.Rect(0, 0, w, h))
-	draw.CatmullRom.Scale(scaled, scaled.Bounds(), bg.img, bg.img.Bounds(), draw.Over, nil)
 	for y := range h {
 		for x := range w {
 			c := scaled.RGBAAt(x, y)
@@ -626,25 +617,33 @@ func (c *Chain) faceFor(r rune) *Typeface {
 }
 
 // Shape splits text into runs of consecutive runes sharing a face and
-// shapes each with it, on one shared baseline. Empty text still shapes
-// one primary run, so its metrics reserve the font's line height.
+// shapes each with it, on one shared baseline, serving repeats from the
+// process-wide shaping cache like Typeface.Shape. The chain is the key:
+// a chain held by the app reuses its entries across frames, and two
+// chains over the same faces never collide. Empty text still shapes one
+// primary run, so its metrics reserve the font's line height.
 func (c *Chain) Shape(text string, px float64) *ShapedText {
-	s := &ShapedText{text: text, px: px}
+	return cachedShape(c, px, text, func() *ShapedText { return c.shapeUncached(text, px) })
+}
+
+// shapeUncached does the run-splitting and shaping work, bypassing the
+// cache.
+func (c *Chain) shapeUncached(text string, px float64) *ShapedText {
 	runes := []rune(text)
 	if len(runes) == 0 {
-		s.runs = []shapedRun{c.primary.shapeRun(text, px, 0)}
-		return s
+		return newShapedText(text, px, []shapedRun{c.primary.shapeRun(text, px, 0)})
 	}
+	var runs []shapedRun
 	for i := 0; i < len(runes); {
 		f := c.faceFor(runes[i])
 		j := i + 1
 		for j < len(runes) && c.faceFor(runes[j]) == f {
 			j++
 		}
-		s.runs = append(s.runs, f.shapeRun(string(runes[i:j]), px, i))
+		runs = append(runs, f.shapeRun(string(runes[i:j]), px, i))
 		i = j
 	}
-	return s
+	return newShapedText(text, px, runs)
 }
 
 // Draw paints a shaped line; see ShapedText.Draw.
