@@ -35,17 +35,24 @@ import (
 	"github.com/neurlang/wayland/xdg"
 )
 
-// Aliases the generated bindings in wlr-layer-shell-unstable-v1.xml.go
-// reference. Keep in lockstep with the scanner's expectations.
+// Wayland type aliases the generated bindings in
+// wlr-layer-shell-unstable-v1.xml.go reference. Keep in lockstep with
+// the scanner's expectations.
 type (
+	// BaseProxy is the base type of every generated Wayland proxy.
 	BaseProxy = wl.BaseProxy
-	Context   = wl.Context
-	Event     = wl.Event
-	Surface   = wl.Surface
-	Output    = wl.Output
-	// The primary selection device hangs off a seat.
+	// Context carries a proxy's wire connection for requests.
+	Context = wl.Context
+	// Event is the base type of every generated proxy event.
+	Event = wl.Event
+	// Surface is a wl_surface.
+	Surface = wl.Surface
+	// Output is a wl_output.
+	Output = wl.Output
+	// Seat is a wl_seat: the primary selection device hangs off it.
 	Seat = wl.Seat
-	// Popups created from a layer surface use the xdg_popup type.
+	// XdgPopup is the xdg_popup role; popups created from a layer
+	// surface use it.
 	XdgPopup = xdg.Popup
 )
 

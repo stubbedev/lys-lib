@@ -579,6 +579,7 @@ func (t *Typeface) Ellipsize(text string, maxWidth, px float64) string {
 // Alignment selects how a drawn run is positioned inside its box.
 type Alignment uint8
 
+// Text alignments: start (left for LTR lines), center, end.
 const (
 	AlignStart Alignment = iota
 	AlignCenter
@@ -637,8 +638,13 @@ type Chain struct {
 }
 
 // NewChain returns a chain shaping with primary and, for runes it
-// lacks, the first covering face of fallback.
+// lacks, the first covering face of fallback. A nil primary panics
+// here, naming the argument — the same nil-face contract the widget
+// constructors enforce — instead of failing on the first Shape.
 func NewChain(primary *Typeface, fallback ...*Typeface) *Chain {
+	if primary == nil {
+		panic("render.NewChain: nil primary")
+	}
 	return &Chain{primary: primary, extra: fallback, picks: map[rune]*Typeface{}}
 }
 
