@@ -294,11 +294,15 @@ func (c *Canvas) RoundedRect(r Rect, radius int, col Color) {
 			if cov > 1 {
 				cov = 1
 			}
-			a := uint8(math.Round(cov * 255))
-			partial := Color(uint32(a)<<24 |
-				(uint32(col.R())*uint32(a)/255)<<16 |
-				(uint32(col.G())*uint32(a)/255)<<8 |
-				(uint32(col.B())*uint32(a))/255)
+			// Coverage scales all four premultiplied channels, alpha
+			// included: scaling alpha alone leaves full-strength color on
+			// edge pixels (the halo class), and dropping the source's own
+			// alpha would paint translucent fills opaque, unlike FillRect.
+			a := uint32(math.Round(cov * 255))
+			partial := Color((uint32(col.A())*a/255)<<24 |
+				(uint32(col.R())*a/255)<<16 |
+				(uint32(col.G())*a/255)<<8 |
+				(uint32(col.B())*a)/255)
 			c.blend(x, y, partial)
 		}
 	}
@@ -375,11 +379,14 @@ func (c *Canvas) Line(x0, y0, x1, y1, width int, col Color) {
 			if cov == 0 {
 				continue
 			}
+			// Coverage scales all four premultiplied channels, alpha
+			// included, exactly as in RoundedRect and the text
+			// rasterizer.
 			a := uint32(math.Round(cov * 255))
-			partial := Color(a<<24 |
+			partial := Color((uint32(col.A())*a/255)<<24 |
 				(uint32(col.R())*a/255)<<16 |
 				(uint32(col.G())*a/255)<<8 |
-				uint32(col.B())*a/255)
+				(uint32(col.B())*a)/255)
 			c.blend(x, y, partial)
 		}
 	}
