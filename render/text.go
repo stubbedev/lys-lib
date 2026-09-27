@@ -366,7 +366,7 @@ func drawOutline(cv *Canvas, clip Rect, outline font.GlyphOutline, scale, penX, 
 				(uint32(col.R())*m/255)<<16 |
 				(uint32(col.G())*m/255)<<8 |
 				(uint32(col.B())*m)/255)
-			cv.set(x, y, src.over(cv.get(x, y)))
+			cv.blend(x, y, src)
 		}
 	}
 }
@@ -426,7 +426,7 @@ func drawBitmapGlyph(cv *Canvas, clip Rect, t *Typeface, gid font.GID, scale, pe
 			} else {
 				src = Color(uint32(c.A)<<24 | uint32(c.R)<<16 | uint32(c.G)<<8 | uint32(c.B))
 			}
-			cv.set(px, py, src.over(cv.get(px, py)))
+			cv.blend(px, py, src)
 		}
 	}
 }

@@ -98,6 +98,13 @@ func Resample(src image.Image, srcRect image.Rectangle, dstW, dstH int) *image.R
 // device rect they cover - widget.Image's cache - must land without a
 // second scale, which DrawImage's nearest-neighbor logical mapping
 // would apply at any device scale other than 1.
+//
+// Opacity (PushAlpha) modulates here, at blit time, and nowhere earlier:
+// the cached rasters are premultiplied and shared by every consumer, so
+// baking a factor into them would double-multiply the next frame and
+// bleed into widgets fading independently. Multiplying the premultiplied
+// channels together (blend then modulate) keeps a modulated raster
+// premultiplied, exactly like the AA coverage ramps.
 func (c *Canvas) DrawImageDevice(img image.Image, x, y int) {
 	b := img.Bounds()
 	if b.Empty() {
@@ -112,7 +119,7 @@ func (c *Canvas) DrawImageDevice(img image.Image, x, y int) {
 		for px := r.Min.X; px < r.Max.X; px++ {
 			sr, sg, sb, sa := img.At(b.Min.X+px-x, b.Min.Y+py-y).RGBA()
 			src := Color(sa>>8<<24 | sr>>8<<16 | sg>>8<<8 | sb>>8)
-			c.set(px, py, src.over(c.get(px, py)))
+			c.blend(px, py, src)
 		}
 	}
 }

@@ -10,7 +10,7 @@ import (
 // Canvas paints into a raw ARGB8888 premultiplied pixel buffer: the exact
 // format of a wl_shm buffer at any scale. All drawing clips to the
 // intersection of the requested rect, the canvas bounds, and any clip set
-// with PushClip.
+// with PushClip, and blends through the opacity set with PushAlpha.
 //
 // The canvas carries a device scale: a rational number of device (buffer)
 // pixels per logical pixel - 240/120 is 2x, 150/120 is the fractional
@@ -32,6 +32,12 @@ type Canvas struct {
 	// it through Touched to pin how much of a frame damage-restricted
 	// repainting actually wrote.
 	touched int
+	// alpha is the PushAlpha stack's product: the subtree opacity every
+	// blended color is scaled by. alphaScale is the same factor as a
+	// uint8 in [0, 255], cached per push so the per-pixel work is
+	// integer math; 255 means unmodulated and 0 skips blends entirely.
+	alpha      float64
+	alphaScale uint32
 }
 
 // Touched returns the number of pixels written since the last
@@ -66,7 +72,10 @@ func NewScaled(data []byte, stride, width, height, num, denom int) *Canvas {
 	if num <= 0 || denom <= 0 {
 		panic(fmt.Sprintf("render: invalid device scale %d/%d", num, denom))
 	}
-	c := &Canvas{data: data, stride: stride, w: width, h: height, num: num, denom: denom}
+	c := &Canvas{
+		data: data, stride: stride, w: width, h: height, num: num, denom: denom,
+		alpha: 1, alphaScale: 255,
+	}
 	c.clip = c.Rect()
 	return c
 }
@@ -119,6 +128,68 @@ func (c *Canvas) PushClip(r Rect) Rect {
 // PopClip restores a clip returned by PushClip.
 func (c *Canvas) PopClip(prev Rect) {
 	c.clip = prev
+}
+
+// PushAlpha scales the opacity of everything painted until the matching
+// PopAlpha: every blended primitive (FillRect, RoundedRect, gradients,
+// Line, text, images) has its premultiplied color channels - color with
+// the alpha, never the alpha alone - multiplied by a. It is the
+// subtree-opacity primitive fades hang off: nested pushes multiply, and
+// a zero push makes every blend a no-op without touching a pixel. a
+// clamps to [0, 1], so a spring tween's overshoot saturates instead of
+// over-brightening.
+//
+// It returns the previous opacity; restore it with PopAlpha, the same
+// save-and-restore shape as PushClip. Clear and ClearDevice are the one
+// exception: they overwrite pixels rather than blend, so a faded subtree
+// cannot punch transparent holes in its background.
+func (c *Canvas) PushAlpha(a float64) float64 {
+	prev := c.alpha
+	c.alpha = prev * min(1, max(0, a))
+	c.rescaleAlpha()
+	return prev
+}
+
+// PopAlpha restores an opacity returned by PushAlpha.
+func (c *Canvas) PopAlpha(prev float64) {
+	c.alpha = prev
+	c.rescaleAlpha()
+}
+
+// rescaleAlpha re-derives the uint8 blend factor from the opacity
+// product: round-half-up to [0, 255], so two pushes of 0.5 and one push
+// of 0.25 produce the identical factor and identical pixels.
+func (c *Canvas) rescaleAlpha() {
+	c.alphaScale = uint32(min(255, max(0, math.Round(c.alpha*255))))
+}
+
+// blend writes src over the pixel at (x, y). It is the single
+// source-over write site: every blending primitive - fill, rounded
+// rect, gradient, line, text, image - goes through it, so the PushAlpha
+// stack is enforced by construction and a new primitive cannot forget
+// it. A zero opacity writes nothing at all, not even the touched
+// counter, which is the paint-count harness's skip proof.
+func (c *Canvas) blend(x, y int, src Color) {
+	switch c.alphaScale {
+	case 0:
+		return
+	case 255:
+	default:
+		src = modulate(src, c.alphaScale)
+	}
+	c.set(x, y, src.over(c.get(x, y)))
+}
+
+// modulate scales a premultiplied color's every channel by scale/255
+// with round-half-up uint8 arithmetic. Scaling the premultiplied
+// channels together keeps the result premultiplied; it is the same
+// invariant the anti-aliasing coverage ramps apply, one level up.
+func modulate(col Color, scale uint32) Color {
+	scaled := func(ch uint8) uint32 { return (uint32(ch)*scale + 127) / 255 }
+	return Color(scaled(col.A())<<24 |
+		scaled(col.R())<<16 |
+		scaled(col.G())<<8 |
+		scaled(col.B()))
 }
 
 // get returns the pixel value at (x, y). Callers must ensure the pixel
@@ -174,7 +245,7 @@ func (c *Canvas) FillRect(r Rect, col Color) {
 	}
 	for y := r.Y; y < r.Y+r.H; y++ {
 		for x := r.X; x < r.X+r.W; x++ {
-			c.set(x, y, col.over(c.get(x, y)))
+			c.blend(x, y, col)
 		}
 	}
 }
@@ -199,7 +270,7 @@ func (c *Canvas) FillRectDevice(r Rect, col Color) {
 	}
 	for y := r.Y; y < r.Y+r.H; y++ {
 		for x := r.X; x < r.X+r.W; x++ {
-			c.set(x, y, col.over(c.get(x, y)))
+			c.blend(x, y, col)
 		}
 	}
 }
@@ -228,7 +299,7 @@ func (c *Canvas) RoundedRect(r Rect, radius int, col Color) {
 				(uint32(col.R())*uint32(a)/255)<<16 |
 				(uint32(col.G())*uint32(a)/255)<<8 |
 				(uint32(col.B())*uint32(a))/255)
-			c.set(x, y, partial.over(c.get(x, y)))
+			c.blend(x, y, partial)
 		}
 	}
 }
@@ -262,7 +333,7 @@ func (c *Canvas) LinearGradient(r Rect, from, to Color, horizontal bool) {
 			} else {
 				t = (float64(y) + 0.5 - float64(r.Y)) / float64(r.H)
 			}
-			c.set(x, y, lerp(from, to, t).over(c.get(x, y)))
+			c.blend(x, y, lerp(from, to, t))
 		}
 	}
 }
@@ -309,7 +380,7 @@ func (c *Canvas) Line(x0, y0, x1, y1, width int, col Color) {
 				(uint32(col.R())*a/255)<<16 |
 				(uint32(col.G())*a/255)<<8 |
 				uint32(col.B())*a/255)
-			c.set(x, y, partial.over(c.get(x, y)))
+			c.blend(x, y, partial)
 		}
 	}
 }
@@ -336,7 +407,7 @@ func (c *Canvas) DrawImage(img image.Image, x, y int) {
 			sy := (py - dst.Y) * b.Dy() / dst.H
 			sr, sg, sb, sa := img.At(b.Min.X+sx, b.Min.Y+sy).RGBA()
 			src := Color(sa>>8<<24 | sr>>8<<16 | sg>>8<<8 | sb>>8)
-			c.set(pxx, py, src.over(c.get(pxx, py)))
+			c.blend(pxx, py, src)
 		}
 	}
 }
