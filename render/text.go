@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-text/typesetting/di"
 	"github.com/go-text/typesetting/font"
+	"github.com/go-text/typesetting/segmenter"
 	"github.com/go-text/typesetting/shaping"
 	"golang.org/x/image/math/fixed"
 )
@@ -481,37 +482,98 @@ func (t *Typeface) bitmapPpem() float64 {
 	return t.strikePpem
 }
 
-// Wrap breaks text into lines of at most maxWidth pixels, greedily, on
-// spaces. A single word longer than maxWidth stays on its own line and
-// overflows. Trailing spaces are dropped.
+// Wrap breaks text into lines of at most maxWidth pixels, filling
+// greedily along Unicode UAX #14 break opportunities: each line takes
+// as much as fits before the first opportunity that overflows. Breaks
+// land where real typesetting puts them - at spaces, after hyphens,
+// inside CJK runs - not only at ASCII spaces. A run with no break
+// opportunity before the width, an unbreakable token, stays whole on
+// its own line and overflows. Hard newlines split unconditionally;
+// trailing spaces at a break and leading spaces of a continuation are
+// dropped.
 func (t *Typeface) Wrap(text string, maxWidth, px float64) []string {
-	return wrapLines(t, text, maxWidth, px)
+	return WrapText(t, text, maxWidth, px)
 }
 
-// ellipsizeText is the shaper-agnostic body of Ellipsize.
-func ellipsizeText(s textShaper, text string, maxWidth, px float64) string {
+// EllipsizeMode selects which end of an overflowing line the ellipsis
+// replaces.
+type EllipsizeMode uint8
+
+const (
+	// EllipsizeNone never truncates: long text overflows and clips.
+	EllipsizeNone EllipsizeMode = iota
+	// EllipsizeStart cuts from the front: "…cated text".
+	EllipsizeStart
+	// EllipsizeMiddle keeps the head and the tail: "trunc…text" - the
+	// mode for paths and filenames, whose both halves identify them.
+	EllipsizeMiddle
+	// EllipsizeEnd cuts from the back: "truncated te…".
+	EllipsizeEnd
+)
+
+// ellipsizeText is the shaper-agnostic body of Ellipsize and
+// EllipsizeText. Fitting text is returned unchanged; otherwise a binary
+// search over the kept-rune count finds the longest truncation whose
+// advance still fits maxWidth - the kept prefix and suffix only ever
+// grow with the count, so the search is monotone. EllipsizeNone cuts
+// from the end, the common default, so a stray None never silently
+// overflows.
+func ellipsizeText(s textShaper, text string, mode EllipsizeMode, maxWidth, px float64) string {
 	if s.Shape(text, px).Advance() <= maxWidth {
 		return text
 	}
 	const ell = "…"
 	runes := []rune(text)
-	lo, hi := 0, len(runes)
-	for lo < hi {
-		mid := (lo + hi + 1) / 2
-		candidate := string(runes[:mid]) + ell
-		if s.Shape(candidate, px).Advance() <= maxWidth {
-			lo = mid
-			continue
+	fits := func(cand string) bool { return s.Shape(cand, px).Advance() <= maxWidth }
+	// longest returns the largest keep whose built candidate fits.
+	longest := func(build func(keep int) string) int {
+		lo, hi := 0, len(runes)
+		for lo < hi {
+			mid := (lo + hi + 1) / 2
+			if fits(build(mid)) {
+				lo = mid
+				continue
+			}
+			hi = mid - 1
 		}
-		hi = mid - 1
+		return lo
 	}
-	return string(runes[:lo]) + ell
+	switch mode {
+	case EllipsizeStart:
+		keep := longest(func(k int) string { return ell + string(runes[len(runes)-k:]) })
+		return ell + string(runes[len(runes)-keep:])
+	case EllipsizeMiddle:
+		keep := longest(func(k int) string {
+			head := k - k/2 // the head keeps the odd rune
+			return string(runes[:head]) + ell + string(runes[len(runes)-(k-head):])
+		})
+		head := keep - keep/2
+		return string(runes[:head]) + ell + string(runes[len(runes)-(keep-head):])
+	default: // EllipsizeEnd, and EllipsizeNone as the safe reading
+		keep := longest(func(k int) string { return string(runes[:k]) + ell })
+		return string(runes[:keep]) + ell
+	}
+}
+
+// EllipsizeText shortens text so its advance fits maxWidth, cutting at
+// mode and inserting an ellipsis; see Typeface.Ellipsize. Package-level
+// so any Font - a lone typeface or a fallback chain - truncates through
+// the same code path the methods use.
+func EllipsizeText(f Font, text string, mode EllipsizeMode, maxWidth, px float64) string {
+	return ellipsizeText(f, text, mode, maxWidth, px)
+}
+
+// WrapText breaks text into lines of at most maxWidth pixels; see Wrap.
+// Package-level so any Font wraps through the same code path.
+func WrapText(f Font, text string, maxWidth, px float64) []string {
+	return wrapLines(f, text, maxWidth, px)
 }
 
 // Ellipsize shortens text to fit maxWidth, replacing the cut remainder
-// with an ellipsis. Text that already fits is returned unchanged.
+// with an ellipsis. Text that already fits is returned unchanged. For
+// the other cut points use EllipsizeText.
 func (t *Typeface) Ellipsize(text string, maxWidth, px float64) string {
-	return ellipsizeText(t, text, maxWidth, px)
+	return EllipsizeText(t, text, EllipsizeEnd, maxWidth, px)
 }
 
 // Alignment selects how a drawn run is positioned inside its box.
@@ -665,27 +727,62 @@ func (c *Chain) Wrap(text string, maxWidth, px float64) []string {
 
 // Ellipsize shortens text to fit maxWidth; see Typeface.Ellipsize.
 func (c *Chain) Ellipsize(text string, maxWidth, px float64) string {
-	return ellipsizeText(c, text, maxWidth, px)
+	return EllipsizeText(c, text, EllipsizeEnd, maxWidth, px)
 }
 
-// wrapLines is the shaper-agnostic body of Wrap.
+// wrapLines is the shaper-agnostic body of Wrap: hard newlines split
+// unconditionally, and each hard line fills greedily along its
+// UAX #14 break opportunities (see wrapSoft).
 func wrapLines(s textShaper, text string, maxWidth, px float64) []string {
-	words := strings.Fields(text)
-	if len(words) == 0 {
-		return []string{text}
+	if text == "" {
+		return []string{""}
 	}
 	var lines []string
-	cur := words[0]
-	for _, w := range words[1:] {
-		candidate := cur + " " + w
-		if cur != "" && s.Shape(candidate, px).Advance() > maxWidth {
-			lines = append(lines, cur)
-			cur = w
-			continue
-		}
-		cur = candidate
+	for hard := range strings.SplitSeq(text, "\n") {
+		lines = append(lines, wrapSoft(s, strings.TrimSuffix(hard, "\r"), maxWidth, px)...)
 	}
-	return append(lines, cur)
+	return lines
+}
+
+// wrapSoft greedily fills one hard line - no newlines - along the
+// UAX #14 break opportunities the typesetting segmenter computes. Each
+// opportunity ends a candidate line; the first one that overflows
+// closes the line before its segment, so a run with no opportunity
+// before the width - an unbreakable token - is accepted whole and
+// overflows rather than disappearing. Spaces ride at the end of the
+// segment before a break, so closing a line trims them, and a
+// continuation line never starts with the space that caused it.
+func wrapSoft(s textShaper, line string, maxWidth, px float64) []string {
+	runes := []rune(line)
+	if len(runes) == 0 {
+		return []string{""}
+	}
+	var seg segmenter.Segmenter
+	if err := seg.InitWithString(line); err != nil {
+		return []string{line} // invalid UTF-8: one overflowing line, never a failure
+	}
+	skipSpaces := func(from int) int {
+		for from < len(runes) && runes[from] == ' ' {
+			from++
+		}
+		return from
+	}
+	var lines []string
+	start, cur := skipSpaces(0), 0
+	for it := seg.LineIterator(); it.Next(); {
+		l := it.Line()
+		end := l.Offset + len(l.Text)
+		if cur > start && s.Shape(string(runes[start:end]), px).Advance() > maxWidth {
+			lines = append(lines, strings.TrimRight(string(runes[start:cur]), " "))
+			start = skipSpaces(cur)
+		}
+		cur = end
+	}
+	if cur > start {
+		lines = append(lines, strings.TrimRight(string(runes[start:cur]), " "))
+		return lines
+	}
+	return append(lines, "") // whitespace only: an empty row, not a disappearance
 }
 
 func f266(px float64) fixed.Int26_6 {
