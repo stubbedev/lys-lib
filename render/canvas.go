@@ -299,10 +299,7 @@ func (c *Canvas) RoundedRect(r Rect, radius int, col Color) {
 			// edge pixels (the halo class), and dropping the source's own
 			// alpha would paint translucent fills opaque, unlike FillRect.
 			a := uint32(math.Round(cov * 255))
-			partial := Color((uint32(col.A())*a/255)<<24 |
-				(uint32(col.R())*a/255)<<16 |
-				(uint32(col.G())*a/255)<<8 |
-				(uint32(col.B())*a)/255)
+			partial := coverageScale(col, a)
 			c.blend(x, y, partial)
 		}
 	}
@@ -319,6 +316,21 @@ func sdRoundRect(px, py float64, r Rect, radius float64) float64 {
 	qy := math.Abs(py-cy) - hh
 	out := math.Hypot(math.Max(qx, 0), math.Max(qy, 0))
 	return out + math.Min(math.Max(qx, qy), 0) - radius
+}
+
+// coverageScale scales a premultiplied color's every channel by
+// cov/255 with uint8 floor arithmetic - the anti-aliasing coverage
+// ramp the signed-distance primitives (RoundedRect, Line, Shadow)
+// publish. Scaling the four channels together keeps the result
+// premultiplied and composable through PushAlpha; scaling alpha alone
+// leaves full-strength color on the edge (the halo class), and
+// dropping the source's own alpha would paint translucent fills
+// opaque, unlike FillRect.
+func coverageScale(col Color, cov uint32) Color {
+	return Color((uint32(col.A())*cov/255)<<24 |
+		(uint32(col.R())*cov/255)<<16 |
+		(uint32(col.G())*cov/255)<<8 |
+		(uint32(col.B())*cov)/255)
 }
 
 // LinearGradient blends a linear interpolation from (at one edge) to (at
@@ -383,11 +395,46 @@ func (c *Canvas) Line(x0, y0, x1, y1, width int, col Color) {
 			// included, exactly as in RoundedRect and the text
 			// rasterizer.
 			a := uint32(math.Round(cov * 255))
-			partial := Color((uint32(col.A())*a/255)<<24 |
-				(uint32(col.R())*a/255)<<16 |
-				(uint32(col.G())*a/255)<<8 |
-				(uint32(col.B())*a)/255)
+			partial := coverageScale(col, a)
 			c.blend(x, y, partial)
+		}
+	}
+}
+
+// Shadow blends a box shadow for the logical rect: the blurred
+// silhouette of a rounded rect, centered on r (no spread), falling off
+// with a precomputed Gaussian kernel. blur is the falloff radius in
+// logical pixels. The shadow paints OUTSIDE r - full strength at the
+// edges, tail gone past blur - so callers keep layout and hit-testing
+// on r itself and owe the ring only damage. The coverage raster is
+// cached per (rect size, radius, blur, device scale) in
+// shadowRasterFor, so a hover twitch that repaints the same shadow
+// re-blends the pixels but never re-Gaussians. Per-pixel coverage
+// scales all four premultiplied channels exactly as RoundedRect's AA,
+// and the draw blends through the PushAlpha stack like every
+// primitive, so a fading surface fades its shadow with it.
+func (c *Canvas) Shadow(r Rect, cornerRadius, blur int, col Color) {
+	if blur < 1 || col.A() == 0 || c.clip.Empty() {
+		return
+	}
+	dev := c.MapRect(r)
+	if dev.Empty() {
+		return
+	}
+	ras := shadowRasterFor(dev.W, dev.H, cornerRadius, blur, c.num, c.denom)
+	ox, oy := dev.X-ras.inset, dev.Y-ras.inset
+	box := c.clip.Intersect(Rect{X: ox, Y: oy, W: ras.w, H: ras.h})
+	if box.Empty() {
+		return
+	}
+	for y := box.Y; y < box.Y+box.H; y++ {
+		row := ras.cov[(y-oy)*ras.w:]
+		for x := box.X; x < box.X+box.W; x++ {
+			cov := uint32(row[x-ox])
+			if cov == 0 {
+				continue
+			}
+			c.blend(x, y, coverageScale(col, cov))
 		}
 	}
 }

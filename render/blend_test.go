@@ -388,6 +388,37 @@ func blendRows(t *testing.T) []blendRow {
 			},
 		},
 		{
+			// Row shape: a shadow has no single "the" coverage — the field
+			// is 1 inside the rect and falls off through the Gaussian
+			// tail outside. The rect interior therefore plays the role the
+			// flat interiors play for the other primitives, which keeps
+			// the opaque-overwrite pass meaningful (full-coverage pixels
+			// must still be pure overwrites) even though a soft shadow as
+			// a whole has no opaque variant. Partial coverage is asserted
+			// by the AA sweep at the coverage the cached raster publishes
+			// (against the kernel tail field the raster is built from),
+			// not by probes — a probe's refOver cannot see the primitive's
+			// internal quantize+floor+round chain within tol 1.
+			name: "Shadow",
+			tol:  1,
+			why:  "full-coverage interior reproduces col exactly, leaving over()'s +/-1; the falloff ring is held to the published coverage by the AA sweep",
+			paint: func(t *testing.T, cv *Canvas, col Color) {
+				cv.Shadow(shadowRowRect, shadowRowRadius, shadowRowBlur, col)
+			},
+			probes: []probe{
+				{25, 19, blendID, probeOver}, // inside the rect: full shadow coverage
+				{2, 2, blendID, probeUntouched},
+				{60, 37, blendID, probeUntouched},
+			},
+			aa: &aaSpec{
+				region:   Rect{X: 14, Y: 7, W: 36, H: 24},
+				draw:     func(cv *Canvas, col Color) { cv.Shadow(shadowRowRect, shadowRowRadius, shadowRowBlur, col) },
+				analytic: shadowRowCoverage(),
+				minFull:  280,
+				minPart:  240,
+			},
+		},
+		{
 			name: "IconSVG",
 			tol:  1,
 			why:  "Icon.Draw shares the DrawImage blit, whose 16-to-8 bit fetch is exact; +/-1 is over()'s rounding",
@@ -575,6 +606,24 @@ func rampProbes() []probe {
 }
 
 // --- geometry references for the SDF primitives -----------------------------
+
+// shadowRowRect, shadowRowRadius, and shadowRowBlur are the Shadow
+// row's geometry: a 24x12 rect with room for the blur ring inside the
+// shared canvas.
+var (
+	shadowRowRect   = Rect{X: 20, Y: 13, W: 24, H: 12}
+	shadowRowRadius = 4
+	shadowRowBlur   = 5
+)
+
+// shadowRowCoverage mirrors the raster the Shadow row is painted from:
+// the kernel tail of the rounded rect's signed distance, at scale 1.
+func shadowRowCoverage() func(x, y float64) float64 {
+	tail, half := shadowTail(shadowRowBlur)
+	return func(x, y float64) float64 {
+		return float64(tailCoverage(tail, half, sdRoundRect(x, y, shadowRowRect, float64(shadowRowRadius)))) / 255
+	}
+}
 
 // roundedCoverage mirrors RoundedRect's distance field: clamped 0.5-d
 // coverage at a point, used only through the supersampler.
