@@ -82,6 +82,10 @@ func (t *Typeface) Describe() font.Description {
 	return t.face.Describe()
 }
 
+// IsMonospace reports whether the face's glyphs are fixed-width (its
+// post table's flag), what a monospace filter asks.
+func (t *Typeface) IsMonospace() bool { return t.face.IsMonospace() }
+
 // Covers reports whether the face has a glyph for r. Fallback chains
 // consult it per rune to decide where a glyph comes from.
 func (t *Typeface) Covers(r rune) bool {
