@@ -30,6 +30,10 @@ type Font interface {
 	// ShapeDir is Shape under an explicit base direction; see
 	// text.Direction.
 	ShapeDir(s string, px float64, d text.Direction) *ShapedText
+	// ShapeRune shapes one rune at the pixel size - the per-rune probe
+	// wrap measurement and advance math use. Rune-keyed in the caches,
+	// so a probe never builds a one-rune string per call.
+	ShapeRune(r rune, px float64) *ShapedText
 	// Draw paints a shaped line with its baseline at logical
 	// (x, baselineY).
 	Draw(cv *Canvas, s *ShapedText, x, baselineY int, col Color)
@@ -147,6 +151,16 @@ func (t *Typeface) Shape(s string, px float64) *ShapedText {
 // text.Direction.
 func (t *Typeface) ShapeDir(s string, px float64, d text.Direction) *ShapedText {
 	return cachedShape(t, px, s, d, func() *ShapedText { return t.shapeUncached(s, px, d) })
+}
+
+// ShapeRune shapes one rune; see Font.ShapeRune. Identical result to
+// Shape(string(r)) - the fill goes through the same uncached path -
+// but the cache keys on the rune, so per-rune probes (wrap measurement
+// walks one rune at a time) stay allocation-free in the steady state.
+func (t *Typeface) ShapeRune(r rune, px float64) *ShapedText {
+	return cachedShapeRune(t, px, r, func() *ShapedText {
+		return t.shapeUncached(string(r), px, text.DirectionAuto)
+	})
 }
 
 // shapeUncached does the actual shaping work, bypassing the cache.
@@ -838,6 +852,13 @@ func (c *Chain) Shape(s string, px float64) *ShapedText {
 // text.Direction.
 func (c *Chain) ShapeDir(s string, px float64, d text.Direction) *ShapedText {
 	return cachedShape(c, px, s, d, func() *ShapedText { return c.shapeUncached(s, px, d) })
+}
+
+// ShapeRune shapes one rune; see Font.ShapeRune and Chain.Shape.
+func (c *Chain) ShapeRune(r rune, px float64) *ShapedText {
+	return cachedShapeRune(c, px, r, func() *ShapedText {
+		return c.shapeUncached(string(r), px, text.DirectionAuto)
+	})
 }
 
 // shapeUncached does the run-splitting and shaping work, bypassing the

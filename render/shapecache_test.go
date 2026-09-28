@@ -119,6 +119,42 @@ func TestShapeCacheHitAllocatesNothing(t *testing.T) {
 	}
 }
 
+func TestShapeRuneMatchesShapeOfString(t *testing.T) {
+	// Font.ShapeRune is the allocation-free probe path for per-rune
+	// advance math; it must produce exactly what Shape of the one-rune
+	// string produces, for both Font implementations and every rune
+	// class (ASCII, Latin-1, CJK, emoji fallback through the chain).
+	dropShapes()
+	tf := testTypeface(t)
+	mono := monoTypeface(t)
+	c := NewChain(mono, tf)
+	runes := []rune{'a', 'W', 'é', '中', '😀', ' ', '\t'}
+	for _, r := range runes {
+		for _, f := range []Font{tf, mono, c} {
+			want := f.Shape(string(r), 14)
+			got := f.ShapeRune(r, 14)
+			if got.Advance() != want.Advance() || got.LineHeight() != want.LineHeight() {
+				t.Fatalf("ShapeRune(%q) disagrees with Shape for %T: advance %v vs %v", r, f, got.Advance(), want.Advance())
+			}
+			if got.CaretX(1) != want.CaretX(1) {
+				t.Errorf("ShapeRune(%q) caret table disagrees with Shape for %T", r, f)
+			}
+			if f.ShapeRune(r, 14) != got {
+				t.Errorf("warm ShapeRune(%q) for %T missed the rune cache", r, f)
+			}
+		}
+	}
+	// Size is part of the key, like Shape.
+	if tf.ShapeRune('a', 14) == tf.ShapeRune('a', 28) {
+		t.Error("sizes shared one rune-cache entry")
+	}
+	// And the probe stays allocation-free warm.
+	tf.ShapeRune('a', 14) // warm
+	if n := testing.AllocsPerRun(100, func() { tf.ShapeRune('a', 14) }); n != 0 {
+		t.Errorf("warm ShapeRune allocated %v times per op, want 0", n)
+	}
+}
+
 func TestLRUEvictionKeepsHotEntries(t *testing.T) {
 	// The eviction discipline, pinned on a small cache: entries keep
 	// their heat across hits, the budget pressure evicts the coldest

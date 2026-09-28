@@ -37,6 +37,12 @@ type shapeKey struct {
 const (
 	shapeCacheBudget = 16 << 20 // shaped lines
 	glyphCacheBudget = 8 << 20  // glyph masks and scaled bitmap strikes
+	// runeShapeCacheBudget bounds the rune-keyed cache the per-rune
+	// probes share. Entries cost exactly what a one-rune shape costs
+	// (tens of bytes plus its glyphs), and a text-heavy window touches
+	// a few hundred distinct runes, so a megabyte is far above use and
+	// the LRU covers the rest.
+	runeShapeCacheBudget = 1 << 20
 	// subpixelBuckets quantizes a glyph's fractional pen offset: four
 	// buckets per axis bound the cache blowup a fractional device
 	// scale (150/120) would otherwise cause while keeping positional
@@ -68,6 +74,32 @@ func cachedShape(font Font, px float64, s string, d text.Direction, fill func() 
 	}
 	sh := fill()
 	shapes.put(key, sh, shapedCost(sh))
+	return sh
+}
+
+// runeKey identifies one shaped rune. The same font identity and size
+// semantics as shapeKey, minus the string: a probe's cost was the
+// one-rune string each lookup built, so the key stores the rune.
+type runeKey struct {
+	font Font
+	px   float64
+	r    rune
+}
+
+// runeShapes is the rune-keyed half of the shaping cache, serving the
+// per-rune probes (Font.ShapeRune). Same LRU, same cost model.
+var runeShapes = newLRU[runeKey, *ShapedText](runeShapeCacheBudget)
+
+// cachedShapeRune returns the shape of one rune at px for font,
+// filling the cache on a miss; the fill must produce what Shape of the
+// one-rune string would, so both caches agree entry for entry.
+func cachedShapeRune(font Font, px float64, r rune, fill func() *ShapedText) *ShapedText {
+	key := runeKey{font: font, px: px, r: r}
+	if sh, ok := runeShapes.get(key); ok {
+		return sh
+	}
+	sh := fill()
+	runeShapes.put(key, sh, shapedCost(sh))
 	return sh
 }
 
