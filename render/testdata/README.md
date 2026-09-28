@@ -21,6 +21,21 @@ enough to bundle whole, no subsetting step to keep in sync). To refresh
 it, re-download, update the SHA-256 above, regenerate the goldens with
 `UPDATE_GOLDEN=1 go test ./render ./widget`, and review the diff.
 
+## NotoSansHebrew-Regular.ttf
+
+The second fixture face, loaded only by the bidirectional-text tests
+(`FixtureChain`): Cantarell covers no Hebrew, so mixed Hebrew + Latin
+goldens shape through a fallback chain over the two — which is exactly
+the path mixed-direction labels take in production.
+
+- Source: https://github.com/notofonts/hebrew (Noto Sans Hebrew
+  Regular, downloaded 2026-09-28)
+- SHA-256: `cdefaf8efd47045f6820928eba84db5bed7557539328952b5f828315485e02ee`
+- License: SIL Open Font License 1.1 — see LICENSE-NotoSansHebrew.txt,
+  which ships alongside the font and must be kept with it.
+
+The file is the font's complete, unmodified regular weight (26 KB).
+
 ## golden/
 
 Committed PNG snapshots. A test fails when its golden is missing, so new

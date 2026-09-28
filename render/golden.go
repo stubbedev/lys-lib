@@ -16,6 +16,9 @@ import (
 //go:embed testdata/Cantarell-Regular.ttf
 var fixtureFontTTF []byte
 
+//go:embed testdata/NotoSansHebrew-Regular.ttf
+var fixtureHebrewTTF []byte
+
 // FixtureFontData returns the bytes of the bundled Cantarell Regular
 // fixture font (SIL Open Font License 1.1; the license text ships in
 // testdata/LICENSE-Cantarell.txt). It is the single face every golden
@@ -27,6 +30,31 @@ func FixtureFontData() []byte { return fixtureFontTTF }
 // concurrent use, so tests never share one.
 func NewFixtureTypeface() (*Typeface, error) {
 	return LoadFont(fixtureFontTTF)
+}
+
+// FixtureHebrewFontData returns the bytes of the bundled Hebrew fixture
+// face; see render/testdata/README.md for why a second face exists.
+func FixtureHebrewFontData() []byte { return fixtureHebrewTTF }
+
+// NewFixtureHebrewTypeface parses the bundled Hebrew fixture into a
+// fresh Typeface, one per caller like NewFixtureTypeface.
+func NewFixtureHebrewTypeface() (*Typeface, error) {
+	return LoadFont(fixtureHebrewTTF)
+}
+
+// FixtureChain returns a fresh fallback chain over the two bundled
+// fixture faces — Latin and digits from Cantarell, Hebrew from Noto
+// Sans Hebrew — the shape mixed-direction goldens pin.
+func FixtureChain() (*Chain, error) {
+	base, err := NewFixtureTypeface()
+	if err != nil {
+		return nil, err
+	}
+	hebrew, err := NewFixtureHebrewTypeface()
+	if err != nil {
+		return nil, err
+	}
+	return NewChain(base, hebrew), nil
 }
 
 // NRGBA converts a Canvas-format pixel buffer — ARGB8888 premultiplied

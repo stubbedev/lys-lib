@@ -13,17 +13,22 @@ import (
 	"container/list"
 	"sync"
 	"unicode/utf8"
+
+	"github.com/stubbedev/gelm/internal/text"
 )
 
 // shapeKey identifies one shaped line. The font field compares by
 // pointer identity - a *Typeface or a *Chain - so a chain held by the
 // app reuses its entries across frames and two chains over the same
 // faces stay separate keys; neither deep face equality nor per-chain
-// rune picks leak into the key.
+// rune picks leak into the key. The direction is part of the key: the
+// same text under an explicit left-to-right vs right-to-left base
+// resolves and reorders differently.
 type shapeKey struct {
 	font Font
 	px   float64
 	text string
+	dir  text.Direction
 }
 
 // Cache budgets. Shaped lines are small (a few hundred bytes each) and
@@ -52,17 +57,18 @@ const (
 // always had.
 var shapes = newLRU[shapeKey, *ShapedText](shapeCacheBudget)
 
-// cachedShape returns the shape of text at px for font, filling the
-// cache on a miss. The returned pointer is shared: ShapedText is
-// immutable once built, so every caller may keep and read it freely.
-func cachedShape(font Font, px float64, text string, fill func() *ShapedText) *ShapedText {
-	key := shapeKey{font: font, px: px, text: text}
-	if s, ok := shapes.get(key); ok {
-		return s
+// cachedShape returns the shape of text at px for font under base
+// direction d, filling the cache on a miss. The returned pointer is
+// shared: ShapedText is immutable once built, so every caller may keep
+// and read it freely.
+func cachedShape(font Font, px float64, s string, d text.Direction, fill func() *ShapedText) *ShapedText {
+	key := shapeKey{font: font, px: px, text: s, dir: d}
+	if sh, ok := shapes.get(key); ok {
+		return sh
 	}
-	s := fill()
-	shapes.put(key, s, shapedCost(s))
-	return s
+	sh := fill()
+	shapes.put(key, sh, shapedCost(sh))
+	return sh
 }
 
 // shapedCost estimates an entry's memory: the string, the caret table,

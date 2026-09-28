@@ -9,6 +9,8 @@ package render
 import (
 	"strings"
 	"testing"
+
+	"github.com/stubbedev/gelm/internal/text"
 )
 
 // benchText200 is a 200-rune line: an entry's worst realistic paste.
@@ -37,7 +39,7 @@ func BenchmarkShape200Cold(b *testing.B) {
 	tf := testTypeface(b)
 	b.ReportAllocs()
 	for b.Loop() {
-		if s := tf.shapeUncached(benchText200, 14); s == nil {
+		if s := tf.shapeUncached(benchText200, 14, text.DirectionAuto); s == nil {
 			b.Fatal("nil shape")
 		}
 	}
