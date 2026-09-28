@@ -30,6 +30,42 @@ func BenchmarkShape200(b *testing.B) {
 	}
 }
 
+// BenchmarkDrawAligned draws a line of text into a 200x40 box every
+// op - the Label/Entry alignment path. Steady state serves the shape
+// from the cache and the glyph from the atlas, so the number the
+// budget gates (TestAllocBudget) is the per-draw allocation count.
+func BenchmarkDrawAligned(b *testing.B) {
+	tf := testTypeface(b)
+	cv, _ := newTestCanvas(240, 40)
+	box := Rect{W: 200, H: 32}
+	col := RGB(255, 255, 255)
+	b.ReportAllocs()
+	for b.Loop() {
+		if s := tf.DrawAligned(cv, benchText200[:43], box, 14, col, AlignStart); s == nil {
+			b.Fatal("nil shape")
+		}
+	}
+}
+
+// BenchmarkCanvasPaint repaints the primitive mix one widget frame
+// uses - clear, filled rects, a border, a rounded fill, and a gradient
+// strip - over a 320x200 canvas. The steady-state number is the pixel
+// work; allocations must stay at zero (the budget gates it).
+func BenchmarkCanvasPaint(b *testing.B) {
+	cv, _ := newTestCanvas(320, 200)
+	full := cv.Rect()
+	bg := RGB(24, 24, 28)
+	fg := RGB(200, 200, 200)
+	b.ReportAllocs()
+	for b.Loop() {
+		cv.Clear(full, bg)
+		cv.FillRect(Rect{X: 8, Y: 8, W: 120, H: 24}, fg)
+		cv.BorderRect(Rect{X: 8, Y: 40, W: 120, H: 24}, 2, fg)
+		cv.RoundedRect(Rect{X: 8, Y: 72, W: 120, H: 24}, 8, fg)
+		cv.LinearGradient(Rect{X: 8, Y: 104, W: 120, H: 24}, bg, fg, true)
+	}
+}
+
 // Cold-path benchmark lands with the shaping cache implementation.
 
 // BenchmarkShape200Cold shapes the same string with the cache bypassed
