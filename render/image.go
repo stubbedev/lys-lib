@@ -130,11 +130,38 @@ func (c *Canvas) DrawImageDevice(img image.Image, x, y int) {
 	if r.Empty() {
 		return
 	}
+	if rgba, ok := img.(*image.RGBA); ok {
+		c.drawRGBADevice(rgba, x, y, r)
+		return
+	}
 	for py := r.Min.Y; py < r.Max.Y; py++ {
 		for px := r.Min.X; px < r.Max.X; px++ {
 			sr, sg, sb, sa := img.At(b.Min.X+px-x, b.Min.Y+py-y).RGBA()
 			src := Color(sa>>8<<24 | sr>>8<<16 | sg>>8<<8 | sb>>8)
 			c.blend(px, py, src)
+		}
+	}
+}
+
+// drawRGBADevice is DrawImageDevice's fast path for *image.RGBA, the
+// raster every resample produces: it reads the premultiplied bytes
+// straight from Pix instead of an At call and color conversion per
+// pixel, and writes opaque pixels without the blend when no opacity
+// modulates them - a full-screen raster (a frozen screenshot behind an
+// overlay) repaints at memory speed. r is the destination rect, already
+// clipped.
+func (c *Canvas) drawRGBADevice(img *image.RGBA, x, y int, r image.Rectangle) {
+	b := img.Bounds()
+	for py := r.Min.Y; py < r.Max.Y; py++ {
+		src := img.Pix[img.PixOffset(b.Min.X+r.Min.X-x, b.Min.Y+py-y):]
+		for px := r.Min.X; px < r.Max.X; px++ {
+			i := (px - r.Min.X) * 4
+			col := Color(uint32(src[i+3])<<24 | uint32(src[i])<<16 | uint32(src[i+1])<<8 | uint32(src[i+2]))
+			if src[i+3] == 0xff && c.alphaScale == 255 {
+				c.set(px, py, col)
+				continue
+			}
+			c.blend(px, py, col)
 		}
 	}
 }

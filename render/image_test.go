@@ -1,6 +1,7 @@
 package render
 
 import (
+	"bytes"
 	"image"
 	"image/color"
 	"math"
@@ -242,6 +243,46 @@ func TestDrawImageDeviceIsOneToOne(t *testing.T) {
 	}
 	if got := get(2, 0); got != RGB(0x40, 0x40, 0x40) {
 		t.Errorf("pixel 2 = %v, want gray", got)
+	}
+}
+
+// opaqueImage hides an image's concrete type, forcing DrawImageDevice
+// onto its generic At path.
+type opaqueImage struct{ image.Image }
+
+// The *image.RGBA fast path must paint exactly what the generic path
+// paints: translucent and opaque pixels, a sub-image whose bounds do
+// not start at the origin, a clip, and a modulating opacity.
+func TestDrawImageDeviceRGBAFastPathMatchesGeneric(t *testing.T) {
+	full := image.NewRGBA(image.Rect(0, 0, 6, 5))
+	for y := range 5 {
+		for x := range 6 {
+			a := uint8(0xff)
+			if (x+y)%3 == 0 {
+				a = 0x80
+			}
+			full.SetRGBA(x, y, color.RGBA{R: uint8(x * 40 * int(a) / 255), G: uint8(y * 50 * int(a) / 255), B: a / 2, A: a})
+		}
+	}
+	sub := full.SubImage(image.Rect(1, 1, 5, 4)).(*image.RGBA)
+	paint := func(img image.Image, alpha float64) []byte {
+		data := make([]byte, Stride(8)*6)
+		cv := New(data, Stride(8), 8, 6)
+		cv.Clear(cv.Rect(), RGB(0x10, 0x20, 0x30))
+		prevA := cv.PushAlpha(alpha)
+		prev := cv.PushClip(Rect{X: 1, Y: 0, W: 6, H: 5})
+		cv.DrawImageDevice(img, 2, 1)
+		cv.PopClip(prev)
+		cv.PopAlpha(prevA)
+		return data
+	}
+	for _, alpha := range []float64{1, 0.5} {
+		for _, src := range []*image.RGBA{full, sub} {
+			fast, slow := paint(src, alpha), paint(opaqueImage{src}, alpha)
+			if !bytes.Equal(fast, slow) {
+				t.Errorf("alpha %v bounds %v: the fast path differs from the generic one", alpha, src.Bounds())
+			}
+		}
 	}
 }
 
