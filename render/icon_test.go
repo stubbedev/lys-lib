@@ -121,6 +121,93 @@ func TestLoadPNG(t *testing.T) {
 	})
 }
 
+func TestIconFromImage(t *testing.T) {
+	src := image.NewNRGBA(image.Rect(0, 0, 4, 2))
+	for i := 0; i < len(src.Pix); i += 4 {
+		src.Pix[i], src.Pix[i+1], src.Pix[i+2], src.Pix[i+3] = 0, 0, 255, 255
+	}
+
+	t.Run("scales to the requested box", func(t *testing.T) {
+		ic, err := IconFromImage(src, 8, 8)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if w, h := ic.Size(); w != 8 || h != 8 {
+			t.Fatalf("size = %dx%d, want 8x8", w, h)
+		}
+		r, g, b, a := ic.At(4, 4).RGBA()
+		if a == 0 || b < 0xf000 || r > 0x1000 || g > 0x1000 {
+			t.Errorf("center = (%d, %d, %d, %d), want opaque blue", r, g, b, a)
+		}
+	})
+
+	t.Run("invalid size and empty images error", func(t *testing.T) {
+		if _, err := IconFromImage(src, 0, 8); err == nil {
+			t.Error("zero width must error")
+		}
+		if _, err := IconFromImage(nil, 8, 8); err == nil {
+			t.Error("nil image must error")
+		}
+		if _, err := IconFromImage(image.NewRGBA(image.Rectangle{}), 8, 8); err == nil {
+			t.Error("empty image must error")
+		}
+	})
+}
+
+func TestIconFromARGB32(t *testing.T) {
+	// Two pixels in network byte order: opaque red, then half-alpha
+	// green (straight alpha).
+	data := []byte{
+		0xff, 0xff, 0x00, 0x00,
+		0x80, 0x00, 0xff, 0x00,
+	}
+
+	t.Run("decodes A,R,G,B byte order", func(t *testing.T) {
+		ic, err := IconFromARGB32(2, 1, data, 2, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		r, g, b, a := ic.At(0, 0).RGBA()
+		if a>>8 != 0xff || r>>8 != 0xff || g != 0 || b != 0 {
+			t.Errorf("pixel 0 = (%d, %d, %d, %d), want opaque red", r>>8, g>>8, b>>8, a>>8)
+		}
+		// The icon stores premultiplied RGBA: half-alpha full green
+		// comes back as green at half intensity.
+		r, g, b, a = ic.At(1, 0).RGBA()
+		if a>>8 < 0x70 || a>>8 > 0x90 || g>>8 < 0x70 || g>>8 > 0x90 || r != 0 || b != 0 {
+			t.Errorf("pixel 1 = (%d, %d, %d, %d), want half-alpha green", r>>8, g>>8, b>>8, a>>8)
+		}
+	})
+
+	t.Run("scales like any image", func(t *testing.T) {
+		ic, err := IconFromARGB32(2, 1, data, 16, 16)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if w, h := ic.Size(); w != 16 || h != 16 {
+			t.Fatalf("size = %dx%d, want 16x16", w, h)
+		}
+	})
+
+	t.Run("short data and bad dimensions error", func(t *testing.T) {
+		if _, err := IconFromARGB32(2, 2, data, 4, 4); err == nil {
+			t.Error("a 2x2 raster from 8 bytes must error")
+		}
+		if _, err := IconFromARGB32(0, 1, data, 4, 4); err == nil {
+			t.Error("zero raster width must error")
+		}
+		if _, err := IconFromARGB32(2, 1, data, 0, 4); err == nil {
+			t.Error("zero target width must error")
+		}
+	})
+
+	t.Run("trailing bytes are ignored", func(t *testing.T) {
+		if _, err := IconFromARGB32(1, 1, data, 1, 1); err != nil {
+			t.Errorf("one pixel with trailing bytes: %v", err)
+		}
+	})
+}
+
 func TestIconDrawClips(t *testing.T) {
 	ic, err := LoadSVG([]byte(testCircleSVG), 20, 20)
 	if err != nil {

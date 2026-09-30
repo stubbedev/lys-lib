@@ -58,9 +58,48 @@ func LoadPNG(data []byte, w, h int) (*Icon, error) {
 	if err != nil {
 		return nil, fmt.Errorf("render: decode png: %w", err)
 	}
+	return IconFromImage(src, w, h)
+}
+
+// IconFromImage scales any decoded image to w x h pixels, the same
+// resampling LoadPNG applies. It is the entry point for pixels that
+// did not come from a file: a decoded image the caller already holds,
+// or a raster protocol payload converted to an image.
+func IconFromImage(src image.Image, w, h int) (*Icon, error) {
+	if w <= 0 || h <= 0 {
+		return nil, fmt.Errorf("render: invalid icon size %dx%d", w, h)
+	}
+	if src == nil || src.Bounds().Empty() {
+		return nil, errors.New("render: icon image is empty")
+	}
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
 	xdraw.CatmullRom.Scale(img, img.Bounds(), src, src.Bounds(), xdraw.Over, nil)
 	return &Icon{img: img}, nil
+}
+
+// IconFromARGB32 decodes a width x height raster of 32-bit ARGB pixels
+// in network byte order (A, R, G, B per pixel, straight alpha, rows
+// top to bottom with no padding) and scales it to w x h pixels. This
+// is the StatusNotifierItem IconPixmap wire format (also the
+// _NET_WM_ICON payload once byte-swapped to big-endian). data shorter
+// than width*height*4 is an error, not a partial icon; trailing bytes
+// past the raster are ignored.
+func IconFromARGB32(width, height int, data []byte, w, h int) (*Icon, error) {
+	if width <= 0 || height <= 0 {
+		return nil, fmt.Errorf("render: invalid ARGB32 raster %dx%d", width, height)
+	}
+	need := width * height * 4
+	if len(data) < need {
+		return nil, fmt.Errorf("render: ARGB32 raster %dx%d needs %d bytes, got %d", width, height, need, len(data))
+	}
+	src := image.NewNRGBA(image.Rect(0, 0, width, height))
+	for i := 0; i < need; i += 4 {
+		src.Pix[i+0] = data[i+1]
+		src.Pix[i+1] = data[i+2]
+		src.Pix[i+2] = data[i+3]
+		src.Pix[i+3] = data[i+0]
+	}
+	return IconFromImage(src, w, h)
 }
 
 // Size returns the rasterized icon size in pixels.
