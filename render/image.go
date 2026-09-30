@@ -26,6 +26,14 @@ const (
 	// device scale an image covers half the logical size it would at
 	// 1x.
 	ImageNone
+	// ImageStretch resamples the whole image to exactly the box,
+	// ignoring the aspect ratio.
+	ImageStretch
+	// ImageScaleDown is ImageNone for an image that fits the box and
+	// ImageFit for one that does not: never enlarged, only shrunk (aspect
+	// kept) until it fits - GTK's ContentFit.SCALE_DOWN, with the natural
+	// size measured in device pixels like ImageNone.
+	ImageScaleDown
 )
 
 // roundDiv divides a by b, rounding halves up on the positive values
@@ -56,6 +64,13 @@ func ScaleRect(srcW, srcH, boxW, boxH int, s ImageScale) (src image.Rectangle, d
 			cropW = min(srcW, max(1, roundDiv(srcH*boxW, boxH)))
 		}
 		return image.Rect((srcW-cropW)/2, (srcH-cropH)/2, (srcW-cropW)/2+cropW, (srcH-cropH)/2+cropH), boxW, boxH
+	case ImageStretch:
+		return image.Rect(0, 0, srcW, srcH), boxW, boxH
+	case ImageScaleDown:
+		if srcW <= boxW && srcH <= boxH {
+			return image.Rect(0, 0, srcW, srcH), srcW, srcH
+		}
+		return ScaleRect(srcW, srcH, boxW, boxH, ImageFit)
 	case ImageNone:
 		// No scaling: the box shows the centered natural-size pixels,
 		// clipped where the source is bigger than the box.
