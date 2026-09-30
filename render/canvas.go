@@ -38,6 +38,9 @@ type Canvas struct {
 	// integer math; 255 means unmodulated and 0 skips blends entirely.
 	alpha      float64
 	alphaScale uint32
+	// bright is the PushBrightness product; 0 and 1 both mean
+	// unmodulated, so the zero Canvas needs no initialization.
+	bright float64
 }
 
 // Touched returns the number of pixels written since the last
@@ -170,6 +173,9 @@ func (c *Canvas) rescaleAlpha() {
 // it. A zero opacity writes nothing at all, not even the touched
 // counter, which is the paint-count harness's skip proof.
 func (c *Canvas) blend(x, y int, src Color) {
+	if c.bright != 0 && c.bright != 1 {
+		src = brighten(src, c.bright)
+	}
 	switch c.alphaScale {
 	case 0:
 		return
