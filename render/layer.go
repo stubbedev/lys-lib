@@ -197,3 +197,22 @@ func (l *Layer) sample(src Rect, x, y float64) Color {
 	}
 	return Color(ch[0]<<24 | ch[1]<<16 | ch[2]<<8 | ch[3])
 }
+
+// CrossFade blends other into l over region: each pixel becomes
+// l·(1−t) + other·t, premultiplied channels alike - GSK's cross-fade,
+// exact where drawing one over the other at partial opacity is not.
+func (l *Layer) CrossFade(other *Layer, region Rect, t float64) {
+	region = region.Intersect(l.cv.Rect()).Intersect(other.cv.Rect())
+	t = min(1, max(0, t))
+	w := uint32(math.Round(t * 255))
+	for y := region.Y; y < region.Y+region.H; y++ {
+		for x := region.X; x < region.X+region.W; x++ {
+			a, b := l.cv.get(x, y), other.cv.get(x, y)
+			if a == b {
+				continue
+			}
+			mix := func(ca, cb uint8) uint32 { return (uint32(ca)*(255-w) + uint32(cb)*w + 127) / 255 }
+			l.cv.set(x, y, Color(mix(a.A(), b.A())<<24|mix(a.R(), b.R())<<16|mix(a.G(), b.G())<<8|mix(a.B(), b.B())))
+		}
+	}
+}

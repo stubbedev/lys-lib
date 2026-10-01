@@ -155,3 +155,29 @@ func TestCompositeTransforms(t *testing.T) {
 		t.Errorf("(4,4) after the turn = %v, want blue", got)
 	}
 }
+
+func TestLayerCrossFade(t *testing.T) {
+	c := layerCanvas(4, 1, 0)
+	region := Rect{W: 4, H: 1}
+	a := c.Layer(nil, region)
+	b := c.Layer(nil, region)
+	a.Canvas().FillRect(Rect{W: 2, H: 1}, RGB(200, 0, 0))
+	b.Canvas().FillRect(Rect{X: 1, W: 3, H: 1}, RGB(0, 0, 100))
+	a.CrossFade(b, region, 0.5)
+	// Pixel 0: red fading to nothing; 1: red to blue; 2: nothing to blue.
+	if got := a.Canvas().get(0, 0); !near8(got.A(), 128) || !near8(got.R(), 100) {
+		t.Errorf("red half gone = %v", got)
+	}
+	if got := a.Canvas().get(1, 0); got.A() != 255 || !near8(got.R(), 100) || !near8(got.B(), 50) {
+		t.Errorf("red-to-blue midpoint = %v", got)
+	}
+	if got := a.Canvas().get(2, 0); !near8(got.A(), 128) || !near8(got.B(), 50) {
+		t.Errorf("blue half in = %v", got)
+	}
+	a.CrossFade(b, region, 1)
+	if got := a.Canvas().get(0, 0); got != 0 {
+		t.Errorf("at t=1 the old pixel survives: %v", got)
+	}
+}
+
+func near8(got, want uint8) bool { return got+1 >= want && got <= want+1 }
