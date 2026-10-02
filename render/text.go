@@ -645,6 +645,9 @@ const (
 	EllipsizeEnd
 )
 
+// Ellipsis is the mark a truncated text carries where it was cut.
+const Ellipsis = "…"
+
 // ellipsizeText is the shaper-agnostic body of Ellipsize and
 // EllipsizeText. Fitting text is returned unchanged; otherwise a binary
 // search over the kept-rune count finds the longest truncation whose
@@ -656,7 +659,7 @@ func ellipsizeText(s textShaper, text string, mode EllipsizeMode, maxWidth, px f
 	if s.Shape(text, px).Advance() <= maxWidth {
 		return text
 	}
-	const ell = "…"
+	const ell = Ellipsis
 	runes := []rune(text)
 	fits := func(cand string) bool { return s.Shape(cand, px).Advance() <= maxWidth }
 	// longest returns the largest keep whose built candidate fits.
