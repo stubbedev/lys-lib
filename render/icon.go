@@ -8,6 +8,7 @@ import (
 	"image/color"
 	"image/png"
 	"math"
+	"regexp"
 
 	"github.com/srwiley/oksvg"
 	"github.com/srwiley/rasterx"
@@ -27,7 +28,7 @@ func LoadSVG(data []byte, w, h int) (*Icon, error) {
 	if w <= 0 || h <= 0 {
 		return nil, fmt.Errorf("render: invalid icon size %dx%d", w, h)
 	}
-	icon, err := oksvg.ReadIconStream(bytes.NewReader(data), oksvg.StrictErrorMode)
+	icon, err := oksvg.ReadIconStream(bytes.NewReader(dropForeignAttrs(data)), oksvg.StrictErrorMode)
 	if err != nil {
 		return nil, fmt.Errorf("render: parse svg: %w", err)
 	}
@@ -47,6 +48,27 @@ func LoadSVG(data []byte, w, h int) (*Icon, error) {
 	icon.SetTarget(offX, offY, fitW, fitH)
 	icon.Draw(dasher, 1.0)
 	return &Icon{img: img}, nil
+}
+
+// foreignAttr is an attribute in another vocabulary's namespace
+// (prefix:name, the xml, xmlns and xlink prefixes excepted), such as
+// GTK's symbolic-icon markup: gpa:fill='foreground'.
+var foreignAttr = regexp.MustCompile(`\s(?:[A-Za-z_][\w.-]*):[A-Za-z_][\w.-]*\s*=\s*(?:'[^']*'|"[^"]*")`)
+
+// dropForeignAttrs removes the attributes oksvg would misread as its
+// own: it ignores namespaces, so gpa:fill='foreground' overrode the
+// real fill and failed the parse. The SVG vocabulary keeps its
+// meaning; GTK symbolic recoloring is the tint gelm applies anyway.
+func dropForeignAttrs(data []byte) []byte {
+	return foreignAttr.ReplaceAllFunc(data, func(m []byte) []byte {
+		name := bytes.TrimSpace(m)
+		for _, keep := range [][]byte{[]byte("xml:"), []byte("xmlns:"), []byte("xlink:")} {
+			if bytes.HasPrefix(name, keep) {
+				return m
+			}
+		}
+		return nil
+	})
 }
 
 // LoadPNG decodes PNG icon data and scales it to w x h pixels.

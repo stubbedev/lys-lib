@@ -225,3 +225,27 @@ func TestIconDrawClips(t *testing.T) {
 		t.Errorf("pixel inside clip = %v, want icon ink", got)
 	}
 }
+
+// GTK's symbolic markup (wayle's icon migration writes it) parses: the
+// gpa attributes drop, the SVG paint stays, the xlink ones survive.
+func TestLoadSVGGrappaSymbolic(t *testing.T) {
+	const grappa = `<svg width='16' height='16'
+     xmlns:gpa='https://www.gtk.org/grappa'
+     gpa:version='2'>
+  <path d='M0 0L16 0L16 16L0 16Z'
+stroke='none'
+fill='rgb(0,0,0)'
+gpa:fill='foreground'/>
+</svg>`
+	ic, err := LoadSVG([]byte(grappa), 16, 16)
+	if err != nil {
+		t.Fatalf("grappa icon: %v", err)
+	}
+	if _, _, _, a := ic.img.At(8, 8).RGBA(); a == 0 {
+		t.Error("the grappa path painted nothing")
+	}
+	kept := string(dropForeignAttrs([]byte(`<use xlink:href="#a" xml:space="preserve" gpa:stroke="x" fill="red"/>`)))
+	if kept != `<use xlink:href="#a" xml:space="preserve" fill="red"/>` {
+		t.Errorf("dropForeignAttrs = %q", kept)
+	}
+}
