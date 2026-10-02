@@ -18,9 +18,9 @@ import (
 // logical pixels and land on device pixels rounded outward, so a logical
 // rect fully covers the device area it spans; text is shaped at its
 // logical size and rasterized at the device scale, which keeps it crisp
-// at any factor. The clip set with PushClip, the bounds returned by Rect,
-// and the explicit device bridge (MapRect, ClearDevice) are in device
-// pixels.
+// at any factor. PushClip takes a logical rect like every primitive;
+// the bounds returned by Rect and the explicit device bridge (MapRect,
+// ClearDevice, FillRectDevice, PushClipDevice) are in device pixels.
 type Canvas struct {
 	data   []byte
 	stride int
@@ -132,10 +132,17 @@ func (c *Canvas) Rect() Rect {
 	return Rect{X: 0, Y: 0, W: c.w, H: c.h}
 }
 
-// PushClip narrows subsequent drawing to the intersection of r and the
-// current clip. r is in device pixels - MapRect converts a logical rect.
-// It returns the previous clip; restore it with PopClip.
+// PushClip narrows subsequent drawing to the intersection of the
+// logical rect r, mapped to device pixels the way FillRect maps, and
+// the current clip. It returns the previous clip; restore it with
+// PopClip.
 func (c *Canvas) PushClip(r Rect) Rect {
+	return c.PushClipDevice(c.MapRect(r))
+}
+
+// PushClipDevice is PushClip for a rect already in device pixels (a
+// damage region, a layer's rect).
+func (c *Canvas) PushClipDevice(r Rect) Rect {
 	prev := c.clip
 	c.clip = c.clip.Intersect(r)
 	return prev
