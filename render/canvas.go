@@ -44,6 +44,7 @@ type Canvas struct {
 	// overlays are the top-layer paints deferred while a frame is armed
 	// (BeginOverlays): they run after the tree, under the frame clip.
 	overlays []overlay
+	focus    focusMark
 	armed    bool
 	frame    Rect
 }
@@ -520,4 +521,39 @@ func (c *Canvas) FlushOverlays() {
 	c.clip, c.alpha, c.bright = clip, alpha, bright
 	c.rescaleAlpha()
 	c.armed, c.overlays = false, c.overlays[:0]
+}
+
+// focusMark is the frame's keyboard focus ring: the widget it belongs
+// to (any comparable key) and how to draw it.
+type focusMark struct {
+	key   any
+	paint func(*Canvas)
+	done  bool
+}
+
+// MarkFocus arms the frame's focus ring: Painted draws it the moment
+// key's widget finishes painting, so everything painted after it in
+// tree order (a card over a list, a later sibling) covers it, as a
+// widget's own outline would be covered. A nil key clears it.
+func (c *Canvas) MarkFocus(key any, paint func(*Canvas)) {
+	c.focus = focusMark{key: key, paint: paint}
+}
+
+// Painted reports that w finished painting: the containers call it
+// after each child, drawing the armed focus ring after its widget.
+func (c *Canvas) Painted(w any) {
+	if f := &c.focus; f.paint != nil && !f.done && f.key == w {
+		f.done = true
+		f.paint(c)
+	}
+}
+
+// FinishFocus draws the focus ring if no container reached its widget
+// (a container defined outside the kit, a subtree composited from a
+// layer) and disarms it.
+func (c *Canvas) FinishFocus() {
+	if f := c.focus; f.paint != nil && !f.done {
+		f.paint(c)
+	}
+	c.focus = focusMark{}
 }

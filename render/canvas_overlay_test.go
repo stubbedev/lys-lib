@@ -42,3 +42,34 @@ func TestOverlaysDeferWhileArmed(t *testing.T) {
 		t.Error("an overlay after the flush was deferred")
 	}
 }
+
+func TestFocusRingDrawsOnceAfterItsWidget(t *testing.T) {
+	cv := New(make([]byte, Stride(4)*4), Stride(4), 4, 4)
+	type w struct{ n int }
+	focused, other := &w{1}, &w{2}
+	var order []string
+	cv.MarkFocus(focused, func(*Canvas) { order = append(order, "ring") })
+	cv.Painted(other)
+	order = append(order, "focused")
+	cv.Painted(focused)
+	cv.Painted(focused)
+	order = append(order, "later")
+	cv.FinishFocus()
+	if len(order) != 3 || order[0] != "focused" || order[1] != "ring" || order[2] != "later" {
+		t.Errorf("order = %v, want the ring once, right after its widget", order)
+	}
+	// Unreached, the ring still draws, at the end.
+	order = nil
+	cv.MarkFocus(focused, func(*Canvas) { order = append(order, "ring") })
+	cv.Painted(other)
+	cv.FinishFocus()
+	if len(order) != 1 {
+		t.Errorf("an unreached ring drew %d times, want once at the end", len(order))
+	}
+	// Disarmed: nothing draws.
+	cv.Painted(focused)
+	cv.FinishFocus()
+	if len(order) != 1 {
+		t.Error("a finished frame drew the ring again")
+	}
+}
