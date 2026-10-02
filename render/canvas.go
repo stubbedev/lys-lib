@@ -41,6 +41,18 @@ type Canvas struct {
 	// bright is the PushBrightness product; 0 and 1 both mean
 	// unmodulated, so the zero Canvas needs no initialization.
 	bright float64
+	// overlays are the top-layer paints deferred while a frame is armed
+	// (BeginOverlays): they run after the tree, under the frame clip.
+	overlays []overlay
+	armed    bool
+	frame    Rect
+}
+
+// overlay is one deferred top-layer paint and the opacity in force when
+// it was queued.
+type overlay struct {
+	paint         func(*Canvas)
+	alpha, bright float64
 }
 
 // Touched returns the number of pixels written since the last
@@ -470,4 +482,42 @@ func (c *Canvas) DrawImage(img image.Image, x, y int) {
 			c.blend(pxx, py, src)
 		}
 	}
+}
+
+// BeginOverlays arms the frame's top layer: until FlushOverlays,
+// Overlay defers its paints instead of running them in place. A window
+// arms it around painting its tree, so a widget that hangs content
+// outside its own bounds (an open dropdown list) paints above every
+// later sibling, as a popover would.
+func (c *Canvas) BeginOverlays() {
+	c.armed, c.frame, c.overlays = true, c.clip, c.overlays[:0]
+}
+
+// Overlay paints on the frame's top layer: deferred to FlushOverlays
+// while a frame is armed, in place otherwise (a subtree painted on its
+// own has no later siblings to escape). The deferred paint runs under
+// the frame's clip, not the caller's, so a scrolled container does not
+// cut it, with the opacity in force now.
+func (c *Canvas) Overlay(paint func(*Canvas)) {
+	if !c.armed {
+		paint(c)
+		return
+	}
+	c.overlays = append(c.overlays, overlay{paint, c.alpha, c.bright})
+}
+
+// FlushOverlays runs the deferred top-layer paints in queue order (one
+// queued while flushing runs too) and disarms the frame.
+func (c *Canvas) FlushOverlays() {
+	clip, alpha, bright := c.clip, c.alpha, c.bright
+	c.clip = c.frame
+	for i := 0; i < len(c.overlays); i++ { //nolint:intrange // an overlay queued while flushing extends the loop
+		o := c.overlays[i]
+		c.alpha, c.bright = o.alpha, o.bright
+		c.rescaleAlpha()
+		o.paint(c)
+	}
+	c.clip, c.alpha, c.bright = clip, alpha, bright
+	c.rescaleAlpha()
+	c.armed, c.overlays = false, c.overlays[:0]
 }
