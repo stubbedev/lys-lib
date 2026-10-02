@@ -2,13 +2,16 @@ package render
 
 import (
 	"bytes"
+	"encoding/xml"
 	"errors"
 	"fmt"
 	"image"
 	"image/color"
 	"image/png"
+	"io"
 	"math"
 	"regexp"
+	"strings"
 
 	"github.com/srwiley/oksvg"
 	"github.com/srwiley/rasterx"
@@ -35,6 +38,7 @@ func LoadSVG(data []byte, w, h int) (*Icon, error) {
 	if icon.ViewBox.W <= 0 || icon.ViewBox.H <= 0 {
 		return nil, errors.New("render: svg has no usable viewBox (want w x h > 0)")
 	}
+	applyFillRules(icon, data)
 
 	scale := math.Min(float64(w)/icon.ViewBox.W, float64(h)/icon.ViewBox.H)
 	fitW := icon.ViewBox.W * scale
@@ -43,8 +47,7 @@ func LoadSVG(data []byte, w, h int) (*Icon, error) {
 	offY := (float64(h) - fitH) / 2
 
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
-	scanner := rasterx.NewScannerGV(w, h, img, img.Bounds())
-	dasher := rasterx.NewDasher(w, h, scanner)
+	dasher := rasterx.NewDasher(w, h, newSVGScanner(w, h, img))
 	icon.SetTarget(offX, offY, fitW, fitH)
 	icon.Draw(dasher, 1.0)
 	return &Icon{img: img}, nil
@@ -69,6 +72,95 @@ func dropForeignAttrs(data []byte) []byte {
 		}
 		return nil
 	})
+}
+
+// svgShapes are the elements oksvg draws as one path each.
+var svgShapes = map[string]bool{
+	"path": true, "rect": true, "circle": true, "ellipse": true,
+	"polygon": true, "polyline": true, "line": true,
+}
+
+// applyFillRules sets the even-odd rule on the paths whose element
+// asks for it: oksvg parses no fill-rule, so a ring drawn as an outer
+// and an inner subpath (an icon frame) filled solid. The shapes are
+// matched to oksvg's paths in document order; a document whose shapes
+// do not line up one to one (a <use>, an empty shape) keeps the
+// nonzero rule throughout.
+func applyFillRules(icon *oksvg.SvgIcon, data []byte) {
+	rules, ok := evenOddShapes(data)
+	if !ok || len(rules) != len(icon.SVGPaths) {
+		return
+	}
+	for i, evenOdd := range rules {
+		if evenOdd {
+			icon.SVGPaths[i].UseNonZeroWinding = false
+		}
+	}
+}
+
+// evenOddShapes lists, in document order, whether each drawn shape
+// fills even-odd: its own fill-rule (attribute or style) or the one it
+// inherits. Shapes inside <defs> are not drawn; a <use> makes the
+// order unknowable (ok false).
+func evenOddShapes(data []byte) (rules []bool, ok bool) {
+	d := xml.NewDecoder(bytes.NewReader(data))
+	d.Strict = false
+	var stack []bool
+	defs := 0
+	for {
+		tok, err := d.Token()
+		if errors.Is(err, io.EOF) {
+			return rules, true
+		}
+		if err != nil {
+			return nil, false
+		}
+		switch t := tok.(type) {
+		case xml.StartElement:
+			rule := len(stack) > 0 && stack[len(stack)-1]
+			if r, set := fillRuleOf(t.Attr); set {
+				rule = r
+			}
+			stack = append(stack, rule)
+			switch name := t.Name.Local; {
+			case name == "use":
+				return nil, false
+			case name == "defs":
+				defs++
+			case defs == 0 && svgShapes[name]:
+				rules = append(rules, rule)
+			}
+		case xml.EndElement:
+			if len(stack) > 0 {
+				stack = stack[:len(stack)-1]
+			}
+			if t.Name.Local == "defs" {
+				defs--
+			}
+		}
+	}
+}
+
+// fillRuleOf reads an element's fill-rule: the style declaration wins
+// over the presentation attribute, as in CSS.
+func fillRuleOf(attrs []xml.Attr) (evenOdd, set bool) {
+	for _, a := range attrs {
+		if a.Name.Space == "" && a.Name.Local == "fill-rule" {
+			evenOdd, set = strings.TrimSpace(a.Value) == "evenodd", true
+		}
+	}
+	for _, a := range attrs {
+		if a.Name.Local != "style" {
+			continue
+		}
+		for decl := range strings.SplitSeq(a.Value, ";") {
+			k, v, found := strings.Cut(decl, ":")
+			if found && strings.TrimSpace(k) == "fill-rule" {
+				evenOdd, set = strings.TrimSpace(v) == "evenodd", true
+			}
+		}
+	}
+	return evenOdd, set
 }
 
 // LoadPNG decodes PNG icon data and scales it to w x h pixels.

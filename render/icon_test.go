@@ -3,8 +3,12 @@ package render
 import (
 	"bytes"
 	"image"
+	"image/color"
 	"image/png"
 	"testing"
+
+	"github.com/srwiley/rasterx"
+	"golang.org/x/image/math/fixed"
 )
 
 const testCircleSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">
@@ -247,5 +251,158 @@ gpa:fill='foreground'/>
 	kept := string(dropForeignAttrs([]byte(`<use xlink:href="#a" xml:space="preserve" gpa:stroke="x" fill="red"/>`)))
 	if kept != `<use xlink:href="#a" xml:space="preserve" fill="red"/>` {
 		t.Errorf("dropForeignAttrs = %q", kept)
+	}
+}
+
+// fill-rule: an even-odd ring (outer and inner subpaths wound alike)
+// leaves its hole; nonzero, the default, fills it. The rule comes from
+// the attribute, a style declaration or a group, and a document whose
+// shapes oksvg cannot be matched to keeps nonzero.
+func TestLoadSVGFillRule(t *testing.T) {
+	const ring = `M0 0L16 0L16 16L0 16ZM4 4L12 4L12 12L4 12Z`
+	hole := func(t *testing.T, svg string) bool {
+		t.Helper()
+		ic, err := LoadSVG([]byte(svg), 16, 16)
+		if err != nil {
+			t.Fatalf("load: %v", err)
+		}
+		if _, _, _, a := ic.img.At(1, 1).RGBA(); a == 0 {
+			t.Fatal("the ring painted nothing")
+		}
+		_, _, _, a := ic.img.At(8, 8).RGBA()
+		return a == 0
+	}
+	for name, tc := range map[string]struct {
+		svg  string
+		hole bool
+	}{
+		"nonzero default":        {`<svg width='16' height='16'><path d='` + ring + `'/></svg>`, false},
+		"evenodd attribute":      {`<svg width='16' height='16'><path fill-rule='evenodd' d='` + ring + `'/></svg>`, true},
+		"explicit nonzero":       {`<svg width='16' height='16'><path fill-rule='nonzero' d='` + ring + `'/></svg>`, false},
+		"evenodd style":          {`<svg width='16' height='16'><path style='fill:#000;fill-rule:evenodd' d='` + ring + `'/></svg>`, true},
+		"style over attribute":   {`<svg width='16' height='16'><path fill-rule='evenodd' style='fill-rule: nonzero' d='` + ring + `'/></svg>`, false},
+		"inherited from a group": {`<svg width='16' height='16'><g fill-rule='evenodd'><path d='` + ring + `'/></g></svg>`, true},
+		"second shape":           {`<svg width='16' height='16'><rect x='0' y='0' width='1' height='1'/><path fill-rule='evenodd' d='` + ring + `'/></svg>`, true},
+		"a use keeps nonzero": {`<svg width='16' height='16' xmlns:xlink='http://www.w3.org/1999/xlink'><defs><path id='p' d='M0 0L1 0L1 1Z'/></defs>` +
+			`<path fill-rule='evenodd' d='` + ring + `'/><use xlink:href='#p'/></svg>`, false},
+		"a defs shape is not drawn":    {`<svg width='16' height='16'><defs><path id='p' d='M0 0L1 0L1 1Z'/></defs><path fill-rule='evenodd' d='` + ring + `'/></svg>`, true},
+		"an empty shape keeps nonzero": {`<svg width='16' height='16'><path d=''/><path fill-rule='evenodd' d='` + ring + `'/></svg>`, false},
+		"defs are not drawn":           {`<svg width='16' height='16'><defs><linearGradient id='g'><stop offset='0' stop-color='#000'/></linearGradient></defs><path fill-rule='evenodd' d='` + ring + `'/></svg>`, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if got := hole(t, tc.svg); got != tc.hole {
+				t.Errorf("hole = %v, want %v", got, tc.hole)
+			}
+		})
+	}
+}
+
+// The even-odd scanner anti-aliases like rasterx's vector one: fed
+// the same points, a shape without overlaps rasterizes the same under
+// either rule, edges included, at any position and slope (on a target
+// past 512px, where the vector scanner uses the floating-point math
+// the even-odd one ports); and a later nonzero path on the same
+// scanner still fills solid.
+func TestSVGScannerEvenOddMatchesTheVectorCoverage(t *testing.T) {
+	const w, h = 600, 40
+	shapes := [][][2]float64{
+		{{2.6, 5.4}, {28.4, 2.2}, {19.2, 30.8}},
+		{{-6, 8}, {40, 12}, {16, 36}},
+		{{100.3, 0.5}, {590.9, 20.25}, {300, 39.9}, {120.1, 30}},
+	}
+	for _, pts := range shapes {
+		paint := func(evenOdd bool) *image.RGBA {
+			img := image.NewRGBA(image.Rect(0, 0, w, h))
+			var sc rasterx.Scanner = rasterx.NewScannerGV(w, h, img, img.Bounds())
+			if evenOdd {
+				sc = newSVGScanner(w, h, img)
+			}
+			sc.Clear()
+			sc.SetWinding(!evenOdd)
+			sc.SetColor(color.NRGBA{0xff, 0xff, 0xff, 0xff})
+			for i, p := range append(pts, pts[0]) {
+				fp := fixed.Point26_6{X: fixed.Int26_6(p[0] * 64), Y: fixed.Int26_6(p[1] * 64)}
+				if i == 0 {
+					sc.Start(fp)
+				} else {
+					sc.Line(fp)
+				}
+			}
+			sc.Draw()
+			return img
+		}
+		nz, eo := paint(false), paint(true)
+		worst := 0
+		for i := range nz.Pix {
+			worst = max(worst, abs(int(nz.Pix[i])-int(eo.Pix[i])))
+		}
+		if worst > 1 {
+			t.Errorf("%v: even-odd coverage differs from the vector scanner's by %d", pts, worst)
+		}
+	}
+	ic, err := LoadSVG([]byte(`<svg width='16' height='16'><path fill-rule='evenodd' d='M0 0L8 0L8 8L0 8ZM2 2L6 2L6 6L2 6Z'/>`+
+		`<path d='M8 8L16 8L16 16L8 16ZM10 10L14 10L14 14L10 14Z'/></svg>`), 16, 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, a := ic.img.At(4, 4).RGBA(); a != 0 {
+		t.Error("the even-odd ring filled its hole")
+	}
+	if _, _, _, a := ic.img.At(12, 12).RGBA(); a == 0 {
+		t.Error("the nonzero ring after it left a hole")
+	}
+}
+
+// Even-odd edges inside an overlap anti-alias: where the inner edge
+// covers a quarter of a pixel the winding sum is 1.25, the pixel three
+// quarters covered.
+func TestSVGEvenOddOverlapEdgeAntialiases(t *testing.T) {
+	ic, err := LoadSVG([]byte(`<svg width='16' height='16'><path fill-rule='evenodd' fill='#000' d='M0 0L16 0L16 16L0 16ZM4.75 4.75L11.25 4.75L11.25 11.25L4.75 11.25Z'/></svg>`), 16, 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, _, _, a := ic.img.At(4, 8).RGBA(); a>>8 < 181 || a>>8 > 201 {
+		t.Errorf("quarter-covered hole edge alpha %d, want about 191", a>>8)
+	}
+	if _, _, _, a := ic.img.At(2, 8).RGBA(); a>>8 != 255 {
+		t.Errorf("ring alpha %d, want opaque", a>>8)
+	}
+}
+
+// Each even-odd path draws alone: a second one on the scanner neither
+// repaints the first in its color nor needs closing by hand, and the
+// extent is the path's.
+func TestSVGScannerEvenOddPathsAreIndependent(t *testing.T) {
+	ic, err := LoadSVG([]byte(`<svg width='16' height='16'>`+
+		`<path fill-rule='evenodd' fill='#ff0000' d='M0 0L6 0L6 6L0 6Z'/>`+
+		`<path fill-rule='evenodd' fill='#0000ff' d='M10 10L16 10L16 16L10 16Z'/></svg>`), 16, 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if r, _, b, _ := ic.img.At(3, 3).RGBA(); r>>8 != 255 || b != 0 {
+		t.Errorf("first path pixel r=%d b=%d, want red only", r>>8, b>>8)
+	}
+	if _, _, b, _ := ic.img.At(13, 13).RGBA(); b>>8 != 255 {
+		t.Errorf("second path pixel b=%d, want blue", b>>8)
+	}
+
+	img := image.NewRGBA(image.Rect(0, 0, 20, 20))
+	sc := newSVGScanner(20, 20, img)
+	sc.Clear()
+	sc.SetWinding(false)
+	sc.SetColor(color.NRGBA{0xff, 0xff, 0xff, 0xff})
+	pt := func(x, y int) fixed.Point26_6 { return fixed.Point26_6{X: fixed.I(x), Y: fixed.I(y)} }
+	sc.Start(pt(2, 3))
+	sc.Line(pt(15, 3))
+	sc.Line(pt(15, 12)) // left open: the fill closes it
+	if ext := sc.GetPathExtent(); ext != (fixed.Rectangle26_6{Min: pt(2, 3), Max: pt(15, 12)}) {
+		t.Errorf("extent %v, want the points' bounds", ext)
+	}
+	sc.Draw()
+	if _, _, _, a := img.At(13, 5).RGBA(); a>>8 != 255 {
+		t.Errorf("an open even-odd path filled %d inside, want closed and filled", a>>8)
+	}
+	if _, _, _, a := img.At(3, 10).RGBA(); a != 0 {
+		t.Errorf("an open path filled %d outside its closing edge", a>>8)
 	}
 }
