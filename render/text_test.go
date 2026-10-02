@@ -1,6 +1,7 @@
 package render
 
 import (
+	"math"
 	"strings"
 	"testing"
 
@@ -269,4 +270,35 @@ func TestCaretMapping(t *testing.T) {
 			t.Errorf("clamping broken: %.2f %.2f", s.CaretX(-5), s.CaretX(99))
 		}
 	})
+}
+
+// Glyphs draw at their origin, the outline's own side bearing placing
+// the ink (not the bearing twice), and at a device scale the pen walks
+// scaled advances: a line at 2x inks twice as wide from twice as far.
+func TestDrawGlyphPositions(t *testing.T) {
+	face := testTypeface(t)
+	ink := func(s string, scale int) Rect {
+		w := 240 * scale
+		data := make([]byte, Stride(w)*w)
+		cv := NewScaled(data, Stride(w), w, w, scale, 1)
+		face.Shape(s, 40).Draw(cv, 10, 60, RGB(255, 255, 255))
+		b, _ := inkBounds(data, Stride(w), w, w)
+		return b
+	}
+	sh := face.Shape("l", 40)
+	lsb := f64(sh.runs[0].out.Glyphs[0].XBearing)
+	if b := ink("l", 1); math.Abs(float64(b.X)-(10+lsb)) > 1.5 {
+		t.Errorf("'l' inks from x=%d, want its bearing past the pen: %.1f", b.X, 10+lsb)
+	}
+	// The second line shapes as three runs (the Hebrew between runs
+	// right to left), so the runs' own advances scale too.
+	for _, line := range []string{"MMMM", "MM" + string([]rune{0x5d0, 0x5d1}) + "MM"} {
+		if len(face.Shape(line, 40).runs) == 1 && line != "MMMM" {
+			t.Fatalf("premise: %q shapes as one run", line)
+		}
+		one, two := ink(line, 1), ink(line, 2)
+		if math.Abs(float64(two.W)-2*float64(one.W)) > 3 || math.Abs(float64(two.X)-2*float64(one.X)) > 2 {
+			t.Errorf("%q at 2x inks %v, at 1x %v: want twice as wide from twice as far", line, two, one)
+		}
+	}
 }
