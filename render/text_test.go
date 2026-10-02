@@ -302,3 +302,29 @@ func TestDrawGlyphPositions(t *testing.T) {
 		}
 	}
 }
+
+// Glyph offsets are y-up (HarfBuzz's): a mark placed below the base
+// glyph (U+0323 dot below) draws below the baseline, not above it.
+func TestDrawGlyphYOffsetIsUp(t *testing.T) {
+	face := testTypeface(t)
+	sh := face.Shape("ạ", 40)
+	var yoff float64
+	for _, r := range sh.runs {
+		for _, g := range r.out.Glyphs {
+			if g.YOffset != 0 {
+				yoff = f64(g.YOffset)
+			}
+		}
+	}
+	if yoff >= 0 {
+		t.Skipf("premise: the face places no mark below (yoff %.2f)", yoff)
+	}
+	const w, base = 120, 60
+	data := make([]byte, Stride(w)*w)
+	cv := New(data, Stride(w), w, w)
+	sh.Draw(cv, 10, base, RGB(255, 255, 255))
+	b, _ := inkBounds(data, Stride(w), w, w)
+	if b.Y+b.H < base-int(yoff)-4 {
+		t.Errorf("ink ends at y=%d; the mark %.0fpx below the baseline should reach past %d", b.Y+b.H, -yoff, base-int(yoff)-4)
+	}
+}

@@ -442,12 +442,13 @@ func (s *ShapedText) Draw(cv *Canvas, x, baselineY int, col Color) {
 		penX := dotX
 		// The shaped positions are logical pixels and the outlines
 		// carry their own side bearing: the pen walks the advances at
-		// the device scale and each glyph draws at its origin.
+		// the device scale and each glyph draws at its origin, its
+		// offset y-up (a mark below the base sits below the baseline).
 		for j := range r.out.Glyphs {
 			g := &r.out.Glyphs[j]
 			drawGlyph(cv, clip, r.face, g.GlyphID, scale,
 				penX+f64(g.XOffset)*dev,
-				base+f64(g.YOffset)*dev, col)
+				base-f64(g.YOffset)*dev, col)
 			penX += f64(g.Advance) * dev
 		}
 		dotX += f64(r.out.Advance) * dev
