@@ -172,11 +172,24 @@ func (b *DmabufBuffer) Destroy() {
 	b.wl = nil
 }
 
+// CopyOutputDmabuf copies the output's next frame into an imported
+// dmabuf without waiting for it to change (a plain screencopy copy):
+// what a stream filling at its own rate, or a probe of an idle output,
+// needs. CaptureOutputDmabuf waits for damage instead, and reports it.
+func (c *Client) CopyOutputDmabuf(o Output, cursor bool, buf *DmabufBuffer) error {
+	_, err := c.captureDmabuf(o, cursor, buf, false)
+	return err
+}
+
 // CaptureOutputDmabuf copies one screencopy frame of the output
 // straight into an imported dmabuf (zero copy: no shm readback). It
 // returns the frame's damage. Fencing is the caller's: reuse a buffer
 // only after its consumer finished reading it.
 func (c *Client) CaptureOutputDmabuf(o Output, cursor bool, buf *DmabufBuffer) ([]Rect, error) {
+	return c.captureDmabuf(o, cursor, buf, c.scVersion >= 2)
+}
+
+func (c *Client) captureDmabuf(o Output, cursor bool, buf *DmabufBuffer, withDamage bool) ([]Rect, error) {
 	if buf == nil || buf.client != c {
 		return nil, errors.New("capture: dmabuf buffer is not from this client")
 	}
@@ -193,7 +206,7 @@ func (c *Client) CaptureOutputDmabuf(o Output, cursor bool, buf *DmabufBuffer) (
 	if err := c.awaitAdvertised(st); err != nil {
 		return nil, err
 	}
-	if err := c.copyInto(frame, st, buf.wl); err != nil {
+	if err := c.copyIntoAs(frame, st, buf.wl, withDamage); err != nil {
 		return nil, err
 	}
 	return st.damage, nil

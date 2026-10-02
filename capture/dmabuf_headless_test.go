@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"testing"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -149,4 +150,46 @@ func TestHeadlessDmabufCapture(t *testing.T) {
 		}
 		return wantColor(img, format.Width/2, format.Height/2, fillRed)
 	})
+}
+
+// TestHeadlessDmabufCopyTakesAnIdleFrame pins the plain copy: on an
+// output that has not changed since the last capture, the damage copy
+// waits for a change, while CopyOutputDmabuf takes the next frame and
+// returns.
+func TestHeadlessDmabufCopyTakesAnIdleFrame(t *testing.T) {
+	requireHeadless(t)
+	c := connectCapture(t)
+	if !c.HasDmabuf() {
+		t.Skip("compositor offers no linux-dmabuf (CPU renderer)")
+	}
+	out := c.Outputs()[0]
+	format, err := c.DmabufFormat(out, false)
+	if err != nil {
+		t.Skipf("no dmabuf screencopy target: %v", err)
+	}
+	stride := format.Width * 4
+	fd, _ := newUdmabuf(t, (stride*format.Height+4095)&^4095)
+	buf, err := c.ImportDmabuf(Dmabuf{
+		Width: format.Width, Height: format.Height, Fourcc: format.Fourcc,
+		Planes: []DmabufPlane{{Fd: uintptr(fd), Stride: uint32(stride)}},
+	})
+	if err != nil {
+		t.Skipf("import: %v", err)
+	}
+	defer buf.Destroy()
+	for i := range 3 {
+		done := make(chan error, 1)
+		go func() { done <- c.CopyOutputDmabuf(out, false, buf) }()
+		select {
+		case err := <-done:
+			if errors.Is(err, ErrFailed) {
+				t.Skip("compositor cannot render into a linear udmabuf on this GPU")
+			}
+			if err != nil {
+				t.Fatalf("copy %d: %v", i, err)
+			}
+		case <-time.After(3 * time.Second):
+			t.Fatalf("copy %d of an idle output never returned", i)
+		}
+	}
 }

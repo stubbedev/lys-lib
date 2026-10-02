@@ -200,8 +200,14 @@ func (c *Client) awaitAdvertised(st *copyState) error {
 // copyInto sends the copy into target and waits for the verdict.
 // copy_with_damage (v2+) is what makes the compositor report damage.
 func (c *Client) copyInto(frame *wlr.ZwlrScreencopyFrameV1, st *copyState, target *wl.Buffer) error {
+	return c.copyIntoAs(frame, st, target, c.scVersion >= 2)
+}
+
+// copyIntoAs is copyInto choosing the request: copy_with_damage waits
+// for the output to change, a plain copy takes the next frame.
+func (c *Client) copyIntoAs(frame *wlr.ZwlrScreencopyFrameV1, st *copyState, target *wl.Buffer, withDamage bool) error {
 	var err error
-	if c.scVersion >= 2 {
+	if withDamage {
 		err = frame.CopyWithDamage(target)
 	} else {
 		err = frame.Copy(target)
