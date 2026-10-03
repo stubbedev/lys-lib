@@ -254,3 +254,45 @@ func (i *Icon) At(x, y int) color.Color { return i.img.At(x, y) }
 func (i *Icon) Draw(cv *Canvas, x, y int) {
 	cv.DrawImage(i.img, x, y)
 }
+
+// DrawRotated blends the icon turned deg degrees clockwise about its
+// center, the center staying where the unrotated draw's center is.
+// Destination pixels inverse-map into the icon with nearest sampling;
+// the corners past the rotated bounds stay transparent.
+func (i *Icon) DrawRotated(cv *Canvas, x, y int, deg float64) {
+	if deg == 0 {
+		i.Draw(cv, x, y)
+		return
+	}
+	b := i.img.Bounds()
+	w, h := b.Dx(), b.Dy()
+	cx := float64(x) + float64(w)/2
+	cy := float64(y) + float64(h)/2
+	rad := deg * math.Pi / 180
+	sin, cos := math.Sin(rad), math.Cos(rad)
+	half := math.Sqrt(float64(w*w+h*h)) / 2
+	num, denom := cv.DeviceScale()
+	fx := func(l float64) int { return divFloor(int(l*float64(num)), denom) }
+	for py := fx(cy - half); py <= fx(cy+half)+1; py++ {
+		for px := fx(cx - half); px <= fx(cx+half)+1; px++ {
+			if !cv.clip.Contains(px, py) {
+				continue
+			}
+			// The device pixel's logical center, inverse-rotated about
+			// the icon center into icon coordinates.
+			lx := (float64(px) + 0.5) * float64(denom) / float64(num)
+			ly := (float64(py) + 0.5) * float64(denom) / float64(num)
+			dx, dy := lx-cx, ly-cy
+			sx := int(cos*dx+sin*dy) + w/2
+			sy := int(-sin*dx+cos*dy) + h/2
+			if sx < 0 || sy < 0 || sx >= w || sy >= h {
+				continue
+			}
+			sr, sg, sb, sa := i.img.At(b.Min.X+sx, b.Min.Y+sy).RGBA()
+			if sa == 0 {
+				continue
+			}
+			cv.blend(px, py, Color(sa>>8<<24|sr>>8<<16|sg>>8<<8|sb>>8))
+		}
+	}
+}
