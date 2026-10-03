@@ -492,6 +492,53 @@ func (c *Canvas) DrawImage(img image.Image, x, y int) {
 	}
 }
 
+// DrawImageCover blends img onto the canvas scaled to COVER r: the
+// image scales uniformly until it fills the rect, centered, the
+// overflow cropped (CSS background-size: cover), the whole masked by
+// the rounded rect.
+func (c *Canvas) DrawImageCover(img image.Image, r Rect, radii Corners) {
+	b := img.Bounds()
+	if b.Empty() || r.Empty() {
+		return
+	}
+	dst := c.clip.Intersect(c.MapRect(r))
+	if dst.Empty() {
+		return
+	}
+	rad := math.Min(float64(radii.TopLeft)*float64(c.num)/float64(c.denom), math.Min(float64(dst.W), float64(dst.H))/2)
+	sw, sh := float64(b.Dx()), float64(b.Dy())
+	scale := math.Max(float64(dst.W)/sw, float64(dst.H)/sh)
+	cw, ch := sw*scale, sh*scale
+	offX := (cw - float64(dst.W)) / 2
+	offY := (ch - float64(dst.H)) / 2
+	for py := dst.Y; py < dst.Y+dst.H; py++ {
+		for pxx := dst.X; pxx < dst.X+dst.W; pxx++ {
+			cov := 0.5 - sdRoundRect(float64(pxx)+0.5, float64(py)+0.5, dst, rad)
+			if cov <= 0 {
+				continue
+			}
+			if cov > 1 {
+				cov = 1
+			}
+			sx := b.Min.X + int((float64(pxx-dst.X)+offX)/scale)
+			sy := b.Min.Y + int((float64(py-dst.Y)+offY)/scale)
+			sx = min(max(sx, b.Min.X), b.Max.X-1)
+			sy = min(max(sy, b.Min.Y), b.Max.Y-1)
+			sr, sg, sb, sa := img.At(sx, sy).RGBA()
+			src := Color(sa>>8<<24 | sr>>8<<16 | sg>>8<<8 | sb>>8)
+			c.blend(pxx, py, coverageScale(src, uint32(math.Round(cov*255))))
+		}
+	}
+}
+
+// DrawImageCoverImage is DrawImageCover for an Icon's pixels.
+func (c *Canvas) DrawImageCoverImage(ic *Icon, r Rect, radii Corners) {
+	if ic == nil {
+		return
+	}
+	c.DrawImageCover(ic.img, r, radii)
+}
+
 // BeginOverlays arms the frame's top layer: until FlushOverlays,
 // Overlay defers its paints instead of running them in place. A window
 // arms it around painting its tree, so a widget that hangs content

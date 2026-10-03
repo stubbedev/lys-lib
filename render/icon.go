@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"image"
 	"image/color"
+	"image/jpeg"
 	"image/png"
 	"io"
 	"math"
@@ -171,6 +172,18 @@ func LoadPNG(data []byte, w, h int) (*Icon, error) {
 	src, err := png.Decode(bytes.NewReader(data))
 	if err != nil {
 		return nil, fmt.Errorf("render: decode png: %w", err)
+	}
+	return IconFromImage(src, w, h)
+}
+
+// LoadJPEG decodes JPEG icon data and scales it to w x h pixels.
+func LoadJPEG(data []byte, w, h int) (*Icon, error) {
+	if w <= 0 || h <= 0 {
+		return nil, fmt.Errorf("render: invalid icon size %dx%d", w, h)
+	}
+	src, err := jpeg.Decode(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("render: decode jpeg: %w", err)
 	}
 	return IconFromImage(src, w, h)
 }
