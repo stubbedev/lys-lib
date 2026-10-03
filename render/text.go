@@ -822,6 +822,9 @@ type Chain struct {
 	tabular bool
 }
 
+// Primary is the chain's first face: the one variants resolve from.
+func (c *Chain) Primary() *Typeface { return c.primary }
+
 // NewChain returns a chain shaping with primary and, for runes it
 // lacks, the first covering face of fallback. A nil primary panics
 // here, naming the argument — the same nil-face contract the widget
