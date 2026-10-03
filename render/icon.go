@@ -260,35 +260,56 @@ func (i *Icon) Draw(cv *Canvas, x, y int) {
 // Destination pixels inverse-map into the icon with nearest sampling;
 // the corners past the rotated bounds stay transparent.
 func (i *Icon) DrawRotated(cv *Canvas, x, y int, deg float64) {
-	if deg == 0 {
+	i.DrawXformed(cv, x, y, Rotate(deg))
+}
+
+// DrawXformed blends the icon through the affine m, applied about the
+// icon's center: destination pixels inverse-map into the icon with
+// nearest sampling; corners past the transformed bounds stay
+// transparent. The identity draws straight.
+func (i *Icon) DrawXformed(cv *Canvas, x, y int, m Affine) {
+	if m == Identity {
 		i.Draw(cv, x, y)
+		return
+	}
+	inv, ok := m.Invert()
+	if !ok {
 		return
 	}
 	b := i.img.Bounds()
 	w, h := b.Dx(), b.Dy()
 	cx := float64(x) + float64(w)/2
 	cy := float64(y) + float64(h)/2
-	rad := deg * math.Pi / 180
-	sin, cos := math.Sin(rad), math.Cos(rad)
-	half := math.Sqrt(float64(w*w+h*h)) / 2
+	// The transformed footprint: the icon's corners mapped forward,
+	// padded a device pixel.
+	var x0, y0, x1, y1 float64
+	for _, c := range [][2]float64{{0, 0}, {float64(w), 0}, {0, float64(h)}, {float64(w), float64(h)}} {
+		px, py := m.Apply(c[0]-float64(w)/2, c[1]-float64(h)/2)
+		x0 = math.Min(x0, px)
+		y0 = math.Min(y0, py)
+		x1 = math.Max(x1, px)
+		y1 = math.Max(y1, py)
+	}
+	// A pixel of padding: nearest sampling reaches one device pixel
+	// past the exact footprint at the edges and corners.
+	x0, y0, x1, y1 = x0-1, y0-1, x1+1, y1+1
 	num, denom := cv.DeviceScale()
 	fx := func(l float64) int { return divFloor(int(l*float64(num)), denom) }
-	for py := fx(cy - half); py <= fx(cy+half)+1; py++ {
-		for px := fx(cx - half); px <= fx(cx+half)+1; px++ {
+	for py := fx(cy + y0); py <= fx(cy+y1)+1; py++ {
+		for px := fx(cx + x0); px <= fx(cx+x1)+1; px++ {
 			if !cv.clip.Contains(px, py) {
 				continue
 			}
-			// The device pixel's logical center, inverse-rotated about
-			// the icon center into icon coordinates.
-			lx := (float64(px) + 0.5) * float64(denom) / float64(num)
-			ly := (float64(py) + 0.5) * float64(denom) / float64(num)
-			dx, dy := lx-cx, ly-cy
-			sx := int(cos*dx+sin*dy) + w/2
-			sy := int(-sin*dx+cos*dy) + h/2
-			if sx < 0 || sy < 0 || sx >= w || sy >= h {
+			// The device pixel's logical center, offset from the icon
+			// center and inverse-mapped into icon coordinates.
+			lx := (float64(px)+0.5)*float64(denom)/float64(num) - cx
+			ly := (float64(py)+0.5)*float64(denom)/float64(num) - cy
+			sx, sy := inv.Apply(lx, ly)
+			ix, iy := int(sx)+w/2, int(sy)+h/2
+			if ix < 0 || iy < 0 || ix >= w || iy >= h {
 				continue
 			}
-			sr, sg, sb, sa := i.img.At(b.Min.X+sx, b.Min.Y+sy).RGBA()
+			sr, sg, sb, sa := i.img.At(b.Min.X+ix, b.Min.Y+iy).RGBA()
 			if sa == 0 {
 				continue
 			}
