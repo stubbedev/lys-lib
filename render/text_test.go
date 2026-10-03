@@ -328,3 +328,27 @@ func TestDrawGlyphYOffsetIsUp(t *testing.T) {
 		t.Errorf("ink ends at y=%d; the mark %.0fpx below the baseline should reach past %d", b.Y+b.H, -yoff, base-int(yoff)-4)
 	}
 }
+
+// Tabular memoizes one tnum twin per face and shapes digits with it;
+// the twin keys its own cache entries and never hands back the plain
+// face.
+func TestTypefaceTabular(t *testing.T) {
+	tf := testTypeface(t)
+	tab := tf.Tabular()
+	if tab == tf {
+		t.Fatal("Tabular returned the plain face")
+	}
+	if again := tf.Tabular(); again != tab {
+		t.Fatal("Tabular is not memoized; every style pass would miss the shaping cache")
+	}
+	sh := tab.Shape("0123456789", 14)
+	if sh.NotDefCount() != 0 {
+		t.Errorf("the tnum shaping produced %d notdef glyphs", sh.NotDefCount())
+	}
+	a := sh.Advance()
+	w := tab.Shape("1111111111", 14).Advance()
+	if a != tab.Shape("8888888888", 14).Advance() {
+		t.Errorf("digit advances differ under tnum: %v vs %v", a, w)
+	}
+	_ = w
+}

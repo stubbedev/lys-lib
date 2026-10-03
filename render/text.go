@@ -13,6 +13,7 @@ import (
 
 	"github.com/go-text/typesetting/di"
 	"github.com/go-text/typesetting/font"
+	ot "github.com/go-text/typesetting/font/opentype"
 	"github.com/go-text/typesetting/segmenter"
 	"github.com/go-text/typesetting/shaping"
 	"golang.org/x/image/math/fixed"
@@ -56,6 +57,13 @@ type Typeface struct {
 	upem   float64
 	shaper shaping.HarfbuzzShaper
 
+	// features shape with OpenType features on (the tnum twin a
+	// stylesheet's font-feature-settings asks for); nil shapes plain.
+	features []shaping.FontFeature
+	// tabular memoizes this face's tnum twin, so the variant keys its
+	// own shaping cache entries instead of missing every style pass.
+	tabular *Typeface
+
 	// strikePpem is the pixels-per-em of the largest embedded bitmap
 	// strike (0 when the face has none), and bitmaps caches decoded
 	// bitmap glyphs. Both fill lazily; color emoji faces hit them on
@@ -63,6 +71,22 @@ type Typeface struct {
 	strikePpem float64
 	strikeRead bool
 	bitmaps    map[font.GID]bitmapGlyph
+}
+
+// Tabular returns the face shaping with the tnum OpenType feature on:
+// digits on a uniform advance grid, what a clock or a numeric column
+// wants. Memoized; the twin shares nothing the lazy caches fill, so
+// the two entries never contend.
+func (t *Typeface) Tabular() *Typeface {
+	if t.tabular == nil {
+		c := *t
+		c.features = []shaping.FontFeature{{Tag: ot.MustNewTag("tnum"), Value: 1}}
+		c.shaper = shaping.HarfbuzzShaper{}
+		c.tabular = nil
+		c.strikePpem, c.strikeRead, c.bitmaps = 0, false, nil
+		t.tabular = &c
+	}
+	return t.tabular
 }
 
 // LoadFont parses font data (TTF or OTF).
@@ -204,12 +228,13 @@ func (t *Typeface) shapeRun(text string, px float64, start int, rtl bool) shaped
 		dir = di.DirectionRTL
 	}
 	run := t.shaper.Shape(shaping.Input{
-		Text:      runes,
-		RunStart:  0,
-		RunEnd:    len(runes),
-		Direction: dir,
-		Face:      t.face,
-		Size:      f266(px),
+		Text:         runes,
+		RunStart:     0,
+		RunEnd:       len(runes),
+		Direction:    dir,
+		Face:         t.face,
+		Size:         f266(px),
+		FontFeatures: t.features,
 	})
 	return shapedRun{face: t, out: run, start: start, end: start + len(runes), rtl: rtl}
 }
@@ -793,6 +818,8 @@ type Chain struct {
 	// primary face, rendering .notdef as before.
 	resolve func(rune) *Typeface
 	picks   map[rune]*Typeface
+	// tabular shapes every run through its face's tnum twin.
+	tabular bool
 }
 
 // NewChain returns a chain shaping with primary and, for runes it
@@ -819,6 +846,17 @@ func (c *Chain) WithResolver(resolve func(rune) *Typeface) *Chain {
 // rune lands on.
 func (c *Chain) Face(r rune) *Typeface { return c.faceFor(r) }
 
+// Tabular returns the chain shaping with each face's tnum twin: digits
+// on a uniform advance grid, what a clock or a numeric column wants.
+// The variant keeps its own rune picks, so it never rewrites the base
+// chain's.
+func (c *Chain) Tabular() *Chain {
+	n := *c
+	n.picks = map[rune]*Typeface{}
+	n.tabular = true
+	return &n
+}
+
 // faceFor returns the face rune r shapes with.
 func (c *Chain) faceFor(r rune) *Typeface {
 	if f, ok := c.picks[r]; ok {
@@ -837,6 +875,9 @@ func (c *Chain) faceFor(r rune) *Typeface {
 				f = rf
 			}
 		}
+	}
+	if c.tabular {
+		f = f.Tabular()
 	}
 	c.picks[r] = f
 	return f
