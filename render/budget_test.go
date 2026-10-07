@@ -56,7 +56,7 @@ func TestAllocBudgetCanvasPaint(t *testing.T) {
 		cv.FillRect(Rect{X: 8, Y: 8, W: 120, H: 24}, fg)
 		cv.BorderRect(Rect{X: 8, Y: 40, W: 120, H: 24}, 2, fg)
 		cv.RoundedRect(Rect{X: 8, Y: 72, W: 120, H: 24}, 8, fg)
-		cv.LinearGradient(Rect{X: 8, Y: 104, W: 120, H: 24}, bg, fg, true)
+		cv.PaintGradient(Rect{X: 8, Y: 104, W: 120, H: 24}, Corners{}, Linear(90, GradientStop{Pos: 0, Color: bg}, GradientStop{Pos: 1, Color: fg}))
 	})
 	if allocs > budget {
 		t.Errorf("canvas paint allocates %v allocs/op, budget %d", allocs, budget)

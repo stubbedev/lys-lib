@@ -193,7 +193,7 @@ func TestPushAlphaZeroPaintsNothing(t *testing.T) {
 	prev := cv.PushAlpha(0)
 	cv.FillRect(cv.Rect(), RGB(255, 255, 255))
 	cv.RoundedRect(cv.Rect(), 4, RGB(255, 0, 0))
-	cv.LinearGradient(cv.Rect(), RGB(1, 2, 3), RGB(4, 5, 6), true)
+	cv.PaintGradient(cv.Rect(), Corners{}, Linear(90, GradientStop{Pos: 0, Color: RGB(1, 2, 3)}, GradientStop{Pos: 1, Color: RGB(4, 5, 6)}))
 	cv.Line(0, 0, 15, 15, 2, RGB(7, 8, 9))
 	face.Draw(cv, face.Shape("ink", 12), 0, 12, RGB(255, 255, 255))
 	cv.DrawImageDevice(img, 4, 4)

@@ -66,17 +66,17 @@ func TestRoundedBorderSides(t *testing.T) {
 	}
 }
 
-func TestFillGradient(t *testing.T) {
+func TestPaintGradientLinear(t *testing.T) {
 	cv, data := newTestCanvas(100, 10)
 	black, white := RGB(0, 0, 0), RGB(0xff, 0xff, 0xff)
-	cv.FillGradient(Rect{W: 100, H: 10}, Corners{}, 90, []GradientStop{{0, black}, {1, white}})
+	cv.PaintGradient(Rect{W: 100, H: 10}, Corners{}, Linear(90, GradientStop{0, black}, GradientStop{1, white}))
 	left, mid, right := pxAt(data, Stride(100), 0, 5), pxAt(data, Stride(100), 50, 5), pxAt(data, Stride(100), 99, 5)
 	if left.R() > 5 || right.R() < 250 || mid.R() < 120 || mid.R() > 135 {
 		t.Errorf("90deg ramp: left %d mid %d right %d", left.R(), mid.R(), right.R())
 	}
 	// 180deg runs top to bottom: every column in a row is equal.
 	cv2, data2 := newTestCanvas(10, 100)
-	cv2.FillGradient(Rect{W: 10, H: 100}, Corners{}, 180, []GradientStop{{0, black}, {0.5, white}, {1, black}})
+	cv2.PaintGradient(Rect{W: 10, H: 100}, Corners{}, Linear(180, GradientStop{0, black}, GradientStop{0.5, white}, GradientStop{1, black}))
 	if a, b := pxAt(data2, Stride(10), 0, 50), pxAt(data2, Stride(10), 9, 50); a != b || a.R() < 245 {
 		t.Errorf("180deg middle stop: %08x %08x", uint32(a), uint32(b))
 	}

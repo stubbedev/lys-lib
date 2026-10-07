@@ -354,10 +354,46 @@ func blendRows(t *testing.T) []blendRow {
 			tol:  1,
 			why:  "lerp is float with half-up rounding and matches refLerp bit for bit; over() adds +/-1",
 			paint: func(t *testing.T, cv *Canvas, col Color) {
-				cv.LinearGradient(Rect{X: 4, Y: 6, W: 28, H: 10}, col, complement(col), true)
-				cv.LinearGradient(Rect{X: 4, Y: 20, W: 28, H: 10}, complement(col), col, false)
+				cv.PaintGradient(Rect{X: 4, Y: 6, W: 28, H: 10}, Corners{}, Linear(90, GradientStop{Pos: 0, Color: col}, GradientStop{Pos: 1, Color: complement(col)}))
+				cv.PaintGradient(Rect{X: 4, Y: 20, W: 28, H: 10}, Corners{}, Linear(180, GradientStop{Pos: 0, Color: complement(col)}, GradientStop{Pos: 1, Color: col}))
 			},
 			probes: append(rampProbes(), probe{40, 14, blendID, probeUntouched}),
+		},
+		{
+			name: "RadialGradient",
+			tol:  1,
+			why:  "the radial position is the exact circle distance, the stop lerp matches refLerp; over() adds +/-1",
+			paint: func(t *testing.T, cv *Canvas, col Color) {
+				cv.PaintGradient(Rect{X: 4, Y: 4, W: 32, H: 32}, Corners{}, Gradient{
+					Kind: GradientRadial, Circle: true, Size: ClosestSide, CenterX: 0.5, CenterY: 0.5,
+					Stops: []GradientStop{{Pos: 0, Color: col}, {Pos: 1, Color: complement(col)}},
+				})
+			},
+			probes: append(gradientProbes(func(x, y float64) float64 { return math.Hypot(x-20, y-20) / 16 }, [][2]int{{19, 19}, {27, 19}, {20, 33}}),
+				probe{40, 20, blendID, probeUntouched}),
+		},
+		{
+			name: "ConicGradient",
+			tol:  1,
+			why:  "the conic position is the exact clockwise turn from up, the stop lerp matches refLerp; over() adds +/-1",
+			paint: func(t *testing.T, cv *Canvas, col Color) {
+				cv.PaintGradient(Rect{X: 4, Y: 4, W: 32, H: 32}, Corners{}, Conic(0, GradientStop{Pos: 0, Color: col}, GradientStop{Pos: 1, Color: complement(col)}))
+			},
+			probes: append(gradientProbes(func(x, y float64) float64 {
+				a := math.Atan2(x-20, -(y-20)) * 180 / math.Pi
+				return math.Mod(a+360, 360) / 360
+			}, [][2]int{{19, 8}, {30, 20}, {20, 31}, {8, 19}}), probe{40, 20, blendID, probeUntouched}),
+		},
+		{
+			name: "RepeatingGradient",
+			tol:  1,
+			why:  "the repeat folds the line position into the stop range exactly; the lerp matches refLerp; over() adds +/-1",
+			paint: func(t *testing.T, cv *Canvas, col Color) {
+				cv.PaintGradient(Rect{X: 4, Y: 6, W: 28, H: 10}, Corners{}, Linear(90, GradientStop{Pos: 0, Color: col}, GradientStop{Pos: 0.25, Color: complement(col)}).Repeating())
+			},
+			probes: append(gradientProbes(func(x, _ float64) float64 {
+				return math.Mod((x-4)/28, 0.25) / 0.25
+			}, [][2]int{{6, 10}, {10, 10}, {20, 10}, {30, 10}}), probe{40, 10, blendID, probeUntouched}),
 		},
 		{
 			name: "Line",
@@ -603,6 +639,18 @@ func rampProbes() []probe {
 		return probe{10, y, func(p Color) Color { return refLerp(complement(p), p, atY(y)) }, probeOver}
 	}
 	return []probe{h(4), h(17), h(31), v(20), v(24), v(29)}
+}
+
+// gradientProbes probes a gradient row at pixel centers: t maps the
+// center to the gradient position, the expected color is the reference
+// lerp from the paint to its complement.
+func gradientProbes(t func(x, y float64) float64, at [][2]int) []probe {
+	out := make([]probe, len(at))
+	for i, p := range at {
+		f := t(float64(p[0])+0.5, float64(p[1])+0.5)
+		out[i] = probe{p[0], p[1], func(c Color) Color { return refLerp(c, complement(c), f) }, probeOver}
+	}
+	return out
 }
 
 // --- geometry references for the SDF primitives -----------------------------

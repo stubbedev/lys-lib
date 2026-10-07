@@ -493,18 +493,7 @@ func (p *colrPainter) colorAt(ss []stop, ext tables.Extend, t float64) rgba {
 		return rgba{}
 	}
 	lo, hi := ss[0].at, ss[len(ss)-1].at
-	if span := hi - lo; span > 0 {
-		switch ext {
-		case tables.ExtendRepeat:
-			t = lo + math.Mod(math.Mod(t-lo, span)+span, span)
-		case tables.ExtendReflect:
-			u := math.Mod(math.Mod(t-lo, 2*span)+2*span, 2*span)
-			if u > span {
-				u = 2*span - u
-			}
-			t = lo + u
-		}
-	}
+	t = extendT(t, lo, hi, Extend(ext)) // the enums share their order
 	if t <= lo {
 		return p.color(ss[0].idx, ss[0].alpha)
 	}

@@ -47,8 +47,8 @@ func TestGoldenLine(t *testing.T) {
 
 func TestGoldenGradientAlpha(t *testing.T) {
 	goldenCanvas(t, "gradient-alpha", 160, 90, func(cv *Canvas) {
-		cv.LinearGradient(Rect{X: 8, Y: 8, W: 144, H: 30}, RGB(0x1E, 0x66, 0xF5), RGB(0x89, 0xB4, 0xFA), true)
-		cv.LinearGradient(Rect{X: 8, Y: 48, W: 144, H: 30}, RGB(0xCD, 0xD6, 0xF4), RGB(0x11, 0x11, 0x1B), false)
+		cv.PaintGradient(Rect{X: 8, Y: 8, W: 144, H: 30}, Corners{}, Linear(90, GradientStop{Pos: 0, Color: RGB(0x1E, 0x66, 0xF5)}, GradientStop{Pos: 1, Color: RGB(0x89, 0xB4, 0xFA)}))
+		cv.PaintGradient(Rect{X: 8, Y: 48, W: 144, H: 30}, Corners{}, Linear(180, GradientStop{Pos: 0, Color: RGB(0xCD, 0xD6, 0xF4)}, GradientStop{Pos: 1, Color: RGB(0x11, 0x11, 0x1B)}))
 		prev := cv.PushAlpha(0.5)
 		cv.FillRect(Rect{X: 30, Y: 20, W: 100, H: 40}, RGB(0xFF, 0xFF, 0xFF))
 		cv.PopAlpha(prev)

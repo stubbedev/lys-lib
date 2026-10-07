@@ -46,8 +46,9 @@ func (i Insets) Grow(r Rect) Rect {
 	return Rect{X: r.X - i.Left, Y: r.Y - i.Top, W: r.W + i.Left + i.Right, H: r.H + i.Top + i.Bottom}
 }
 
-// GradientStop is one color stop of a linear gradient: Pos is the
-// fraction of the gradient line, 0 at its start and 1 at its end.
+// GradientStop is one color stop of a gradient: Pos is the fraction
+// of the gradient line (or ray, or turn), 0 at its start and 1 at its
+// end.
 type GradientStop struct {
 	Pos   float64
 	Color Color
@@ -247,39 +248,6 @@ func borderSide(px, py float64, b frect, w [4]float64) int {
 		}
 	}
 	return best
-}
-
-// FillGradient paints a CSS linear gradient over r, clipped to its
-// rounded outline. angle is in degrees, CSS convention: 0 runs bottom
-// to top, 90 left to right; the gradient line spans the box's corners
-// along that direction. Colors interpolate premultiplied between the
-// stops, which must be sorted by position; outside the first and last
-// stop the end colors extend.
-func (c *Canvas) FillGradient(r Rect, radii Corners, angle float64, stops []GradientStop) {
-	if len(stops) == 0 {
-		return
-	}
-	b, rc := c.devBox(r, radii)
-	rad := angle * math.Pi / 180
-	dx, dy := math.Sin(rad), -math.Cos(rad)
-	w, h := b.x1-b.x0, b.y1-b.y0
-	length := math.Abs(w*dx) + math.Abs(h*dy)
-	if length == 0 {
-		return
-	}
-	cx, cy := (b.x0+b.x1)/2, (b.y0+b.y1)/2
-	sp := c.span(b)
-	for y := sp.Y; y < sp.Y+sp.H; y++ {
-		for x := sp.X; x < sp.X+sp.W; x++ {
-			px, py := float64(x)+0.5, float64(y)+0.5
-			cov := coverage(sdBox(px, py, b, rc))
-			if cov <= 0 {
-				continue
-			}
-			t := ((px-cx)*dx+(py-cy)*dy)/length + 0.5
-			c.blendCov(x, y, gradientAt(stops, t), cov)
-		}
-	}
 }
 
 // gradientAt samples the stop list at t.

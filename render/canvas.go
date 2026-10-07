@@ -359,27 +359,6 @@ func coverageScale(col Color, cov uint32) Color {
 		(uint32(col.B())*cov)/255)
 }
 
-// LinearGradient blends a linear interpolation from (at one edge) to (at
-// the opposite edge) over the logical rect. Horizontal runs left to
-// right; otherwise top to bottom.
-func (c *Canvas) LinearGradient(r Rect, from, to Color, horizontal bool) {
-	r = c.clip.Intersect(c.MapRect(r))
-	if r.Empty() {
-		return
-	}
-	for y := r.Y; y < r.Y+r.H; y++ {
-		for x := r.X; x < r.X+r.W; x++ {
-			var t float64
-			if horizontal {
-				t = (float64(x) + 0.5 - float64(r.X)) / float64(r.W)
-			} else {
-				t = (float64(y) + 0.5 - float64(r.Y)) / float64(r.H)
-			}
-			c.blend(x, y, lerp(from, to, t))
-		}
-	}
-}
-
 // Line blends col along the segment from logical (x0, y0) to (x1, y1)
 // with the given thickness in logical pixels, anti-aliased with
 // per-pixel signed-distance coverage at the device scale. Caps are round.

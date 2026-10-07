@@ -292,13 +292,13 @@ func TestLine(t *testing.T) {
 	})
 }
 
-func TestLinearGradient(t *testing.T) {
+func TestPaintGradientTwoStop(t *testing.T) {
 	cv, data := newTestCanvas(10, 10)
 	from, to := RGB(0, 0, 0), RGB(100, 100, 100)
 	r := Rect{X: 0, Y: 0, W: 10, H: 10}
 
 	t.Run("vertical rows interpolate top to bottom", func(t *testing.T) {
-		cv.LinearGradient(r, from, to, false)
+		cv.PaintGradient(r, Corners{}, Linear(180, GradientStop{0, from}, GradientStop{1, to}))
 		// Pixel centers sample the gradient at row+0.5, so the first and
 		// last rows are strictly inside the ramp.
 		if got := pxAt(data, Stride(10), 5, 0); got.R() > 25 {
@@ -321,7 +321,7 @@ func TestLinearGradient(t *testing.T) {
 
 	t.Run("horizontal columns interpolate left to right", func(t *testing.T) {
 		cv.Clear(cv.Rect(), 0)
-		cv.LinearGradient(r, from, to, true)
+		cv.PaintGradient(r, Corners{}, Linear(90, GradientStop{0, from}, GradientStop{1, to}))
 		if got := pxAt(data, Stride(10), 0, 5); got.R() > 25 {
 			t.Errorf("left column = %v, want near from", got)
 		}
