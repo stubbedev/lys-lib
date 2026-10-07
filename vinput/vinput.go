@@ -17,6 +17,7 @@ import (
 	"github.com/neurlang/wayland/wl"
 	"github.com/neurlang/wayland/wlclient"
 
+	"github.com/stubbedev/gelm/internal/keymapfd"
 	"github.com/stubbedev/gelm/wlr"
 )
 
@@ -355,7 +356,7 @@ func (g *listener) HandleKeyboardKeymap(ev wl.KeyboardKeymapEvent) {
 	if ev.Format == 0 || ev.Size == 0 || ev.FdError != nil || ev.Fd == 0 || v.vk == nil {
 		return
 	}
-	text, err := readKeymap(ev.Fd, ev.Size)
+	text, err := keymapfd.Read(ev.Fd, ev.Size)
 	if err != nil {
 		v.keymapErr = err
 		return
@@ -370,20 +371,6 @@ func (g *listener) HandleKeyboardKeymap(ev wl.KeyboardKeymapEvent) {
 		return
 	}
 	v.keymap, v.keymapArmed = text, true
-}
-
-// readKeymap maps the keymap fd and copies its text out.
-func readKeymap(fd uintptr, size uint32) ([]byte, error) {
-	data, err := syscall.Mmap(int(fd), 0, int(size), syscall.PROT_READ, syscall.MAP_PRIVATE)
-	if err != nil {
-		return nil, fmt.Errorf("vinput: map the seat keymap: %w", err)
-	}
-	defer func() { _ = syscall.Munmap(data) }()
-	text := append([]byte(nil), data...)
-	for len(text) > 0 && text[len(text)-1] == 0 {
-		text = text[:len(text)-1]
-	}
-	return text, nil
 }
 
 func (g *listener) HandleKeyboardEnter(wl.KeyboardEnterEvent)           {}
