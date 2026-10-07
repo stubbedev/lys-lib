@@ -71,6 +71,13 @@ The variable COLRv1 build (test_glyphs-glyf_colr_1_variable) is not
 bundled: go-text/typesetting v0.3.5 cannot parse its item variation
 store (LONG_WORDS delta sets), so its COLR table never loads.
 
+## images/
+
+`blue-purple-pink.lossy.webp` and `blue-purple-pink.lossless.webp`,
+copied unmodified from golang.org/x/image v0.46.0's testdata (BSD,
+LICENSE-x-image.txt): the still-WebP decode fixtures. Animated GIF and
+APNG fixtures are generated in the tests by the encoders themselves.
+
 ## golden/
 
 Committed PNG snapshots. A test fails when its golden is missing, so new
