@@ -36,6 +36,21 @@ the path mixed-direction labels take in production.
 
 The file is the font's complete, unmodified regular weight (26 KB).
 
+## Quicksand-VF.ttf
+
+The variable fixture face, read from disk (not embedded) by the
+variation tests in render, internal/sysfont and widget: its wght axis
+spans 300-700, so the 300/400/700 instance goldens pin real outline
+variation, not synthesized weight.
+
+- Source: https://github.com/google/fonts/tree/main/ofl/quicksand
+  (Quicksand[wght].ttf, downloaded 2026-10-07)
+- SHA-256: `39c9b64223561f56aaff6062a6f04063c4fc86809ad6768722c06614d977e1cc`
+- License: SIL Open Font License 1.1 — see LICENSE-Quicksand.txt,
+  which ships alongside the font and must be kept with it.
+
+The file is the font's complete, unmodified variable build (122 KB).
+
 ## golden/
 
 Committed PNG snapshots. A test fails when its golden is missing, so new

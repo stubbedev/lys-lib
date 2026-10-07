@@ -71,6 +71,13 @@ type Typeface struct {
 	strikePpem float64
 	strikeRead bool
 	bitmaps    map[font.GID]bitmapGlyph
+
+	// base is the default instance a variable-font instance was made
+	// from (nil on a default face), vars its settings, and inst the
+	// instance bookkeeping they share (variation.go).
+	base *Typeface
+	vars []Variation
+	inst *instances
 }
 
 // Tabular returns the face shaping with the tnum OpenType feature on:
@@ -820,6 +827,10 @@ type Chain struct {
 	picks   map[rune]*Typeface
 	// tabular shapes every run through its face's tnum twin.
 	tabular bool
+	// variants memoizes the derived chains (Tabular, WithVariations)
+	// by kind, so a style pass asking again gets the same chain - the
+	// identity the shaping cache and restyle comparisons key on.
+	variants map[string]*Chain
 }
 
 // Primary is the chain's first face: the one variants resolve from.
@@ -854,9 +865,23 @@ func (c *Chain) Face(r rune) *Typeface { return c.faceFor(r) }
 // The variant keeps its own rune picks, so it never rewrites the base
 // chain's.
 func (c *Chain) Tabular() *Chain {
+	return c.variant("tnum", func(n *Chain) { n.tabular = true })
+}
+
+// variant returns the memoized chain derived from c by derive under
+// key, building it on first use with its own rune picks and variants.
+func (c *Chain) variant(key string, derive func(n *Chain)) *Chain {
+	if v, ok := c.variants[key]; ok {
+		return v
+	}
 	n := *c
 	n.picks = map[rune]*Typeface{}
-	n.tabular = true
+	n.variants = nil
+	derive(&n)
+	if c.variants == nil {
+		c.variants = map[string]*Chain{}
+	}
+	c.variants[key] = &n
 	return &n
 }
 
