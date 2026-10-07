@@ -81,6 +81,31 @@ type Typeface struct {
 
 	// colors memoizes each glyph's color source (colorglyph.go).
 	colors map[font.GID]colorKind
+
+	// letter is the letter spacing (px) shaping adds after every
+	// cluster; spaced memoizes the Spaced variants.
+	letter float64
+	spaced map[float64]*Typeface
+}
+
+// Spaced returns the face shaping with px of letter spacing after
+// every cluster (CSS letter-spacing): the advances themselves carry it,
+// so measuring, caret placement, and painting agree. Memoized; zero
+// returns the face itself.
+func (t *Typeface) Spaced(px float64) *Typeface {
+	if px == t.letter {
+		return t
+	}
+	if v, ok := t.spaced[px]; ok {
+		return v
+	}
+	c := *t
+	c.letter, c.tabular, c.spaced = px, nil, nil
+	if t.spaced == nil {
+		t.spaced = map[float64]*Typeface{}
+	}
+	t.spaced[px] = &c
+	return &c
 }
 
 // Tabular returns the face shaping with the tnum OpenType feature on:
@@ -200,11 +225,11 @@ func (t *Typeface) ShapeRune(r rune, px float64) *ShapedText {
 // shapeUncached does the actual shaping work, bypassing the cache.
 func (t *Typeface) shapeUncached(s string, px float64, d text.Direction) *ShapedText {
 	if s == "" {
-		return newShapedText(s, px, []shapedRun{t.shapeRun(s, px, 0, false)})
+		return newShapedText(s, px, []shapedRun{t.shapeRun(s, px, 0, false, t.letter)})
 	}
 	var runs []shapedRun
 	bidiPieces(s, d, func(piece string, start int, rtl bool) {
-		runs = append(runs, t.shapeRun(piece, px, start, rtl))
+		runs = append(runs, t.shapeRun(piece, px, start, rtl, t.letter))
 	})
 	return newShapedText(s, px, runs)
 }
@@ -230,8 +255,9 @@ func newShapedText(text string, px float64, runs []shapedRun) *ShapedText {
 }
 
 // shapeRun shapes text as one run positioned at rune indexes
-// [start, end) of the line, shaped right to left when rtl.
-func (t *Typeface) shapeRun(text string, px float64, start int, rtl bool) shapedRun {
+// [start, end) of the line, shaped right to left when rtl, with letter
+// px of spacing added after every cluster.
+func (t *Typeface) shapeRun(text string, px float64, start int, rtl bool, letter float64) shapedRun {
 	runes := []rune(text)
 	dir := di.DirectionLTR
 	if rtl {
@@ -246,7 +272,22 @@ func (t *Typeface) shapeRun(text string, px float64, start int, rtl bool) shaped
 		Size:         f266(px),
 		FontFeatures: t.features,
 	})
+	if letter != 0 {
+		addLetterSpacing(&run, f266(letter))
+	}
 	return shapedRun{face: t, out: run, start: start, end: start + len(runes), rtl: rtl}
+}
+
+// addLetterSpacing widens the last glyph of every cluster by sp, and
+// the run's advance with it.
+func addLetterSpacing(run *shaping.Output, sp fixed.Int26_6) {
+	gs := run.Glyphs
+	for i := range gs {
+		if i == len(gs)-1 || gs[i+1].TextIndex() != gs[i].TextIndex() {
+			gs[i].Advance += sp
+			run.Advance += sp
+		}
+	}
 }
 
 // Runs returns how many faces the line was shaped across. A single
@@ -780,11 +821,20 @@ type textShaper interface {
 // right to left), draw on the rounded line box.
 func drawAligned(cv *Canvas, sh textShaper, s string, box Rect, px float64, col Color, h Alignment, d text.Direction) *ShapedText {
 	st := sh.ShapeDir(s, px, d)
-	lineH := float64(st.LineHeight())
-	if float64(box.H) < lineH {
+	if float64(box.H) < float64(st.LineHeight()) {
 		return nil
 	}
-	if text.RTL(s, d) {
+	x, baseline := AlignedPen(st, box, h, d)
+	st.Draw(cv, x, baseline, col)
+	return st
+}
+
+// AlignedPen is where an aligned draw puts sh's pen inside box: the
+// alignment mirrored for a right-to-left line, the line centered
+// vertically on its baseline. Decorations and carets drawn after a
+// DrawAligned use it to land on the painted text.
+func AlignedPen(sh *ShapedText, box Rect, h Alignment, d text.Direction) (x, baseline int) {
+	if text.RTL(sh.Text(), d) {
 		switch h {
 		case AlignStart:
 			h = AlignEnd
@@ -792,18 +842,17 @@ func drawAligned(cv *Canvas, sh textShaper, s string, box Rect, px float64, col 
 			h = AlignStart
 		}
 	}
-	var x float64
+	var fx float64
 	switch h {
 	case AlignCenter:
-		x = float64(box.X) + (float64(box.W)-st.Advance())/2
+		fx = float64(box.X) + (float64(box.W)-sh.Advance())/2
 	case AlignEnd:
-		x = float64(box.X) + float64(box.W) - st.Advance()
+		fx = float64(box.X) + float64(box.W) - sh.Advance()
 	default:
-		x = float64(box.X)
+		fx = float64(box.X)
 	}
-	baseline := box.Y + int(math.Round((float64(box.H)-lineH)/2+st.Ascent()))
-	st.Draw(cv, int(math.Round(x)), baseline, col)
-	return st
+	baseline = box.Y + int(math.Round((float64(box.H)-float64(sh.LineHeight()))/2+sh.Ascent()))
+	return int(math.Round(fx)), baseline
 }
 
 // DrawAligned draws text inside box with the given alignment, skipping it
@@ -834,6 +883,8 @@ type Chain struct {
 	picks   map[rune]*Typeface
 	// tabular shapes every run through its face's tnum twin.
 	tabular bool
+	// letter is the letter spacing (px) every run shapes with.
+	letter float64
 	// variants memoizes the derived chains (Tabular, WithVariations)
 	// by kind, so a style pass asking again gets the same chain - the
 	// identity the shaping cache and restyle comparisons key on.
@@ -890,6 +941,15 @@ func (c *Chain) variant(key string, derive func(n *Chain)) *Chain {
 	}
 	c.variants[key] = &n
 	return &n
+}
+
+// Spaced returns the chain shaping with px of letter spacing after
+// every cluster, whichever face a rune lands on (see Typeface.Spaced).
+func (c *Chain) Spaced(px float64) *Chain {
+	if px == c.letter {
+		return c
+	}
+	return c.variant(fmt.Sprintf("ls:%g", px), func(n *Chain) { n.letter = px })
 }
 
 // faceFor returns the face rune r shapes with.
@@ -949,7 +1009,7 @@ func (c *Chain) ShapeRune(r rune, px float64) *ShapedText {
 // own embedding direction.
 func (c *Chain) shapeUncached(s string, px float64, d text.Direction) *ShapedText {
 	if s == "" {
-		return newShapedText(s, px, []shapedRun{c.primary.shapeRun(s, px, 0, false)})
+		return newShapedText(s, px, []shapedRun{c.primary.shapeRun(s, px, 0, false, c.letter)})
 	}
 	var runs []shapedRun
 	bidiPieces(s, d, func(piece string, start int, rtl bool) {
@@ -960,7 +1020,7 @@ func (c *Chain) shapeUncached(s string, px float64, d text.Direction) *ShapedTex
 			for j < len(runes) && c.faceFor(runes[j]) == f {
 				j++
 			}
-			runs = append(runs, f.shapeRun(string(runes[i:j]), px, start+i, rtl))
+			runs = append(runs, f.shapeRun(string(runes[i:j]), px, start+i, rtl, c.letter))
 			i = j
 		}
 	})
