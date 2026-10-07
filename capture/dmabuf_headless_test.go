@@ -1,4 +1,4 @@
-package capture
+package capture_test
 
 import (
 	"errors"
@@ -10,6 +10,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/stubbedev/gelm/app"
+	"github.com/stubbedev/gelm/capture"
 	"github.com/stubbedev/gelm/widget"
 )
 
@@ -86,7 +87,7 @@ func TestHeadlessDmabufCapture(t *testing.T) {
 	})
 	out := c.Outputs()[0]
 	format, err := c.DmabufFormat(out, false)
-	if errors.Is(err, ErrUnsupported) {
+	if errors.Is(err, capture.ErrUnsupported) {
 		t.Skip("compositor offers no dmabuf screencopy target")
 	}
 	if err != nil {
@@ -110,9 +111,9 @@ func TestHeadlessDmabufCapture(t *testing.T) {
 		// must surface from the import and from every later call,
 		// never as a hang.
 		bad := connectCapture(t)
-		_, err := bad.ImportDmabuf(Dmabuf{
+		_, err := bad.ImportDmabuf(capture.Dmabuf{
 			Width: format.Width, Height: format.Height * 4, Fourcc: drmFourccXRGB8888,
-			Planes: []DmabufPlane{{Fd: uintptr(fd), Stride: uint32(stride)}},
+			Planes: []capture.DmabufPlane{{Fd: uintptr(fd), Stride: uint32(stride)}},
 		})
 		if err == nil {
 			t.Fatal("oversized import accepted")
@@ -122,11 +123,11 @@ func TestHeadlessDmabufCapture(t *testing.T) {
 		}
 	})
 
-	buf, err := c.ImportDmabuf(Dmabuf{
+	buf, err := c.ImportDmabuf(capture.Dmabuf{
 		Width: format.Width, Height: format.Height, Fourcc: format.Fourcc,
-		Planes: []DmabufPlane{{Fd: uintptr(fd), Stride: uint32(stride)}},
+		Planes: []capture.DmabufPlane{{Fd: uintptr(fd), Stride: uint32(stride)}},
 	})
-	if errors.Is(err, ErrDmabufRejected) {
+	if errors.Is(err, capture.ErrDmabufRejected) {
 		t.Skip("compositor cannot import udmabuf memory")
 	}
 	if err != nil {
@@ -136,14 +137,14 @@ func TestHeadlessDmabufCapture(t *testing.T) {
 	// Some GPUs (NVIDIA among them) import a linear dmabuf for
 	// sampling only and cannot render the copy into it; the
 	// compositor then fails the copy, which is its verdict, not ours.
-	if _, err := c.CaptureOutputDmabuf(out, false, buf); errors.Is(err, ErrFailed) {
+	if _, err := c.CaptureOutputDmabuf(out, false, buf); errors.Is(err, capture.ErrFailed) {
 		t.Skip("compositor cannot render into a linear udmabuf on this GPU")
 	}
 	eventually(t, "red frame in the dmabuf", func() error {
 		if _, err := c.CaptureOutputDmabuf(out, false, buf); err != nil {
 			return err
 		}
-		f := &Frame{Width: format.Width, Height: format.Height, Stride: stride, Format: FormatFromFourcc(format.Fourcc), Data: mem}
+		f := &capture.Frame{Width: format.Width, Height: format.Height, Stride: stride, Format: capture.FormatFromFourcc(format.Fourcc), Data: mem}
 		img, err := f.Image()
 		if err != nil {
 			return err
@@ -169,9 +170,9 @@ func TestHeadlessDmabufCopyTakesAnIdleFrame(t *testing.T) {
 	}
 	stride := format.Width * 4
 	fd, _ := newUdmabuf(t, (stride*format.Height+4095)&^4095)
-	buf, err := c.ImportDmabuf(Dmabuf{
+	buf, err := c.ImportDmabuf(capture.Dmabuf{
 		Width: format.Width, Height: format.Height, Fourcc: format.Fourcc,
-		Planes: []DmabufPlane{{Fd: uintptr(fd), Stride: uint32(stride)}},
+		Planes: []capture.DmabufPlane{{Fd: uintptr(fd), Stride: uint32(stride)}},
 	})
 	if err != nil {
 		t.Skipf("import: %v", err)
@@ -182,7 +183,7 @@ func TestHeadlessDmabufCopyTakesAnIdleFrame(t *testing.T) {
 		go func() { done <- c.CopyOutputDmabuf(out, false, buf) }()
 		select {
 		case err := <-done:
-			if errors.Is(err, ErrFailed) {
+			if errors.Is(err, capture.ErrFailed) {
 				t.Skip("compositor cannot render into a linear udmabuf on this GPU")
 			}
 			if err != nil {

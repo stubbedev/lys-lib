@@ -1,4 +1,4 @@
-package capture
+package capture_test
 
 import (
 	"errors"
@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/stubbedev/gelm/app"
+	"github.com/stubbedev/gelm/capture"
 	"github.com/stubbedev/gelm/render"
 	"github.com/stubbedev/gelm/widget"
 )
@@ -92,9 +93,9 @@ func wantColor(img *image.RGBA, x, y int, want render.Color) error {
 	return nil
 }
 
-func connectCapture(t *testing.T) *Client {
+func connectCapture(t *testing.T) *capture.Client {
 	t.Helper()
-	c, err := Connect()
+	c, err := capture.Connect()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -129,7 +130,7 @@ func TestHeadlessOutputCapture(t *testing.T) {
 			t.Fatal("sway offers wlr-screencopy")
 		}
 		eventually(t, "red output", func() error {
-			f, err := c.CaptureOutput(out, Options{})
+			f, err := c.CaptureOutput(out, capture.Options{})
 			if err != nil {
 				return err
 			}
@@ -144,7 +145,7 @@ func TestHeadlessOutputCapture(t *testing.T) {
 		})
 	})
 	t.Run("screencopy region", func(t *testing.T) {
-		f, err := c.CaptureOutputRegion(out, image.Rect(10, 20, 110, 70), Options{})
+		f, err := c.CaptureOutputRegion(out, image.Rect(10, 20, 110, 70), capture.Options{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -160,7 +161,7 @@ func TestHeadlessOutputCapture(t *testing.T) {
 		}
 	})
 	t.Run("empty region is refused before the wire", func(t *testing.T) {
-		if _, err := c.CaptureOutputRegion(out, image.Rectangle{}, Options{}); err == nil {
+		if _, err := c.CaptureOutputRegion(out, image.Rectangle{}, capture.Options{}); err == nil {
 			t.Fatal("empty region captured")
 		}
 	})
@@ -168,7 +169,7 @@ func TestHeadlessOutputCapture(t *testing.T) {
 		if !c.HasOutputCapture() {
 			t.Fatal("sway offers ext-image-copy-capture output sources")
 		}
-		f, err := c.CaptureOutputOnce(out, Options{})
+		f, err := c.CaptureOutputOnce(out, capture.Options{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -181,7 +182,7 @@ func TestHeadlessOutputCapture(t *testing.T) {
 		}
 	})
 	t.Run("stream publishes frames and closes", func(t *testing.T) {
-		s, err := OpenOutputStream(out.Name, false)
+		s, err := capture.OpenOutputStream(out.Name, false)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -225,7 +226,7 @@ func TestHeadlessOutputCapture(t *testing.T) {
 		}
 	})
 	t.Run("an unknown output is an error", func(t *testing.T) {
-		if _, err := OpenOutputStream("NOPE-9", false); err == nil {
+		if _, err := capture.OpenOutputStream("NOPE-9", false); err == nil {
 			t.Fatal("stream opened on a missing output")
 		}
 	})
@@ -236,13 +237,13 @@ func TestHeadlessOutputCapture(t *testing.T) {
 		if c.HasDmabuf() {
 			t.Skip("compositor offers linux-dmabuf; the negative probe needs a CPU renderer")
 		}
-		if _, err := c.DmabufFormat(out, false); !errors.Is(err, ErrUnsupported) {
-			t.Fatalf("DmabufFormat = %v, want ErrUnsupported", err)
+		if _, err := c.DmabufFormat(out, false); !errors.Is(err, capture.ErrUnsupported) {
+			t.Fatalf("DmabufFormat = %v, want capture.ErrUnsupported", err)
 		}
 	})
 	t.Run("hyprland export is unsupported on sway", func(t *testing.T) {
-		if _, err := c.CaptureHyprlandWindow(1, Options{}); !errors.Is(err, ErrUnsupported) {
-			t.Fatalf("CaptureHyprlandWindow = %v, want ErrUnsupported", err)
+		if _, err := c.CaptureHyprlandWindow(1, capture.Options{}); !errors.Is(err, capture.ErrUnsupported) {
+			t.Fatalf("CaptureHyprlandWindow = %v, want capture.ErrUnsupported", err)
 		}
 	})
 }
@@ -265,7 +266,7 @@ func TestHeadlessToplevelCapture(t *testing.T) {
 	if !c.HasToplevelCapture() {
 		t.Fatal("sway offers ext toplevel capture")
 	}
-	var target Toplevel
+	var target capture.Toplevel
 	eventually(t, "toplevel listed", func() error {
 		tls, err := c.Toplevels()
 		if err != nil {
@@ -283,7 +284,7 @@ func TestHeadlessToplevelCapture(t *testing.T) {
 		t.Fatalf("toplevel metadata %+v", target)
 	}
 	eventually(t, "green window", func() error {
-		f, err := c.CaptureToplevel(target, Options{})
+		f, err := c.CaptureToplevel(target, capture.Options{})
 		if err != nil {
 			return err
 		}
@@ -294,7 +295,7 @@ func TestHeadlessToplevelCapture(t *testing.T) {
 		return wantColor(img, f.Width/2, f.Height/2, fillGreen)
 	})
 	t.Run("a foreign toplevel value is refused", func(t *testing.T) {
-		if _, err := c.CaptureToplevel(Toplevel{Title: "x"}, Options{}); err == nil {
+		if _, err := c.CaptureToplevel(capture.Toplevel{Title: "x"}, capture.Options{}); err == nil {
 			t.Fatal("captured a toplevel without a handle")
 		}
 	})
