@@ -32,7 +32,7 @@ func LoadSVG(data []byte, w, h int) (*Icon, error) {
 	if w <= 0 || h <= 0 {
 		return nil, fmt.Errorf("render: invalid icon size %dx%d", w, h)
 	}
-	icon, err := oksvg.ReadIconStream(bytes.NewReader(dropForeignAttrs(data)), oksvg.StrictErrorMode)
+	icon, err := oksvg.ReadIconStream(bytes.NewReader(normalizePaths(dropForeignAttrs(data))), oksvg.StrictErrorMode)
 	if err != nil {
 		return nil, fmt.Errorf("render: parse svg: %w", err)
 	}
