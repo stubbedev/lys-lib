@@ -32,14 +32,13 @@ func LoadSVG(data []byte, w, h int) (*Icon, error) {
 	if w <= 0 || h <= 0 {
 		return nil, fmt.Errorf("render: invalid icon size %dx%d", w, h)
 	}
-	icon, err := oksvg.ReadIconStream(bytes.NewReader(normalizePaths(dropForeignAttrs(data))), oksvg.StrictErrorMode)
+	icon, err := parseSVG(data)
 	if err != nil {
-		return nil, fmt.Errorf("render: parse svg: %w", err)
+		return nil, err
 	}
 	if icon.ViewBox.W <= 0 || icon.ViewBox.H <= 0 {
 		return nil, errors.New("render: svg has no usable viewBox (want w x h > 0)")
 	}
-	applyFillRules(icon, data)
 
 	scale := math.Min(float64(w)/icon.ViewBox.W, float64(h)/icon.ViewBox.H)
 	fitW := icon.ViewBox.W * scale
@@ -49,9 +48,42 @@ func LoadSVG(data []byte, w, h int) (*Icon, error) {
 
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
 	dasher := rasterx.NewDasher(w, h, newSVGScanner(w, h, img))
-	icon.SetTarget(offX, offY, fitW, fitH)
+	fitSVG(icon, offX, offY, fitW, fitH)
 	icon.Draw(dasher, 1.0)
 	return &Icon{img: img}, nil
+}
+
+// parseSVG reads an SVG document through the shared preparation:
+// foreign attributes dropped, path data made explicit, fill rules
+// applied - for icons and SVG glyphs alike.
+func parseSVG(data []byte) (*oksvg.SvgIcon, error) {
+	icon, err := oksvg.ReadIconStream(bytes.NewReader(normalizePaths(dropForeignAttrs(data))), oksvg.StrictErrorMode)
+	if err != nil {
+		return nil, fmt.Errorf("render: parse svg: %w", err)
+	}
+	applyFillRules(icon, data)
+	return icon, nil
+}
+
+// rasterSVG draws icon's region (rx, ry, rw, rh in its user units)
+// into a w x h image.
+func rasterSVG(icon *oksvg.SvgIcon, rx, ry, rw, rh float64, w, h int) *image.RGBA {
+	icon.ViewBox.X, icon.ViewBox.Y, icon.ViewBox.W, icon.ViewBox.H = rx, ry, rw, rh
+	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	dasher := rasterx.NewDasher(w, h, newSVGScanner(w, h, img))
+	fitSVG(icon, 0, 0, float64(w), float64(h))
+	icon.Draw(dasher, 1.0)
+	return img
+}
+
+// fitSVG maps icon's viewBox onto the target rect - oksvg's SetTarget
+// without its bug: SetTarget translates by the viewBox origin in user
+// units, unscaled, so any viewBox not starting at 0,0 ("0 -960 960
+// 960", a shared SVG glyph document's region) landed off target.
+func fitSVG(icon *oksvg.SvgIcon, x, y, w, h float64) {
+	vb := icon.ViewBox
+	sx, sy := w/vb.W, h/vb.H
+	icon.Transform = rasterx.Identity.Translate(x-vb.X*sx, y-vb.Y*sy).Scale(sx, sy)
 }
 
 // foreignAttr is an attribute in another vocabulary's namespace

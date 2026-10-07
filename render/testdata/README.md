@@ -51,6 +51,26 @@ variation, not synthesized weight.
 
 The file is the font's complete, unmodified variable build (122 KB).
 
+## color/
+
+The color-glyph fixtures, read from disk by render/colorglyph_test.go:
+
+- `twemoji_smiley-glyf_colr_1.ttf`, `twemoji_smiley-picosvg.ttf`,
+  `twemoji_smiley-sbix.ttf`, `test_glyphs-glyf_colr_1.ttf` — test builds
+  from https://github.com/googlefonts/color-fonts (downloaded
+  2026-10-07; Apache License 2.0, LICENSE-color-fonts.txt). The smiley
+  builds are one Twemoji glyph set (artwork CC-BY 4.0, Twitter, Inc.
+  and contributors) as COLRv1, OT-SVG and sbix, so the three paths
+  render the same glyph side by side; test_glyphs exercises every
+  COLRv1 paint format.
+- `BungeeColor-Regular.ttf` — Bungee Color from
+  https://github.com/google/fonts/tree/main/ofl/bungeecolor, a COLRv0
+  font (SIL OFL 1.1, LICENSE-BungeeColor.txt).
+
+The variable COLRv1 build (test_glyphs-glyf_colr_1_variable) is not
+bundled: go-text/typesetting v0.3.5 cannot parse its item variation
+store (LONG_WORDS delta sets), so its COLR table never loads.
+
 ## golden/
 
 Committed PNG snapshots. A test fails when its golden is missing, so new

@@ -78,6 +78,9 @@ type Typeface struct {
 	base *Typeface
 	vars []Variation
 	inst *instances
+
+	// colors memoizes each glyph's color source (colorglyph.go).
+	colors map[font.GID]colorKind
 }
 
 // Tabular returns the face shaping with the tnum OpenType feature on:
@@ -493,9 +496,13 @@ func (t *Typeface) Draw(cv *Canvas, s *ShapedText, x, baselineY int, col Color) 
 }
 
 // drawGlyph paints one glyph with its baseline pen at (penX, penY)
-// into the clip: the cached 8bpp coverage raster when the face has an
-// outline, the cached scaled bitmap strike (color emoji) otherwise.
+// into the clip: its COLR or OT-SVG color rendering when it has one,
+// else the cached 8bpp coverage raster when the face has an outline,
+// else the cached scaled bitmap strike (CBDT/sbix emoji).
 func drawGlyph(cv *Canvas, clip Rect, t *Typeface, gid font.GID, scale, penX, penY float64, col Color) {
+	if drawColorGlyph(cv, clip, t, gid, scale, penX, penY, col) {
+		return
+	}
 	g, ok := cachedOutlineRaster(t, gid, scale, penX, penY)
 	if ok {
 		// The mask sits at the integer pen plus the raster's own

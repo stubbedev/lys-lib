@@ -112,11 +112,17 @@ func cachedOutlineRaster(t *Typeface, gid font.GID, scale, penX, penY float64) (
 // bounds grow a pixel on every side, the anti-aliasing margin the
 // per-pixel blit has always worked in.
 func rasterOutline(outline font.GlyphOutline, scale, fx, fy float64) *glyphRaster {
+	return rasterOutlineXform(outline, Affine{A: scale, D: -scale, E: fx, F: fy})
+}
+
+// rasterOutlineXform rasterizes an outline mapped from font units to
+// pixels by m (rasterOutline's map, or a color glyph's transformed
+// clip), with the same pixel margin.
+func rasterOutlineXform(outline font.GlyphOutline, m Affine) *glyphRaster {
 	minX, minY, maxX, maxY := math.Inf(1), math.Inf(1), math.Inf(-1), math.Inf(-1)
 	for _, seg := range outline.Segments {
 		for _, p := range seg.Args {
-			x := fx + float64(p.X)*scale
-			y := fy - float64(p.Y)*scale
+			x, y := m.Apply(float64(p.X), float64(p.Y))
 			minX, minY = math.Min(minX, x), math.Min(minY, y)
 			maxX, maxY = math.Max(maxX, x), math.Max(maxY, y)
 		}
@@ -130,8 +136,8 @@ func rasterOutline(outline font.GlyphOutline, scale, fx, fy float64) *glyphRaste
 	}
 	rast := vector.NewRasterizer(w, h)
 	toRaster := func(p ot.SegmentPoint) (float32, float32) {
-		return float32(fx+float64(p.X)*scale) - float32(ox),
-			float32(fy-float64(p.Y)*scale) - float32(oy)
+		x, y := m.Apply(float64(p.X), float64(p.Y))
+		return float32(x) - float32(ox), float32(y) - float32(oy)
 	}
 	for _, seg := range outline.Segments {
 		switch seg.Op {
