@@ -5,9 +5,8 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/neurlang/wayland/wl"
-	"github.com/neurlang/wayland/wlclient"
-
+	"github.com/stubbedev/gelm/third_party/neurlang-wayland/wl"
+	"github.com/stubbedev/gelm/third_party/neurlang-wayland/wlclient"
 	"github.com/stubbedev/gelm/wlr"
 )
 

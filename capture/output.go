@@ -1,7 +1,7 @@
 package capture
 
 import (
-	"github.com/neurlang/wayland/wl"
+	"github.com/stubbedev/gelm/third_party/neurlang-wayland/wl"
 )
 
 // Output is one wl_output as the capture connection sees it: the

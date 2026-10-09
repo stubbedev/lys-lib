@@ -4,8 +4,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/neurlang/wayland/wl"
-
+	"github.com/stubbedev/gelm/third_party/neurlang-wayland/wl"
 	"github.com/stubbedev/gelm/wlr"
 )
 
