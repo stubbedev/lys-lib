@@ -4,6 +4,8 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/stubbedev/gelm/dmabuf"
+	"github.com/stubbedev/gelm/internal/dmabufwl"
 	"github.com/stubbedev/gelm/third_party/neurlang-wayland/wl"
 	"github.com/stubbedev/gelm/wlr"
 )
@@ -15,34 +17,13 @@ type DmabufFormat struct {
 	Width, Height int
 }
 
-// DmabufPlane is one plane of a dmabuf: its file descriptor and the
-// plane's byte offset and stride within it.
-type DmabufPlane struct {
-	Fd     uintptr
-	Offset uint32
-	Stride uint32
-}
-
-// Dmabuf describes a GPU buffer to import as a screencopy target. The
-// caller allocates it (gbm, a DRM dumb buffer, udmabuf) and keeps the
-// plane fds open for as long as the DmabufBuffer lives; the import
-// dups nothing.
-type Dmabuf struct {
-	Width, Height int
-	Fourcc        uint32
-	// Modifier is the DRM format modifier (DRM_FORMAT_MOD_LINEAR is 0,
-	// DRM_FORMAT_MOD_INVALID means implicit).
-	Modifier uint64
-	Planes   []DmabufPlane
-}
-
 // DmabufBuffer is an imported dmabuf, ready to receive screencopy
 // frames.
 type DmabufBuffer struct {
 	wl     *wl.Buffer
 	client *Client
 	// Attrs is the imported description.
-	Attrs Dmabuf
+	Attrs dmabuf.Buffer
 }
 
 // ErrDmabufRejected reports that the compositor refused a dmabuf
@@ -117,7 +98,7 @@ func (p *paramsState) HandleZwpBufferParamsV1Failed(wlr.ZwpBufferParamsV1FailedE
 // (create_immed) and waits one roundtrip for the compositor's verdict,
 // so a rejected import surfaces here as ErrDmabufRejected rather than
 // as a failed copy later.
-func (c *Client) ImportDmabuf(d Dmabuf) (*DmabufBuffer, error) {
+func (c *Client) ImportDmabuf(d dmabuf.Buffer) (*DmabufBuffer, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if err := c.usable(); err != nil {
@@ -126,24 +107,14 @@ func (c *Client) ImportDmabuf(d Dmabuf) (*DmabufBuffer, error) {
 	if c.dmabuf == nil {
 		return nil, fmt.Errorf("%w: %s", ErrUnsupported, ifaceDmabuf)
 	}
-	if d.Width <= 0 || d.Height <= 0 || len(d.Planes) == 0 {
-		return nil, fmt.Errorf("capture: bad dmabuf %dx%d with %d planes", d.Width, d.Height, len(d.Planes))
-	}
-	params, err := c.dmabuf.CreateParams()
+	params, err := dmabufwl.Params(c.dmabuf, d)
 	if err != nil {
-		return nil, fmt.Errorf("capture: dmabuf params: %w", err)
+		return nil, fmt.Errorf("capture: %w", err)
 	}
 	st := &paramsState{}
 	params.AddCreatedHandler(st)
 	params.AddFailedHandler(st)
-	hi, lo := uint32(d.Modifier>>32), uint32(d.Modifier)
-	for i, p := range d.Planes {
-		if err := params.Add(p.Fd, uint32(i), p.Offset, p.Stride, hi, lo); err != nil {
-			_ = params.Destroy()
-			return nil, fmt.Errorf("capture: dmabuf plane %d: %w", i, err)
-		}
-	}
-	buf, err := params.CreateImmed(int32(d.Width), int32(d.Height), d.Fourcc, 0)
+	buf, err := params.CreateImmed(int32(d.Width), int32(d.Height), d.Format, 0)
 	if err != nil {
 		_ = params.Destroy()
 		return nil, fmt.Errorf("capture: dmabuf create_immed: %w", err)

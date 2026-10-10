@@ -2,15 +2,13 @@ package capture_test
 
 import (
 	"errors"
-	"fmt"
 	"image"
-	"image/color"
-	"os"
 	"testing"
 	"time"
 
 	"github.com/stubbedev/gelm/app"
 	"github.com/stubbedev/gelm/capture"
+	"github.com/stubbedev/gelm/internal/headlesstest/inproc"
 	"github.com/stubbedev/gelm/render"
 	"github.com/stubbedev/gelm/widget"
 )
@@ -21,94 +19,15 @@ import (
 // every protocol path sway offers. Without GELM_HEADLESS they skip -
 // they must never capture a developer's real session.
 
-// requireHeadless skips outside the headless gate.
-func requireHeadless(t *testing.T) {
-	t.Helper()
-	if os.Getenv("GELM_HEADLESS") == "" {
-		t.Skip("GELM_HEADLESS is not set; capture tests run under just check-headless")
-	}
-}
-
 // Test colors, opaque, distinct in every channel.
 var (
 	fillRed   = render.Color(0xffd02030)
 	fillGreen = render.Color(0xff20c040)
 )
 
-// showApp runs a gelm application on its own goroutine with build
-// adding its surfaces, and stops it at test cleanup.
-func showApp(t *testing.T, build func(a *app.Application, out *app.Output) error) {
-	t.Helper()
-	sess, err := app.Connect()
-	if err != nil {
-		t.Fatalf("connect: %v", err)
-	}
-	a := app.NewApplication(sess)
-	outs := sess.Outputs()
-	if len(outs) == 0 {
-		sess.Close()
-		t.Fatal("no outputs")
-	}
-	if err := build(a, outs[0]); err != nil {
-		sess.Close()
-		t.Fatalf("build: %v", err)
-	}
-	done := make(chan struct{})
-	go func() {
-		defer close(done)
-		_ = a.Run()
-	}()
-	t.Cleanup(func() {
-		a.Invoke(a.Quit)
-		select {
-		case <-done:
-		case <-time.After(5 * time.Second):
-			t.Error("application did not quit")
-		}
-		sess.Close()
-	})
-}
-
-// eventually retries fn until it succeeds or the deadline passes.
-func eventually(t *testing.T, what string, fn func() error) {
-	t.Helper()
-	deadline := time.Now().Add(8 * time.Second)
-	var err error
-	for time.Now().Before(deadline) {
-		if err = fn(); err == nil {
-			return
-		}
-		time.Sleep(100 * time.Millisecond)
-	}
-	t.Fatalf("%s: %v", what, err)
-}
-
-// wantColor checks one pixel of a captured frame.
-func wantColor(img *image.RGBA, x, y int, want render.Color) error {
-	got := img.RGBAAt(x, y)
-	w := color.RGBA{R: uint8(want >> 16), G: uint8(want >> 8), B: uint8(want), A: 0xff}
-	if got != w {
-		return fmt.Errorf("pixel (%d,%d) = %v, want %v", x, y, got, w)
-	}
-	return nil
-}
-
-func connectCapture(t *testing.T) *capture.Client {
-	t.Helper()
-	c, err := capture.Connect()
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = c.Close() })
-	if len(c.Outputs()) == 0 {
-		t.Fatal("no outputs")
-	}
-	return c
-}
-
 func TestHeadlessOutputCapture(t *testing.T) {
-	requireHeadless(t)
-	showApp(t, func(a *app.Application, out *app.Output) error {
+	inproc.Require(t)
+	inproc.Show(t, func(a *app.Application, out *app.Output) error {
 		_, err := a.NewLayer(app.LayerConfig{
 			Output:     out,
 			Layer:      app.LayerOverlay,
@@ -119,7 +38,7 @@ func TestHeadlessOutputCapture(t *testing.T) {
 		})
 		return err
 	})
-	c := connectCapture(t)
+	c := inproc.Capture(t)
 	out := c.Outputs()[0]
 	if out.Name == "" || out.Width <= 0 || out.Height <= 0 {
 		t.Fatalf("output metadata incomplete: %+v", out)
@@ -129,7 +48,7 @@ func TestHeadlessOutputCapture(t *testing.T) {
 		if !c.HasScreencopy() {
 			t.Fatal("sway offers wlr-screencopy")
 		}
-		eventually(t, "red output", func() error {
+		inproc.Eventually(t, "red output", func() error {
 			f, err := c.CaptureOutput(out, capture.Options{})
 			if err != nil {
 				return err
@@ -141,7 +60,7 @@ func TestHeadlessOutputCapture(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			return wantColor(img, f.Width/2, f.Height/2, fillRed)
+			return inproc.WantColor(img, f.Width/2, f.Height/2, fillRed)
 		})
 	})
 	t.Run("screencopy region", func(t *testing.T) {
@@ -156,7 +75,7 @@ func TestHeadlessOutputCapture(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := wantColor(img, 50, 25, fillRed); err != nil {
+		if err := inproc.WantColor(img, 50, 25, fillRed); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -177,7 +96,7 @@ func TestHeadlessOutputCapture(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := wantColor(img, f.Width/2, f.Height/2, fillRed); err != nil {
+		if err := inproc.WantColor(img, f.Width/2, f.Height/2, fillRed); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -190,7 +109,7 @@ func TestHeadlessOutputCapture(t *testing.T) {
 		if info.Width != int(out.Width) || info.Stride != info.Width*info.Format.BytesPerPixel() {
 			t.Fatalf("stream info %+v", info)
 		}
-		eventually(t, "first stream frame", func() error {
+		inproc.Eventually(t, "first stream frame", func() error {
 			if s.Latest() == nil {
 				return errors.New("no frame yet")
 			}
@@ -204,7 +123,7 @@ func TestHeadlessOutputCapture(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := wantColor(img, 5, 5, fillRed); err != nil {
+		if err := inproc.WantColor(img, 5, 5, fillRed); err != nil {
 			t.Fatal(err)
 		}
 		frame := s.Latest()
@@ -249,9 +168,9 @@ func TestHeadlessOutputCapture(t *testing.T) {
 }
 
 func TestHeadlessToplevelCapture(t *testing.T) {
-	requireHeadless(t)
+	inproc.Require(t)
 	const appID = "dev.stubbe.gelm.capturetest"
-	showApp(t, func(a *app.Application, out *app.Output) error {
+	inproc.Show(t, func(a *app.Application, out *app.Output) error {
 		_, err := a.NewWindow(app.WindowConfig{
 			Title:      "capture target",
 			AppID:      appID,
@@ -262,12 +181,12 @@ func TestHeadlessToplevelCapture(t *testing.T) {
 		})
 		return err
 	})
-	c := connectCapture(t)
+	c := inproc.Capture(t)
 	if !c.HasToplevelCapture() {
 		t.Fatal("sway offers ext toplevel capture")
 	}
 	var target capture.Toplevel
-	eventually(t, "toplevel listed", func() error {
+	inproc.Eventually(t, "toplevel listed", func() error {
 		tls, err := c.Toplevels()
 		if err != nil {
 			return err
@@ -283,7 +202,7 @@ func TestHeadlessToplevelCapture(t *testing.T) {
 	if target.Title != "capture target" || target.Identifier == "" {
 		t.Fatalf("toplevel metadata %+v", target)
 	}
-	eventually(t, "green window", func() error {
+	inproc.Eventually(t, "green window", func() error {
 		f, err := c.CaptureToplevel(target, capture.Options{})
 		if err != nil {
 			return err
@@ -292,7 +211,7 @@ func TestHeadlessToplevelCapture(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		return wantColor(img, f.Width/2, f.Height/2, fillGreen)
+		return inproc.WantColor(img, f.Width/2, f.Height/2, fillGreen)
 	})
 	t.Run("a foreign toplevel value is refused", func(t *testing.T) {
 		if _, err := c.CaptureToplevel(capture.Toplevel{Title: "x"}, capture.Options{}); err == nil {

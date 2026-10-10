@@ -2,65 +2,29 @@ package capture_test
 
 import (
 	"errors"
-	"os"
 	"testing"
 	"time"
-	"unsafe"
-
-	"golang.org/x/sys/unix"
 
 	"github.com/stubbedev/gelm/app"
 	"github.com/stubbedev/gelm/capture"
+	"github.com/stubbedev/gelm/dmabuf"
+	"github.com/stubbedev/gelm/internal/headlesstest/inproc"
+	"github.com/stubbedev/gelm/internal/udmabuf"
 	"github.com/stubbedev/gelm/widget"
 )
 
-// drmFourccXRGB8888 is DRM_FORMAT_XRGB8888 ('XR24').
-const drmFourccXRGB8888 = 0x34325258
-
-// udmabufCreate is struct udmabuf_create; udmabufIoctl is
-// UDMABUF_CREATE, _IOW('u', 0x42, struct udmabuf_create).
-type udmabufCreate struct {
-	memfd  uint32
-	flags  uint32
-	offset uint64
-	size   uint64
-}
-
-const udmabufIoctl = 0x40187542
-
-// newUdmabuf allocates a linear, CPU-visible dmabuf through
-// /dev/udmabuf: a sealed memfd wrapped as a dmabuf, so the test can
-// read what the compositor's GPU copy wrote without any GPU library.
-func newUdmabuf(t *testing.T, size int) (dmabufFd int, mem []byte) {
+func newUdmabuf(t *testing.T, size int) (int, []byte) {
 	t.Helper()
-	dev, err := os.OpenFile("/dev/udmabuf", os.O_RDWR, 0)
+	b, err := udmabuf.New(size)
 	if err != nil {
 		t.Skipf("no udmabuf: %v", err)
 	}
-	defer dev.Close()
-	memfd, err := unix.MemfdCreate("gelm-capture-udmabuf", unix.MFD_ALLOW_SEALING|unix.MFD_CLOEXEC)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = unix.Close(memfd) })
-	if err := unix.Ftruncate(memfd, int64(size)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := unix.FcntlInt(uintptr(memfd), unix.F_ADD_SEALS, unix.F_SEAL_SHRINK); err != nil {
-		t.Fatal(err)
-	}
-	req := udmabufCreate{memfd: uint32(memfd), flags: unix.O_CLOEXEC, size: uint64(size)}
-	fd, _, errno := unix.Syscall(unix.SYS_IOCTL, dev.Fd(), udmabufIoctl, uintptr(unsafe.Pointer(&req)))
-	if errno != 0 {
-		t.Skipf("UDMABUF_CREATE: %v", errno)
-	}
-	t.Cleanup(func() { _ = unix.Close(int(fd)) })
-	mem, err = unix.Mmap(memfd, 0, size, unix.PROT_READ, unix.MAP_SHARED)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(func() { _ = unix.Munmap(mem) })
-	return int(fd), mem
+	t.Cleanup(func() {
+		if err := b.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	return b.FD, b.Mem
 }
 
 // TestHeadlessDmabufCapture runs the zero-copy path end to end: probe
@@ -69,12 +33,12 @@ func newUdmabuf(t *testing.T, size int) (dmabufFd int, mem []byte) {
 // a GPU-rendering compositor (sway's gles2 renderer); the pixman gate
 // skips it and covers the negative probe instead.
 func TestHeadlessDmabufCapture(t *testing.T) {
-	requireHeadless(t)
-	c := connectCapture(t)
+	inproc.Require(t)
+	c := inproc.Capture(t)
 	if !c.HasDmabuf() {
 		t.Skip("compositor offers no linux-dmabuf (CPU renderer)")
 	}
-	showApp(t, func(a *app.Application, out *app.Output) error {
+	inproc.Show(t, func(a *app.Application, out *app.Output) error {
 		_, err := a.NewLayer(app.LayerConfig{
 			Output:     out,
 			Layer:      app.LayerOverlay,
@@ -110,10 +74,10 @@ func TestHeadlessDmabufCapture(t *testing.T) {
 		// connection - so it runs on a throwaway client. The verdict
 		// must surface from the import and from every later call,
 		// never as a hang.
-		bad := connectCapture(t)
-		_, err := bad.ImportDmabuf(capture.Dmabuf{
-			Width: format.Width, Height: format.Height * 4, Fourcc: drmFourccXRGB8888,
-			Planes: []capture.DmabufPlane{{Fd: uintptr(fd), Stride: uint32(stride)}},
+		bad := inproc.Capture(t)
+		_, err := bad.ImportDmabuf(dmabuf.Buffer{
+			Width: format.Width, Height: format.Height * 4, Format: dmabuf.FormatXRGB8888,
+			Planes: []dmabuf.Plane{{FD: fd, Stride: uint32(stride)}},
 		})
 		if err == nil {
 			t.Fatal("oversized import accepted")
@@ -123,9 +87,9 @@ func TestHeadlessDmabufCapture(t *testing.T) {
 		}
 	})
 
-	buf, err := c.ImportDmabuf(capture.Dmabuf{
-		Width: format.Width, Height: format.Height, Fourcc: format.Fourcc,
-		Planes: []capture.DmabufPlane{{Fd: uintptr(fd), Stride: uint32(stride)}},
+	buf, err := c.ImportDmabuf(dmabuf.Buffer{
+		Width: format.Width, Height: format.Height, Format: format.Fourcc,
+		Planes: []dmabuf.Plane{{FD: fd, Stride: uint32(stride)}},
 	})
 	if errors.Is(err, capture.ErrDmabufRejected) {
 		t.Skip("compositor cannot import udmabuf memory")
@@ -140,7 +104,7 @@ func TestHeadlessDmabufCapture(t *testing.T) {
 	if _, err := c.CaptureOutputDmabuf(out, false, buf); errors.Is(err, capture.ErrFailed) {
 		t.Skip("compositor cannot render into a linear udmabuf on this GPU")
 	}
-	eventually(t, "red frame in the dmabuf", func() error {
+	inproc.Eventually(t, "red frame in the dmabuf", func() error {
 		if _, err := c.CaptureOutputDmabuf(out, false, buf); err != nil {
 			return err
 		}
@@ -149,7 +113,7 @@ func TestHeadlessDmabufCapture(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		return wantColor(img, format.Width/2, format.Height/2, fillRed)
+		return inproc.WantColor(img, format.Width/2, format.Height/2, fillRed)
 	})
 }
 
@@ -158,8 +122,8 @@ func TestHeadlessDmabufCapture(t *testing.T) {
 // waits for a change, while CopyOutputDmabuf takes the next frame and
 // returns.
 func TestHeadlessDmabufCopyTakesAnIdleFrame(t *testing.T) {
-	requireHeadless(t)
-	c := connectCapture(t)
+	inproc.Require(t)
+	c := inproc.Capture(t)
 	if !c.HasDmabuf() {
 		t.Skip("compositor offers no linux-dmabuf (CPU renderer)")
 	}
@@ -170,9 +134,9 @@ func TestHeadlessDmabufCopyTakesAnIdleFrame(t *testing.T) {
 	}
 	stride := format.Width * 4
 	fd, _ := newUdmabuf(t, (stride*format.Height+4095)&^4095)
-	buf, err := c.ImportDmabuf(capture.Dmabuf{
-		Width: format.Width, Height: format.Height, Fourcc: format.Fourcc,
-		Planes: []capture.DmabufPlane{{Fd: uintptr(fd), Stride: uint32(stride)}},
+	buf, err := c.ImportDmabuf(dmabuf.Buffer{
+		Width: format.Width, Height: format.Height, Format: format.Fourcc,
+		Planes: []dmabuf.Plane{{FD: fd, Stride: uint32(stride)}},
 	})
 	if err != nil {
 		t.Skipf("import: %v", err)
