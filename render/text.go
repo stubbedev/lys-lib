@@ -25,6 +25,10 @@ import (
 // falls back across faces for runes the primary face lacks. Widgets
 // take a Font, so either works at every text call site.
 type Font interface {
+	// Metrics reports the face's font-relative metrics as ratios of
+	// its font size: the CSS ch, ex, cap, ic and lh unit bases. Widgets
+	// feed these to the style engine's unit environment.
+	Metrics() FaceMetrics
 	// Shape lays text out at the given pixel size, resolving the base
 	// paragraph direction from the text's first strong character.
 	Shape(s string, px float64) *ShapedText
@@ -92,6 +96,43 @@ type Typeface struct {
 	// cluster; spaced memoizes the Spaced variants.
 	letter float64
 	spaced map[float64]*Typeface
+
+	// metrics memoizes Metrics; metricsRead marks it computed.
+	metrics     FaceMetrics
+	metricsRead bool
+}
+
+// FaceMetrics is a face's font-relative metrics expressed as ratios
+// of its font size: the advance of "0" (ch), the x-height (ex), the
+// cap height (cap), the ideographic advance (ic), and the natural
+// line height (lh). A zero field means the face does not report it
+// and the CSS fallback ratio applies.
+type FaceMetrics struct {
+	Ch, Ex, Cap, Ic, LineHeight float64
+}
+
+// Metrics returns the face's metrics, memoized after the first call.
+func (t *Typeface) Metrics() FaceMetrics {
+	if t.metricsRead {
+		return t.metrics
+	}
+	t.metricsRead = true
+	if gid, ok := t.face.NominalGlyph('0'); ok {
+		t.metrics.Ch = float64(t.face.HorizontalAdvance(gid)) / t.upem
+	}
+	if v := t.face.LineMetric(font.XHeight); v > 0 {
+		t.metrics.Ex = float64(v) / t.upem
+	}
+	if v := t.face.LineMetric(font.CapHeight); v > 0 {
+		t.metrics.Cap = float64(v) / t.upem
+	}
+	if gid, ok := t.face.NominalGlyph('\u6c34'); ok {
+		t.metrics.Ic = float64(t.face.HorizontalAdvance(gid)) / t.upem
+	}
+	if ext, ok := t.face.FontHExtents(); ok {
+		t.metrics.LineHeight = float64(ext.Ascender-ext.Descender+ext.LineGap) / t.upem
+	}
+	return t.metrics
 }
 
 // Spaced returns the face shaping with px of letter spacing after
@@ -916,6 +957,10 @@ type Chain struct {
 	// identity the shaping cache and restyle comparisons key on.
 	variants map[string]*Chain
 }
+
+// Metrics reports the primary face's metrics; the CSS font-relative
+// units all resolve against the primary face.
+func (c *Chain) Metrics() FaceMetrics { return c.primary.Metrics() }
 
 // Primary is the chain's first face: the one variants resolve from.
 func (c *Chain) Primary() *Typeface { return c.primary }
