@@ -5,9 +5,10 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/stubbedev/gelm/internal/text"
 	"golang.org/x/image/font/gofont/gomono"
 	"golang.org/x/image/font/gofont/goregular"
+
+	"github.com/stubbedev/gelm/internal/text"
 )
 
 // dropShapes drains the process-wide shaping caches, so a test's keys
