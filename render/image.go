@@ -107,6 +107,14 @@ func Resample(src image.Image, srcRect image.Rectangle, dstW, dstH int) *image.R
 	return dst
 }
 
+// ResampleInto scales srcRect of src over all of dst bilinearly,
+// reusing dst's pixels: the per-frame path for video, where a cubic
+// kernel and a fresh raster per frame would cost more than the frame
+// budget allows.
+func ResampleInto(dst, src *image.RGBA, srcRect image.Rectangle) {
+	xdraw.ApproxBiLinear.Scale(dst, dst.Bounds(), src, srcRect.Intersect(src.Bounds()), xdraw.Src, nil)
+}
+
 // DrawImageDevice blends img onto the canvas one-to-one in device
 // pixels, its top-left corner at (x, y). It is the device-space
 // counterpart of DrawImage: rasters that were already resampled for the
