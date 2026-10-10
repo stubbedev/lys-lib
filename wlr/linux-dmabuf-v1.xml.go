@@ -232,7 +232,7 @@ func (p *ZwpBufferParamsV1) Dispatch(event *Event) {
 	case 0:
 		if len(p.privateZwpBufferParamsV1Createds) > 0 {
 			ev := ZwpBufferParamsV1CreatedEvent{}
-			ev.Buffer = func() *Buffer { ret := new(Buffer); return event.NewId(ret, p.Context()).(*Buffer) }()
+			ev.Buffer = func() *Buffer { ret := newServerBuffer(); return event.NewId(ret, p.Context()).(*Buffer) }()
 			p.mu.RLock()
 			for h := range p.privateZwpBufferParamsV1Createds {
 				h.HandleZwpBufferParamsV1Created(ev)
