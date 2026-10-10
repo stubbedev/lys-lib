@@ -301,6 +301,29 @@ func (c *Canvas) FillRectDevice(r Rect, col Color) {
 	}
 }
 
+// DrawCanvasDevice paints src over c with its top-left device pixel
+// at (x, y), one to one - a retained surface's canvas drawn back at
+// the scale it was allocated at. Like DrawImageDevice it clips to c's
+// clip, blends through c's opacity, and overwrites where both pixels
+// are opaque.
+func (c *Canvas) DrawCanvasDevice(src *Canvas, x, y int) {
+	dr := Rect{X: x, Y: y, W: src.w, H: src.h}.Intersect(c.clip)
+	if dr.Empty() {
+		return
+	}
+	for py := dr.Y; py < dr.Y+dr.H; py++ {
+		row := src.data[(py-y)*src.stride:]
+		for px := dr.X; px < dr.X+dr.W; px++ {
+			col := Color(binary.LittleEndian.Uint32(row[(px-x)*4 : (px-x)*4+4]))
+			if col.A() == 0xff && c.alphaScale == 255 {
+				c.set(px, py, col)
+				continue
+			}
+			c.blend(px, py, col)
+		}
+	}
+}
+
 // RoundedRect blends col over a filled logical rect with corners rounded
 // by radius logical pixels, anti-aliased with per-pixel signed-distance
 // coverage. The rasterization runs at the device scale.
