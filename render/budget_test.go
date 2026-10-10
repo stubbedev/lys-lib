@@ -43,6 +43,25 @@ func TestAllocBudgetDrawAligned(t *testing.T) {
 	}
 }
 
+// TestAllocBudgetShapeRunes pins the rune-holding widgets' warm path:
+// one ShapeRunes of a stable rune slice must be a table hit, like the
+// string-keyed Shape beside it.
+func TestAllocBudgetShapeRunes(t *testing.T) {
+	tf := testTypeface(t)
+	const budget = 0
+	rs := []rune(benchText200)
+	line := rs[:43]
+	tf.ShapeRunes(line, 14) // warm the rune-keyed table
+	allocs := testing.AllocsPerRun(100, func() {
+		if tf.ShapeRunes(line, 14) == nil {
+			panic("nil shape")
+		}
+	})
+	if allocs > budget {
+		t.Errorf("ShapeRunes allocates %v allocs/op, budget %d", allocs, budget)
+	}
+}
+
 // TestAllocBudgetCanvasPaint pins the canvas primitive mix: clear,
 // fill, border, rounded fill, gradient. Pure pixel work; the baseline
 // measured 0 allocs/op.

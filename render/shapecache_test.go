@@ -5,13 +5,17 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/stubbedev/gelm/internal/text"
 	"golang.org/x/image/font/gofont/gomono"
 	"golang.org/x/image/font/gofont/goregular"
 )
 
-// dropShapes drains the process-wide shaping cache, so a test's keys
+// dropShapes drains the process-wide shaping caches, so a test's keys
 // cannot be served by another test's entries.
-func dropShapes() { shapes.dropAll() }
+func dropShapes() {
+	shapes.dropAll()
+	dropRuneLines()
+}
 
 func monoTypeface(t *testing.T) *Typeface {
 	t.Helper()
@@ -116,6 +120,40 @@ func TestShapeCacheHitAllocatesNothing(t *testing.T) {
 	})
 	if reads != 0 {
 		t.Errorf("warm CaretX/CaretAt allocated %v times per op, want 0", reads)
+	}
+}
+
+func TestShapeRunesMatchesShapeOfString(t *testing.T) {
+	// Font.ShapeRunes/ShapeDirRunes are the rune-holding widgets' probe
+	// path; they must produce exactly what the string-keyed Shape of
+	// the same text produces, for both Font implementations, and the
+	// resolved direction the shape carries must follow the string
+	// path's text.RTL read.
+	dropShapes()
+	tf := testTypeface(t)
+	mono := monoTypeface(t)
+	c := NewChain(mono, tf)
+	for _, s := range []string{"hello world", "שלום hello", "", "tab\tnew\n"} {
+		rs := []rune(s)
+		for _, f := range []Font{tf, mono, c} {
+			for _, d := range []text.Direction{text.DirectionAuto, text.DirectionLTR, text.DirectionRTL} {
+				want := f.ShapeDir(s, 14, d)
+				got := f.ShapeDirRunes(rs, 14, d)
+				if got == nil {
+					t.Fatalf("ShapeDirRunes(%q) returned nil for %T", s, f)
+				}
+				if got.Advance() != want.Advance() || got.LineHeight() != want.LineHeight() ||
+					got.Runs() != want.Runs() || got.CaretX(len(rs)) != want.CaretX(len(rs)) {
+					t.Errorf("ShapeDirRunes(%q, %v) disagrees with ShapeDir for %T", s, d, f)
+				}
+				if got.RTL() != text.RTL(s, d) {
+					t.Errorf("shape of %q under %v reports RTL %v, want %v", s, d, got.RTL(), text.RTL(s, d))
+				}
+			}
+			if a, b := f.ShapeRunes(rs, 14), f.Shape(s, 14); a.Advance() != b.Advance() || a.LineHeight() != b.LineHeight() {
+				t.Errorf("ShapeRunes(%q) and Shape disagree for %T", s, f)
+			}
+		}
 	}
 }
 

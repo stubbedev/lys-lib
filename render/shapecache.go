@@ -11,6 +11,9 @@ package render
 
 import (
 	"container/list"
+	"hash/maphash"
+	"math"
+	"slices"
 	"sync"
 	"unicode/utf8"
 
@@ -103,6 +106,85 @@ func cachedShapeRune(font Font, px float64, r rune, fill func() *ShapedText) *Sh
 	return sh
 }
 
+// The rune-keyed half of the line cache: widgets that hold their
+// contents as rune slices (text areas, entries while composing) shape
+// through it, so a frame's probes never convert runes to a string per
+// call. Slices are not comparable, so the key is a hash over
+// (font, size, direction, runes) with full equality on the bucket
+// compare. The table is set-associative with a fixed way count, so its
+// memory is bounded by construction; entries leave only by collision.
+const (
+	runeLineSets = 512
+	runeLineWays = 4
+)
+
+type runeLineEntry struct {
+	font  Font
+	px    float64
+	dir   text.Direction
+	rs    []rune
+	val   *ShapedText
+	stamp uint64
+}
+
+var (
+	runeLineMu    sync.Mutex
+	runeLines     [runeLineSets][runeLineWays]runeLineEntry
+	runeLineClock uint64
+	runeLineSeed  = maphash.MakeSeed()
+)
+
+// cachedShapeRunes returns the shape of rs at px for font under base
+// direction d, filling the table on a miss; the fill must produce what
+// ShapeDir of the string form would, so both caches agree entry for
+// entry.
+func cachedShapeRunes(font Font, px float64, rs []rune, d text.Direction, fill func() *ShapedText) *ShapedText {
+	key := runeLineHash(font, px, rs, d)
+	runeLineMu.Lock()
+	set := &runeLines[key%runeLineSets]
+	runeLineClock++
+	for i := range set {
+		e := &set[i]
+		if e.stamp != 0 && e.font == font && e.px == px && e.dir == d && slices.Equal(e.rs, rs) {
+			e.stamp = runeLineClock
+			sh := e.val
+			runeLineMu.Unlock()
+			return sh
+		}
+	}
+	runeLineMu.Unlock()
+	sh := fill()
+	runeLineMu.Lock()
+	set = &runeLines[key%runeLineSets]
+	var victim *runeLineEntry
+	for i := range set {
+		if set[i].stamp == 0 || victim == nil || set[i].stamp < victim.stamp {
+			victim = &set[i]
+		}
+	}
+	*victim = runeLineEntry{font: font, px: px, dir: d, rs: slices.Clone(rs), val: sh, stamp: runeLineClock}
+	runeLineMu.Unlock()
+	return sh
+}
+
+// runeLineHash folds the key's parts into the set index. The hash is
+// O(runes) per probe, the same order the string-keyed map's own hash
+// pays over the bytes.
+func runeLineHash(font Font, px float64, rs []rune, d text.Direction) uint64 {
+	h := uint64(0xcbf29ce484222325)
+	mix := func(x uint64) {
+		h ^= x
+		h *= 0x100000001b3
+	}
+	mix(maphash.Comparable(runeLineSeed, font))
+	mix(math.Float64bits(px))
+	mix(uint64(d))
+	for _, r := range rs {
+		mix(uint64(r))
+	}
+	return h
+}
+
 // shapedCost estimates an entry's memory: the string, the caret table,
 // and one row per shaped glyph.
 func shapedCost(s *ShapedText) int {
@@ -112,6 +194,15 @@ func shapedCost(s *ShapedText) int {
 	}
 	return shapeOverhead + len(s.text) + glyphBytesPerRun*glyphs +
 		8*(utf8.RuneCountInString(s.text)+1)
+}
+
+// dropRuneLines empties the rune-keyed caches; tests use it to pin
+// miss-path costs and keep caches fixture-local.
+func dropRuneLines() {
+	runeLineMu.Lock()
+	defer runeLineMu.Unlock()
+	runeLines = [runeLineSets][runeLineWays]runeLineEntry{}
+	runeShapes.dropAll()
 }
 
 // lru is a mutex-guarded LRU map with a byte budget. Entries move to

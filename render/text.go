@@ -35,6 +35,12 @@ type Font interface {
 	// wrap measurement and advance math use. Rune-keyed in the caches,
 	// so a probe never builds a one-rune string per call.
 	ShapeRune(r rune, px float64) *ShapedText
+	// ShapeRunes is Shape over a rune slice - the rune-holding widgets'
+	// path, keyed on the runes so a frame's shaping never converts them
+	// to a string per call.
+	ShapeRunes(rs []rune, px float64) *ShapedText
+	// ShapeDirRunes is ShapeDir over a rune slice; see ShapeRunes.
+	ShapeDirRunes(rs []rune, px float64, d text.Direction) *ShapedText
 	// Draw paints a shaped line with its baseline at logical
 	// (x, baselineY).
 	Draw(cv *Canvas, s *ShapedText, x, baselineY int, col Color)
@@ -180,10 +186,18 @@ type ShapedText struct {
 	runs []shapedRun
 	text string
 	px   float64
+	// rtl is the paragraph's resolved base direction (text.RTL of the
+	// text under the direction it was shaped with), so rune-holding
+	// readers take it off the shape instead of converting per frame.
+	rtl bool
 	// carets is the per-rune-boundary x table carets() serves, built
 	// once at shape time so repeated paint passes never rebuild it.
 	carets []float64
 }
+
+// RTL reports whether the line lays out right to left: the resolved
+// base direction it was shaped under.
+func (s *ShapedText) RTL() bool { return s.rtl }
 
 // shapedRun is one face's shaped slice of the line: the runes of
 // Text on [start, end), positioned after the preceding runs'
@@ -222,16 +236,28 @@ func (t *Typeface) ShapeRune(r rune, px float64) *ShapedText {
 	})
 }
 
+// ShapeRunes shapes a rune slice; see Font.ShapeRunes.
+func (t *Typeface) ShapeRunes(rs []rune, px float64) *ShapedText {
+	return t.ShapeDirRunes(rs, px, text.DirectionAuto)
+}
+
+// ShapeDirRunes shapes a rune slice under d; see Font.ShapeDirRunes.
+func (t *Typeface) ShapeDirRunes(rs []rune, px float64, d text.Direction) *ShapedText {
+	return cachedShapeRunes(t, px, rs, d, func() *ShapedText {
+		return t.shapeUncached(string(rs), px, d)
+	})
+}
+
 // shapeUncached does the actual shaping work, bypassing the cache.
 func (t *Typeface) shapeUncached(s string, px float64, d text.Direction) *ShapedText {
 	if s == "" {
-		return newShapedText(s, px, []shapedRun{t.shapeRun(s, px, 0, false, t.letter)})
+		return newShapedText(s, px, text.RTL(s, d), []shapedRun{t.shapeRun(s, px, 0, false, t.letter)})
 	}
 	var runs []shapedRun
 	bidiPieces(s, d, func(piece string, start int, rtl bool) {
 		runs = append(runs, t.shapeRun(piece, px, start, rtl, t.letter))
 	})
-	return newShapedText(s, px, runs)
+	return newShapedText(s, px, text.RTL(s, d), runs)
 }
 
 // bidiPieces walks s's directional runs - internal/text.BidiRuns, the
@@ -248,8 +274,8 @@ func bidiPieces(s string, d text.Direction, yield func(piece string, start int, 
 }
 
 // newShapedText builds an immutable ShapedText, caret table included.
-func newShapedText(text string, px float64, runs []shapedRun) *ShapedText {
-	s := &ShapedText{text: text, px: px, runs: runs}
+func newShapedText(text string, px float64, rtl bool, runs []shapedRun) *ShapedText {
+	s := &ShapedText{text: text, px: px, rtl: rtl, runs: runs}
 	s.carets = s.buildCarets()
 	return s
 }
@@ -1004,12 +1030,24 @@ func (c *Chain) ShapeRune(r rune, px float64) *ShapedText {
 	})
 }
 
+// ShapeRunes shapes a rune slice; see Font.ShapeRunes.
+func (c *Chain) ShapeRunes(rs []rune, px float64) *ShapedText {
+	return c.ShapeDirRunes(rs, px, text.DirectionAuto)
+}
+
+// ShapeDirRunes shapes a rune slice under d; see Font.ShapeDirRunes.
+func (c *Chain) ShapeDirRunes(rs []rune, px float64, d text.Direction) *ShapedText {
+	return cachedShapeRunes(c, px, rs, d, func() *ShapedText {
+		return c.shapeUncached(string(rs), px, d)
+	})
+}
+
 // shapeUncached does the run-splitting and shaping work, bypassing the
 // cache: each directional run splits per covering face, shaped with its
 // own embedding direction.
 func (c *Chain) shapeUncached(s string, px float64, d text.Direction) *ShapedText {
 	if s == "" {
-		return newShapedText(s, px, []shapedRun{c.primary.shapeRun(s, px, 0, false, c.letter)})
+		return newShapedText(s, px, text.RTL(s, d), []shapedRun{c.primary.shapeRun(s, px, 0, false, c.letter)})
 	}
 	var runs []shapedRun
 	bidiPieces(s, d, func(piece string, start int, rtl bool) {
@@ -1024,7 +1062,7 @@ func (c *Chain) shapeUncached(s string, px float64, d text.Direction) *ShapedTex
 			i = j
 		}
 	})
-	return newShapedText(s, px, runs)
+	return newShapedText(s, px, text.RTL(s, d), runs)
 }
 
 // Draw paints a shaped line; see ShapedText.Draw.

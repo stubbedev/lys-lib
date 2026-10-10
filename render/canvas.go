@@ -96,6 +96,27 @@ func NewScaled(data []byte, stride, width, height, num, denom int) *Canvas {
 	return c
 }
 
+// Reset re-points the canvas at a fresh buffer, the window-owned
+// canvas's per-frame entry: the same struct re-readied instead of a
+// NewScaled allocation per painted frame. The scale must be positive,
+// as NewScaled's. Frame state (overlays, focus, counters) starts
+// clean, as after a completed frame.
+func (c *Canvas) Reset(data []byte, stride, width, height, num, denom int) *Canvas {
+	if num <= 0 || denom <= 0 {
+		panic(fmt.Sprintf("render: invalid device scale %d/%d", num, denom))
+	}
+	c.data, c.stride, c.w, c.h = data, stride, width, height
+	c.num, c.denom = num, denom
+	c.alpha, c.alphaScale = 1, 255
+	c.bright = 0
+	c.touched = 0
+	c.overlays = c.overlays[:0]
+	c.focus = focusMark{}
+	c.armed = false
+	c.clip = c.Rect()
+	return c
+}
+
 // DeviceScale returns the canvas's device scale as a rational: num
 // device pixels per denom logical pixels.
 func (c *Canvas) DeviceScale() (num, denom int) { return c.num, c.denom }
