@@ -8,7 +8,47 @@ import (
 	"testing"
 )
 
-func TestScaleRectFit(t *testing.T) {
+// placeCentered is PlaceImage at the default position, read as the
+// source rect and drawn size the policy tests compare.
+func placeCentered(srcW, srcH, boxW, boxH int, s ImageScale) (image.Rectangle, int, int) {
+	src, dst := PlaceImage(srcW, srcH, boxW, boxH, s, ImageCentered)
+	return src, dst.W, dst.H
+}
+
+// TestPlaceImagePositions pins object-position: the object's origin at
+// a fraction of the free space plus an offset, the box showing only
+// what lands inside it.
+func TestPlaceImagePositions(t *testing.T) {
+	tests := []struct {
+		name       string
+		srcW, srcH int
+		boxW, boxH int
+		s          ImageScale
+		pos        ImagePos
+		wantSrc    image.Rectangle
+		wantDst    Rect
+	}{
+		{"none at left bottom", 4, 4, 10, 10, ImageNone, ImagePos{X: 0, Y: 1}, image.Rect(0, 0, 4, 4), Rect{X: 0, Y: 6, W: 4, H: 4}},
+		{"none overflowing at left top", 16, 16, 10, 10, ImageNone, ImagePos{}, image.Rect(0, 0, 10, 10), Rect{W: 10, H: 10}},
+		{"none overflowing at right bottom", 16, 16, 10, 10, ImageNone, ImagePos{X: 1, Y: 1}, image.Rect(6, 6, 16, 16), Rect{W: 10, H: 10}},
+		{"none offset past the top", 4, 4, 10, 10, ImageNone, ImagePos{OffX: 3, OffY: -2}, image.Rect(0, 2, 4, 4), Rect{X: 3, W: 4, H: 2}},
+		{"fit at the bottom", 100, 50, 20, 40, ImageFit, ImagePos{Y: 1}, image.Rect(0, 0, 100, 50), Rect{Y: 30, W: 20, H: 10}},
+		{"cover at the left", 4, 2, 10, 10, ImageCover, ImagePos{}, image.Rect(0, 0, 2, 2), Rect{W: 10, H: 10}},
+		{"cover at the right", 4, 2, 10, 10, ImageCover, ImagePos{X: 1}, image.Rect(2, 0, 4, 2), Rect{W: 10, H: 10}},
+		{"cover shifted right", 4, 2, 10, 10, ImageCover, ImagePos{OffX: 5}, image.Rect(0, 0, 1, 2), Rect{X: 5, W: 5, H: 10}},
+		{"placed outside the box", 4, 4, 10, 10, ImageNone, ImagePos{OffX: 20}, image.Rectangle{}, Rect{}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			src, dst := PlaceImage(tt.srcW, tt.srcH, tt.boxW, tt.boxH, tt.s, tt.pos)
+			if src != tt.wantSrc || dst != tt.wantDst {
+				t.Errorf("PlaceImage = %v into %v, want %v into %v", src, dst, tt.wantSrc, tt.wantDst)
+			}
+		})
+	}
+}
+
+func TestPlaceImageFit(t *testing.T) {
 	tests := []struct {
 		name         string
 		srcW, srcH   int
@@ -27,16 +67,16 @@ func TestScaleRectFit(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			src, w, h := ScaleRect(tt.srcW, tt.srcH, tt.boxW, tt.boxH, ImageFit)
+			src, w, h := placeCentered(tt.srcW, tt.srcH, tt.boxW, tt.boxH, ImageFit)
 			if src != tt.wantSrc || w != tt.wantW || h != tt.wantH {
-				t.Errorf("ScaleRect(%d,%d in %d,%d, fit) = %v, %dx%d, want %v, %dx%d",
+				t.Errorf("PlaceImage(%d,%d in %d,%d, fit) = %v, %dx%d, want %v, %dx%d",
 					tt.srcW, tt.srcH, tt.boxW, tt.boxH, src, w, h, tt.wantSrc, tt.wantW, tt.wantH)
 			}
 		})
 	}
 }
 
-func TestScaleRectFitMatchesContainScale(t *testing.T) {
+func TestPlaceImageFitMatchesContainScale(t *testing.T) {
 	// Sweep a grid of source and box sizes: the fit result must stay
 	// inside the box and be exactly the contain scale, rounded, with a
 	// floor at one pixel for extreme aspect ratios.
@@ -44,7 +84,7 @@ func TestScaleRectFitMatchesContainScale(t *testing.T) {
 		for srcH := 1; srcH <= 33; srcH += 4 {
 			for boxW := 1; boxW <= 20; boxW += 3 {
 				for boxH := 1; boxH <= 20; boxH += 3 {
-					_, w, h := ScaleRect(srcW, srcH, boxW, boxH, ImageFit)
+					_, w, h := placeCentered(srcW, srcH, boxW, boxH, ImageFit)
 					s := math.Min(float64(boxW)/float64(srcW), float64(boxH)/float64(srcH))
 					wantW := clampInt(int(math.Round(float64(srcW)*s)), 1, boxW)
 					wantH := clampInt(int(math.Round(float64(srcH)*s)), 1, boxH)
@@ -60,7 +100,7 @@ func TestScaleRectFitMatchesContainScale(t *testing.T) {
 
 func clampInt(v, lo, hi int) int { return min(hi, max(lo, v)) }
 
-func TestScaleRectCover(t *testing.T) {
+func TestPlaceImageCover(t *testing.T) {
 	tests := []struct {
 		name         string
 		srcW, srcH   int
@@ -77,21 +117,21 @@ func TestScaleRectCover(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			src, w, h := ScaleRect(tt.srcW, tt.srcH, tt.boxW, tt.boxH, ImageCover)
+			src, w, h := placeCentered(tt.srcW, tt.srcH, tt.boxW, tt.boxH, ImageCover)
 			if src != tt.wantSrc || w != tt.wantW || h != tt.wantH {
-				t.Errorf("ScaleRect(%d,%d in %d,%d, cover) = %v, %dx%d, want %v, %dx%d",
+				t.Errorf("PlaceImage(%d,%d in %d,%d, cover) = %v, %dx%d, want %v, %dx%d",
 					tt.srcW, tt.srcH, tt.boxW, tt.boxH, src, w, h, tt.wantSrc, tt.wantW, tt.wantH)
 			}
 		})
 	}
 }
 
-func TestScaleRectCoverAlwaysFillsAndCropsCenter(t *testing.T) {
+func TestPlaceImageCoverAlwaysFillsAndCropsCenter(t *testing.T) {
 	for srcW := 1; srcW <= 30; srcW += 3 {
 		for srcH := 1; srcH <= 30; srcH += 3 {
 			for boxW := 1; boxW <= 24; boxW += 5 {
 				for boxH := 1; boxH <= 24; boxH += 5 {
-					src, w, h := ScaleRect(srcW, srcH, boxW, boxH, ImageCover)
+					src, w, h := placeCentered(srcW, srcH, boxW, boxH, ImageCover)
 					if w != boxW || h != boxH {
 						t.Fatalf("cover %dx%d into %dx%d gave %dx%d, must fill the box",
 							srcW, srcH, boxW, boxH, w, h)
@@ -118,7 +158,7 @@ func TestScaleRectCoverAlwaysFillsAndCropsCenter(t *testing.T) {
 	}
 }
 
-func TestScaleRectNone(t *testing.T) {
+func TestPlaceImageNone(t *testing.T) {
 	tests := []struct {
 		name         string
 		srcW, srcH   int
@@ -134,9 +174,9 @@ func TestScaleRectNone(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			src, w, h := ScaleRect(tt.srcW, tt.srcH, tt.boxW, tt.boxH, ImageNone)
+			src, w, h := placeCentered(tt.srcW, tt.srcH, tt.boxW, tt.boxH, ImageNone)
 			if src != tt.wantSrc || w != tt.wantW || h != tt.wantH {
-				t.Errorf("ScaleRect(%d,%d in %d,%d, none) = %v, %dx%d, want %v, %dx%d",
+				t.Errorf("PlaceImage(%d,%d in %d,%d, none) = %v, %dx%d, want %v, %dx%d",
 					tt.srcW, tt.srcH, tt.boxW, tt.boxH, src, w, h, tt.wantSrc, tt.wantW, tt.wantH)
 			}
 		})

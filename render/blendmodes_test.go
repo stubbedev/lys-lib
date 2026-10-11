@@ -21,7 +21,9 @@ func TestBlendModesAgainstKnownColors(t *testing.T) {
 		{"screen", [3]float64{0.5, 1, 0}, [3]float64{1, 0.5, 0}, [3]float64{1, 1, 0}},
 		{"darken", [3]float64{0.8, 0.2, 0.5}, [3]float64{0.3, 0.9, 0.5}, [3]float64{0.3, 0.2, 0.5}},
 		{"lighten", [3]float64{0.8, 0.2, 0.5}, [3]float64{0.3, 0.9, 0.5}, [3]float64{0.8, 0.9, 0.5}},
-		{"color-dodge", [3]float64{0.5, 1, 0}, [3]float64{0.5, 0.5, 0.5}, [3]float64{1, 1, 0}},
+		// B(cb, cs) = min(1, cb / (1 - cs)): a black source keeps the
+		// backdrop, a white one saturates it.
+		{"color-dodge", [3]float64{0.5, 1, 0}, [3]float64{0.5, 0.5, 0.5}, [3]float64{1, 1, 0.5}},
 		{"color-burn", [3]float64{0.5, 0, 0.25}, [3]float64{0.5, 0.5, 1}, [3]float64{0, 0, 1}},
 		{"difference", [3]float64{0.8, 0.2, 0.5}, [3]float64{0.3, 0.9, 0.5}, [3]float64{0.5, 0.7, 0}},
 		{"exclusion", [3]float64{0.5, 0.5, 1}, [3]float64{0.5, 0.25, 0.5}, [3]float64{0.5, 0.5, 0.5}},
@@ -36,6 +38,25 @@ func TestBlendModesAgainstKnownColors(t *testing.T) {
 			if abs64(got-c.want[i]) > 1e-9 {
 				t.Errorf("%s channel %d: %v, want %v", c.name, i, got, c.want[i])
 			}
+		}
+	}
+}
+
+// TestBlendDodgeBurnOperandOrder pins which operand divides: dodge
+// divides the backdrop by the inverted source, burn the inverted
+// backdrop by the source — swapped operands give other numbers here.
+func TestBlendDodgeBurnOperandOrder(t *testing.T) {
+	for _, c := range []struct {
+		mode      BlendMode
+		cs, cb, w float64
+	}{
+		{BlendColorDodge, 0.2, 0.4, 0.5},
+		{BlendColorDodge, 0.75, 0.1, 0.4},
+		{BlendColorBurn, 0.8, 0.6, 0.5},
+		{BlendColorBurn, 0.4, 0.9, 0.75},
+	} {
+		if got := blendChannel(c.mode, c.cs, c.cb); abs64(got-c.w) > 1e-9 {
+			t.Errorf("%v(cs %v, cb %v) = %v, want %v", c.mode, c.cs, c.cb, got, c.w)
 		}
 	}
 }

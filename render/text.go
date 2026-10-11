@@ -1165,57 +1165,77 @@ func wrapLines(s textShaper, txt string, maxWidth, px float64, o WrapOptions) []
 	}
 	txt = hyphenPrep(txt, o.Hyphens)
 	var lines []string
+	first := maxWidth - o.Indent
 	for hard := range strings.SplitSeq(txt, "\n") {
-		for _, ln := range wrapSoft(s, strings.TrimSuffix(hard, "\r"), maxWidth, px, o) {
+		for _, ln := range wrapSoft(s, strings.TrimSuffix(hard, "\r"), first, maxWidth, px, o) {
 			lines = append(lines, hyphenRow(ln, o.Hyphens))
 		}
+		first = maxWidth
 	}
 	return lines
 }
 
 // wrapSoft greedily fills one hard line - no newlines - along its
-// break opportunities. The default computes the UAX #14 opportunities
-// the typesetting segmenter yields; the options trade them: break-all
+// break opportunities, its first row first px wide and the rest
+// width. The default computes the UAX #14 opportunities the
+// typesetting segmenter yields; the options trade them: break-all
 // and anywhere break at every grapheme cluster, keep-all keeps only
-// the space and hyphen opportunities (CJK runs stay whole), and
-// preserved spaces ride the rows instead of being collapsed. Each
-// opportunity ends a candidate line; the first one that overflows
-// closes the line before its segment, so a run with no opportunity
-// before the width - an unbreakable token - is accepted whole and
-// overflows rather than disappearing.
-func wrapSoft(s textShaper, line string, maxWidth, px float64, o WrapOptions) []string {
+// the space and hyphen opportunities (CJK runs stay whole),
+// break-spaces adds one after every preserved space, and preserved
+// spaces ride the rows instead of being collapsed. Each opportunity
+// ends a candidate line; the first one that overflows closes the line
+// before its segment, so a run with no opportunity before the width -
+// an unbreakable token - is accepted whole and overflows rather than
+// disappearing, unless BreakWords splits it between clusters.
+func wrapSoft(s textShaper, line string, first, width, px float64, o WrapOptions) []string {
 	runes := []rune(line)
 	if len(runes) == 0 {
 		return []string{""}
 	}
+	f := &rowFill{s: s, runes: runes, px: px, o: o, first: first, width: width}
 	if o.Break == WrapWordBreakAll || o.Anywhere {
-		return wrapGraphemes(s, runes, maxWidth, px, o)
+		return f.graphemes()
 	}
 	var seg segmenter.Segmenter
 	if err := seg.InitWithString(line); err != nil {
 		return []string{line} // invalid UTF-8: one overflowing line, never a failure
 	}
-	skipSpaces := func(from int) int { return skipRowSpaces(runes, from, o) }
-	var lines []string
-	start, cur := skipSpaces(0), 0
-	for it := seg.LineIterator(); it.Next(); {
-		l := it.Line()
-		end := l.Offset + len(l.Text)
-		if o.Break == WrapWordKeepAll && !keepAllOK(runes, end) {
-			cur = end
-			continue
+	start, cur := skipRowSpaces(runes, 0, o), 0
+	step := func(end int) {
+		if cur > start && !f.fits(start, end) {
+			f.emit(start, cur)
+			start = skipRowSpaces(runes, cur, o)
 		}
-		if cur > start && s.Shape(string(runes[start:end]), px).Advance() > maxWidth {
-			lines = append(lines, rowText(runes, start, cur, o))
-			start = skipSpaces(cur)
+		if o.BreakWords {
+			start = f.splitWord(start, end)
 		}
 		cur = end
 	}
-	if cur > start {
-		lines = append(lines, rowText(runes, start, cur, o))
-		return lines
+	for it := seg.LineIterator(); it.Next(); {
+		l := it.Line()
+		end := l.Offset + len(l.Text)
+		if o.Break == WrapWordKeepAll && end < len(runes) && !keepAllOK(runes, end) {
+			cur = end
+			continue
+		}
+		if o.BreakSpaces {
+			word := end
+			for word > l.Offset && runes[word-1] == ' ' {
+				word--
+			}
+			for sp := word + 1; sp < end; sp++ {
+				step(sp)
+			}
+		}
+		step(end)
 	}
-	return append(lines, "") // whitespace only: an empty row, not a disappearance
+	if cur > start {
+		f.emit(start, cur)
+	}
+	if len(f.lines) == 0 {
+		return []string{""} // whitespace only: an empty row, not a disappearance
+	}
+	return f.lines
 }
 
 func f266(px float64) fixed.Int26_6 {

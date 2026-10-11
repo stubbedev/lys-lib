@@ -146,6 +146,44 @@ type WrapOptions struct {
 	Hyphens        HyphensMode
 	Anywhere       bool
 	PreserveSpaces bool
+	// BreakSpaces is white-space: break-spaces: preserved spaces take
+	// their advance at a row's end instead of hanging past it, and a
+	// row may break after any one of them.
+	BreakSpaces bool
+	// BreakWords is overflow-wrap break-word and anywhere: a word that
+	// overflows a row on its own breaks between grapheme clusters.
+	BreakWords bool
+	// Indent narrows the text's first row by that many pixels
+	// (text-indent).
+	Indent float64
+}
+
+// CollapseWhiteSpace applies CSS white-space collapsing (CSS Text 3
+// §4.1.1) to a paragraph: tabs read as spaces, the spaces around a
+// newline go, each run of spaces collapses to one, and every line
+// loses its leading and trailing spaces. With newlines set the
+// newlines collapse too, each becoming a space before the runs
+// collapse (normal, nowrap); without it they stay (pre-line).
+func CollapseWhiteSpace(s string, newlines bool) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	space, lineStart := false, true
+	for _, r := range strings.ReplaceAll(s, "\r\n", "\n") {
+		switch {
+		case r == '\n' && !newlines:
+			b.WriteByte('\n')
+			space, lineStart = false, true
+		case r == ' ' || r == '\t' || r == '\n':
+			space = !lineStart
+		default:
+			if space {
+				b.WriteByte(' ')
+			}
+			b.WriteRune(r)
+			space, lineStart = false, false
+		}
+	}
+	return b.String()
 }
 
 // WrapTextOpts breaks text into lines of at most maxWidth pixels under
@@ -204,28 +242,85 @@ func skipRowSpaces(runes []rune, from int, o WrapOptions) int {
 	return from
 }
 
-// wrapGraphemes fills lines breaking at every grapheme cluster
+// rowFill is the greedy row filler over one hard line: the rows it
+// closed so far and the widths they fill, the first row narrower by
+// the text indent.
+type rowFill struct {
+	s            textShaper
+	runes        []rune
+	px           float64
+	o            WrapOptions
+	first, width float64
+	lines        []string
+}
+
+// rowWidth is the width the row being filled may take.
+func (f *rowFill) rowWidth() float64 {
+	if len(f.lines) == 0 {
+		return f.first
+	}
+	return f.width
+}
+
+// fits reports whether runes[a:b] fit the row being filled. Trailing
+// spaces hang (or collapse away) and never push a row over, except
+// under break-spaces, where they take their advance.
+func (f *rowFill) fits(a, b int) bool {
+	if !f.o.BreakSpaces {
+		for b > a && f.runes[b-1] == ' ' {
+			b--
+		}
+	}
+	return f.s.Shape(string(f.runes[a:b]), f.px).Advance() <= f.rowWidth()
+}
+
+// emit closes the row runes[a:b].
+func (f *rowFill) emit(a, b int) { f.lines = append(f.lines, rowText(f.runes, a, b, f.o)) }
+
+// splitWord breaks the overflowing run runes[start:end) between
+// grapheme clusters, each row taking as many clusters as fit and at
+// least one, and returns where the remainder that fits begins.
+func (f *rowFill) splitWord(start, end int) int {
+	for !f.fits(start, end) {
+		k := text.NextCluster(f.runes, start)
+		for k < end {
+			j := text.NextCluster(f.runes, k)
+			if !f.fits(start, j) {
+				break
+			}
+			k = j
+		}
+		if k >= end {
+			return start
+		}
+		f.emit(start, k)
+		start = k
+	}
+	return start
+}
+
+// graphemes fills the rows breaking at every grapheme cluster
 // boundary: word-break break-all and line-break anywhere.
-func wrapGraphemes(s textShaper, runes []rune, maxWidth, px float64, o WrapOptions) []string {
-	var lines []string
+func (f *rowFill) graphemes() []string {
+	runes := f.runes
 	start, end := 0, 0
 	for i := 0; i < len(runes); {
 		j := text.NextCluster(runes, i)
-		if end > start && s.Shape(string(runes[start:j]), px).Advance() > maxWidth {
-			lines = append(lines, rowText(runes, start, end, o))
-			start = skipRowSpaces(runes, end, o)
+		if end > start && !f.fits(start, j) {
+			f.emit(start, end)
+			start = skipRowSpaces(runes, end, f.o)
 			if start >= len(runes) {
-				return lines
+				return f.lines
 			}
 			i, end = start, start
 			continue
 		}
 		i, end = j, j
 	}
-	if end > start || len(lines) == 0 {
-		lines = append(lines, rowText(runes, start, end, o))
+	if end > start || len(f.lines) == 0 {
+		f.emit(start, end)
 	}
-	return lines
+	return f.lines
 }
 
 // keepAllOK reports whether the UAX #14 opportunity at rune index end

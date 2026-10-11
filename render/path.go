@@ -132,6 +132,63 @@ func (c *Canvas) FillPath(p *Path, col Color) {
 	}
 }
 
+// cubeSteps is how many chords Contains flattens a cubic into.
+const cubeSteps = 16
+
+// Contains reports whether the point (x, y), in logical pixels, lies
+// inside the path under the nonzero winding rule FillPath fills by,
+// every subpath closed. It allocates nothing.
+func (p *Path) Contains(x, y float64) bool {
+	wind := 0
+	var cur, start [2]float64
+	edge := func(a, b [2]float64) {
+		switch {
+		case a[1] <= y && b[1] > y && cross(a, b, x, y) > 0:
+			wind++
+		case a[1] > y && b[1] <= y && cross(a, b, x, y) < 0:
+			wind--
+		}
+	}
+	for _, op := range p.ops {
+		switch op.kind {
+		case pathMove:
+			edge(cur, start)
+			cur, start = op.pts[0], op.pts[0]
+		case pathLine:
+			edge(cur, op.pts[0])
+			cur = op.pts[0]
+		case pathCube:
+			for i := 1; i <= cubeSteps; i++ {
+				pt := cubicAt(cur, op.pts, float64(i)/cubeSteps)
+				edge(cur, pt)
+				cur = pt
+			}
+		case pathClose:
+			edge(cur, start)
+			cur = start
+		}
+	}
+	edge(cur, start)
+	return wind != 0
+}
+
+// cross is the z of (b-a)×(pt-a): positive when (x, y) lies left of
+// the edge a→b.
+func cross(a, b [2]float64, x, y float64) float64 {
+	return (b[0]-a[0])*(y-a[1]) - (x-a[0])*(b[1]-a[1])
+}
+
+// cubicAt is the cubic from p0 through the control points c[0], c[1]
+// to c[2] at parameter t.
+func cubicAt(p0 [2]float64, c [3][2]float64, t float64) [2]float64 {
+	u := 1 - t
+	a, b, d, e := u*u*u, 3*u*u*t, 3*u*t*t, t*t*t
+	return [2]float64{
+		a*p0[0] + b*c[0][0] + d*c[1][0] + e*c[2][0],
+		a*p0[1] + b*c[0][1] + d*c[1][1] + e*c[2][1],
+	}
+}
+
 // Offset returns p translated by (dx, dy).
 func (p *Path) Offset(dx, dy float64) *Path {
 	out := &Path{}

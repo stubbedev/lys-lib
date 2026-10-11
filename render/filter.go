@@ -421,7 +421,7 @@ func dropShadowRegion(l *Layer, region Rect, s *DropShadow) {
 				uint32(tint.R())*a/255<<16 |
 				uint32(tint.G())*a/255<<8 |
 				uint32(tint.B())*a/255)
-			l.cv.set(region.X+x, region.Y+y, shadow.over(l.cv.get(region.X+x, region.Y+y)))
+			l.cv.set(region.X+x, region.Y+y, l.cv.get(region.X+x, region.Y+y).over(shadow))
 		}
 	}
 }

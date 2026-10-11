@@ -144,6 +144,22 @@ func (g Gradient) mapping(b frect, scale float64) (gradientMap, bool) {
 	return m, m.length != 0
 }
 
+// LineLength is the length in logical pixels of g's gradient line over
+// the box r — what a stop's length position is measured along: a
+// linear gradient's corner-to-corner line, a radial one's ray (the
+// ending shape's horizontal radius); a conic gradient has none.
+func (g Gradient) LineLength(r Rect) float64 {
+	b := frect{float64(r.X), float64(r.Y), float64(r.X + r.W), float64(r.Y + r.H)}
+	m, ok := g.mapping(b, 1)
+	switch {
+	case !ok, g.Kind == GradientConic:
+		return 0
+	case g.Kind == GradientRadial:
+		return m.rx
+	}
+	return m.length
+}
+
 // at is the gradient position of the device point (px, py).
 func (m gradientMap) at(px, py float64) float64 {
 	switch m.kind {

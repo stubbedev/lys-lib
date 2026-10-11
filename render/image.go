@@ -2,6 +2,7 @@ package render
 
 import (
 	"image"
+	"math"
 
 	xdraw "golang.org/x/image/draw"
 )
@@ -16,12 +17,13 @@ const (
 	// transparent. The default.
 	ImageFit ImageScale = iota
 	// ImageCover scales the image until it fills the box completely,
-	// aspect ratio kept, cropping the overflow: the largest centered
-	// crop of the source with the box's aspect ratio, resampled to the
-	// full box.
+	// aspect ratio kept, cropping the overflow: the largest crop of the
+	// source with the box's aspect ratio, centered unless an ImagePos
+	// places it, resampled to the full box.
 	ImageCover
 	// ImageNone draws the image at its natural size, one source pixel
-	// per device pixel, centered in the box and clipped to it. Nothing
+	// per device pixel, placed in the box (centered by default) and
+	// clipped to it. Nothing
 	// is resampled, so the pixels stay exactly as decoded - at a 2x
 	// device scale an image covers half the logical size it would at
 	// 1x.
@@ -40,53 +42,111 @@ const (
 // the scaling arithmetic produces.
 func roundDiv(a, b int) int { return (a + b/2) / b }
 
-// ScaleRect resolves a scaling policy for a srcW x srcH image into a
-// boxW x boxH box. Both sizes are in the same units - widget.Image
-// feeds device pixels so the result stays crisp at fractional scales.
-// It returns the source rectangle to sample and the size to resample
-// it into; drawing that resample centered in the box is the whole
-// policy. An empty result means a zero-sized input.
-func ScaleRect(srcW, srcH, boxW, boxH int, s ImageScale) (src image.Rectangle, dstW, dstH int) {
+// ImagePos places an image's concrete object inside its box, CSS's
+// object-position: per axis the object's origin sits at X (or Y) of the
+// free space — the box less the object, negative where the object
+// overflows — plus OffX (or OffY) pixels, in the units of the box.
+type ImagePos struct {
+	X, Y       float64
+	OffX, OffY int
+}
+
+// ImageCentered is the default placement, 50% 50%.
+var ImageCentered = ImagePos{X: 0.5, Y: 0.5}
+
+// PlaceImage resolves a scaling policy for a srcW x srcH image into a
+// boxW x boxH box, the object placed by pos. Both sizes are in the same
+// units - widget.Image feeds device pixels so the result stays crisp at
+// fractional scales. It returns the source rectangle to sample and the
+// destination rect, relative to the box, to resample it into: the part
+// of the placed object the box shows. An empty result means a
+// zero-sized input or an object placed wholly outside the box.
+func PlaceImage(srcW, srcH, boxW, boxH int, s ImageScale, pos ImagePos) (src image.Rectangle, dst Rect) {
 	if srcW <= 0 || srcH <= 0 || boxW <= 0 || boxH <= 0 {
-		return image.Rectangle{}, 0, 0
+		return image.Rectangle{}, Rect{}
 	}
+	if s == ImageCover {
+		return placeCover(srcW, srcH, boxW, boxH, pos)
+	}
+	objW, objH := objectSize(srcW, srcH, boxW, boxH, s)
+	x0, x1, sx0, sx1, okX := placeAxis(srcW, objW, boxW, pos.X, pos.OffX)
+	y0, y1, sy0, sy1, okY := placeAxis(srcH, objH, boxH, pos.Y, pos.OffY)
+	if !okX || !okY {
+		return image.Rectangle{}, Rect{}
+	}
+	return image.Rect(sx0, sy0, sx1, sy1), Rect{X: x0, Y: y0, W: x1 - x0, H: y1 - y0}
+}
+
+// objectSize is the concrete object size of every policy but cover.
+func objectSize(srcW, srcH, boxW, boxH int, s ImageScale) (w, h int) {
 	switch s {
-	case ImageCover:
-		// scale = max(boxW/srcW, boxH/srcH): the visible crop of the
-		// source is the box divided by the scale, centered. The branch
-		// decides which axis binds; the other side's crop follows from
-		// the box ratio. The floor at 1 keeps extreme aspect ratios from
-		// rounding the crop away entirely.
-		cropW, cropH := srcW, srcH
-		if boxW*srcH >= boxH*srcW {
-			cropH = min(srcH, max(1, roundDiv(srcW*boxH, boxW)))
-		} else {
-			cropW = min(srcW, max(1, roundDiv(srcH*boxW, boxH)))
-		}
-		return image.Rect((srcW-cropW)/2, (srcH-cropH)/2, (srcW-cropW)/2+cropW, (srcH-cropH)/2+cropH), boxW, boxH
 	case ImageStretch:
-		return image.Rect(0, 0, srcW, srcH), boxW, boxH
+		return boxW, boxH
 	case ImageScaleDown:
 		if srcW <= boxW && srcH <= boxH {
-			return image.Rect(0, 0, srcW, srcH), srcW, srcH
+			return srcW, srcH
 		}
-		return ScaleRect(srcW, srcH, boxW, boxH, ImageFit)
+		return objectSize(srcW, srcH, boxW, boxH, ImageFit)
 	case ImageNone:
-		// No scaling: the box shows the centered natural-size pixels,
-		// clipped where the source is bigger than the box.
-		w, h := min(srcW, boxW), min(srcH, boxH)
-		x, y := (srcW-w)/2, (srcH-h)/2
-		return image.Rect(x, y, x+w, y+h), w, h
+		return srcW, srcH
 	default: // ImageFit
 		// scale = min(boxW/srcW, boxH/srcH), rounded; the rounding
 		// cannot push the result past the box because the real value
 		// lies strictly inside it on the non-binding axis. The floor at
 		// 1 keeps a thin source visible in a wide box.
 		if boxW*srcH < boxH*srcW {
-			return image.Rect(0, 0, srcW, srcH), boxW, min(boxH, max(1, roundDiv(srcH*boxW, srcW)))
+			return boxW, min(boxH, max(1, roundDiv(srcH*boxW, srcW)))
 		}
-		return image.Rect(0, 0, srcW, srcH), min(boxW, max(1, roundDiv(srcW*boxH, srcH))), boxH
+		return min(boxW, max(1, roundDiv(srcW*boxH, srcH))), boxH
 	}
+}
+
+// placeAxis places an obj-long object over a box-long axis at frac of
+// the free space plus off, and returns the box span it shows, [d0, d1),
+// with the source span of a src-long source it samples, [s0, s1); ok
+// is false when nothing shows. The origin truncates toward zero, so a
+// centered overflow crops the source's floor half.
+func placeAxis(src, obj, box int, frac float64, off int) (d0, d1, s0, s1 int, ok bool) {
+	o := int(frac*float64(box-obj)) + off
+	d0, d1 = max(o, 0), min(o+obj, box)
+	if d1 <= d0 {
+		return 0, 0, 0, 0, false
+	}
+	return d0, d1, (d0 - o) * src / obj, (d1 - o) * src / obj, true
+}
+
+// placeCover is PlaceImage's cover policy, worked in source pixels: the
+// visible crop of the source is the box divided by the scale
+// max(boxW/srcW, boxH/srcH). The branch decides which axis binds; the
+// other side's crop follows from the box ratio, and the floor at 1
+// keeps extreme aspect ratios from rounding the crop away entirely.
+// The position moves the crop across the source's slack, an offset
+// scaled into source pixels.
+func placeCover(srcW, srcH, boxW, boxH int, pos ImagePos) (image.Rectangle, Rect) {
+	cropW, cropH := srcW, srcH
+	if boxW*srcH >= boxH*srcW {
+		cropH = min(srcH, max(1, roundDiv(srcW*boxH, boxW)))
+	} else {
+		cropW = min(srcW, max(1, roundDiv(srcH*boxW, boxH)))
+	}
+	x0, x1, sx0, sx1, okX := coverAxis(srcW, cropW, boxW, pos.X, pos.OffX)
+	y0, y1, sy0, sy1, okY := coverAxis(srcH, cropH, boxH, pos.Y, pos.OffY)
+	if !okX || !okY {
+		return image.Rectangle{}, Rect{}
+	}
+	return image.Rect(sx0, sy0, sx1, sy1), Rect{X: x0, Y: y0, W: x1 - x0, H: y1 - y0}
+}
+
+// coverAxis places a crop-long source window over a src-long source
+// at frac of the slack, shifted against off box pixels, and returns
+// the box span it fills, [d0, d1), with the source span it samples.
+func coverAxis(src, crop, box int, frac float64, off int) (d0, d1, s0, s1 int, ok bool) {
+	c := int(frac*float64(src-crop)) - int(math.Round(float64(off*crop)/float64(box)))
+	s0, s1 = max(c, 0), min(c+crop, src)
+	if s1 <= s0 {
+		return 0, 0, 0, 0, false
+	}
+	return (s0 - c) * box / crop, (s1 - c) * box / crop, s0, s1, true
 }
 
 // Resample scales srcRect of src into a fresh dstW x dstH RGBA with the

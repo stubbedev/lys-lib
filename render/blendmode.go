@@ -78,15 +78,21 @@ func blendChannel(m BlendMode, cs, cb float64) float64 {
 	case BlendLighten:
 		return max(cs, cb)
 	case BlendColorDodge:
-		if cb == 0 {
+		switch {
+		case cb == 0:
 			return 0
-		}
-		return min(1, cs/(1-cb))
-	case BlendColorBurn:
-		if cb == 1 {
+		case cs == 1:
 			return 1
 		}
-		return 1 - min(1, (1-cs)/cb)
+		return min(1, cb/(1-cs))
+	case BlendColorBurn:
+		switch {
+		case cb == 1:
+			return 1
+		case cs == 0:
+			return 0
+		}
+		return 1 - min(1, (1-cb)/cs)
 	case BlendHardLight:
 		if cs <= 0.5 {
 			return blendChannel(BlendMultiply, cb, 2*cs)
