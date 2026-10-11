@@ -96,6 +96,13 @@ type Typeface struct {
 	// cluster; spaced memoizes the Spaced variants.
 	letter float64
 	spaced map[float64]*Typeface
+	// word is the word spacing (px) shaping adds after every word
+	// separator; worded memoizes the WordSpaced variants.
+	word   float64
+	worded map[float64]*Typeface
+	// featured memoizes the WithFeatureSpec twins, keyed by the
+	// canonical feature list the variant came from.
+	featured map[string]*Typeface
 
 	// metrics memoizes Metrics; metricsRead marks it computed.
 	metrics     FaceMetrics
@@ -147,7 +154,7 @@ func (t *Typeface) Spaced(px float64) *Typeface {
 		return v
 	}
 	c := *t
-	c.letter, c.tabular, c.spaced = px, nil, nil
+	c.letter, c.tabular, c.spaced, c.worded, c.featured = px, nil, nil, nil, nil
 	if t.spaced == nil {
 		t.spaced = map[float64]*Typeface{}
 	}
@@ -292,11 +299,11 @@ func (t *Typeface) ShapeDirRunes(rs []rune, px float64, d text.Direction) *Shape
 // shapeUncached does the actual shaping work, bypassing the cache.
 func (t *Typeface) shapeUncached(s string, px float64, d text.Direction) *ShapedText {
 	if s == "" {
-		return newShapedText(s, px, text.RTL(s, d), []shapedRun{t.shapeRun(s, px, 0, false, t.letter)})
+		return newShapedText(s, px, text.RTL(s, d), []shapedRun{t.shapeRun(s, px, 0, false, t.letter, t.word)})
 	}
 	var runs []shapedRun
 	bidiPieces(s, d, func(piece string, start int, rtl bool) {
-		runs = append(runs, t.shapeRun(piece, px, start, rtl, t.letter))
+		runs = append(runs, t.shapeRun(piece, px, start, rtl, t.letter, t.word))
 	})
 	return newShapedText(s, px, text.RTL(s, d), runs)
 }
@@ -323,8 +330,9 @@ func newShapedText(text string, px float64, rtl bool, runs []shapedRun) *ShapedT
 
 // shapeRun shapes text as one run positioned at rune indexes
 // [start, end) of the line, shaped right to left when rtl, with letter
-// px of spacing added after every cluster.
-func (t *Typeface) shapeRun(text string, px float64, start int, rtl bool, letter float64) shapedRun {
+// px of spacing added after every cluster and word px after every
+// word separator.
+func (t *Typeface) shapeRun(text string, px float64, start int, rtl bool, letter, word float64) shapedRun {
 	runes := []rune(text)
 	dir := di.DirectionLTR
 	if rtl {
@@ -341,6 +349,9 @@ func (t *Typeface) shapeRun(text string, px float64, start int, rtl bool, letter
 	})
 	if letter != 0 {
 		addLetterSpacing(&run, f266(letter))
+	}
+	if word != 0 {
+		addWordSpacing(&run, runes, f266(word))
 	}
 	return shapedRun{face: t, out: run, start: start, end: start + len(runes), rtl: rtl}
 }
@@ -854,7 +865,7 @@ func EllipsizeText(f Font, text string, mode EllipsizeMode, maxWidth, px float64
 // WrapText breaks text into lines of at most maxWidth pixels; see Wrap.
 // Package-level so any Font wraps through the same code path.
 func WrapText(f Font, text string, maxWidth, px float64) []string {
-	return wrapLines(f, text, maxWidth, px)
+	return wrapLines(f, text, maxWidth, px, wrapOptions)
 }
 
 // Ellipsize shortens text to fit maxWidth, replacing the cut remainder
@@ -950,8 +961,12 @@ type Chain struct {
 	picks   map[rune]*Typeface
 	// tabular shapes every run through its face's tnum twin.
 	tabular bool
-	// letter is the letter spacing (px) every run shapes with.
-	letter float64
+	// letter is the letter spacing (px) every run shapes with, word
+	// the word spacing (px), and features the canonical OpenType
+	// feature list every run shapes under.
+	letter   float64
+	word     float64
+	features string
 	// variants memoizes the derived chains (Tabular, WithVariations)
 	// by kind, so a style pass asking again gets the same chain - the
 	// identity the shaping cache and restyle comparisons key on.
@@ -1045,6 +1060,9 @@ func (c *Chain) faceFor(r rune) *Typeface {
 	if c.tabular {
 		f = f.Tabular()
 	}
+	if c.features != "" {
+		f = f.WithFeatureSpec(c.features)
+	}
 	c.picks[r] = f
 	return f
 }
@@ -1092,7 +1110,7 @@ func (c *Chain) ShapeDirRunes(rs []rune, px float64, d text.Direction) *ShapedTe
 // own embedding direction.
 func (c *Chain) shapeUncached(s string, px float64, d text.Direction) *ShapedText {
 	if s == "" {
-		return newShapedText(s, px, text.RTL(s, d), []shapedRun{c.primary.shapeRun(s, px, 0, false, c.letter)})
+		return newShapedText(s, px, text.RTL(s, d), []shapedRun{c.primary.shapeRun(s, px, 0, false, c.letter, c.word)})
 	}
 	var runs []shapedRun
 	bidiPieces(s, d, func(piece string, start int, rtl bool) {
@@ -1103,7 +1121,7 @@ func (c *Chain) shapeUncached(s string, px float64, d text.Direction) *ShapedTex
 			for j < len(runes) && c.faceFor(runes[j]) == f {
 				j++
 			}
-			runs = append(runs, f.shapeRun(string(runes[i:j]), px, start+i, rtl, c.letter))
+			runs = append(runs, f.shapeRun(string(runes[i:j]), px, start+i, rtl, c.letter, c.word))
 			i = j
 		}
 	})
@@ -1130,7 +1148,7 @@ func (c *Chain) DrawAlignedDir(cv *Canvas, s string, box Rect, px float64, col C
 // Wrap breaks text into lines of at most maxWidth pixels; see
 // Typeface.Wrap.
 func (c *Chain) Wrap(text string, maxWidth, px float64) []string {
-	return wrapLines(c, text, maxWidth, px)
+	return wrapLines(c, text, maxWidth, px, wrapOptions)
 }
 
 // Ellipsize shortens text to fit maxWidth; see Typeface.Ellipsize.
@@ -1139,55 +1157,62 @@ func (c *Chain) Ellipsize(text string, maxWidth, px float64) string {
 }
 
 // wrapLines is the shaper-agnostic body of Wrap: hard newlines split
-// unconditionally, and each hard line fills greedily along its
-// UAX #14 break opportunities (see wrapSoft).
-func wrapLines(s textShaper, text string, maxWidth, px float64) []string {
-	if text == "" {
+// unconditionally, and each hard line fills greedily along its break
+// opportunities (see wrapSoft) under the wrap options.
+func wrapLines(s textShaper, txt string, maxWidth, px float64, o WrapOptions) []string {
+	if txt == "" {
 		return []string{""}
 	}
+	txt = hyphenPrep(txt, o.Hyphens)
 	var lines []string
-	for hard := range strings.SplitSeq(text, "\n") {
-		lines = append(lines, wrapSoft(s, strings.TrimSuffix(hard, "\r"), maxWidth, px)...)
+	for hard := range strings.SplitSeq(txt, "\n") {
+		for _, ln := range wrapSoft(s, strings.TrimSuffix(hard, "\r"), maxWidth, px, o) {
+			lines = append(lines, hyphenRow(ln, o.Hyphens))
+		}
 	}
 	return lines
 }
 
-// wrapSoft greedily fills one hard line - no newlines - along the
-// UAX #14 break opportunities the typesetting segmenter computes. Each
+// wrapSoft greedily fills one hard line - no newlines - along its
+// break opportunities. The default computes the UAX #14 opportunities
+// the typesetting segmenter yields; the options trade them: break-all
+// and anywhere break at every grapheme cluster, keep-all keeps only
+// the space and hyphen opportunities (CJK runs stay whole), and
+// preserved spaces ride the rows instead of being collapsed. Each
 // opportunity ends a candidate line; the first one that overflows
 // closes the line before its segment, so a run with no opportunity
 // before the width - an unbreakable token - is accepted whole and
-// overflows rather than disappearing. Spaces ride at the end of the
-// segment before a break, so closing a line trims them, and a
-// continuation line never starts with the space that caused it.
-func wrapSoft(s textShaper, line string, maxWidth, px float64) []string {
+// overflows rather than disappearing.
+func wrapSoft(s textShaper, line string, maxWidth, px float64, o WrapOptions) []string {
 	runes := []rune(line)
 	if len(runes) == 0 {
 		return []string{""}
+	}
+	if o.Break == WrapWordBreakAll || o.Anywhere {
+		return wrapGraphemes(s, runes, maxWidth, px, o)
 	}
 	var seg segmenter.Segmenter
 	if err := seg.InitWithString(line); err != nil {
 		return []string{line} // invalid UTF-8: one overflowing line, never a failure
 	}
-	skipSpaces := func(from int) int {
-		for from < len(runes) && runes[from] == ' ' {
-			from++
-		}
-		return from
-	}
+	skipSpaces := func(from int) int { return skipRowSpaces(runes, from, o) }
 	var lines []string
 	start, cur := skipSpaces(0), 0
 	for it := seg.LineIterator(); it.Next(); {
 		l := it.Line()
 		end := l.Offset + len(l.Text)
+		if o.Break == WrapWordKeepAll && !keepAllOK(runes, end) {
+			cur = end
+			continue
+		}
 		if cur > start && s.Shape(string(runes[start:end]), px).Advance() > maxWidth {
-			lines = append(lines, strings.TrimRight(string(runes[start:cur]), " "))
+			lines = append(lines, rowText(runes, start, cur, o))
 			start = skipSpaces(cur)
 		}
 		cur = end
 	}
 	if cur > start {
-		lines = append(lines, strings.TrimRight(string(runes[start:cur]), " "))
+		lines = append(lines, rowText(runes, start, cur, o))
 		return lines
 	}
 	return append(lines, "") // whitespace only: an empty row, not a disappearance
