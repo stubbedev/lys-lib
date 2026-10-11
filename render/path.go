@@ -131,3 +131,17 @@ func (c *Canvas) FillPath(p *Path, col Color) {
 		}
 	}
 }
+
+// Offset returns p translated by (dx, dy).
+func (p *Path) Offset(dx, dy float64) *Path {
+	out := &Path{}
+	for _, op := range p.ops {
+		n := op
+		for i := range n.pts {
+			n.pts[i][0] += dx
+			n.pts[i][1] += dy
+		}
+		out.ops = append(out.ops, n)
+	}
+	return out
+}

@@ -173,3 +173,21 @@ func (c *Canvas) drawRGBADevice(img *image.RGBA, x, y int, r image.Rectangle) {
 		}
 	}
 }
+
+// DrawImageRect blends img onto the canvas scaled into the logical
+// rect r: nearest-neighbor sampling, the mask-image rasterizer's own.
+func (c *Canvas) DrawImageRect(img image.Image, r Rect) {
+	b := img.Bounds()
+	dst := c.clip.Intersect(c.MapRect(r))
+	if dst.Empty() || b.Empty() {
+		return
+	}
+	for py := dst.Y; py < dst.Y+dst.H; py++ {
+		for px := dst.X; px < dst.X+dst.W; px++ {
+			sx := b.Min.X + (px-dst.X)*b.Dx()/dst.W
+			sy := b.Min.Y + (py-dst.Y)*b.Dy()/dst.H
+			sr, sg, sb, sa := img.At(sx, sy).RGBA()
+			c.blend(px, py, Color(sa>>8<<24|sr>>8<<16|sg>>8<<8|sb>>8))
+		}
+	}
+}
