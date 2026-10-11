@@ -10,7 +10,7 @@ font and nothing else, so glyph metrics and pixel output are byte-stable
 on any machine, with or without fonts installed.
 
 - Source: https://github.com/google/fonts/tree/main/ofl/cantarell
-  (Cantarell Regular, downloaded 2026-09-27)
+  (Cantarell Regular)
 - SHA-256: `840a255779258a2b24b5e3d1f32a821ed641fdd5ef1e47c4dc180064db9ccfa1`
 - License: SIL Open Font License 1.1 — see LICENSE-Cantarell.txt, which
   ships alongside the font and must be kept with it. The license permits
@@ -29,7 +29,7 @@ goldens shape through a fallback chain over the two — which is exactly
 the path mixed-direction labels take in production.
 
 - Source: https://github.com/notofonts/hebrew (Noto Sans Hebrew
-  Regular, downloaded 2026-09-28)
+  Regular)
 - SHA-256: `cdefaf8efd47045f6820928eba84db5bed7557539328952b5f828315485e02ee`
 - License: SIL Open Font License 1.1 — see LICENSE-NotoSansHebrew.txt,
   which ships alongside the font and must be kept with it.
@@ -44,7 +44,7 @@ spans 300-700, so the 300/400/700 instance goldens pin real outline
 variation, not synthesized weight.
 
 - Source: https://github.com/google/fonts/tree/main/ofl/quicksand
-  (Quicksand[wght].ttf, downloaded 2026-10-07)
+  (Quicksand[wght].ttf)
 - SHA-256: `39c9b64223561f56aaff6062a6f04063c4fc86809ad6768722c06614d977e1cc`
 - License: SIL Open Font License 1.1 — see LICENSE-Quicksand.txt,
   which ships alongside the font and must be kept with it.
@@ -57,8 +57,8 @@ The color-glyph fixtures, read from disk by render/colorglyph_test.go:
 
 - `twemoji_smiley-glyf_colr_1.ttf`, `twemoji_smiley-picosvg.ttf`,
   `twemoji_smiley-sbix.ttf`, `test_glyphs-glyf_colr_1.ttf` — test builds
-  from https://github.com/googlefonts/color-fonts (downloaded
-  2026-10-07; Apache License 2.0, LICENSE-color-fonts.txt). The smiley
+  from https://github.com/googlefonts/color-fonts (Apache License 2.0,
+  LICENSE-color-fonts.txt). The smiley
   builds are one Twemoji glyph set (artwork CC-BY 4.0, Twitter, Inc.
   and contributors) as COLRv1, OT-SVG and sbix, so the three paths
   render the same glyph side by side; test_glyphs exercises every
@@ -80,6 +80,6 @@ APNG fixtures are generated in the tests by the encoders themselves.
 
 ## golden/
 
-Committed PNG snapshots. A test fails when its golden is missing, so new
-widgets must land with snapshots; `UPDATE_GOLDEN=1 go test ./...`
-regenerates them.
+Committed PNG snapshots. A test fails when its golden is missing, so a
+new widget comes with its snapshots; `just goldens`
+(`UPDATE_GOLDEN=1 go test ./render ./widget`) regenerates them.
