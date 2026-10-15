@@ -71,7 +71,7 @@ func Dial(display string, opts Options) (*Device, error) {
 	if err != nil {
 		return fail(err)
 	}
-	v.ctx, _ = wl.GetUserData[wl.Context](reg)
+	v.ctx = reg.Context()
 	d.AddErrorHandler(v)
 	g := &listener{v: v}
 	wlclient.RegistryAddListener(reg, g)
