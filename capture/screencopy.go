@@ -19,6 +19,11 @@ type Options struct {
 	// Dst is reused for the frame's pixels when it is large enough,
 	// sparing the continuous-capture paths an allocation per frame.
 	Dst []byte
+	// AwaitDamage waits for the output to change before copying and
+	// reports what changed in Frame.Damage (copy_with_damage, screencopy
+	// v2+): what a continuous capture paces itself on. Without it the
+	// copy takes the next frame, so a static screen still captures.
+	AwaitDamage bool
 }
 
 // shmParams is one advertised wl_shm buffer layout.
@@ -132,7 +137,7 @@ func (c *Client) screencopy1(o Output, region *image.Rectangle, opts Options) (*
 	if err != nil {
 		return nil, err
 	}
-	if err := c.copyInto(frame, st, buf.wl); err != nil {
+	if err := c.copyIntoAs(frame, st, buf.wl, opts.AwaitDamage && c.scVersion >= 2); err != nil {
 		return nil, err
 	}
 	out := buf.frame(opts.Dst)
@@ -194,12 +199,6 @@ func (c *Client) awaitAdvertised(st *copyState) error {
 		return ErrFailed
 	}
 	return nil
-}
-
-// copyInto sends the copy into target and waits for the verdict.
-// copy_with_damage (v2+) is what makes the compositor report damage.
-func (c *Client) copyInto(frame *wlr.ZwlrScreencopyFrameV1, st *copyState, target *wl.Buffer) error {
-	return c.copyIntoAs(frame, st, target, c.scVersion >= 2)
 }
 
 // copyIntoAs is copyInto choosing the request: copy_with_damage waits

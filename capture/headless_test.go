@@ -79,6 +79,25 @@ func TestHeadlessOutputCapture(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
+	t.Run("a static screen captures again", func(t *testing.T) {
+		// Nothing on screen changes between these copies: a capture that
+		// waited for damage would never finish.
+		for i := range 3 {
+			done := make(chan error, 1)
+			go func() {
+				_, err := c.CaptureOutput(out, capture.Options{})
+				done <- err
+			}()
+			select {
+			case err := <-done:
+				if err != nil {
+					t.Fatalf("capture %d: %v", i, err)
+				}
+			case <-time.After(5 * time.Second):
+				t.Fatalf("capture %d of a static screen never finished", i)
+			}
+		}
+	})
 	t.Run("empty region is refused before the wire", func(t *testing.T) {
 		if _, err := c.CaptureOutputRegion(out, image.Rectangle{}, capture.Options{}); err == nil {
 			t.Fatal("empty region captured")
