@@ -82,6 +82,12 @@ type Typeface struct {
 	strikeRead bool
 	bitmaps    map[font.GID]bitmapGlyph
 
+	// familyName memoizes the face's family name once familyRead is
+	// set: Describe decodes the name table on every call, and the style
+	// pass asks for the family each time it resolves a weight or style.
+	familyName string
+	familyRead bool
+
 	// base is the default instance a variable-font instance was made
 	// from (nil on a default face), vars its settings, and inst the
 	// instance bookkeeping they share (variation.go).
@@ -198,7 +204,10 @@ func NewTypeface(face *font.Face) (*Typeface, error) {
 
 // Family returns the resolved face's family name.
 func (t *Typeface) Family() string {
-	return t.face.Describe().Family
+	if !t.familyRead {
+		t.familyName, t.familyRead = t.face.Describe().Family, true
+	}
+	return t.familyName
 }
 
 // Describe returns the face's font description: family, style, weight,
