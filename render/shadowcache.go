@@ -20,7 +20,7 @@ import (
 // sweep.
 const maxShadowBlur = 64
 
-// maxShadowCacheEntries and maxShadowCacheBytes bound the cache: a
+// maxShadowCacheEntries and maxShadowCacheBytes bound each cache: a
 // live desktop holds a handful of floating surfaces, so overflowing
 // means a resize storm or a stream of one-shot geometries. On
 // overflow the map resets and rebuilds - bounded, and a steady-state
@@ -30,9 +30,57 @@ const (
 	maxShadowCacheBytes   = 8 << 20
 )
 
-// shadowKey identifies one cached raster: the mapped device-pixel rect
-// size, the logical corner radius and blur, and the device scale they
-// were rasterized at.
+// covRaster is one cached coverage field: quantized coverage (0..255),
+// w x h, row-major. Its owner records where it sits relative to the
+// box it shades.
+type covRaster struct {
+	w, h int
+	cov  []uint8
+}
+
+// rasterCache memoizes coverage rasters by geometry. Canvases paint on
+// several goroutines (the application loop and a grabbed menu's nested
+// loop), so the map is lock-guarded. The counters are the paint-count
+// proof: a repaint of the same geometry must hit, not rebuild.
+type rasterCache[K comparable, V interface{ size() int }] struct {
+	mu           sync.Mutex
+	m            map[K]V
+	hits, misses int
+}
+
+// get returns k's raster, building it on first use.
+func (c *rasterCache[K, V]) get(k K, build func() V) V {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if v, ok := c.m[k]; ok {
+		c.hits++
+		return v
+	}
+	c.misses++
+	v := build()
+	total := v.size()
+	for _, cached := range c.m {
+		total += cached.size()
+	}
+	if c.m == nil || len(c.m) >= maxShadowCacheEntries || total > maxShadowCacheBytes {
+		c.m = map[K]V{}
+	}
+	c.m[k] = v
+	return v
+}
+
+// counts reads and resets the hit and miss counters.
+func (c *rasterCache[K, V]) counts() (hits, misses int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	hits, misses = c.hits, c.misses
+	c.hits, c.misses = 0, 0
+	return hits, misses
+}
+
+// shadowKey identifies one theme shadow raster: the mapped
+// device-pixel rect size, the logical corner radius and blur, and the
+// device scale they were rasterized at.
 type shadowKey struct {
 	w, h       int
 	radius     int
@@ -40,57 +88,26 @@ type shadowKey struct {
 	num, denom int
 }
 
-// shadowRaster is one cached coverage field. cov holds quantized
-// coverage (0..255) for the rect grown by inset device pixels on every
-// side, row-major from the box's top-left; inset is how far the box
-// edge sits from the rect edge, so callers index with
-// (x - (rect.X - inset), y - (rect.Y - inset)).
+// shadowRaster is a theme shadow's coverage field over the rect grown
+// by inset device pixels on every side, from the box's top-left minus
+// inset, so callers index with (x - (rect.X - inset), y - (rect.Y -
+// inset)).
 type shadowRaster struct {
-	w, h  int
+	covRaster
 	inset int
-	cov   []uint8
-}
-
-var (
-	shadowMu     sync.Mutex
-	shadowCache  = map[shadowKey]*shadowRaster{}
-	shadowHits   int
-	shadowMisses int
-)
-
-// shadowRasterFor returns the cached coverage raster for a shadow
-// around a devW x devH device-pixel rect at the given device scale,
-// building it on first use. Canvases paint on several goroutines (the
-// application loop and a grabbed menu's nested loop), so the map is
-// lock-guarded.
-func shadowRasterFor(w, h, radius, blur, num, denom int) *shadowRaster {
-	key := shadowKey{w: w, h: h, radius: radius, blur: blur, num: num, denom: denom}
-	shadowMu.Lock()
-	defer shadowMu.Unlock()
-	if ras := shadowCache[key]; ras != nil {
-		shadowHits++
-		return ras
-	}
-	shadowMisses++
-	ras := buildShadowRaster(w, h, radius, blur, num, denom)
-	if len(shadowCache) >= maxShadowCacheEntries || shadowCacheBytes()+ras.size() > maxShadowCacheBytes {
-		shadowCache = map[shadowKey]*shadowRaster{}
-	}
-	shadowCache[key] = ras
-	return ras
-}
-
-// shadowCacheBytes sums the cached rasters' size; the caller holds
-// shadowMu.
-func shadowCacheBytes() int {
-	total := 0
-	for _, ras := range shadowCache {
-		total += ras.size()
-	}
-	return total
 }
 
 func (r *shadowRaster) size() int { return len(r.cov) }
+
+var shadows rasterCache[shadowKey, *shadowRaster]
+
+// shadowRasterFor returns the cached coverage raster for a shadow
+// around a devW x devH device-pixel rect at the given device scale.
+func shadowRasterFor(w, h, radius, blur, num, denom int) *shadowRaster {
+	return shadows.get(shadowKey{w: w, h: h, radius: radius, blur: blur, num: num, denom: denom}, func() *shadowRaster {
+		return buildShadowRaster(w, h, radius, blur, num, denom)
+	})
+}
 
 // buildShadowRaster computes the coverage field once: the signed
 // distance to the (radius-rounded, device-space) rect, mapped through
@@ -103,10 +120,8 @@ func buildShadowRaster(w, h, radius, blur, num, denom int) *shadowRaster {
 	devRadius := max(0, min(divCeil(radius*num, denom), min(w, h)/2))
 	rect := Rect{X: inset, Y: inset, W: w, H: h}
 	ras := &shadowRaster{
-		w:     w + 2*inset,
-		h:     h + 2*inset,
-		inset: inset,
-		cov:   make([]uint8, (w+2*inset)*(h+2*inset)),
+		covRaster: covRaster{w: w + 2*inset, h: h + 2*inset, cov: make([]uint8, (w+2*inset)*(h+2*inset))},
+		inset:     inset,
 	}
 	tail, half := shadowTail(devBlur)
 	for y := range ras.h {

@@ -320,8 +320,62 @@ func (c *Canvas) BoxShadow(r Rect, radii Corners, s BoxShadow) {
 	if s.Color.A() == 0 || c.clip.Empty() {
 		return
 	}
-	box, rc := c.devBox(r, radii)
-	f := float64(c.num) / float64(c.denom)
+	dev := c.MapRect(r)
+	ras := boxShadows.get(boxShadowKey{
+		w: dev.W, h: dev.H, radii: radii,
+		x: s.X, y: s.Y, blur: s.Blur, spread: s.Spread, inset: s.Inset,
+		num: c.num, denom: c.denom,
+	}, func() *boxShadowRaster { return buildBoxShadow(dev.W, dev.H, radii, s, c.num, c.denom) })
+	ox, oy := dev.X+ras.x0, dev.Y+ras.y0
+	area := c.clip.Intersect(Rect{X: ox, Y: oy, W: ras.w, H: ras.h})
+	for y := area.Y; y < area.Y+area.H; y++ {
+		row := ras.cov[(y-oy)*ras.w:]
+		for x := area.X; x < area.X+area.W; x++ {
+			if q := uint32(row[x-ox]); q != 0 {
+				c.blend(x, y, coverageScale(s.Color, q))
+			}
+		}
+	}
+}
+
+// boxShadowKey identifies a CSS box-shadow's coverage: everything but
+// the color and the box's position, which the field does not depend on
+// (device boxes sit on whole pixels).
+type boxShadowKey struct {
+	w, h               int
+	radii              Corners
+	x, y, blur, spread int
+	inset              bool
+	num, denom         int
+}
+
+// boxShadowRaster is a box-shadow's coverage field over its span,
+// whose top-left sits at (x0, y0) from the box's.
+type boxShadowRaster struct {
+	covRaster
+	x0, y0 int
+}
+
+func (r *boxShadowRaster) size() int { return len(r.cov) }
+
+var boxShadows rasterCache[boxShadowKey, *boxShadowRaster]
+
+// buildBoxShadow rasterizes one shadow layer's coverage for a w x h
+// device box at the origin: an outer shadow is the box offset and
+// grown by the spread, blurred, and clipped to outside the box itself;
+// an inset shadow fills the box's inside except the offset,
+// spread-shrunk hole, blurred at the hole's edge. The blur is Gaussian
+// with sigma half the blur radius, evaluated per pixel from the
+// silhouette's signed distance.
+func buildBoxShadow(w, h int, radii Corners, s BoxShadow, num, denom int) *boxShadowRaster {
+	f := float64(num) / float64(denom)
+	box := frect{0, 0, float64(w), float64(h)}
+	rc := clampRadii(box, fcorners{
+		math.Max(0, float64(radii.TopLeft)*f),
+		math.Max(0, float64(radii.TopRight)*f),
+		math.Max(0, float64(radii.BottomRight)*f),
+		math.Max(0, float64(radii.BottomLeft)*f),
+	})
 	ox, oy := float64(s.X)*f, float64(s.Y)*f
 	spread := float64(s.Spread) * f
 	sigma := float64(s.Blur) * f / 2
@@ -352,55 +406,63 @@ func (c *Canvas) BoxShadow(r Rect, radii Corners, s BoxShadow) {
 		}
 		return 0.5 * math.Erfc(d/(sigma*math.Sqrt2))
 	}
+	reach := 3 * sigma
+	span := box
+	if !s.Inset {
+		sb, _ := shape(1)
+		span = frect{sb.x0 - reach, sb.y0 - reach, sb.x1 + reach, sb.y1 + reach}
+	}
+	x0, y0 := int(math.Floor(span.x0)), int(math.Floor(span.y0))
+	ras := &boxShadowRaster{x0: x0, y0: y0}
+	ras.w, ras.h = int(math.Ceil(span.x1))-x0, int(math.Ceil(span.y1))-y0
+	ras.cov = make([]uint8, max(0, ras.w*ras.h))
+	put := func(x, y int, cov float64) {
+		if cov > 0 {
+			ras.cov[(y-y0)*ras.w+(x-x0)] = uint8(math.Round(math.Min(cov, 1) * 255))
+		}
+	}
 	if !s.Inset {
 		sb, src := shape(1)
-		reach := 3 * sigma
-		sp := c.span(frect{sb.x0 - reach, sb.y0 - reach, sb.x1 + reach, sb.y1 + reach})
-		for y := sp.Y; y < sp.Y+sp.H; y++ {
+		for y := y0; y < y0+ras.h; y++ {
 			py := float64(y) + 0.5
 			// The box's own solid run is fully covered: no shadow there.
 			xa, xb, solid := solidRun(box, rc, py)
-			for x := sp.X; x < sp.X+sp.W; x++ {
+			for x := x0; x < x0+ras.w; x++ {
 				px := float64(x) + 0.5
 				if solid && px >= xa && px <= xb {
 					continue
 				}
-				outside := 1 - coverage(sdBox(px, py, box, rc))
-				if outside <= 0 {
-					continue
+				if outside := 1 - coverage(sdBox(px, py, box, rc)); outside > 0 {
+					put(x, y, blurCov(sdBox(px, py, sb, src))*outside)
 				}
-				c.blendCov(x, y, s.Color, blurCov(sdBox(px, py, sb, src))*outside)
 			}
 		}
-		return
+		return ras
 	}
 	hole, hrc := shape(-1)
 	// Deeper than the blur's 3-sigma reach inside the hole, the shadow
 	// rounds to nothing: the hole shrunk by the reach is skipped whole.
-	reach := 3 * sigma
 	deep := frect{hole.x0 + reach, hole.y0 + reach, hole.x1 - reach, hole.y1 - reach}
 	var drc fcorners
 	for i := range hrc {
 		drc[i] = math.Max(0, hrc[i]-reach)
 	}
 	deepOK := deep.x1 > deep.x0 && deep.y1 > deep.y0
-	sp := c.span(box)
-	for y := sp.Y; y < sp.Y+sp.H; y++ {
+	for y := y0; y < y0+ras.h; y++ {
 		py := float64(y) + 0.5
 		xa, xb, skip := solidRun(deep, drc, py)
 		skip = skip && deepOK
-		for x := sp.X; x < sp.X+sp.W; x++ {
+		for x := x0; x < x0+ras.w; x++ {
 			px := float64(x) + 0.5
 			if skip && px >= xa && px <= xb {
 				continue
 			}
-			inside := coverage(sdBox(px, py, box, rc))
-			if inside <= 0 {
-				continue
+			if inside := coverage(sdBox(px, py, box, rc)); inside > 0 {
+				put(x, y, (1-blurCov(sdBox(px, py, hole, hrc)))*inside)
 			}
-			c.blendCov(x, y, s.Color, (1-blurCov(sdBox(px, py, hole, hrc)))*inside)
 		}
 	}
+	return ras
 }
 
 // PushBrightness multiplies the color channels of everything painted

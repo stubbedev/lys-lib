@@ -129,23 +129,15 @@ func TestShadowUnderPushAlpha(t *testing.T) {
 }
 
 func TestShadowCacheReuse(t *testing.T) {
-	shadowMu.Lock()
-	shadowHits, shadowMisses = 0, 0
-	shadowMu.Unlock()
-	t.Cleanup(func() {
-		shadowMu.Lock()
-		shadowHits, shadowMisses = 0, 0
-		shadowMu.Unlock()
-	})
+	shadows.counts()
+	t.Cleanup(func() { shadows.counts() })
 
 	rect := Rect{X: 10, Y: 10, W: 20, H: 10}
 	cv1, d1 := newTestCanvas(60, 40)
 	cv1.Clear(cv1.Rect(), RGB(250, 250, 250))
 	cv1.Shadow(rect, 4, 6, RGB(0, 0, 0))
 
-	shadowMu.Lock()
-	misses, hits := shadowMisses, shadowHits
-	shadowMu.Unlock()
+	hits, misses := shadows.counts()
 	if misses != 1 || hits != 0 {
 		t.Fatalf("first paint: misses=%d hits=%d, want 1 miss, 0 hits", misses, hits)
 	}
@@ -157,9 +149,8 @@ func TestShadowCacheReuse(t *testing.T) {
 	cv2.Clear(cv2.Rect(), RGB(250, 250, 250))
 	cv2.Shadow(rect, 4, 6, RGB(0, 0, 0))
 
-	shadowMu.Lock()
-	misses, hits = shadowMisses, shadowHits
-	shadowMu.Unlock()
+	h, m := shadows.counts()
+	hits, misses = hits+h, misses+m
 	if misses != 1 || hits != 1 {
 		t.Errorf("second paint: misses=%d hits=%d, want the cached raster (1 miss, 1 hit)", misses, hits)
 	}
@@ -174,9 +165,8 @@ func TestShadowCacheReuse(t *testing.T) {
 	cv3, _ := newTestCanvas(60, 40)
 	cv3.Clear(cv3.Rect(), RGB(250, 250, 250))
 	cv3.Shadow(rect, 4, 6, RGB(255, 0, 0))
-	shadowMu.Lock()
-	misses, hits = shadowMisses, shadowHits
-	shadowMu.Unlock()
+	h, m = shadows.counts()
+	hits, misses = hits+h, misses+m
 	if misses != 1 || hits != 2 {
 		t.Errorf("recolored paint rebuilt the raster: misses=%d hits=%d, want 1 miss, 2 hits", misses, hits)
 	}
@@ -199,5 +189,29 @@ func TestShadowKernelBounded(t *testing.T) {
 	}
 	if got := pxAt(data, Stride(200), rect.X+rect.W+maxShadowBlur-1, 24); got.A() == 0 {
 		t.Error("no falloff at the clamp edge; the kernel was cut shorter than the cap")
+	}
+}
+
+// A CSS box-shadow's coverage depends on the box's size, radii, scale
+// and the shadow's geometry only: a repaint, moved or recolored, reuses
+// the raster and paints the same pixels relative to the box.
+func TestBoxShadowCacheReuse(t *testing.T) {
+	boxShadows.counts()
+	t.Cleanup(func() { boxShadows.counts() })
+	paint := func(at Rect, col Color) []byte {
+		cv, d := newTestCanvas(80, 60)
+		cv.Clear(cv.Rect(), RGB(250, 250, 250))
+		cv.BoxShadow(at, UniformCorners(6), BoxShadow{X: 2, Y: 3, Blur: 8, Spread: 1, Color: col})
+		return d
+	}
+	first := paint(Rect{X: 20, Y: 15, W: 30, H: 20}, RGBA(0, 0, 0, 160))
+	again := paint(Rect{X: 20, Y: 15, W: 30, H: 20}, RGBA(0, 0, 0, 160))
+	paint(Rect{X: 26, Y: 18, W: 30, H: 20}, RGBA(200, 0, 0, 160))
+	hits, misses := boxShadows.counts()
+	if misses != 1 || hits != 2 {
+		t.Errorf("misses=%d hits=%d, want one build reused by the repaint, the move and the recolor", misses, hits)
+	}
+	if !bytes.Equal(first, again) {
+		t.Error("the cached raster painted different pixels")
 	}
 }
