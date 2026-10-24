@@ -44,5 +44,9 @@ rotation or skew (lys-ui #190).
 
 ## Upstream status
 
-Each patch is offered upstream; once one is merged and released, the
-copy is rebased onto that release and the patch dropped.
+Each patch is offered upstream; once one is merged, the copy is
+rebased onto it and the patch dropped.
+
+- Strokes scale with the transform: srwiley/oksvg#54
+- Stroke defaults are SVG's: srwiley/oksvg#55
+- userSpaceOnUse gradients follow the transform: srwiley/oksvg#56
