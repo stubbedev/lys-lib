@@ -15,9 +15,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/srwiley/oksvg"
 	"github.com/srwiley/rasterx"
 	"golang.org/x/image/math/fixed"
+
+	"github.com/stubbedev/lys-ui/third_party/oksvg"
 )
 
 // svgDoc is an SVG document parsed for drawing: oksvg's paths and the
