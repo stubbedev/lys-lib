@@ -488,3 +488,54 @@ func brighten(col Color, f float64) Color {
 	ch := func(v uint8) uint32 { return uint32(math.Min(a, math.Round(float64(v)*f))) }
 	return Color(uint32(col.A())<<24 | ch(col.R())<<16 | ch(col.G())<<8 | ch(col.B()))
 }
+
+// RoundedRectRegion decomposes the rounded rect r into the rects a
+// rectangle-only region (a wl_region) can carry: per pixel row, the
+// pixels whose centers lie inside the shape, with consecutive rows of
+// the same span merged. Radii that overlap scale down together, per
+// CSS. A plain rect is one rect.
+func RoundedRectRegion(r Rect, radii Corners) []Rect {
+	if r.Empty() {
+		return nil
+	}
+	b := frect{float64(r.X), float64(r.Y), float64(r.X + r.W), float64(r.Y + r.H)}
+	rc := clampRadii(b, fcorners{
+		math.Max(0, float64(radii.TopLeft)), math.Max(0, float64(radii.TopRight)),
+		math.Max(0, float64(radii.BottomRight)), math.Max(0, float64(radii.BottomLeft)),
+	})
+	// inset is how far a corner of radius rad pulls the edge in at the
+	// row whose center sits dy into the corner's square.
+	inset := func(rad, dy float64) float64 {
+		d := rad - dy
+		return rad - math.Sqrt(math.Max(0, rad*rad-d*d))
+	}
+	var out []Rect
+	for y := r.Y; y < r.Y+r.H; y++ {
+		cy := float64(y) + 0.5
+		left, right := 0.0, 0.0
+		if dy := cy - b.y0; dy < rc[0] {
+			left = inset(rc[0], dy)
+		}
+		if dy := b.y1 - cy; dy < rc[3] {
+			left = math.Max(left, inset(rc[3], dy))
+		}
+		if dy := cy - b.y0; dy < rc[1] {
+			right = inset(rc[1], dy)
+		}
+		if dy := b.y1 - cy; dy < rc[2] {
+			right = math.Max(right, inset(rc[2], dy))
+		}
+		// A column is in when its center is: x + 0.5 >= x0 + left.
+		x0 := r.X + int(math.Ceil(left-0.5))
+		x1 := r.X + r.W - int(math.Ceil(right-0.5))
+		if x1 <= x0 {
+			continue
+		}
+		if n := len(out); n > 0 && out[n-1].X == x0 && out[n-1].X+out[n-1].W == x1 && out[n-1].Y+out[n-1].H == y {
+			out[n-1].H++
+			continue
+		}
+		out = append(out, Rect{X: x0, Y: y, W: x1 - x0, H: 1})
+	}
+	return out
+}

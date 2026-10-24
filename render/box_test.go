@@ -177,3 +177,30 @@ func TestInsetsShrinkGrow(t *testing.T) {
 		t.Errorf("over-shrink = %+v, want empty", got)
 	}
 }
+
+// A rounded rect's region rects cover exactly the pixels whose centers
+// the shape contains, merge rows of equal span, and stay one rect for
+// a plain rect (#196).
+func TestRoundedRectRegion(t *testing.T) {
+	if got := RoundedRectRegion(Rect{X: 3, Y: 4, W: 20, H: 10}, Corners{}); len(got) != 1 || got[0] != (Rect{X: 3, Y: 4, W: 20, H: 10}) {
+		t.Errorf("plain rect = %v, want the rect itself", got)
+	}
+	r, radii := Rect{X: 10, Y: 20, W: 60, H: 40}, Corners{TopLeft: 12, TopRight: 6, BottomRight: 0, BottomLeft: 20}
+	rects := RoundedRectRegion(r, radii)
+	b, rc := frect{10, 20, 70, 60}, fcorners{12, 6, 0, 20}
+	for y := r.Y; y < r.Y+r.H; y++ {
+		for x := r.X; x < r.X+r.W; x++ {
+			in := false
+			for _, q := range rects {
+				in = in || (x >= q.X && x < q.X+q.W && y >= q.Y && y < q.Y+q.H)
+			}
+			want := sdBox(float64(x)+0.5, float64(y)+0.5, b, rc) <= 0
+			if in != want {
+				t.Fatalf("pixel (%d,%d) in region %v, shape contains it %v", x, y, in, want)
+			}
+		}
+	}
+	if len(rects) > 2*(12+20)+1 {
+		t.Errorf("%d rects; rows of equal span must merge", len(rects))
+	}
+}
