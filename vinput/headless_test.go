@@ -1,6 +1,7 @@
 package vinput
 
 import (
+	"errors"
 	"os"
 	"testing"
 )
@@ -28,8 +29,9 @@ func TestDialArmsTheDevices(t *testing.T) {
 		"absolute": d.MotionAbsolute(10, 10, 100, 100),
 		"button":   d.Button(0x110, true),
 		"release":  d.Button(0x110, false),
-		"axis":     d.Axis(0, 15),
-		"discrete": d.AxisDiscrete(1, 15, 1),
+		"axis":     d.Axis(SourceFinger, AxisVertical, 15),
+		"stop":     d.AxisStop(SourceFinger, AxisVertical),
+		"discrete": d.AxisDiscrete(SourceWheel, AxisHorizontal, 15, 1),
 		"key":      d.Key(30, true),
 		"key up":   d.Key(30, false),
 		"mods":     d.Modifiers(0, 0, 0, 0),
@@ -50,6 +52,23 @@ func TestDialArmsTheDevices(t *testing.T) {
 	if p.Keymap() != nil || p.Key(30, true) == nil {
 		t.Error("a pointer-only device has a keyboard")
 	}
+}
+
+// A closed device refuses pointer requests instead of writing to the
+// gone connection.
+func TestClosedDeviceRefusesInput(t *testing.T) {
+	if os.Getenv("LYS_UI_HEADLESS") == "" {
+		t.Skip("LYS_UI_HEADLESS is not set; vinput tests run under just check-headless")
+	}
+	d, err := Dial("", Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.Close()
+	if err := d.AxisStop(SourceFinger, AxisVertical); !errors.Is(err, errClosed) {
+		t.Errorf("AxisStop on a closed device = %v, want errClosed", err)
+	}
+	d.Close()
 }
 
 func TestDialWithoutACompositor(t *testing.T) {

@@ -189,14 +189,49 @@ func (v *Device) OutputSize() (width, height int32) {
 
 func (v *Device) now() uint32 { return uint32(time.Since(v.start).Milliseconds()) }
 
-// pointer runs one pointer request and ends the frame.
-func (v *Device) pointer(req func() error) error {
+// ScrollAxis is a wl_pointer axis.
+type ScrollAxis uint32
+
+// The scroll axes.
+const (
+	AxisVertical   ScrollAxis = 0
+	AxisHorizontal ScrollAxis = 1
+)
+
+// AxisSource is what a scroll comes from (wl_pointer.axis_source): a
+// finger scroll lets clients scroll kinetically, a wheel clicks.
+type AxisSource uint32
+
+// The axis sources, wl_pointer's values.
+const (
+	SourceWheel      AxisSource = 0
+	SourceFinger     AxisSource = 1
+	SourceContinuous AxisSource = 2
+	SourceWheelTilt  AxisSource = 3
+)
+
+// errClosed is a request on a closed device.
+var errClosed = errors.New("vinput: device closed")
+
+// pointer runs one frame's pointer requests and ends the frame.
+func (v *Device) pointer(reqs ...func() error) error {
 	v.mu.Lock()
 	defer v.mu.Unlock()
-	if err := req(); err != nil {
-		return err
+	if v.vp == nil {
+		return errClosed
+	}
+	for _, req := range reqs {
+		if err := req(); err != nil {
+			return err
+		}
 	}
 	return v.vp.Frame()
+}
+
+// source declares a frame's axis source, first in the frame as the
+// protocol asks.
+func (v *Device) source(src AxisSource) func() error {
+	return func() error { return v.vp.AxisSource(uint32(src)) }
 }
 
 // Motion moves the pointer by (dx, dy).
@@ -215,16 +250,26 @@ func (v *Device) Button(code uint32, pressed bool) error {
 	return v.pointer(func() error { return v.vp.Button(v.now(), code, btoi(pressed)) })
 }
 
-// Axis scrolls: axis 0 vertical, 1 horizontal, value in wl_pointer
-// axis units.
-func (v *Device) Axis(axis uint32, value float64) error {
-	return v.pointer(func() error { return v.vp.Axis(v.now(), axis, float32(value)) })
+// Axis scrolls axis by value, in wl_pointer axis units, from src: one
+// frame carrying the source and the motion.
+func (v *Device) Axis(src AxisSource, axis ScrollAxis, value float64) error {
+	return v.pointer(v.source(src), func() error { return v.vp.Axis(v.now(), uint32(axis), float32(value)) })
 }
 
 // AxisDiscrete scrolls whole steps (a wheel), value the axis units
-// they amount to.
-func (v *Device) AxisDiscrete(axis uint32, value float64, steps int32) error {
-	return v.pointer(func() error { return v.vp.AxisDiscrete(v.now(), axis, float32(value), steps) })
+// they amount to, from src.
+func (v *Device) AxisDiscrete(src AxisSource, axis ScrollAxis, value float64, steps int32) error {
+	return v.pointer(v.source(src), func() error {
+		return v.vp.AxisDiscrete(v.now(), uint32(axis), float32(value), steps)
+	})
+}
+
+// AxisStop ends a scroll sequence from src on axis
+// (wl_pointer.axis_stop), the source and the stop in one frame as a
+// touchpad sends them: the fingers lifted, and a client may start its
+// kinetic glide.
+func (v *Device) AxisStop(src AxisSource, axis ScrollAxis) error {
+	return v.pointer(v.source(src), func() error { return v.vp.AxisStop(v.now(), uint32(axis)) })
 }
 
 // Key presses or releases an evdev key code.
@@ -278,16 +323,18 @@ func (v *Device) roundtrip() error {
 func (v *Device) Close() {
 	v.mu.Lock()
 	defer v.mu.Unlock()
+	if v.vp == nil {
+		return
+	}
 	if v.vk != nil {
 		_ = v.vk.Destroy()
 	}
-	if v.vp != nil {
-		_ = v.vp.Destroy()
-	}
+	_ = v.vp.Destroy()
 	if v.vpMgr != nil {
 		_ = v.vpMgr.Destroy()
 	}
 	_ = v.d.Context().Close()
+	v.vp, v.vk = nil, nil
 }
 
 // HandleDisplayError implements wl.DisplayErrorHandler: the
