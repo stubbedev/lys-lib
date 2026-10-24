@@ -119,10 +119,9 @@ func buildShadowRaster(w, h, radius, blur, num, denom int) *shadowRaster {
 	inset := devBlur + 1
 	devRadius := max(0, min(divCeil(radius*num, denom), min(w, h)/2))
 	rect := Rect{X: inset, Y: inset, W: w, H: h}
-	ras := &shadowRaster{
-		covRaster: covRaster{w: w + 2*inset, h: h + 2*inset, cov: make([]uint8, (w+2*inset)*(h+2*inset))},
-		inset:     inset,
-	}
+	ras := &shadowRaster{inset: inset}
+	ras.w, ras.h = w+2*inset, h+2*inset
+	ras.cov = make([]uint8, ras.w*ras.h)
 	tail, half := shadowTail(devBlur)
 	for y := range ras.h {
 		for x := range ras.w {
