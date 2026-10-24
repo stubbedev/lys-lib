@@ -15,7 +15,15 @@ lys-ui.
 
 ## Patches
 
-None yet; the copy is verbatim.
+### Strokes scale with the transform
+
+`svg_path.go`, `SvgPath.DrawTransformed`: upstream hands the dasher
+`stroke-width`, `stroke-dasharray` and `stroke-dashoffset` as device
+pixels while the path itself goes through the full transform (viewBox
+fit and element transforms), so a stroke kept its user-unit width at
+any icon size. The patch scales all three by the transform's area
+scale, sqrt(|det|), exact for uniform scales and rotations (lys-ui
+#189).
 
 ## Upstream status
 
