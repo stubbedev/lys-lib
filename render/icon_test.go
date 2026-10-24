@@ -4,11 +4,17 @@ import (
 	"bytes"
 	"image"
 	"image/color"
+	"image/draw"
 	"image/png"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/srwiley/rasterx"
 	"golang.org/x/image/math/fixed"
+
+	"github.com/stubbedev/lys-ui/internal/golden"
 )
 
 const testCircleSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">
@@ -433,5 +439,93 @@ func TestLoadSVGTransforms(t *testing.T) {
 				t.Errorf("%s draws differently from %s", tc.transformed, tc.applied)
 			}
 		})
+	}
+}
+
+// LoadSVG agrees with rsvg-convert: every testdata/svgref/*.svg,
+// rendered at its reference's size, matches the reference PNG (`just
+// svg-refs`) up to anti-aliasing. The set pins rect corner radii (one
+// radius standing for both, clamping) and clip-path (user space and
+// bounding-box units, groups, transforms, clip-rule, intersections, a
+// forward reference) - all of which oksvg alone ignored (#186).
+func TestLoadSVGMatchesReference(t *testing.T) {
+	svgs, err := filepath.Glob("testdata/svgref/*.svg")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(svgs) == 0 {
+		t.Fatal("no SVG references in testdata/svgref")
+	}
+	for _, svg := range svgs {
+		ref := strings.TrimSuffix(svg, ".svg") + ".png"
+		t.Run(filepath.Base(svg), func(t *testing.T) {
+			data, err := os.ReadFile(svg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			f, err := os.Open(ref)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := png.DecodeConfig(f)
+			if cerr := f.Close(); err == nil {
+				err = cerr
+			}
+			if err != nil {
+				t.Fatalf("read %s: %v", ref, err)
+			}
+			ic, err := LoadSVG(data, cfg.Width, cfg.Height)
+			if err != nil {
+				t.Fatal(err)
+			}
+			got := image.NewNRGBA(ic.img.Rect)
+			draw.Draw(got, got.Rect, ic.img, ic.img.Rect.Min, draw.Src)
+			golden.Reference(t, ref, got, golden.Tolerance{ChannelDiff: 40})
+		})
+	}
+}
+
+// A clip LoadSVG cannot apply is an error, never an unclipped icon.
+func TestLoadSVGClipErrors(t *testing.T) {
+	const rect = `<rect width='16' height='16' clip-path='url(#c)'/>`
+	for name, svg := range map[string]string{
+		"unknown reference":    `<svg viewBox='0 0 16 16'>` + rect + `</svg>`,
+		"not a url":            `<svg viewBox='0 0 16 16'><clipPath id='c'><rect width='8' height='8'/></clipPath><rect width='16' height='16' clip-path='inset(2px)'/></svg>`,
+		"clipped clipPath":     `<svg viewBox='0 0 16 16'><clipPath id='d'><rect width='8' height='8'/></clipPath><clipPath id='c' clip-path='url(#d)'><rect width='8' height='8'/></clipPath>` + rect + `</svg>`,
+		"clipped clip content": `<svg viewBox='0 0 16 16'><clipPath id='d'><rect width='8' height='8'/></clipPath><clipPath id='c'><rect width='8' height='8' clip-path='url(#d)'/></clipPath>` + rect + `</svg>`,
+		"unknown units":        `<svg viewBox='0 0 16 16'><clipPath id='c' clipPathUnits='strokeBox'><rect width='8' height='8'/></clipPath>` + rect + `</svg>`,
+		"percent box units":    `<svg viewBox='0 0 16 16'><clipPath id='c' clipPathUnits='objectBoundingBox'><rect width='50%' height='1'/></clipPath>` + rect + `</svg>`,
+		"used from defs": `<svg viewBox='0 0 16 16' xmlns:xlink='http://www.w3.org/1999/xlink'><clipPath id='c'><rect width='8' height='8'/></clipPath>` +
+			`<defs><rect id='r' width='16' height='16' clip-path='url(#c)'/></defs><use xlink:href='#r'/></svg>`,
+		"beside a use": `<svg viewBox='0 0 16 16' xmlns:xlink='http://www.w3.org/1999/xlink'><defs><path id='p' d='M0 0L1 0L1 1Z'/></defs>` +
+			`<clipPath id='c'><rect width='8' height='8'/></clipPath>` + rect + `<use xlink:href='#p'/></svg>`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := LoadSVG([]byte(svg), 16, 16); err == nil {
+				t.Error("loaded, want an error")
+			}
+		})
+	}
+}
+
+// A bounding-box clip on an element without area clips it away, and
+// the bounds of a curve are its extent, not its control polygon's.
+func TestSVGClipBounds(t *testing.T) {
+	ic, err := LoadSVG([]byte(`<svg viewBox='0 0 16 16'><clipPath id='c' clipPathUnits='objectBoundingBox'><rect width='1' height='1'/></clipPath>`+
+		`<line x1='0' y1='8' x2='16' y2='8' stroke='#000' stroke-width='4' clip-path='url(#c)'/></svg>`), 16, 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i := 3; i < len(ic.img.Pix); i += 4 {
+		if ic.img.Pix[i] != 0 {
+			t.Fatal("a zero-height bounding box let ink through")
+		}
+	}
+
+	b := svgBounds{m: rasterx.Identity, minX: 1e9, minY: 1e9, maxX: -1e9, maxY: -1e9}
+	b.Start(fixed.P(0, 0))
+	b.CubeBezier(fixed.P(0, 10), fixed.P(10, 10), fixed.P(10, 0))
+	if b.minX != 0 || b.minY != 0 || b.maxX != 10 || b.maxY != 7.5 {
+		t.Errorf("bounds = (%v,%v)-(%v,%v), want (0,0)-(10,7.5)", b.minX, b.minY, b.maxX, b.maxY)
 	}
 }

@@ -78,6 +78,20 @@ copied unmodified from golang.org/x/image v0.46.0's testdata (BSD,
 LICENSE-x-image.txt): the still-WebP decode fixtures. Animated GIF and
 APNG fixtures are generated in the tests by the encoders themselves.
 
+## svgref/
+
+SVG fixtures (`name.svg`), each beside its reference rasterisation
+(`name.png`) by rsvg-convert, the renderer `render.LoadSVG` is held to:
+`TestLoadSVGMatchesReference` renders every SVG at its PNG's size and
+compares premultiplied pixels within anti-aliasing tolerance
+(`golden.Reference`). The references are another renderer's output, so
+`UPDATE_GOLDEN=1` never rewrites them; `just svg-refs` regenerates them
+with the dev shell's rsvg-convert (librsvg 2.62.3 at the time of
+writing). Where rsvg-convert's own output departs from the spec (it
+clips a group's children one by one, so overlapping children bleed
+along the clip edge) the fixture avoids the case rather than encoding
+the departure.
+
 ## golden/
 
 Committed PNG snapshots. A test fails when its golden is missing, so a

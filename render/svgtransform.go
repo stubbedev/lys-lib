@@ -31,7 +31,7 @@ func parseSVGTransform(v string) (rasterx.Matrix2D, bool) {
 			return m, false
 		}
 		name := strings.TrimSpace(v[i : i+open])
-		args, ok := transformArgs(v[i+open+1 : i+open+end])
+		args, ok := svgNumbers(v[i+open+1 : i+open+end])
 		if !ok {
 			return m, false
 		}
@@ -68,9 +68,9 @@ func applyTransform(m rasterx.Matrix2D, name string, a []float64) (rasterx.Matri
 	return m, false
 }
 
-// transformArgs reads a transform function's comma or space separated
-// numbers.
-func transformArgs(s string) ([]float64, bool) {
+// svgNumbers reads a list of comma or space separated numbers: a
+// transform function's arguments, a polygon's points.
+func svgNumbers(s string) ([]float64, bool) {
 	var out []float64
 	i := 0
 	for {
@@ -111,7 +111,7 @@ var (
 // parser reads scale(s) as scale(s, 0), collapsing the shape; handed a
 // matrix, it composes exactly what parseSVGTransform reads, so the
 // document has one transform semantics. A list that does not parse is
-// left for oksvg to reject.
+// left as written, for layoutSVG to reject.
 func canonicalTransforms(data []byte) []byte {
 	data = rewriteAttr(data, transformAttr, func(v string) string {
 		if m, ok := parseSVGTransform(v); ok {

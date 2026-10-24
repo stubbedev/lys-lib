@@ -16,6 +16,10 @@
 //     Tolerance.ChannelDiff, and the test still passes when at most
 //     Tolerance.MaxMismatch pixels exceed that. Use it sparingly; every
 //     snapshot in the tree today is exact.
+//   - A reference (Reference) is an image another renderer produced,
+//     the independent truth a renderer is held to. Anti-aliasing never
+//     agrees byte for byte across renderers, so references compare
+//     within a Tolerance, and UPDATE_GOLDEN never rewrites them.
 //   - A test FAILS when its golden is missing. New widgets must land
 //     with their snapshots, otherwise the golden net has a hole nobody
 //     notices until it misses a real regression.
@@ -74,31 +78,56 @@ func Check(t TB, dir, name string, img *image.NRGBA, tol Tolerance) {
 		write(t, path, img)
 		return
 	}
-	raw, err := os.ReadFile(path) //nolint:gosec // the path is the package's testdata dir joined with the test's literal name
+	compare(t, "golden", path, img, tol, false,
+		"; a snapshot must land with the code it pins - run UPDATE_GOLDEN=1 go test ./... to generate it",
+		"\nregenerate with UPDATE_GOLDEN=1 go test ./... only after confirming the new output is correct")
+}
+
+// Reference compares img against the image at path that another
+// renderer produced, the independent truth img is held to. Unlike a
+// golden, UPDATE_GOLDEN never rewrites it: the code under test cannot
+// produce its own reference. Pixels compare premultiplied, since a
+// nearly transparent pixel's straight color is noise between
+// renderers.
+func Reference(t TB, path string, img *image.NRGBA, tol Tolerance) {
+	t.Helper()
+	compare(t, "reference", path, img, tol, true, "", "")
+}
+
+// compare is Check's and Reference's comparison; kind names the
+// expected image in failures, premultiplied compares premultiplied
+// pixels, and the hints follow the missing and mismatched reports.
+func compare(t TB, kind, path string, img *image.NRGBA, tol Tolerance, premultiplied bool, missingHint, mismatchHint string) {
+	t.Helper()
+	raw, err := os.ReadFile(path) //nolint:gosec // the path is the caller's testdata file
 	if errors.Is(err, fs.ErrNotExist) {
-		t.Fatalf("golden %s missing; a snapshot must land with the code it pins - run UPDATE_GOLDEN=1 go test ./... to generate it", path)
+		t.Fatalf("%s %s missing%s", kind, path, missingHint)
 	}
 	if err != nil {
-		t.Fatalf("read golden %s: %v", path, err)
+		t.Fatalf("read %s %s: %v", kind, path, err)
 	}
 	dec, err := png.Decode(bytes.NewReader(raw))
 	if err != nil {
-		t.Fatalf("decode golden %s: %v", path, err)
+		t.Fatalf("decode %s %s: %v", kind, path, err)
 	}
 	want := asNRGBA(dec)
 	if want.Rect != img.Rect {
-		t.Fatalf("golden %s is %dx%d, shot is %dx%d; the layout under it changed - regenerate and review",
-			path, want.Rect.Dx(), want.Rect.Dy(), img.Rect.Dx(), img.Rect.Dy())
+		t.Fatalf("%s %s is %dx%d, shot is %dx%d; the layout under it changed - regenerate and review",
+			kind, path, want.Rect.Dx(), want.Rect.Dy(), img.Rect.Dx(), img.Rect.Dy())
 	}
-	if bytes.Equal(want.Pix, img.Pix) {
+	wantPix, gotPix := want.Pix, img.Pix
+	if premultiplied {
+		wantPix, gotPix = premultiply(want), premultiply(img)
+	}
+	if bytes.Equal(wantPix, gotPix) {
 		return
 	}
-	mismatch, samples := mismatches(want, img, tol)
+	mismatch, samples := mismatches(wantPix, gotPix, want.Rect.Dx(), tol)
 	if mismatch <= tol.MaxMismatch {
 		return
 	}
-	t.Fatalf("golden %s mismatched: %d of %d pixels differ (tolerance %d/channel, %d allowed)%s\nregenerate with UPDATE_GOLDEN=1 go test ./... only after confirming the new output is correct",
-		path, mismatch, len(want.Pix)/4, tol.ChannelDiff, tol.MaxMismatch, strings.Join(samples, ""))
+	t.Fatalf("%s %s mismatched: %d of %d pixels differ (tolerance %d/channel, %d allowed)%s%s",
+		kind, path, mismatch, len(want.Pix)/4, tol.ChannelDiff, tol.MaxMismatch, strings.Join(samples, ""), mismatchHint)
 }
 
 // write encodes img to path, the UPDATE_GOLDEN=1 half of Check.
@@ -143,23 +172,36 @@ func asNRGBA(img image.Image) *image.NRGBA {
 	return out
 }
 
+// premultiply is img's pixels with each color channel scaled by its
+// alpha, rounded.
+func premultiply(img *image.NRGBA) []byte {
+	out := make([]byte, len(img.Pix))
+	for i := 0; i < len(img.Pix); i += 4 {
+		a := uint32(img.Pix[i+3])
+		for c := range 3 {
+			out[i+c] = uint8((uint32(img.Pix[i+c])*a + 127) / 255)
+		}
+		out[i+3] = img.Pix[i+3]
+	}
+	return out
+}
+
 // maxReported caps the per-pixel samples a failure prints.
 const maxReported = 5
 
 // mismatches counts the pixels outside tol and samples the first
 // few, enough to see what moved without opening an image editor.
-func mismatches(want, got *image.NRGBA, tol Tolerance) (mismatch int, samples []string) {
-	w := want.Rect.Dx()
-	for i := 0; i < len(want.Pix); i += 4 {
-		if pixelMatches(want.Pix[i:i+4], got.Pix[i:i+4], tol) {
+func mismatches(want, got []byte, w int, tol Tolerance) (mismatch int, samples []string) {
+	for i := 0; i < len(want); i += 4 {
+		if pixelMatches(want[i:i+4], got[i:i+4], tol) {
 			continue
 		}
 		if mismatch < maxReported {
 			x, y := (i/4)%w, (i/4)/w
-			samples = append(samples, fmt.Sprintf("\n  (%d,%d) golden R%d G%d B%d A%d, got R%d G%d B%d A%d",
+			samples = append(samples, fmt.Sprintf("\n  (%d,%d) want R%d G%d B%d A%d, got R%d G%d B%d A%d",
 				x, y,
-				want.Pix[i], want.Pix[i+1], want.Pix[i+2], want.Pix[i+3],
-				got.Pix[i], got.Pix[i+1], got.Pix[i+2], got.Pix[i+3]))
+				want[i], want[i+1], want[i+2], want[i+3],
+				got[i], got[i+1], got[i+2], got[i+3]))
 		}
 		mismatch++
 	}

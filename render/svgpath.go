@@ -271,6 +271,34 @@ func normalizePaths(data []byte) []byte {
 
 // normalizePathData is normalizePaths for one d value.
 func normalizePathData(d string) string {
+	out, ok := mapPathData(d, func(_ byte, _ int, num string) (string, bool) { return num, true })
+	if !ok {
+		return d // not path data we understand: leave it
+	}
+	return out
+}
+
+// scalePathData multiplies the coordinates and arc radii in d by k,
+// leaving arc rotations and flags. false for path data mapPathData
+// cannot read.
+func scalePathData(d string, k float64) (string, bool) {
+	return mapPathData(d, func(cmd byte, pos int, num string) (string, bool) {
+		if upper(cmd) == 'A' && pos >= 2 && pos <= 4 {
+			return num, true
+		}
+		v, err := strconv.ParseFloat(num, 64)
+		if err != nil {
+			return "", false
+		}
+		return strconv.FormatFloat(v*k, 'g', -1, 64), true
+	})
+}
+
+// mapPathData rewrites d into the explicit form, every command letter
+// written out and every number spaced, passing each number through f
+// with its command and parameter index. false for path data it cannot
+// read or f rejects.
+func mapPathData(d string, f func(cmd byte, pos int, num string) (string, bool)) (string, bool) {
 	var out strings.Builder
 	var cmd byte
 	pos := 0 // the current command's next parameter index
@@ -290,11 +318,11 @@ func normalizePathData(d string) string {
 			continue
 		}
 		if cmd == 0 {
-			return d // not path data we understand: leave it
+			return "", false
 		}
 		arity := pathArity[upper(cmd)]
 		if arity == 0 {
-			return d
+			return "", false
 		}
 		if n > 0 && pos == 0 {
 			// An implicit repeat: write the letter out (moveto continues
@@ -316,15 +344,19 @@ func normalizePathData(d string) string {
 		} else {
 			num, i = scanNumber(d, i)
 			if num == "" {
-				return d
+				return "", false
 			}
 		}
+		mapped, ok := f(cmd, pos, num)
+		if !ok {
+			return "", false
+		}
 		out.WriteByte(' ')
-		out.WriteString(num)
+		out.WriteString(mapped)
 		n++
 		pos = (pos + 1) % arity
 	}
-	return strings.TrimSpace(out.String())
+	return strings.TrimSpace(out.String()), true
 }
 
 // isSVGSep reports whether c separates numbers in SVG attribute

@@ -2,20 +2,15 @@ package render
 
 import (
 	"bytes"
-	"encoding/xml"
 	"errors"
 	"fmt"
 	"image"
 	"image/color"
 	"image/jpeg"
 	"image/png"
-	"io"
 	"math"
 	"regexp"
-	"strings"
 
-	"github.com/srwiley/oksvg"
-	"github.com/srwiley/rasterx"
 	xdraw "golang.org/x/image/draw"
 )
 
@@ -32,58 +27,32 @@ func LoadSVG(data []byte, w, h int) (*Icon, error) {
 	if w <= 0 || h <= 0 {
 		return nil, fmt.Errorf("render: invalid icon size %dx%d", w, h)
 	}
-	icon, err := parseSVG(data)
+	doc, err := parseSVG(data)
 	if err != nil {
 		return nil, err
 	}
-	if icon.ViewBox.W <= 0 || icon.ViewBox.H <= 0 {
+	vb := doc.icon.ViewBox
+	if vb.W <= 0 || vb.H <= 0 {
 		return nil, errors.New("render: svg has no usable viewBox (want w x h > 0)")
 	}
 
-	scale := math.Min(float64(w)/icon.ViewBox.W, float64(h)/icon.ViewBox.H)
-	fitW := icon.ViewBox.W * scale
-	fitH := icon.ViewBox.H * scale
+	scale := math.Min(float64(w)/vb.W, float64(h)/vb.H)
+	fitW := vb.W * scale
+	fitH := vb.H * scale
 	offX := (float64(w) - fitW) / 2
 	offY := (float64(h) - fitH) / 2
 
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
-	dasher := rasterx.NewDasher(w, h, newSVGScanner(w, h, img))
-	fitSVG(icon, offX, offY, fitW, fitH)
-	icon.Draw(dasher, 1.0)
+	doc.draw(img, fitViewBox(vb.X, vb.Y, vb.W, vb.H, offX, offY, fitW, fitH))
 	return &Icon{img: img}, nil
 }
 
-// parseSVG reads an SVG document through the shared preparation:
-// foreign attributes dropped, path data made explicit, fill rules
-// applied - for icons and SVG glyphs alike.
-func parseSVG(data []byte) (*oksvg.SvgIcon, error) {
-	icon, err := oksvg.ReadIconStream(bytes.NewReader(canonicalTransforms(normalizePaths(dropForeignAttrs(data)))), oksvg.StrictErrorMode)
-	if err != nil {
-		return nil, fmt.Errorf("render: parse svg: %w", err)
-	}
-	applyFillRules(icon, data)
-	return icon, nil
-}
-
-// rasterSVG draws icon's region (rx, ry, rw, rh in its user units)
+// rasterSVG draws doc's region (rx, ry, rw, rh in its user units)
 // into a w x h image.
-func rasterSVG(icon *oksvg.SvgIcon, rx, ry, rw, rh float64, w, h int) *image.RGBA {
-	icon.ViewBox.X, icon.ViewBox.Y, icon.ViewBox.W, icon.ViewBox.H = rx, ry, rw, rh
+func rasterSVG(doc *svgDoc, rx, ry, rw, rh float64, w, h int) *image.RGBA {
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
-	dasher := rasterx.NewDasher(w, h, newSVGScanner(w, h, img))
-	fitSVG(icon, 0, 0, float64(w), float64(h))
-	icon.Draw(dasher, 1.0)
+	doc.draw(img, fitViewBox(rx, ry, rw, rh, 0, 0, float64(w), float64(h)))
 	return img
-}
-
-// fitSVG maps icon's viewBox onto the target rect - oksvg's SetTarget
-// without its bug: SetTarget translates by the viewBox origin in user
-// units, unscaled, so any viewBox not starting at 0,0 ("0 -960 960
-// 960", a shared SVG glyph document's region) landed off target.
-func fitSVG(icon *oksvg.SvgIcon, x, y, w, h float64) {
-	vb := icon.ViewBox
-	sx, sy := w/vb.W, h/vb.H
-	icon.Transform = rasterx.Identity.Translate(x-vb.X*sx, y-vb.Y*sy).Scale(sx, sy)
 }
 
 // foreignAttr is an attribute in another vocabulary's namespace
@@ -105,95 +74,6 @@ func dropForeignAttrs(data []byte) []byte {
 		}
 		return nil
 	})
-}
-
-// svgShapes are the elements oksvg draws as one path each.
-var svgShapes = map[string]bool{
-	"path": true, "rect": true, "circle": true, "ellipse": true,
-	"polygon": true, "polyline": true, "line": true,
-}
-
-// applyFillRules sets the even-odd rule on the paths whose element
-// asks for it: oksvg parses no fill-rule, so a ring drawn as an outer
-// and an inner subpath (an icon frame) filled solid. The shapes are
-// matched to oksvg's paths in document order; a document whose shapes
-// do not line up one to one (a <use>, an empty shape) keeps the
-// nonzero rule throughout.
-func applyFillRules(icon *oksvg.SvgIcon, data []byte) {
-	rules, ok := evenOddShapes(data)
-	if !ok || len(rules) != len(icon.SVGPaths) {
-		return
-	}
-	for i, evenOdd := range rules {
-		if evenOdd {
-			icon.SVGPaths[i].UseNonZeroWinding = false
-		}
-	}
-}
-
-// evenOddShapes lists, in document order, whether each drawn shape
-// fills even-odd: its own fill-rule (attribute or style) or the one it
-// inherits. Shapes inside <defs> are not drawn; a <use> makes the
-// order unknowable (ok false).
-func evenOddShapes(data []byte) (rules []bool, ok bool) {
-	d := xml.NewDecoder(bytes.NewReader(data))
-	d.Strict = false
-	var stack []bool
-	defs := 0
-	for {
-		tok, err := d.Token()
-		if errors.Is(err, io.EOF) {
-			return rules, true
-		}
-		if err != nil {
-			return nil, false
-		}
-		switch t := tok.(type) {
-		case xml.StartElement:
-			rule := len(stack) > 0 && stack[len(stack)-1]
-			if r, set := fillRuleOf(t.Attr); set {
-				rule = r
-			}
-			stack = append(stack, rule)
-			switch name := t.Name.Local; {
-			case name == "use":
-				return nil, false
-			case name == "defs":
-				defs++
-			case defs == 0 && svgShapes[name]:
-				rules = append(rules, rule)
-			}
-		case xml.EndElement:
-			if len(stack) > 0 {
-				stack = stack[:len(stack)-1]
-			}
-			if t.Name.Local == "defs" {
-				defs--
-			}
-		}
-	}
-}
-
-// fillRuleOf reads an element's fill-rule: the style declaration wins
-// over the presentation attribute, as in CSS.
-func fillRuleOf(attrs []xml.Attr) (evenOdd, set bool) {
-	for _, a := range attrs {
-		if a.Name.Space == "" && a.Name.Local == "fill-rule" {
-			evenOdd, set = strings.TrimSpace(a.Value) == "evenodd", true
-		}
-	}
-	for _, a := range attrs {
-		if a.Name.Local != "style" {
-			continue
-		}
-		for decl := range strings.SplitSeq(a.Value, ";") {
-			k, v, found := strings.Cut(decl, ":")
-			if found && strings.TrimSpace(k) == "fill-rule" {
-				evenOdd, set = strings.TrimSpace(v) == "evenodd", true
-			}
-		}
-	}
-	return evenOdd, set
 }
 
 // LoadPNG decodes PNG icon data and scales it to w x h pixels.
