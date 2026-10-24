@@ -31,6 +31,17 @@ scale, sqrt(|det|), exact for uniform scales and rotations (lys-ui
 and `stroke-linejoin` to bevel; SVG's initial values are 1 and miter
 (lys-ui #191).
 
+### userSpaceOnUse gradients follow the transform
+
+`svg_path.go`, `SvgPath.DrawTransformed`: upstream builds gradient
+paints with rasterx's `GetColorFunction`, the identity transform, so a
+`gradientUnits="userSpaceOnUse"` gradient was placed at its user-space
+coordinates read as device pixels. The patch passes the path's full
+transform to `GetColorFunctionUS`. rasterx maps the gradient's
+geometry forward through it, which is exact for scales and
+translations (the viewBox fit) but not for a radial gradient under a
+rotation or skew (lys-ui #190).
+
 ## Upstream status
 
 Each patch is offered upstream; once one is merged and released, the
