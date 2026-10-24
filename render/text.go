@@ -347,6 +347,7 @@ func (t *Typeface) shapeRun(text string, px float64, start int, rtl bool, letter
 		Size:         f266(px),
 		FontFeatures: t.features,
 	})
+	scaleToSize(&run, px)
 	if letter != 0 {
 		addLetterSpacing(&run, f266(letter))
 	}
@@ -354,6 +355,35 @@ func (t *Typeface) shapeRun(text string, px float64, start int, rtl bool, letter
 		addWordSpacing(&run, runes, f266(word))
 	}
 	return shapedRun{face: t, out: run, start: start, end: start + len(runes), rtl: rtl}
+}
+
+// scaleToSize brings a run go-text shaped to the exact size px. The
+// shaper scales the font to the size rounded up to a whole pixel
+// (shaping.go: XScale = Size.Ceil() << scaleShift), so an 11.67px run
+// came back with 12px advances and line bounds: text a twelfth wider
+// and lines taller than the outlines drawn at 11.67px. Its scaling is
+// linear in the size (no hinting), so the run at px is the run at the
+// ceiling scaled by px / ceiling.
+func scaleToSize(run *shaping.Output, px float64) {
+	ceil := math.Ceil(px)
+	if ceil == px || ceil <= 0 {
+		return
+	}
+	f := px / ceil
+	sc := func(v fixed.Int26_6) fixed.Int26_6 { return fixed.Int26_6(math.Round(float64(v) * f)) }
+	for i := range run.Glyphs {
+		g := &run.Glyphs[i]
+		g.Advance = sc(g.Advance)
+		g.XOffset, g.YOffset = sc(g.XOffset), sc(g.YOffset)
+		g.Width, g.Height = sc(g.Width), sc(g.Height)
+		g.XBearing, g.YBearing = sc(g.XBearing), sc(g.YBearing)
+	}
+	run.LineBounds = shaping.Bounds{
+		Ascent:  sc(run.LineBounds.Ascent),
+		Descent: sc(run.LineBounds.Descent),
+		Gap:     sc(run.LineBounds.Gap),
+	}
+	run.RecalculateAll()
 }
 
 // addLetterSpacing widens the last glyph of every cluster by sp, and
