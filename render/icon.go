@@ -57,7 +57,7 @@ func LoadSVG(data []byte, w, h int) (*Icon, error) {
 // foreign attributes dropped, path data made explicit, fill rules
 // applied - for icons and SVG glyphs alike.
 func parseSVG(data []byte) (*oksvg.SvgIcon, error) {
-	icon, err := oksvg.ReadIconStream(bytes.NewReader(normalizePaths(dropForeignAttrs(data))), oksvg.StrictErrorMode)
+	icon, err := oksvg.ReadIconStream(bytes.NewReader(canonicalTransforms(normalizePaths(dropForeignAttrs(data)))), oksvg.StrictErrorMode)
 	if err != nil {
 		return nil, fmt.Errorf("render: parse svg: %w", err)
 	}

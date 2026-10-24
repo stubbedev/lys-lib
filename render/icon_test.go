@@ -406,3 +406,32 @@ func TestSVGScannerEvenOddPathsAreIndependent(t *testing.T) {
 		t.Errorf("an open path filled %d outside its closing edge", a>>8)
 	}
 }
+
+// Transforms compose with SVG semantics: each case draws the same
+// pixels as its transform applied by hand. scale(s) is uniform - oksvg
+// alone read it as scale(s, 0) and drew nothing (#187).
+func TestLoadSVGTransforms(t *testing.T) {
+	load := func(t *testing.T, body string) *image.RGBA {
+		t.Helper()
+		ic, err := LoadSVG([]byte(`<svg viewBox='0 0 16 16'>`+body+`</svg>`), 16, 16)
+		if err != nil {
+			t.Fatalf("load %s: %v", body, err)
+		}
+		return ic.img
+	}
+	for name, tc := range map[string]struct{ transformed, applied string }{
+		"uniform scale":        {`<rect transform='scale(2)' x='1' y='1' width='6' height='5'/>`, `<rect x='2' y='2' width='12' height='10'/>`},
+		"scale in a style":     {`<rect style='transform:scale(2)' x='1' y='1' width='6' height='5'/>`, `<rect x='2' y='2' width='12' height='10'/>`},
+		"scale on a group":     {`<g transform='scale(2)'><rect x='1' y='1' width='6' height='5'/></g>`, `<rect x='2' y='2' width='12' height='10'/>`},
+		"one-argument move":    {`<rect transform='translate(3)' x='0' y='1' width='4' height='4'/>`, `<rect x='3' y='1' width='4' height='4'/>`},
+		"list composes":        {`<rect transform='translate(1,2) scale(2)' x='1' y='1' width='2' height='2'/>`, `<rect x='3' y='4' width='4' height='4'/>`},
+		"rotate about a point": {`<rect transform='rotate(90 8 8)' x='2' y='4' width='12' height='2'/>`, `<rect x='10' y='2' width='2' height='12'/>`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			got, want := load(t, tc.transformed), load(t, tc.applied)
+			if !bytes.Equal(got.Pix, want.Pix) {
+				t.Errorf("%s draws differently from %s", tc.transformed, tc.applied)
+			}
+		})
+	}
+}

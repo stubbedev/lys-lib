@@ -1,7 +1,6 @@
 package render
 
 import (
-	"bytes"
 	"math"
 	"regexp"
 	"strconv"
@@ -22,7 +21,7 @@ func ParsePathData(d string) (*Path, bool) {
 	i := 0
 	cmd := byte(0)
 	for i < len(d) {
-		for i < len(d) && (d[i] == ' ' || d[i] == ',' || d[i] == '\t' || d[i] == '\n' || d[i] == '\r') {
+		for i < len(d) && isSVGSep(d[i]) {
 			i++
 		}
 		if i >= len(d) {
@@ -164,7 +163,7 @@ func mapRel(cmd byte, up byte) byte {
 func pathNumbers(d string, i int, n int) ([]float64, int, bool) {
 	var out []float64
 	for n == 0 || len(out) < n {
-		for i < len(d) && (d[i] == ' ' || d[i] == ',' || d[i] == '\t' || d[i] == '\n' || d[i] == '\r') {
+		for i < len(d) && isSVGSep(d[i]) {
 			i++
 		}
 		if i >= len(d) || isPathCmd(d[i]) {
@@ -267,12 +266,7 @@ var pathArity = map[byte]int{
 // use them (Lucide's arcs). The output repeats every letter and spaces
 // every number.
 func normalizePaths(data []byte) []byte {
-	return pathData.ReplaceAllFunc(data, func(m []byte) []byte {
-		i := bytes.IndexAny(m, `"'`)
-		q := m[i]
-		inner := string(m[i+1 : len(m)-1])
-		return []byte(` d=` + string(q) + normalizePathData(inner) + string(q))
-	})
+	return rewriteAttr(data, pathData, normalizePathData)
 }
 
 // normalizePathData is normalizePaths for one d value.
@@ -285,7 +279,7 @@ func normalizePathData(d string) string {
 	for i < len(d) {
 		c := d[i]
 		switch {
-		case c == ' ' || c == ',' || c == '\t' || c == '\n' || c == '\r':
+		case isSVGSep(c):
 			i++
 			continue
 		case isPathCmd(c):
@@ -331,6 +325,12 @@ func normalizePathData(d string) string {
 		pos = (pos + 1) % arity
 	}
 	return strings.TrimSpace(out.String())
+}
+
+// isSVGSep reports whether c separates numbers in SVG attribute
+// syntax: whitespace or a comma.
+func isSVGSep(c byte) bool {
+	return c == ' ' || c == ',' || c == '\t' || c == '\n' || c == '\r'
 }
 
 // isPathCmd reports whether c is a path command letter.
