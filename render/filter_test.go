@@ -242,3 +242,33 @@ func TestFilterHeavyBlurMatchesFullResolution(t *testing.T) {
 		t.Errorf("downsampled blur differs from the full-resolution one by up to %d levels inside the edge band, want at most 3", worst)
 	}
 }
+
+// Filter lengths are CSS pixels: on a 2x layer a blur reaches twice as
+// many device pixels as on a 1x one (#223).
+func TestFilterBlurScalesWithTheDevice(t *testing.T) {
+	reach := func(num int) int {
+		w := 64 * num
+		cv := NewScaled(make([]byte, Stride(w)*w), Stride(w), w, w, num, 1)
+		l := cv.Layer(nil, cv.Rect())
+		sq := 24 * num
+		for y := sq; y < 2*sq; y++ {
+			for x := sq; x < 2*sq; x++ {
+				l.cv.set(x, y, RGB(255, 255, 255))
+			}
+		}
+		var f Filters
+		f.Append(FilterOp{Kind: FilterBlur, Amount: 4})
+		ApplyFilters(l, l.cv.Rect(), &f)
+		r := 0
+		for x := range sq {
+			if l.cv.get(sq-1-x, sq+sq/2).A() > 2 {
+				r = x + 1
+			}
+		}
+		return r
+	}
+	r1, r2 := reach(1), reach(2)
+	if r2 < 2*r1-2 || r2 > 2*r1+2 {
+		t.Errorf("blur reach %d device px at 1x, %d at 2x; want twice", r1, r2)
+	}
+}

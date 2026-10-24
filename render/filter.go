@@ -195,8 +195,9 @@ func filterMatrix(kind FilterKind, amount float64) colorMatrix {
 }
 
 // ApplyFilters applies the list to l's device region in place. The
-// region must already cover every op's Extent; blur and drop-shadow
-// read transparent outside it.
+// ops' lengths are logical (CSS) pixels, scaled here by the layer's
+// device scale. The region must already cover every op's Extent;
+// blur and drop-shadow read transparent outside it.
 func ApplyFilters(l *Layer, region Rect, f *Filters) {
 	if l == nil || f.Empty() {
 		return
@@ -205,13 +206,17 @@ func ApplyFilters(l *Layer, region Rect, f *Filters) {
 	if region.Empty() {
 		return
 	}
+	// The lengths are CSS pixels; the layer is device pixels.
+	scale := float64(l.cv.num) / float64(l.cv.denom)
 	for i := range f.N {
 		op := &f.Ops[i]
 		switch op.Kind {
 		case FilterBlur:
-			blurRegion(l, region, op.Amount)
+			blurRegion(l, region, op.Amount*scale)
 		case FilterDropShadow:
-			dropShadowRegion(l, region, &op.Shadow)
+			s := op.Shadow
+			s.DX, s.DY, s.Blur = s.DX*scale, s.DY*scale, s.Blur*scale
+			dropShadowRegion(l, region, &s)
 		default:
 			// Each color function applies on its own: the spec clamps
 			// every function's output, and composing the matrices would
