@@ -14,9 +14,10 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/neurlang/wayland/wl"
+	"github.com/neurlang/wayland/wlclient"
+
 	"github.com/stubbedev/lys-ui/internal/keymapfd"
-	"github.com/stubbedev/lys-ui/third_party/neurlang-wayland/wl"
-	"github.com/stubbedev/lys-ui/third_party/neurlang-wayland/wlclient"
 	"github.com/stubbedev/lys-ui/wlr"
 )
 

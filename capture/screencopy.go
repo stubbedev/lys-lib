@@ -4,7 +4,8 @@ import (
 	"fmt"
 	"image"
 
-	"github.com/stubbedev/lys-ui/third_party/neurlang-wayland/wl"
+	"github.com/neurlang/wayland/wl"
+
 	"github.com/stubbedev/lys-ui/wlr"
 )
 

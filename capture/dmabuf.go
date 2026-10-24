@@ -4,9 +4,10 @@ import (
 	"errors"
 	"fmt"
 
+	"github.com/neurlang/wayland/wl"
+
 	"github.com/stubbedev/lys-ui/dmabuf"
 	"github.com/stubbedev/lys-ui/internal/dmabufwl"
-	"github.com/stubbedev/lys-ui/third_party/neurlang-wayland/wl"
 	"github.com/stubbedev/lys-ui/wlr"
 )
 

@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"image"
 
-	"github.com/stubbedev/lys-ui/third_party/neurlang-wayland/wl"
+	"github.com/neurlang/wayland/wl"
 )
 
 // Format is a wl_shm pixel format code (the wl_shm.format enum: DRM

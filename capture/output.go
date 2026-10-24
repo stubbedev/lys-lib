@@ -1,7 +1,7 @@
 package capture
 
 import (
-	"github.com/stubbedev/lys-ui/third_party/neurlang-wayland/wl"
+	"github.com/neurlang/wayland/wl"
 )
 
 // Output is one wl_output as the capture connection sees it: the
