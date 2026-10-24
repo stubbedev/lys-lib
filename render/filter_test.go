@@ -194,3 +194,51 @@ func TestFilterDropShadowUnderSilhouette(t *testing.T) {
 }
 
 func nearC(v uint8, w int) bool { return abs64(float64(v)-float64(w)) <= 1 }
+
+// A heavy blur runs downsampled (blurScale) and must still match the
+// exact full-resolution passes: uniform areas stay uniform, and the
+// blurred edge of a square differs by a few levels at most (#195).
+func TestFilterHeavyBlurMatchesFullResolution(t *testing.T) {
+	if blurScale(2) != 1 || blurScale(8) != 2 || blurScale(40) != 4 {
+		t.Fatalf("blurScale(2, 8, 40) = %d, %d, %d; want 1, 2, 4", blurScale(2), blurScale(8), blurScale(40))
+	}
+	const w, h, radius = 96, 96, 16.0
+	paint := func() *Layer {
+		l := filterLayer(t, RGB(20, 40, 60), w, h)
+		for y := 30; y < 66; y++ {
+			for x := 30; x < 66; x++ {
+				l.cv.set(x, y, RGB(240, 200, 40))
+			}
+		}
+		return l
+	}
+	got := paint()
+	var f Filters
+	f.Append(FilterOp{Kind: FilterBlur, Amount: radius})
+	ApplyFilters(got, got.cv.Rect(), &f)
+
+	want := paint()
+	n := w * h
+	buf := make([]Color, n)
+	readRegion(want.cv, want.cv.Rect(), buf)
+	want.blurPasses(buf, w, h, radius/2)
+	writeRegion(want.cv, want.cv.Rect(), buf)
+
+	// Within the blur's reach of the region's edge the two differ the
+	// most (outside reads transparent, coarser at the reduced
+	// resolution); a backdrop filter masks that band away. Inside it
+	// they must agree closely.
+	reach := int(3 * radius / 2)
+	worst := 0
+	for y := reach; y < h-reach; y++ {
+		for x := reach; x < w-reach; x++ {
+			a, b := got.cv.get(x, y), want.cv.get(x, y)
+			for _, s := range []uint{24, 16, 8, 0} {
+				worst = max(worst, abs(int(uint8(a>>s))-int(uint8(b>>s))))
+			}
+		}
+	}
+	if worst > 3 {
+		t.Errorf("downsampled blur differs from the full-resolution one by up to %d levels inside the edge band, want at most 3", worst)
+	}
+}

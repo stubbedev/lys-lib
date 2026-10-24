@@ -100,6 +100,13 @@ func (m Affine) isTranslate() (dx, dy int, ok bool) {
 type Layer struct {
 	buf []byte
 	cv  *Canvas
+	// blurA and blurB are the blur passes' ping-pong buffers, blurS
+	// the downsampled copy a heavy blur runs on, and blurAcc the
+	// vertical pass's per-column sums, all kept with the layer so a
+	// backdrop blurred every frame allocates once.
+	blurA, blurB, blurS, blurRow []Color
+	blurAcc                      []uint32
+	blurCols                     []upCol
 }
 
 // Layer returns a layer the size and scale of c whose region (device

@@ -144,6 +144,32 @@ func sdBox(px, py float64, b frect, rc fcorners) float64 {
 	return math.Hypot(math.Max(qx, 0), math.Max(qy, 0)) + math.Min(math.Max(qx, qy), 0) - rad
 }
 
+// solidRun returns the pixel-center x range [xa, xb] of row center py
+// where the rounded rect covers fully: at least half a pixel inside
+// every straight edge and outside the corner squares, where sdBox is at
+// most -0.5 and coverage exactly 1. ok is false for a row with no such
+// range. The painters fill the run without evaluating the distance
+// field, which is what a large rounded surface's interior costs.
+func solidRun(b frect, rc fcorners, py float64) (xa, xb float64, ok bool) {
+	if py-b.y0 < 0.5 || b.y1-py < 0.5 {
+		return 0, 0, false
+	}
+	xa, xb = b.x0+0.5, b.x1-0.5
+	if py < b.y0+rc[0] {
+		xa = math.Max(xa, b.x0+rc[0])
+	}
+	if py < b.y0+rc[1] {
+		xb = math.Min(xb, b.x1-rc[1])
+	}
+	if py > b.y1-rc[2] {
+		xb = math.Min(xb, b.x1-rc[2])
+	}
+	if py > b.y1-rc[3] {
+		xa = math.Max(xa, b.x0+rc[3])
+	}
+	return xa, xb, xa <= xb
+}
+
 // coverage maps a signed distance to anti-aliased pixel coverage.
 func coverage(d float64) float64 { return math.Min(1, math.Max(0, 0.5-d)) }
 
@@ -179,8 +205,15 @@ func (c *Canvas) RoundedRectCorners(r Rect, radii Corners, col Color) {
 	b, rc := c.devBox(r, radii)
 	sp := c.span(b)
 	for y := sp.Y; y < sp.Y+sp.H; y++ {
+		py := float64(y) + 0.5
+		xa, xb, solid := solidRun(b, rc, py)
 		for x := sp.X; x < sp.X+sp.W; x++ {
-			c.blendCov(x, y, col, coverage(sdBox(float64(x)+0.5, float64(y)+0.5, b, rc)))
+			px := float64(x) + 0.5
+			if solid && px >= xa && px <= xb {
+				c.blend(x, y, col)
+				continue
+			}
+			c.blendCov(x, y, col, coverage(sdBox(px, py, b, rc)))
 		}
 	}
 }
@@ -216,8 +249,15 @@ func (c *Canvas) RoundedBorderSides(r Rect, radii Corners, widths Insets, cols [
 	innerEmpty := in.x1 <= in.x0 || in.y1 <= in.y0
 	sp := c.span(b)
 	for y := sp.Y; y < sp.Y+sp.H; y++ {
+		py := float64(y) + 0.5
+		// The inner shape's solid run is the ring's hole: coverage 0.
+		xa, xb, hole := solidRun(in, irc, py)
+		hole = hole && !innerEmpty
 		for x := sp.X; x < sp.X+sp.W; x++ {
-			px, py := float64(x)+0.5, float64(y)+0.5
+			px := float64(x) + 0.5
+			if hole && px >= xa && px <= xb {
+				continue
+			}
 			cov := coverage(sdBox(px, py, b, rc))
 			if cov <= 0 {
 				continue
@@ -317,8 +357,14 @@ func (c *Canvas) BoxShadow(r Rect, radii Corners, s BoxShadow) {
 		reach := 3 * sigma
 		sp := c.span(frect{sb.x0 - reach, sb.y0 - reach, sb.x1 + reach, sb.y1 + reach})
 		for y := sp.Y; y < sp.Y+sp.H; y++ {
+			py := float64(y) + 0.5
+			// The box's own solid run is fully covered: no shadow there.
+			xa, xb, solid := solidRun(box, rc, py)
 			for x := sp.X; x < sp.X+sp.W; x++ {
-				px, py := float64(x)+0.5, float64(y)+0.5
+				px := float64(x) + 0.5
+				if solid && px >= xa && px <= xb {
+					continue
+				}
 				outside := 1 - coverage(sdBox(px, py, box, rc))
 				if outside <= 0 {
 					continue
@@ -329,10 +375,25 @@ func (c *Canvas) BoxShadow(r Rect, radii Corners, s BoxShadow) {
 		return
 	}
 	hole, hrc := shape(-1)
+	// Deeper than the blur's 3-sigma reach inside the hole, the shadow
+	// rounds to nothing: the hole shrunk by the reach is skipped whole.
+	reach := 3 * sigma
+	deep := frect{hole.x0 + reach, hole.y0 + reach, hole.x1 - reach, hole.y1 - reach}
+	var drc fcorners
+	for i := range hrc {
+		drc[i] = math.Max(0, hrc[i]-reach)
+	}
+	deepOK := deep.x1 > deep.x0 && deep.y1 > deep.y0
 	sp := c.span(box)
 	for y := sp.Y; y < sp.Y+sp.H; y++ {
+		py := float64(y) + 0.5
+		xa, xb, skip := solidRun(deep, drc, py)
+		skip = skip && deepOK
 		for x := sp.X; x < sp.X+sp.W; x++ {
-			px, py := float64(x)+0.5, float64(y)+0.5
+			px := float64(x) + 0.5
+			if skip && px >= xa && px <= xb {
+				continue
+			}
 			inside := coverage(sdBox(px, py, box, rc))
 			if inside <= 0 {
 				continue

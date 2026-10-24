@@ -1,6 +1,9 @@
 package render
 
-import "math"
+import (
+	"encoding/binary"
+	"math"
+)
 
 // The CSS filter effects: the color-matrix family (brightness,
 // contrast, grayscale, hue-rotate, invert, opacity, saturate, sepia)
@@ -219,9 +222,17 @@ func ApplyFilters(l *Layer, region Rect, f *Filters) {
 }
 
 // applyMatrixRegion maps region's pixels through the color matrix,
-// un-premultiplying before and re-premultiplying after.
+// un-premultiplying before and re-premultiplying after. A matrix that
+// mixes only the color channels, without offsets, commutes with
+// premultiplication, so it runs on the premultiplied pixels directly in
+// fixed point (applyLinearRegion): saturate, grayscale, sepia,
+// brightness and hue-rotate, the backdrop's usual functions.
 func applyMatrixRegion(l *Layer, region Rect, m colorMatrix) {
 	if m == matrixIdentity {
+		return
+	}
+	if m.colorLinear() {
+		applyLinearRegion(l.cv, region, m)
 		return
 	}
 	for y := region.Y; y < region.Y+region.H; y++ {
@@ -240,6 +251,46 @@ func applyMatrixRegion(l *Layer, region Rect, m colorMatrix) {
 				clamp8(math.Round(float64(out[2])*pm))))
 		}
 	}
+}
+
+// colorLinear reports whether m only mixes the color channels: no
+// offsets, no alpha feeding a color, alpha passed through unchanged.
+func (m colorMatrix) colorLinear() bool {
+	for _, row := range [3]int{0, 5, 10} {
+		if m[row+3] != 0 || m[row+4] != 0 {
+			return false
+		}
+	}
+	return m[15] == 0 && m[16] == 0 && m[17] == 0 && m[18] == 1 && m[19] == 0
+}
+
+// applyLinearRegion applies a colorLinear matrix to region's
+// premultiplied pixels in 16.16 fixed point, each channel clamped to
+// its pixel's alpha (the premultiplied form of clamping to 255).
+func applyLinearRegion(c *Canvas, region Rect, m colorMatrix) {
+	var k [9]int64
+	for row := range 3 {
+		for col := range 3 {
+			k[row*3+col] = int64(math.Round(m[row*5+col] * 65536))
+		}
+	}
+	ch := func(row int, r, g, b, a int64) uint32 {
+		v := (k[row*3]*r + k[row*3+1]*g + k[row*3+2]*b + 32768) >> 16
+		return uint32(min(a, max(0, v)))
+	}
+	for y := range region.H {
+		px := c.data[(region.Y+y)*c.stride+region.X*4:]
+		for x := range region.W {
+			col := Color(binary.LittleEndian.Uint32(px[x*4:]))
+			if col == 0 {
+				continue
+			}
+			a, r, g, b := int64(col.A()), int64(col.R()), int64(col.G()), int64(col.B())
+			out := uint32(a)<<24 | ch(0, r, g, b, a)<<16 | ch(1, r, g, b, a)<<8 | ch(2, r, g, b, a)
+			binary.LittleEndian.PutUint32(px[x*4:], out)
+		}
+	}
+	c.touched += region.W * region.H
 }
 
 // blurBoxes returns the three integer box radii whose passes
@@ -276,103 +327,257 @@ func blurBoxes(sigma float64) [3]int {
 // convolution whose sigma is radius/2, CSS blur()'s definition. The
 // passes run over premultiplied channels, so translucent edges blur
 // without picking up color from nothing; pixels outside the region
-// read as transparent.
+// read as transparent. A heavy blur (blurScale) runs on an
+// area-averaged copy at a fraction of the resolution and is sampled
+// back bilinearly: at that radius the difference is below what the
+// blur leaves visible, and the passes cost a fraction.
 func blurRegion(l *Layer, region Rect, radius float64) {
 	if radius <= 0 {
 		return
 	}
-	boxes := blurBoxes(radius / 2)
-	buf := make([]Color, region.W*region.H)
-	scratch := make([]Color, region.W*region.H)
-	for y := region.Y; y < region.Y+region.H; y++ {
-		for x := region.X; x < region.X+region.W; x++ {
-			buf[(y-region.Y)*region.W+(x-region.X)] = l.cv.get(x, y)
-		}
+	sigma := radius / 2
+	n := region.W * region.H
+	l.blurA = growColors(l.blurA, n)
+	full := l.blurA[:n]
+	readRegion(l.cv, region, full)
+	d := blurScale(sigma)
+	if d == 1 {
+		l.blurPasses(full, region.W, region.H, sigma)
+		writeRegion(l.cv, region, full)
+		return
 	}
-	for _, r := range boxes {
+	sw, sh := (region.W+d-1)/d, (region.H+d-1)/d
+	l.blurS = growColors(l.blurS, sw*sh)
+	small := l.blurS[:sw*sh]
+	downsample(small, full, region.W, region.H, d)
+	// The area average and the bilinear sampling blur too (variances
+	// (d²-1)/12 and d²/6 in full-resolution pixels): the passes make
+	// up only the rest, so the total stays sigma.
+	fd := float64(d)
+	rest := math.Max(0, sigma*sigma-(fd*fd-1)/12-fd*fd/6)
+	l.blurPasses(small, sw, sh, math.Sqrt(rest)/fd)
+	l.upsample(full, small, region.W, region.H, sw, sh, d)
+	writeRegion(l.cv, region, full)
+}
+
+// blurScale is the downsampling factor for a blur of sigma: 1 (exact)
+// below sigma 6, then one step per 3 of sigma, at most 4.
+func blurScale(sigma float64) int {
+	return min(4, max(1, int(sigma/3)))
+}
+
+// blurPasses runs the three box passes over a w x h buffer in place.
+func (l *Layer) blurPasses(buf []Color, w, h int, sigma float64) {
+	l.blurB = growColors(l.blurB, w*h)
+	scratch := l.blurB[:w*h]
+	if cap(l.blurAcc) < 4*w {
+		l.blurAcc = make([]uint32, 4*w)
+	}
+	acc := l.blurAcc[:4*w]
+	for _, r := range blurBoxes(sigma) {
 		if r < 1 {
 			continue
 		}
-		boxPassH(scratch, buf, region, r)
-		boxPassV(buf, scratch, region, r)
+		boxPassH(scratch, buf, w, h, r)
+		boxPassV(buf, scratch, w, h, r, acc)
 	}
-	for y := region.Y; y < region.Y+region.H; y++ {
-		for x := region.X; x < region.X+region.W; x++ {
-			l.cv.set(x, y, buf[(y-region.Y)*region.W+(x-region.X)])
+}
+
+// downsample area-averages src (w x h) into dst by d x d blocks; a
+// block cut by the edge averages the pixels it has.
+func downsample(dst, src []Color, w, h, d int) {
+	sw := (w + d - 1) / d
+	for sy := range (h + d - 1) / d {
+		for sx := range sw {
+			var acc [4]uint32
+			n := 0
+			for y := sy * d; y < min(h, sy*d+d); y++ {
+				for x := sx * d; x < min(w, sx*d+d); x++ {
+					addAcc(&acc, src[y*w+x])
+					n++
+				}
+			}
+			dst[sy*sw+sx] = newBoxDiv(n).color(&acc)
 		}
 	}
 }
 
-// boxPassH is one horizontal box pass over integer radius r: dst is
-// the running average of src's window, transparent outside.
-func boxPassH(dst, src []Color, region Rect, r int) {
-	for y := range region.H {
-		row := y * region.W
-		var acc [4]int64
-		for k := -r; k <= r; k++ {
-			if k >= 0 && k < region.W {
-				addAcc(&acc, src[row+k])
-			}
+// upCol is one destination column's bilinear source: the left
+// source column and the weight of the one right of it, in 1/256.
+type upCol struct {
+	x0 int
+	t  uint32
+}
+
+// upsample samples the sw x sh buffer src back over w x h dst
+// bilinearly, at each destination pixel's center: per row, the two
+// source rows blend once into row, then each column interpolates
+// across it.
+func (l *Layer) upsample(dst, src []Color, w, h, sw, sh, d int) {
+	if cap(l.blurCols) < w {
+		l.blurCols = make([]upCol, w)
+	}
+	cols := l.blurCols[:w]
+	for x := range cols {
+		x0, t := upSource(x, d)
+		cols[x] = upCol{x0: min(sw-1, max(0, x0)), t: t}
+		if x0 < 0 {
+			cols[x].t = 0
 		}
-		den := int64(2*r + 1)
-		for x := range region.W {
-			dst[row+x] = accColor(acc, den)
-			out, in := x-r, x+r+1
-			if out >= 0 && out < region.W {
+	}
+	l.blurRow = growColors(l.blurRow, sw)
+	row := l.blurRow[:sw]
+	for y := range h {
+		y0, ty := upSource(y, d)
+		a := src[min(sh-1, max(0, y0))*sw:][:sw]
+		b := src[min(sh-1, max(0, y0+1))*sw:][:sw]
+		for x := range row {
+			row[x] = lerp256(a[x], b[x], ty)
+		}
+		out := dst[y*w : (y+1)*w]
+		for x, c := range cols {
+			out[x] = lerp256(row[c.x0], row[min(sw-1, c.x0+1)], c.t)
+		}
+	}
+}
+
+// upSource maps a destination pixel to its source cell at scale d: the
+// lower source index and the weight of the next one, in 1/256.
+func upSource(i, d int) (int, uint32) {
+	// The center of i in source units, less the half pixel to the
+	// source centers, in 1/256 fixed point: ((2i+1) - d) * 128 / d.
+	f := ((2*i+1)*128 - d*128) / d
+	i0 := f >> 8 // arithmetic: floors negative positions too
+	return i0, uint32(f - i0*256)
+}
+
+// lerp256 interpolates two premultiplied colors at t/256.
+func lerp256(a, b Color, t uint32) Color {
+	ch := func(s uint) uint32 {
+		x, y := uint32(a>>s)&0xff, uint32(b>>s)&0xff
+		return (x*(256-t) + y*t + 128) >> 8
+	}
+	return Color(ch(24)<<24 | ch(16)<<16 | ch(8)<<8 | ch(0))
+}
+
+// growColors returns s with room for n colors, reusing its storage.
+func growColors(s []Color, n int) []Color {
+	if cap(s) >= n {
+		return s[:n]
+	}
+	return make([]Color, n)
+}
+
+// readRegion copies region's pixels row by row into dst.
+func readRegion(c *Canvas, region Rect, dst []Color) {
+	for y := range region.H {
+		row := c.data[(region.Y+y)*c.stride+region.X*4:]
+		out := dst[y*region.W : (y+1)*region.W]
+		for x := range out {
+			out[x] = Color(binary.LittleEndian.Uint32(row[x*4:]))
+		}
+	}
+}
+
+// writeRegion copies src back over region's pixels row by row.
+func writeRegion(c *Canvas, region Rect, src []Color) {
+	for y := range region.H {
+		row := c.data[(region.Y+y)*c.stride+region.X*4:]
+		in := src[y*region.W : (y+1)*region.W]
+		for x, v := range in {
+			binary.LittleEndian.PutUint32(row[x*4:], uint32(v))
+		}
+	}
+	c.touched += region.W * region.H
+}
+
+// boxDiv divides a box window's channel sums by its width, rounded, as
+// a multiply: recip is 2^32/den rounded up, which is exact for every
+// sum a window of 8-bit channels reaches (sum < 2^32/den).
+type boxDiv struct{ half, recip uint64 }
+
+func newBoxDiv(den int) boxDiv {
+	return boxDiv{half: uint64(den / 2), recip: (1<<32)/uint64(den) + 1}
+}
+
+func (d boxDiv) q(v uint32) uint32 { return uint32(((uint64(v) + d.half) * d.recip) >> 32) }
+
+// color rounds the averaged channels back to a Color.
+func (d boxDiv) color(acc *[4]uint32) Color {
+	return Color(d.q(acc[0])<<24 | d.q(acc[1])<<16 | d.q(acc[2])<<8 | d.q(acc[3]))
+}
+
+// boxPassH is one horizontal box pass over integer radius r on a w x
+// h buffer: dst is the running average of src's window, transparent
+// outside.
+func boxPassH(dst, src []Color, w, h, r int) {
+	div := newBoxDiv(2*r + 1)
+	for y := range h {
+		row := y * w
+		var acc [4]uint32
+		for k := 0; k <= r && k < w; k++ {
+			addAcc(&acc, src[row+k])
+		}
+		for x := range w {
+			dst[row+x] = div.color(&acc)
+			if out := x - r; out >= 0 {
 				subAcc(&acc, src[row+out])
 			}
-			if in >= 0 && in < region.W {
+			if in := x + r + 1; in < w {
 				addAcc(&acc, src[row+in])
 			}
 		}
 	}
 }
 
-// boxPassV is boxPassH's vertical twin.
-func boxPassV(dst, src []Color, region Rect, r int) {
-	for x := range region.W {
-		var acc [4]int64
-		for k := -r; k <= r; k++ {
-			if k >= 0 && k < region.H {
-				addAcc(&acc, src[k*region.W+x])
+// boxPassV is boxPassH's vertical twin. It sweeps rows in memory order
+// with one accumulator per column (acc, 4 per column) instead of
+// walking columns, which strided through the buffer.
+func boxPassV(dst, src []Color, w, h, r int, acc []uint32) {
+	div := newBoxDiv(2*r + 1)
+	clear(acc)
+	addRow := func(y int, sign bool) {
+		row := src[y*w : (y+1)*w]
+		for x, c := range row {
+			a := (*[4]uint32)(acc[x*4 : x*4+4])
+			if sign {
+				addAcc(a, c)
+			} else {
+				subAcc(a, c)
 			}
 		}
-		den := int64(2*r + 1)
-		for y := range region.H {
-			dst[y*region.W+x] = accColor(acc, den)
-			out, in := y-r, y+r+1
-			if out >= 0 && out < region.H {
-				subAcc(&acc, src[out*region.W+x])
-			}
-			if in >= 0 && in < region.H {
-				addAcc(&acc, src[in*region.W+x])
-			}
+	}
+	for k := 0; k <= r && k < h; k++ {
+		addRow(k, true)
+	}
+	for y := range h {
+		out := dst[y*w : (y+1)*w]
+		for x := range out {
+			out[x] = div.color((*[4]uint32)(acc[x*4 : x*4+4]))
+		}
+		if o := y - r; o >= 0 {
+			addRow(o, false)
+		}
+		if in := y + r + 1; in < h {
+			addRow(in, true)
 		}
 	}
 }
 
 // addAcc adds a color's premultiplied channels to an accumulator.
-func addAcc(acc *[4]int64, c Color) {
-	acc[0] += int64(c.A())
-	acc[1] += int64(c.R())
-	acc[2] += int64(c.G())
-	acc[3] += int64(c.B())
+func addAcc(acc *[4]uint32, c Color) {
+	acc[0] += uint32(c.A())
+	acc[1] += uint32(c.R())
+	acc[2] += uint32(c.G())
+	acc[3] += uint32(c.B())
 }
 
 // subAcc subtracts one.
-func subAcc(acc *[4]int64, c Color) {
-	acc[0] -= int64(c.A())
-	acc[1] -= int64(c.R())
-	acc[2] -= int64(c.G())
-	acc[3] -= int64(c.B())
-}
-
-// accColor rounds the averaged channels back to a Color.
-func accColor(acc [4]int64, den int64) Color {
-	q := func(v int64) uint32 {
-		return uint32(min(255, max(0, (v+den/2)/den)))
-	}
-	return Color(q(acc[0])<<24 | q(acc[1])<<16 | q(acc[2])<<8 | q(acc[3]))
+func subAcc(acc *[4]uint32, c Color) {
+	acc[0] -= uint32(c.A())
+	acc[1] -= uint32(c.R())
+	acc[2] -= uint32(c.G())
+	acc[3] -= uint32(c.B())
 }
 
 // dropShadowRegion composites a blurred, tinted copy of region's
@@ -394,13 +599,13 @@ func dropShadowRegion(l *Layer, region Rect, s *DropShadow) {
 	tmp := make([]Color, w*h)
 	copy(tmp, sil)
 	if s.Blur > 0 {
-		silRect := Rect{W: w, H: h}
+		acc := make([]uint32, 4*w)
 		for _, r := range blurBoxes(s.Blur / 2) {
 			if r < 1 {
 				continue
 			}
-			boxPassH(tmp, sil, silRect, r)
-			boxPassV(sil, tmp, silRect, r)
+			boxPassH(tmp, sil, w, h, r)
+			boxPassV(sil, tmp, w, h, r, acc)
 		}
 	}
 	tint := s.Color
