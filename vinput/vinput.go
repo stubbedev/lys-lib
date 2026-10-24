@@ -228,8 +228,9 @@ func (v *Device) pointer(reqs ...func() error) error {
 	return v.vp.Frame()
 }
 
-// source declares a frame's axis source, first in the frame as the
-// protocol asks.
+// source declares a frame's axis source after its axis request: the
+// protocol leaves the order open, and Hyprland resets the source on
+// each axis request and applies it to the last one set.
 func (v *Device) source(src AxisSource) func() error {
 	return func() error { return v.vp.AxisSource(uint32(src)) }
 }
@@ -251,25 +252,25 @@ func (v *Device) Button(code uint32, pressed bool) error {
 }
 
 // Axis scrolls axis by value, in wl_pointer axis units, from src: one
-// frame carrying the source and the motion.
+// frame carrying the motion and its source.
 func (v *Device) Axis(src AxisSource, axis ScrollAxis, value float64) error {
-	return v.pointer(v.source(src), func() error { return v.vp.Axis(v.now(), uint32(axis), float32(value)) })
+	return v.pointer(func() error { return v.vp.Axis(v.now(), uint32(axis), float32(value)) }, v.source(src))
 }
 
 // AxisDiscrete scrolls whole steps (a wheel), value the axis units
 // they amount to, from src.
 func (v *Device) AxisDiscrete(src AxisSource, axis ScrollAxis, value float64, steps int32) error {
-	return v.pointer(v.source(src), func() error {
+	return v.pointer(func() error {
 		return v.vp.AxisDiscrete(v.now(), uint32(axis), float32(value), steps)
-	})
+	}, v.source(src))
 }
 
 // AxisStop ends a scroll sequence from src on axis
-// (wl_pointer.axis_stop), the source and the stop in one frame as a
+// (wl_pointer.axis_stop), the stop and its source in one frame as a
 // touchpad sends them: the fingers lifted, and a client may start its
 // kinetic glide.
 func (v *Device) AxisStop(src AxisSource, axis ScrollAxis) error {
-	return v.pointer(v.source(src), func() error { return v.vp.AxisStop(v.now(), uint32(axis)) })
+	return v.pointer(func() error { return v.vp.AxisStop(v.now(), uint32(axis)) }, v.source(src))
 }
 
 // Key presses or releases an evdev key code.
