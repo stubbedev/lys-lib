@@ -93,7 +93,12 @@ func Check(t TB, dir, name string, img *image.NRGBA, tol Tolerance) {
 	if bytes.Equal(want.Pix, img.Pix) {
 		return
 	}
-	report(t, path, want, img, tol)
+	mismatch, samples := mismatches(want, img, tol)
+	if mismatch <= tol.MaxMismatch {
+		return
+	}
+	t.Fatalf("golden %s mismatched: %d of %d pixels differ (tolerance %d/channel, %d allowed)%s\nregenerate with UPDATE_GOLDEN=1 go test ./... only after confirming the new output is correct",
+		path, mismatch, len(want.Pix)/4, tol.ChannelDiff, tol.MaxMismatch, strings.Join(samples, ""))
 }
 
 // write encodes img to path, the UPDATE_GOLDEN=1 half of Check.
@@ -141,13 +146,10 @@ func asNRGBA(img image.Image) *image.NRGBA {
 // maxReported caps the per-pixel samples a failure prints.
 const maxReported = 5
 
-// report Fatalf's with the mismatch statistics and the first samples,
-// enough to see what moved without opening an image editor.
-func report(t TB, path string, want, got *image.NRGBA, tol Tolerance) {
-	t.Helper()
+// mismatches counts the pixels outside tol and samples the first
+// few, enough to see what moved without opening an image editor.
+func mismatches(want, got *image.NRGBA, tol Tolerance) (mismatch int, samples []string) {
 	w := want.Rect.Dx()
-	var samples []string
-	var mismatch int
 	for i := 0; i < len(want.Pix); i += 4 {
 		if pixelMatches(want.Pix[i:i+4], got.Pix[i:i+4], tol) {
 			continue
@@ -161,8 +163,7 @@ func report(t TB, path string, want, got *image.NRGBA, tol Tolerance) {
 		}
 		mismatch++
 	}
-	t.Fatalf("golden %s mismatched: %d of %d pixels differ (tolerance %d/channel, %d allowed)%s\nregenerate with UPDATE_GOLDEN=1 go test ./... only after confirming the new output is correct",
-		path, mismatch, len(want.Pix)/4, tol.ChannelDiff, tol.MaxMismatch, strings.Join(samples, ""))
+	return mismatch, samples
 }
 
 // pixelMatches reports whether one pixel pair is within tol.
