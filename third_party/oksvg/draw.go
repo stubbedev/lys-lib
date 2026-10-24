@@ -224,6 +224,7 @@ var (
 		c.inGrad = true
 		c.grad = &rasterx.Gradient{Points: [5]float64{0, 0, 1, 0, 0},
 			IsRadial: false, Bounds: c.icon.ViewBox, Matrix: rasterx.Identity}
+		c.gradHref = ""
 		for _, attr := range attrs {
 			switch attr.Name.Local {
 			case "id":
@@ -233,6 +234,8 @@ var (
 				} else {
 					return errZeroLengthID
 				}
+			case "href":
+				c.gradHref = attr.Value
 			case "x1":
 				c.grad.Points[0], err = readFraction(attr.Value)
 			case "y1":
@@ -254,6 +257,7 @@ var (
 		c.inGrad = true
 		c.grad = &rasterx.Gradient{Points: [5]float64{0.5, 0.5, 0.5, 0.5, 0.5},
 			IsRadial: true, Bounds: c.icon.ViewBox, Matrix: rasterx.Identity}
+		c.gradHref = ""
 		var setFx, setFy bool
 		var err error
 		for _, attr := range attrs {
@@ -265,6 +269,8 @@ var (
 				} else {
 					return errZeroLengthID
 				}
+			case "href":
+				c.gradHref = attr.Value
 			case "r":
 				c.grad.Points[4], err = readFraction(attr.Value)
 			case "cx":
@@ -300,11 +306,14 @@ var (
 				switch attr.Name.Local {
 				case "offset":
 					stop.Offset, err = readFraction(attr.Value)
-				case "stop-color":
-					//todo: add current color inherit
-					stop.StopColor, err = ParseSVGColor(attr.Value)
-				case "stop-opacity":
-					stop.Opacity, err = parseFloat(attr.Value, 64)
+				case "style":
+					for _, decl := range strings.Split(attr.Value, ";") {
+						if k, v, ok := strings.Cut(decl, ":"); ok && err == nil {
+							err = setStopProperty(&stop, strings.TrimSpace(k), strings.TrimSpace(v))
+						}
+					}
+				default:
+					err = setStopProperty(&stop, attr.Name.Local, attr.Value)
 				}
 				if err != nil {
 					return err
@@ -389,4 +398,16 @@ func init() {
 	// avoids cyclical static declaration
 	// called on package initialization
 	drawFuncs["use"] = useF
+}
+
+// setStopProperty applies a gradient stop's stop-color or stop-opacity,
+// given as an attribute or in its style; others are not a stop's.
+func setStopProperty(stop *rasterx.GradStop, k, v string) (err error) {
+	switch k {
+	case "stop-color":
+		stop.StopColor, err = ParseSVGColor(v)
+	case "stop-opacity":
+		stop.Opacity, err = parseFloat(v, 64)
+	}
+	return err
 }

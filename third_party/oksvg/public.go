@@ -37,6 +37,10 @@ func ReadIconStream(stream io.Reader, errMode ...ErrorMode) (*SvgIcon, error) {
 	classInfo := ""
 	decoder := xml.NewDecoder(stream)
 	decoder.CharsetReader = charset.NewReaderLabel
+	// skip is the depth inside a subtree that renders nothing: metadata
+	// and elements of a foreign namespace (an editor's sodipodi:*,
+	// inkscape:*, rdf:* notes), which SVG renderers ignore.
+	skip := 0
 	for {
 		t, err := decoder.Token()
 		if err != nil {
@@ -44,6 +48,18 @@ func ReadIconStream(stream io.Reader, errMode ...ErrorMode) (*SvgIcon, error) {
 				break
 			}
 			return icon, err
+		}
+		switch se := t.(type) {
+		case xml.StartElement:
+			if skip > 0 || ignoredElement(se.Name) {
+				skip++
+				continue
+			}
+		case xml.EndElement:
+			if skip > 0 {
+				skip--
+				continue
+			}
 		}
 		// Inspect the type of the XML token
 		switch se := t.(type) {
@@ -82,6 +98,7 @@ func ReadIconStream(stream io.Reader, errMode ...ErrorMode) (*SvgIcon, error) {
 				}
 				cursor.inDefs = false
 			case "radialGradient", "linearGradient":
+				cursor.inheritGradStops()
 				cursor.inGrad = false
 
 			case "style":
@@ -284,4 +301,14 @@ func ParseSVGColor(colorStr string) (color.Color, error) {
 		return color.NRGBA{r, g, b, 0xFF}, nil
 	}
 	return nil, errParamMismatch
+}
+
+// svgNamespace is the SVG elements' namespace.
+const svgNamespace = "http://www.w3.org/2000/svg"
+
+// ignoredElement reports an element that renders nothing and whose
+// subtree the reader skips: metadata, and anything outside the SVG
+// namespace (a document without one keeps every element).
+func ignoredElement(name xml.Name) bool {
+	return name.Local == "metadata" || (name.Space != "" && name.Space != svgNamespace)
 }

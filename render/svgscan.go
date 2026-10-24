@@ -32,6 +32,21 @@ func newSVGScanner(w, h int, dest draw.Image) *svgScanner {
 	return s
 }
 
+// SetColor sets the next path's paint. A gradient's source is
+// rasterx's ColorFuncImage, which embeds image.Uniform and so inherits
+// its RGBA64At; image/draw prefers that over At, and would paint the
+// Uniform's leftover color instead of the gradient. The source is
+// handed to draw behind an image that only answers At.
+func (s *svgScanner) SetColor(c any) {
+	s.ScannerGV.SetColor(c)
+	if _, uniform := s.Source.(*image.Uniform); !uniform {
+		s.Source = atOnly{s.Source}
+	}
+}
+
+// atOnly is an image whose pixels come from At alone.
+type atOnly struct{ image.Image }
+
 // SetWinding picks the fill rule for the next path.
 func (s *svgScanner) SetWinding(useNonZeroWinding bool) { s.evenOdd = !useNonZeroWinding }
 

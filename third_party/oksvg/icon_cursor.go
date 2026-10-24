@@ -23,6 +23,9 @@ type IconCursor struct {
 	icon                                                 *SvgIcon
 	StyleStack                                           []PathStyle
 	grad                                                 *rasterx.Gradient
+	// gradHref is the open gradient's href: the gradient it inherits its
+	// stops from when it has none of its own.
+	gradHref string
 	inTitleText, inDescText, inGrad, inDefs, inDefsStyle bool
 	currentDef                                           []definition
 }
@@ -388,4 +391,18 @@ func (c *IconCursor) returnError(errMsg string) bool {
 	}
 
 	return false
+}
+
+// inheritGradStops gives the gradient closing now the stops of the one
+// its href names when it has none of its own, as SVG's gradient href
+// inherits them. Editors chain gradients so (Inkscape writes the
+// shared stops once and references them), and they write the base
+// first, so a chain resolves link by link as each gradient closes.
+func (c *IconCursor) inheritGradStops() {
+	if c.grad == nil || len(c.grad.Stops) > 0 || !strings.HasPrefix(c.gradHref, "#") {
+		return
+	}
+	if base, ok := c.icon.Grads[c.gradHref[1:]]; ok && base != c.grad {
+		c.grad.Stops = append([]rasterx.GradStop(nil), base.Stops...)
+	}
 }
