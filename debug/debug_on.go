@@ -14,7 +14,7 @@ import (
 const Enabled = true
 
 // categories selects which trace lines pass at runtime, parsed once
-// from GOELM_DEBUG (comma-separated names, "*" or "" for all, "-name"
+// from LYS_UI_DEBUG (comma-separated names, "*" or "" for all, "-name"
 // excludes one).
 var (
 	parseOnce sync.Once
@@ -27,7 +27,7 @@ var (
 var start = time.Now()
 
 // Log emits one trace line when the build has the lysuidebug tag and
-// GOELM_DEBUG admits the category: "<offset>s <category>: <message>"
+// LYS_UI_DEBUG admits the category: "<offset>s <category>: <message>"
 // on stderr.
 func Log(category, format string, args ...any) {
 	parseOnce.Do(parseEnv)
@@ -38,10 +38,10 @@ func Log(category, format string, args ...any) {
 		time.Since(start).Seconds(), category, fmt.Sprintf(format, args...))
 }
 
-// parseEnv reads GOELM_DEBUG once per process.
+// parseEnv reads LYS_UI_DEBUG once per process.
 func parseEnv() {
 	cats = make(map[string]bool)
-	for _, name := range strings.Split(os.Getenv("GOELM_DEBUG"), ",") {
+	for _, name := range strings.Split(os.Getenv("LYS_UI_DEBUG"), ",") {
 		name = strings.TrimSpace(name)
 		switch {
 		case name == "":
