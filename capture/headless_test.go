@@ -6,17 +6,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stubbedev/gelm/app"
-	"github.com/stubbedev/gelm/capture"
-	"github.com/stubbedev/gelm/internal/headlesstest/inproc"
-	"github.com/stubbedev/gelm/render"
-	"github.com/stubbedev/gelm/widget"
+	"github.com/stubbedev/lys-ui/app"
+	"github.com/stubbedev/lys-ui/capture"
+	"github.com/stubbedev/lys-ui/internal/headlesstest/inproc"
+	"github.com/stubbedev/lys-ui/render"
+	"github.com/stubbedev/lys-ui/widget"
 )
 
 // The compositor-in-the-loop capture tests: they attach to the private
-// headless sway the just headless recipe boots (GELM_HEADLESS set),
-// paint known colors with gelm surfaces, and capture them back through
-// every protocol path sway offers. Without GELM_HEADLESS they skip -
+// headless sway the just headless recipe boots (LYS_UI_HEADLESS set),
+// paint known colors with lys-ui surfaces, and capture them back through
+// every protocol path sway offers. Without LYS_UI_HEADLESS they skip -
 // they must never capture a developer's real session.
 
 // Test colors, opaque, distinct in every channel.
@@ -32,7 +32,7 @@ func TestHeadlessOutputCapture(t *testing.T) {
 			Output:     out,
 			Layer:      app.LayerOverlay,
 			Anchor:     app.AnchorTop | app.AnchorBottom | app.AnchorLeft | app.AnchorRight,
-			Namespace:  "gelm-capture-test",
+			Namespace:  "lys-ui-capture-test",
 			Root:       widget.NewBox(widget.Row, 0, 0),
 			Background: fillRed,
 		})
@@ -188,7 +188,7 @@ func TestHeadlessOutputCapture(t *testing.T) {
 
 func TestHeadlessToplevelCapture(t *testing.T) {
 	inproc.Require(t)
-	const appID = "dev.stubbe.gelm.capturetest"
+	const appID = "dev.stubbe.lys.ui.capturetest"
 	inproc.Show(t, func(a *app.Application, out *app.Output) error {
 		_, err := a.NewWindow(app.WindowConfig{
 			Title:      "capture target",

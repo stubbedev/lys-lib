@@ -18,7 +18,7 @@ import (
 	"github.com/go-text/typesetting/shaping"
 	"golang.org/x/image/math/fixed"
 
-	"github.com/stubbedev/gelm/internal/text"
+	"github.com/stubbedev/lys-ui/internal/text"
 )
 
 // Font shapes and paints text: a single Typeface, or a Chain that

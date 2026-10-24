@@ -6,10 +6,10 @@ import (
 )
 
 // The devices against the headless sway the just headless recipe
-// boots (GELM_HEADLESS set); without it they skip.
+// boots (LYS_UI_HEADLESS set); without it they skip.
 func TestDialArmsTheDevices(t *testing.T) {
-	if os.Getenv("GELM_HEADLESS") == "" {
-		t.Skip("GELM_HEADLESS is not set; vinput tests run under just check-headless")
+	if os.Getenv("LYS_UI_HEADLESS") == "" {
+		t.Skip("LYS_UI_HEADLESS is not set; vinput tests run under just check-headless")
 	}
 	fallback := []byte("xkb_keymap { xkb_keycodes { include \"evdev\" }; xkb_types { include \"complete\" }; xkb_compat { include \"complete\" }; xkb_symbols { include \"pc+us\" }; };\n")
 	d, err := Dial("", Options{Keyboard: true, FallbackKeymap: fallback})

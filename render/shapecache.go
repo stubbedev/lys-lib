@@ -17,7 +17,7 @@ import (
 	"sync"
 	"unicode/utf8"
 
-	"github.com/stubbedev/gelm/internal/text"
+	"github.com/stubbedev/lys-ui/internal/text"
 )
 
 // shapeKey identifies one shaped line. The font field compares by

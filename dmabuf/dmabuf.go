@@ -6,7 +6,7 @@ package dmabuf
 
 import "fmt"
 
-// DRM fourcc formats and modifiers gelm names; any other DRM code
+// DRM fourcc formats and modifiers lys-ui names; any other DRM code
 // works the same way.
 const (
 	// FormatXRGB8888 is DRM_FORMAT_XRGB8888 ('XR24').

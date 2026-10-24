@@ -3,7 +3,7 @@ package render
 import (
 	"testing"
 
-	itext "github.com/stubbedev/gelm/internal/text"
+	itext "github.com/stubbedev/lys-ui/internal/text"
 )
 
 // Letter spacing widens every cluster's advance by the spacing, and the

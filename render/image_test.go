@@ -187,7 +187,7 @@ func TestPlaceImageNone(t *testing.T) {
 // two-color edge upscaled 4x must blend across the boundary. A
 // nearest-neighbor pass would produce only pure black and pure white
 // blocks; the CatmullRom kernel mixes - and slightly overshoots - at
-// every edge (stubbedev/gelm#14).
+// every edge (stubbedev/lys-ui#14).
 func TestResampleBlendsAcrossEdges(t *testing.T) {
 	src := image.NewRGBA(image.Rect(0, 0, 2, 1))
 	src.SetRGBA(0, 0, color.RGBA{A: 0xff})

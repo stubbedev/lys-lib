@@ -1,7 +1,7 @@
 // Package vinput injects pointer and keyboard input into the
 // compositor through zwlr_virtual_pointer_v1 and
 // zwp_virtual_keyboard_v1, on a private Wayland connection: the input
-// half of a remote-desktop bridge, and of gelm's own headless test
+// half of a remote-desktop bridge, and of lys-ui's own headless test
 // harness. The seat's keymap is relayed to the virtual keyboard, so
 // key codes mean what they mean on the real keyboard.
 package vinput
@@ -14,10 +14,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/stubbedev/gelm/internal/keymapfd"
-	"github.com/stubbedev/gelm/third_party/neurlang-wayland/wl"
-	"github.com/stubbedev/gelm/third_party/neurlang-wayland/wlclient"
-	"github.com/stubbedev/gelm/wlr"
+	"github.com/stubbedev/lys-ui/internal/keymapfd"
+	"github.com/stubbedev/lys-ui/third_party/neurlang-wayland/wl"
+	"github.com/stubbedev/lys-ui/third_party/neurlang-wayland/wlclient"
+	"github.com/stubbedev/lys-ui/wlr"
 )
 
 // Options tunes Dial.
@@ -154,7 +154,7 @@ func Dial(display string, opts Options) (*Device, error) {
 // upload arms the virtual keyboard with keymap text through a temp
 // file (format 1, xkb_v1).
 func (v *Device) upload(keymap []byte) error {
-	f, err := os.CreateTemp("", "gelm-vinput-keymap-*")
+	f, err := os.CreateTemp("", "lys-ui-vinput-keymap-*")
 	if err != nil {
 		return err
 	}

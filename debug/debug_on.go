@@ -1,4 +1,4 @@
-//go:build gelmdebug
+//go:build lysuidebug
 
 package debug
 
@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// Enabled is true in builds carrying the gelmdebug tag.
+// Enabled is true in builds carrying the lysuidebug tag.
 const Enabled = true
 
 // categories selects which trace lines pass at runtime, parsed once
@@ -26,7 +26,7 @@ var (
 // offsets instead of wall-clock noise.
 var start = time.Now()
 
-// Log emits one trace line when the build has the gelmdebug tag and
+// Log emits one trace line when the build has the lysuidebug tag and
 // GOELM_DEBUG admits the category: "<offset>s <category>: <message>"
 // on stderr.
 func Log(category, format string, args ...any) {

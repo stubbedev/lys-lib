@@ -1,7 +1,7 @@
-// Package debug is gelm's compile-time trace facility. Call sites stay
+// Package debug is lys-ui's compile-time trace facility. Call sites stay
 // in the source at the points that matter (input routing, frame
 // pacing, configure handshakes) but compile out of prod builds: the
-// gelmdebug build tag swaps in an enabled implementation, and with the
+// lysuidebug build tag swaps in an enabled implementation, and with the
 // tag off Log is an empty function, so the compiler eliminates every
 // call and the evaluation of its arguments.
 //

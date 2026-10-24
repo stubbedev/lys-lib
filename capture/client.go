@@ -5,9 +5,9 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/stubbedev/gelm/third_party/neurlang-wayland/wl"
-	"github.com/stubbedev/gelm/third_party/neurlang-wayland/wlclient"
-	"github.com/stubbedev/gelm/wlr"
+	"github.com/stubbedev/lys-ui/third_party/neurlang-wayland/wl"
+	"github.com/stubbedev/lys-ui/third_party/neurlang-wayland/wlclient"
+	"github.com/stubbedev/lys-ui/wlr"
 )
 
 // Global names the client binds. They double as the protocol names in

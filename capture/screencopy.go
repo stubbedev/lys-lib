@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"image"
 
-	"github.com/stubbedev/gelm/third_party/neurlang-wayland/wl"
-	"github.com/stubbedev/gelm/wlr"
+	"github.com/stubbedev/lys-ui/third_party/neurlang-wayland/wl"
+	"github.com/stubbedev/lys-ui/wlr"
 )
 
 // screencopyYInvert is the zwlr_screencopy_frame_v1 flags bit that

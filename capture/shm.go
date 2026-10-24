@@ -6,8 +6,8 @@ import (
 	"math"
 	"os"
 
-	wlos "github.com/stubbedev/gelm/third_party/neurlang-wayland/os"
-	"github.com/stubbedev/gelm/third_party/neurlang-wayland/wl"
+	wlos "github.com/stubbedev/lys-ui/third_party/neurlang-wayland/os"
+	"github.com/stubbedev/lys-ui/third_party/neurlang-wayland/wl"
 )
 
 // shmBuffer is one memfd-backed wl_buffer the compositor copies a

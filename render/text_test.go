@@ -74,7 +74,7 @@ func TestDrawText(t *testing.T) {
 
 	t.Run("text leaves ink on the canvas", func(t *testing.T) {
 		cv, data := newTestCanvas(120, 32)
-		s := tf.Shape("gelm", 16)
+		s := tf.Shape("lys-ui", 16)
 		tf.Draw(cv, s, 4, 24, RGB(255, 255, 255))
 		_, count := inkBounds(data, Stride(120), 120, 32)
 		if count == 0 {

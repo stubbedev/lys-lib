@@ -152,7 +152,7 @@ func coverAxis(src, crop, box int, frac float64, off int) (d0, d1, s0, s1 int, o
 // Resample scales srcRect of src into a fresh dstW x dstH RGBA with the
 // CatmullRom kernel. Cubic resampling is what keeps fractional and
 // non-integer down- and upscales from the blockiness of a
-// nearest-neighbor pass (stubbedev/gelm#14); the canvas's own image
+// nearest-neighbor pass (stubbedev/lys-ui#14); the canvas's own image
 // drawing is nearest-neighbor and must never see unresampled pixels.
 func Resample(src image.Image, srcRect image.Rectangle, dstW, dstH int) *image.RGBA {
 	if dstW <= 0 || dstH <= 0 {

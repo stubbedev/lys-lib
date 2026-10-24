@@ -3,7 +3,7 @@ package capture
 import (
 	"fmt"
 
-	"github.com/stubbedev/gelm/wlr"
+	"github.com/stubbedev/lys-ui/wlr"
 )
 
 // sessionState accumulates an ext_image_copy_capture_session_v1's

@@ -39,7 +39,7 @@ func New(size int) (*Buffer, error) {
 		return nil, fmt.Errorf("udmabuf: %w", err)
 	}
 	defer dev.Close()
-	memfd, err := unix.MemfdCreate("gelm-udmabuf", unix.MFD_ALLOW_SEALING|unix.MFD_CLOEXEC)
+	memfd, err := unix.MemfdCreate("lys-ui-udmabuf", unix.MFD_ALLOW_SEALING|unix.MFD_CLOEXEC)
 	if err != nil {
 		return nil, fmt.Errorf("udmabuf: memfd: %w", err)
 	}

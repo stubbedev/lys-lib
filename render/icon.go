@@ -94,7 +94,7 @@ var foreignAttr = regexp.MustCompile(`\s(?:[A-Za-z_][\w.-]*):[A-Za-z_][\w.-]*\s*
 // dropForeignAttrs removes the attributes oksvg would misread as its
 // own: it ignores namespaces, so gpa:fill='foreground' overrode the
 // real fill and failed the parse. The SVG vocabulary keeps its
-// meaning; GTK symbolic recoloring is the tint gelm applies anyway.
+// meaning; GTK symbolic recoloring is the tint lys-ui applies anyway.
 func dropForeignAttrs(data []byte) []byte {
 	return foreignAttr.ReplaceAllFunc(data, func(m []byte) []byte {
 		name := bytes.TrimSpace(m)

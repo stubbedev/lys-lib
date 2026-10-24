@@ -10,7 +10,7 @@ package render
 import (
 	"testing"
 
-	"github.com/stubbedev/gelm/internal/golden"
+	"github.com/stubbedev/lys-ui/internal/golden"
 )
 
 // goldenCanvas paints into a fresh WxH canvas cleared to the dark

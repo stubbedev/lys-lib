@@ -8,7 +8,7 @@ import (
 	"golang.org/x/image/font/gofont/gomono"
 	"golang.org/x/image/font/gofont/goregular"
 
-	"github.com/stubbedev/gelm/internal/text"
+	"github.com/stubbedev/lys-ui/internal/text"
 )
 
 // dropShapes drains the process-wide shaping caches, so a test's keys
