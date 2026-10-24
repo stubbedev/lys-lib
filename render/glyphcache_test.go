@@ -86,6 +86,26 @@ func TestGlyphAtlasReuse(t *testing.T) {
 		}
 	})
 
+	t.Run("a bucket's mask does not depend on the pen that filled it", func(t *testing.T) {
+		s := tf.Shape("b", 16)
+		gid := s.runs[0].out.Glyphs[0].GlyphID
+		scale := 16.0 / tf.upem
+		glyphs.dropAll()
+		first, _ := cachedOutlineRaster(tf, gid, scale, 4.26, 30.0)
+		glyphs.dropAll()
+		cachedOutlineRaster(tf, gid, scale, 4.49, 30.0)
+		glyphs.dropAll()
+		second, _ := cachedOutlineRaster(tf, gid, scale, 4.49, 30.0)
+		if !bytes.Equal(first.mask, second.mask) || first.ox != second.ox || first.w != second.w {
+			t.Error("two pens in one bucket rasterized different masks: the cache keeps whichever came first")
+		}
+		glyphs.dropAll()
+		other, _ := cachedOutlineRaster(tf, gid, scale, 4.51, 30.0)
+		if bytes.Equal(first.mask, other.mask) {
+			t.Error("pens in different buckets share one mask: the bucket offset is not applied")
+		}
+	})
+
 	t.Run("device scale changes the key", func(t *testing.T) {
 		glyphs.dropAll()
 		data := make([]byte, Stride(320)*40)

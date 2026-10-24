@@ -71,19 +71,24 @@ func subpixelBucket(frac float64) uint8 {
 	return uint8(b)
 }
 
+// bucketOffset is the fractional pen offset a bucket's mask is
+// rasterized at: the bucket's lower edge. The mask is a pure function
+// of its key, so a cached glyph looks the same whichever pen in the
+// bucket happened to fill it first.
+func bucketOffset(b uint8) float64 { return float64(b) / subpixelBuckets }
+
 // cachedOutlineRaster returns the atlas entry for the outline glyph,
 // rasterizing it into the cache on a miss. ok is false when the face
 // has no outline segments for gid (a space, or a bitmap-only glyph);
 // that negative is cached too, so blank glyphs stop re-parsing their
 // empty outlines per draw.
 func cachedOutlineRaster(t *Typeface, gid font.GID, scale, penX, penY float64) (*glyphRaster, bool) {
-	fx, fy := penX-math.Floor(penX), penY-math.Floor(penY)
 	key := glyphKey{
 		face:  t,
 		scale: scale,
 		gid:   gid,
-		fx:    subpixelBucket(fx),
-		fy:    subpixelBucket(fy),
+		fx:    subpixelBucket(penX - math.Floor(penX)),
+		fy:    subpixelBucket(penY - math.Floor(penY)),
 	}
 	if g, ok := glyphs.get(key); ok {
 		if g == nil {
@@ -101,7 +106,7 @@ func cachedOutlineRaster(t *Typeface, gid font.GID, scale, penX, penY float64) (
 		glyphs.put(key, nil, 16)
 		return nil, false
 	}
-	g := rasterOutline(outline, scale, fx, fy)
+	g := rasterOutline(outline, scale, bucketOffset(key.fx), bucketOffset(key.fy))
 	glyphs.put(key, g, len(g.mask))
 	return g, true
 }
