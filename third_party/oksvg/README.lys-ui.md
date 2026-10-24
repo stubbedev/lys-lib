@@ -25,6 +25,12 @@ any icon size. The patch scales all three by the transform's area
 scale, sqrt(|det|), exact for uniform scales and rotations (lys-ui
 #189).
 
+### Stroke defaults are SVG's
+
+`path_style.go`, `DefaultStyle`: upstream defaults `stroke-width` to 2
+and `stroke-linejoin` to bevel; SVG's initial values are 1 and miter
+(lys-ui #191).
+
 ## Upstream status
 
 Each patch is offered upstream; once one is merged and released, the
