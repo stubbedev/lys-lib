@@ -539,3 +539,49 @@ func RoundedRectRegion(r Rect, radii Corners) []Rect {
 	}
 	return out
 }
+
+// PaintGrain blends a fine luminance noise over the rounded rect r:
+// each device pixel lightens or darkens by a hashed amount up to
+// opacity, the etching of frosted glass. The noise is anchored at the
+// logical origin (ox, oy) - the surface it belongs to - so it moves
+// with the surface and repaints identically: a pure function of the
+// pixel's offset from the origin, deterministic on every machine.
+func (c *Canvas) PaintGrain(r Rect, radii Corners, opacity float64, ox, oy int) {
+	if opacity <= 0 || c.clip.Empty() {
+		return
+	}
+	b, rc := c.devBox(r, radii)
+	o := c.MapRect(Rect{X: ox, Y: oy})
+	strength := uint32(math.Round(math.Min(opacity, 1) * 255))
+	sp := c.span(b)
+	for y := sp.Y; y < sp.Y+sp.H; y++ {
+		py := float64(y) + 0.5
+		xa, xb, solid := solidRun(b, rc, py)
+		for x := sp.X; x < sp.X+sp.W; x++ {
+			px := float64(x) + 0.5
+			cov := uint32(255)
+			if !solid || px < xa || px > xb {
+				cov = uint32(math.Round(coverage(sdBox(px, py, b, rc)) * 255))
+			}
+			n := grainNoise(x-o.X, y-o.Y)
+			// Signed around the midpoint: above lightens, below darkens.
+			ink, amt := RGB(255, 255, 255), n-128
+			if n < 128 {
+				ink, amt = RGB(0, 0, 0), 127-n
+			}
+			if a := amt * 2 * strength / 255 * cov / 255; a > 0 {
+				c.blend(x, y, coverageScale(ink, a))
+			}
+		}
+	}
+}
+
+// grainNoise is a hashed byte for a pixel offset: white noise without
+// a texture to store, the same for the same offset everywhere.
+func grainNoise(x, y int) uint32 {
+	h := uint32(x)*0x27d4eb2d ^ uint32(y)*0x165667b1
+	h ^= h >> 15
+	h *= 0x85ebca6b
+	h ^= h >> 13
+	return h & 0xff
+}

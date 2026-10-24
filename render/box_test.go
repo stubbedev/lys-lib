@@ -1,6 +1,7 @@
 package render
 
 import (
+	"bytes"
 	"testing"
 )
 
@@ -202,5 +203,42 @@ func TestRoundedRectRegion(t *testing.T) {
 	}
 	if len(rects) > 2*(12+20)+1 {
 		t.Errorf("%d rects; rows of equal span must merge", len(rects))
+	}
+}
+
+// The grain is deterministic, anchored to its origin (the same pattern
+// moves with the surface), and averages out to about no tint (#198).
+func TestPaintGrain(t *testing.T) {
+	shot := func(r Rect, ox, oy int) (*Canvas, []byte) {
+		cv, d := newTestCanvas(60, 40)
+		cv.Clear(cv.Rect(), RGB(128, 128, 128))
+		cv.PaintGrain(r, Corners{}, 0.2, ox, oy)
+		return cv, d
+	}
+	a, da := shot(Rect{X: 4, Y: 4, W: 20, H: 20}, 4, 4)
+	_, db := shot(Rect{X: 4, Y: 4, W: 20, H: 20}, 4, 4)
+	if !bytes.Equal(da, db) {
+		t.Fatal("the same grain painted different pixels")
+	}
+	moved, _ := shot(Rect{X: 30, Y: 10, W: 20, H: 20}, 30, 10)
+	sum, varied := 0, false
+	for y := range 20 {
+		for x := range 20 {
+			p := a.get(4+x, 4+y)
+			if p != moved.get(30+x, 10+y) {
+				t.Fatalf("grain at offset (%d,%d) differs after the move; it must move with its origin", x, y)
+			}
+			sum += int(p.R()) - 128
+			varied = varied || p != a.get(4, 4)
+		}
+	}
+	if !varied {
+		t.Error("the grain is flat")
+	}
+	if mean := float64(sum) / 400; mean < -4 || mean > 4 {
+		t.Errorf("grain shifts the mean by %.1f levels, want about none", mean)
+	}
+	if a.get(2, 2) != RGB(128, 128, 128) {
+		t.Error("grain painted outside its rect")
 	}
 }
