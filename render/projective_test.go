@@ -108,7 +108,7 @@ func TestSnapshotSamplesBackdrop(t *testing.T) {
 	}
 	var f Filters
 	f.Append(FilterOp{Kind: FilterBrightness, Amount: 0})
-	ApplyFilters(l, l.cv.Rect(), &f)
+	ApplyFilters(l, l.cv.Rect(), &f, FilterShape{})
 	if l.cv.get(3, 3).R() != 0 {
 		t.Error("filtering the snapshot left color")
 	}

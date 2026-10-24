@@ -24,7 +24,7 @@ func TestFilterGrayscaleLuminanceWeights(t *testing.T) {
 		l := filterLayer(t, tc.in, 4, 4)
 		var f Filters
 		f.Append(FilterOp{Kind: FilterGrayscale, Amount: 1})
-		ApplyFilters(l, l.cv.Rect(), &f)
+		ApplyFilters(l, l.cv.Rect(), &f, FilterShape{})
 		c := l.cv.get(2, 2)
 		if c.R() != c.G() || c.G() != c.B() || abs64(float64(c.R())-float64(tc.want)) > 1 {
 			t.Errorf("grayscale(%08x) = %02x%02x%02x, want ~%02x", uint32(tc.in), c.R(), c.G(), c.B(), tc.want)
@@ -88,7 +88,7 @@ func TestFilterMatrixFunctions(t *testing.T) {
 		l := filterLayer(t, tc.in, 4, 4)
 		var f Filters
 		f.Append(tc.op)
-		ApplyFilters(l, l.cv.Rect(), &f)
+		ApplyFilters(l, l.cv.Rect(), &f, FilterShape{})
 		if got := l.cv.get(2, 2); !tc.check(got) {
 			t.Errorf("%s: %08x -> %08x", tc.name, uint32(tc.in), uint32(got))
 		}
@@ -103,7 +103,7 @@ func TestFilterChainComposes(t *testing.T) {
 	var f Filters
 	f.Append(FilterOp{Kind: FilterBrightness, Amount: 2})
 	f.Append(FilterOp{Kind: FilterGrayscale, Amount: 1})
-	ApplyFilters(l, l.cv.Rect(), &f)
+	ApplyFilters(l, l.cv.Rect(), &f, FilterShape{})
 	if c := l.cv.get(2, 2); !nearC(c.R(), 54) || !nearC(c.G(), 54) {
 		t.Errorf("chain = %02x%02x%02x, want saturated gray", c.R(), c.G(), c.B())
 	}
@@ -111,7 +111,7 @@ func TestFilterChainComposes(t *testing.T) {
 	f = Filters{}
 	f.Append(FilterOp{Kind: FilterBrightness, Amount: 2})
 	f.Append(FilterOp{Kind: FilterGrayscale, Amount: 1})
-	ApplyFilters(l, l.cv.Rect(), &f)
+	ApplyFilters(l, l.cv.Rect(), &f, FilterShape{})
 	// Unsaturated: 100 -> 200, then the red weight .2126: ~43.
 	if c := l.cv.get(2, 2); !nearC(c.R(), 43) {
 		t.Errorf("chain unsaturated = %02x, want ~43", c.R())
@@ -147,7 +147,7 @@ func TestFilterBlurSpreadsAndFades(t *testing.T) {
 	before := layerEnergy(l)
 	var f Filters
 	f.Append(FilterOp{Kind: FilterBlur, Amount: 4})
-	ApplyFilters(l, l.cv.Rect(), &f)
+	ApplyFilters(l, l.cv.Rect(), &f, FilterShape{})
 	c := l.cv.get(11, 11)
 	if c.A() == 255 {
 		t.Error("blur left the center fully opaque")
@@ -184,7 +184,7 @@ func TestFilterDropShadowUnderSilhouette(t *testing.T) {
 	}
 	var f Filters
 	f.Append(FilterOp{Kind: FilterDropShadow, Shadow: DropShadow{DX: 0, DY: 6, Blur: 0, Color: RGB(0, 255, 0)}})
-	ApplyFilters(l, l.cv.Rect(), &f)
+	ApplyFilters(l, l.cv.Rect(), &f, FilterShape{})
 	if c := l.cv.get(8, 8); c != RGB(255, 255, 255) {
 		t.Errorf("drop-shadow painted over the silhouette: %08x", uint32(c))
 	}
@@ -215,7 +215,7 @@ func TestFilterHeavyBlurMatchesFullResolution(t *testing.T) {
 	got := paint()
 	var f Filters
 	f.Append(FilterOp{Kind: FilterBlur, Amount: radius})
-	ApplyFilters(got, got.cv.Rect(), &f)
+	ApplyFilters(got, got.cv.Rect(), &f, FilterShape{})
 
 	want := paint()
 	n := w * h
@@ -258,7 +258,7 @@ func TestFilterBlurScalesWithTheDevice(t *testing.T) {
 		}
 		var f Filters
 		f.Append(FilterOp{Kind: FilterBlur, Amount: 4})
-		ApplyFilters(l, l.cv.Rect(), &f)
+		ApplyFilters(l, l.cv.Rect(), &f, FilterShape{})
 		r := 0
 		for x := range sq {
 			if l.cv.get(sq-1-x, sq+sq/2).A() > 2 {
@@ -270,5 +270,39 @@ func TestFilterBlurScalesWithTheDevice(t *testing.T) {
 	r1, r2 := reach(1), reach(2)
 	if r2 < 2*r1-2 || r2 > 2*r1+2 {
 		t.Errorf("blur reach %d device px at 1x, %d at 2x; want twice", r1, r2)
+	}
+}
+
+// -lys-refract bends only the bezel: inside the shape within the bezel
+// of its edge pixels sample the backdrop displaced outward; past the
+// bezel and outside the shape they stay as they were (#197).
+func TestFilterRefractBendsTheBezel(t *testing.T) {
+	const w, h = 80, 60
+	stripes := func() *Layer {
+		l := filterLayer(t, 0, w, h)
+		for y := range h {
+			for x := range w {
+				l.cv.set(x, y, RGB(uint8(x*3), uint8(y*4), 200))
+			}
+		}
+		return l
+	}
+	before := stripes()
+	l := stripes()
+	var f Filters
+	f.Append(FilterOp{Kind: FilterRefract, Bezel: 10, Amount: 6})
+	shape := FilterShape{Box: Rect{X: 20, Y: 15, W: 40, H: 30}, Radii: UniformCorners(8)}
+	ApplyFilters(l, l.cv.Rect(), &f, shape)
+	same := func(x, y int) bool { return l.cv.get(x, y) == before.cv.get(x, y) }
+	if !same(5, 5) || !same(70, 50) {
+		t.Error("refract changed pixels outside the shape")
+	}
+	if !same(40, 30) {
+		t.Error("refract changed the middle, past the bezel")
+	}
+	// On the left edge the backdrop comes from further left: a smaller
+	// red ramp value than the pixel's own.
+	if got, own := l.cv.get(21, 30).R(), before.cv.get(21, 30).R(); got >= own {
+		t.Errorf("left rim red %d, want below its own %d (sampled from outside)", got, own)
 	}
 }

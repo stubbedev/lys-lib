@@ -28,6 +28,9 @@ const (
 	FilterSaturate
 	FilterSepia
 	FilterDropShadow
+	// FilterRefract is lys-ui's -lys-refract(): the backdrop bends
+	// through a glass bezel along the shape's edge.
+	FilterRefract
 )
 
 // DropShadow is one drop-shadow() shadow: the offset in device
@@ -45,6 +48,17 @@ type FilterOp struct {
 	Kind   FilterKind
 	Amount float64
 	Shadow DropShadow
+	// Bezel is -lys-refract()'s bezel width; Amount is then its
+	// displacement at the edge. Both CSS pixels.
+	Bezel float64
+}
+
+// FilterShape is the box a filter list applies to, in logical pixels:
+// the border box and its corner radii, what -lys-refract() bends
+// along. The zero shape has no edge, so nothing bends.
+type FilterShape struct {
+	Box   Rect
+	Radii Corners
 }
 
 // MaxFilters bounds a filter list; later functions past it are
@@ -93,6 +107,11 @@ func (f *Filters) Extent() Insets {
 		switch op.Kind {
 		case FilterBlur:
 			r := int(math.Ceil(op.Amount * 1.5))
+			out.Top, out.Right = max(out.Top, r), max(out.Right, r)
+			out.Bottom, out.Left = max(out.Bottom, r), max(out.Left, r)
+		case FilterRefract:
+			// The bezel samples up to the displacement outside the box.
+			r := int(math.Ceil(op.Amount))
 			out.Top, out.Right = max(out.Top, r), max(out.Right, r)
 			out.Bottom, out.Left = max(out.Bottom, r), max(out.Left, r)
 		case FilterDropShadow:
@@ -196,9 +215,10 @@ func filterMatrix(kind FilterKind, amount float64) colorMatrix {
 
 // ApplyFilters applies the list to l's device region in place. The
 // ops' lengths are logical (CSS) pixels, scaled here by the layer's
-// device scale. The region must already cover every op's Extent;
-// blur and drop-shadow read transparent outside it.
-func ApplyFilters(l *Layer, region Rect, f *Filters) {
+// device scale; shape is the box the list applies to. The region must
+// already cover every op's Extent; blur, drop-shadow and refract read
+// transparent outside it.
+func ApplyFilters(l *Layer, region Rect, f *Filters, shape FilterShape) {
 	if l == nil || f.Empty() {
 		return
 	}
@@ -217,6 +237,8 @@ func ApplyFilters(l *Layer, region Rect, f *Filters) {
 			s := op.Shadow
 			s.DX, s.DY, s.Blur = s.DX*scale, s.DY*scale, s.Blur*scale
 			dropShadowRegion(l, region, &s)
+		case FilterRefract:
+			refractRegion(l, region, shape, op.Bezel*scale, op.Amount*scale)
 		default:
 			// Each color function applies on its own: the spec clamps
 			// every function's output, and composing the matrices would
@@ -463,6 +485,72 @@ func lerp256(a, b Color, t uint32) Color {
 		return (x*(256-t) + y*t + 128) >> 8
 	}
 	return Color(ch(24)<<24 | ch(16)<<16 | ch(8)<<8 | ch(0))
+}
+
+// refractRegion bends region's pixels through a glass bezel along
+// shape's edge: inside the shape, within bezel device pixels of the
+// edge, each pixel samples the backdrop displaced outward along the
+// edge normal, by disp at the edge falling off quadratically to none
+// at the bezel's inner side - the rim of a lens, which shows what lies
+// just beyond it. Samples are bilinear; past the bezel, and outside
+// the shape, pixels stay as they are.
+func refractRegion(l *Layer, region Rect, shape FilterShape, bezel, disp float64) {
+	if bezel <= 0 || disp <= 0 || shape.Box.Empty() {
+		return
+	}
+	b, rc := l.cv.devBox(shape.Box, shape.Radii)
+	n := region.W * region.H
+	l.blurA = growColors(l.blurA, n)
+	src := l.blurA[:n]
+	readRegion(l.cv, region, src)
+	at := func(x, y int) Color {
+		if x < 0 || y < 0 || x >= region.W || y >= region.H {
+			return 0
+		}
+		return src[y*region.W+x]
+	}
+	sample := func(fx, fy float64) Color {
+		x0, y0 := int(math.Floor(fx)), int(math.Floor(fy))
+		tx, ty := uint32((fx-float64(x0))*256), uint32((fy-float64(y0))*256)
+		top := lerp256(at(x0, y0), at(x0+1, y0), tx)
+		bot := lerp256(at(x0, y0+1), at(x0+1, y0+1), tx)
+		return lerp256(top, bot, ty)
+	}
+	// Deeper than the bezel nothing moves: that run skips the field.
+	deep := frect{b.x0 + bezel, b.y0 + bezel, b.x1 - bezel, b.y1 - bezel}
+	var drc fcorners
+	for i := range rc {
+		drc[i] = math.Max(0, rc[i]-bezel)
+	}
+	deepOK := deep.x1 > deep.x0 && deep.y1 > deep.y0
+	rows := region.Intersect(l.cv.span(b))
+	for y := rows.Y; y < rows.Y+rows.H; y++ {
+		py := float64(y) + 0.5
+		xa, xb, skip := solidRun(deep, drc, py)
+		skip = skip && deepOK
+		out := l.cv.data[y*l.cv.stride:]
+		for x := rows.X; x < rows.X+rows.W; x++ {
+			px := float64(x) + 0.5
+			if skip && px >= xa && px <= xb {
+				continue
+			}
+			d := sdBox(px, py, b, rc)
+			if d > 0 || d <= -bezel {
+				continue
+			}
+			nx := sdBox(px+0.5, py, b, rc) - sdBox(px-0.5, py, b, rc)
+			ny := sdBox(px, py+0.5, b, rc) - sdBox(px, py-0.5, b, rc)
+			norm := math.Hypot(nx, ny)
+			if norm == 0 {
+				continue
+			}
+			k := 1 + d/bezel // 1 at the edge, 0 at the bezel's inner side
+			m := disp * k * k / norm
+			c := sample(px-0.5-float64(region.X)+nx*m, py-0.5-float64(region.Y)+ny*m)
+			binary.LittleEndian.PutUint32(out[x*4:], uint32(c))
+		}
+	}
+	l.cv.touched += rows.W * rows.H
 }
 
 // growColors returns s with room for n colors, reusing its storage.
