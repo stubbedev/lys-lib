@@ -14,12 +14,9 @@ import (
 // one.
 func openDevice(t testing.TB) *Device {
 	t.Helper()
-	icd, required, err := gputest.Driver()
+	required, err := gputest.SetupTest(t)
 	if err != nil {
 		t.Fatal(err)
-	}
-	if icd != "" {
-		t.Setenv("VK_DRIVER_FILES", icd)
 	}
 	d, err := Open()
 	if errors.Is(err, ErrNoVulkan) || errors.Is(err, ErrNoDevice) {
