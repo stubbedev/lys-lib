@@ -57,9 +57,9 @@ type scratch struct {
 	// page holds a segment's sprites; blank is sampled by draws that
 	// sample nothing.
 	page, blank *surface
-	// filterTemp holds a layer region a color matrix step reads while
-	// it writes the layer.
-	filterTemp                      *surface
+	// filterTemp and filterTemp2 hold a layer region an in-place
+	// call reads while it writes the layer, and a blur's passes.
+	filterTemp, filterTemp2         *surface
 	prims, words, staging, readback *buffer
 	scratchW, scratchH              int
 	freeLayers                      []*layerSurface
@@ -99,7 +99,7 @@ func (d *Device) ensureScratch(w, h int) error {
 		return nil
 	}
 	d.scratchW, d.scratchH = max(w, d.scratchW), max(h, d.scratchH)
-	for _, s := range []*surface{d.page, d.filterTemp} {
+	for _, s := range []*surface{d.page, d.filterTemp, d.filterTemp2} {
 		if s != nil {
 			s.close()
 		}
@@ -108,13 +108,15 @@ func (d *Device) ensureScratch(w, h int) error {
 	if d.page, err = d.newSurface(d.scratchW, d.scratchH); err != nil {
 		return err
 	}
-	if d.filterTemp, err = d.newSurface(d.scratchW, d.scratchH); err != nil {
-		return err
+	for _, t := range []**surface{&d.filterTemp, &d.filterTemp2} {
+		if *t, err = d.newSurface(d.scratchW, d.scratchH); err != nil {
+			return err
+		}
+		if err := (*t).ready(); err != nil {
+			return err
+		}
 	}
 	d.scratches = nil
-	if err := d.filterTemp.ready(); err != nil {
-		return err
-	}
 	return d.page.ready()
 }
 
@@ -214,7 +216,7 @@ func (d *Device) closeScratch() {
 	for _, ls := range d.freeLayers {
 		ls.s.close()
 	}
-	for _, s := range []*surface{d.page, d.blank, d.masks.page, d.filterTemp} {
+	for _, s := range []*surface{d.page, d.blank, d.masks.page, d.filterTemp, d.filterTemp2} {
 		if s != nil {
 			s.close()
 		}

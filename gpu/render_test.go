@@ -330,3 +330,42 @@ func TestRenderLayerMasks(t *testing.T) {
 		})
 	}
 }
+
+// Blurs run on the GPU by render's integer plan: full-resolution box
+// passes, and heavier ones area-averaged down, passed and sampled back,
+// mixed with color steps, as the CPU blurs them.
+func TestRenderBlurs(t *testing.T) {
+	d := openDevice(t)
+	face, err := render.NewFixtureTypeface()
+	if err != nil {
+		t.Fatal(err)
+	}
+	lists := [][]render.FilterOp{
+		{{Kind: render.FilterBlur, Amount: 3}},
+		{{Kind: render.FilterBlur, Amount: 14}},
+		{{Kind: render.FilterSaturate, Amount: 1.8}, {Kind: render.FilterBlur, Amount: 40}},
+		{{Kind: render.FilterBlur, Amount: 7}, {Kind: render.FilterContrast, Amount: 1.4}},
+	}
+	for _, sc := range [][2]int{{1, 1}, {3, 2}} {
+		w, h := 260*sc[0]/sc[1], 90*sc[0]/sc[1]
+		parity(t, d, w, h, sc[0], sc[1], 1, func(cv *render.Canvas, _ int) {
+			cv.Clear(cv.Rect(), render.RGBA(16, 18, 24, 255))
+			for i, ops := range lists {
+				box := render.Rect{X: 8 + 63*i, Y: 8, W: 51, H: 73}
+				var fl render.Filters
+				for _, op := range ops {
+					fl.Append(op)
+				}
+				region := cv.MapRect(fl.Extent().Grow(box)).Intersect(cv.Rect())
+				l := cv.ScratchLayer(region)
+				lc := l.Canvas()
+				lc.RoundedRectCorners(box, render.UniformCorners(9), render.RGBA(180, 60, 40, 220))
+				lc.FillRect(render.Rect{X: box.X + 6, Y: box.Y + 30, W: 30, H: 14}, render.RGBA(20, 90, 200, 160))
+				face.DrawAligned(lc, "Blur", render.Rect{X: box.X + 4, Y: box.Y + 4, W: 44, H: 18}, 14, render.RGBA(240, 240, 240, 255), render.AlignStart)
+				render.ApplyFilters(l, region, &fl, render.FilterShape{})
+				cv.DrawLayer(l, region, render.BlendNormal)
+				l.Release()
+			}
+		})
+	}
+}

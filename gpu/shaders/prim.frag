@@ -20,6 +20,10 @@ const uint kindMatrix = 13u;
 const uint kindCrossFade = 14u;
 const uint kindMaskLayer = 15u;
 const uint kindPathMask = 16u;
+const uint kindBoxH = 17u;
+const uint kindBoxV = 18u;
+const uint kindDownsample = 19u;
+const uint kindUpsample = 20u;
 
 // The info.w flags, gpu/prim.go's.
 const uint flagRaw = 1u;
@@ -292,6 +296,39 @@ int dot3(ivec3 k, ivec3 c) {
     return (k.x * c.x + k.y * c.y + k.z * c.z + 32768) >> 16;
 }
 
+// boxQ is render's boxDiv.q: (v + half) * recip >> 32, the high word
+// of the 32x32-bit product.
+uint boxQ(uint v, uint half_, uint recip) {
+    uint msb, lsb;
+    umulExtended(v + half_, recip, msb, lsb);
+    return msb;
+}
+
+uvec4 boxQ4(uvec4 v, uint half_, uint recip) {
+    return uvec4(boxQ(v.x, half_, recip), boxQ(v.y, half_, recip), boxQ(v.z, half_, recip), boxQ(v.w, half_, recip));
+}
+
+// boxRecip is render.newBoxDiv's reciprocal, 2^32/n + 1, for n from 2.
+uint boxRecip(uint n) {
+    uint q = 0xFFFFFFFFu / n;
+    if (0xFFFFFFFFu % n == n - 1u) {
+        q += 1u;
+    }
+    return q + 1u;
+}
+
+// upSource is render's: a destination index's lower source index at
+// scale d and the next one's weight, in 1/256.
+ivec2 upSource(int i, int d) {
+    int f = ((2 * i + 1) * 128 - d * 128) / d;
+    int i0 = f >> 8;
+    return ivec2(i0, f - i0 * 256);
+}
+
+uvec4 lerp256(uvec4 a, uvec4 b, uint t) {
+    return (a * (256u - t) + b * t + 128u) >> 8;
+}
+
 // bilinear is render.Layer.sample: texels outside src are transparent.
 uvec4 bilinear(vec4 src, vec2 at) {
     vec2 f0 = floor(at);
@@ -508,6 +545,60 @@ void main() {
             cov = uint(floor(texelFetch(tex2, at - b.xy + ivec2(p.radii.xy), 0).r * 255.0 + 0.5));
         }
         c = masked(texel(at), cov);
+        break;
+    }
+    case kindBoxH:
+    case kindBoxV: {
+        // render's boxPassH and boxPassV: the 2r+1 taps inside the
+        // working rect summed, rounded and divided.
+        ivec2 at = ivec2(floor(px));
+        ivec4 b = ivec4(p.box);
+        int r = int(p.radii.x);
+        ivec2 axis = kind == kindBoxH ? ivec2(1, 0) : ivec2(0, 1);
+        uvec4 sum = uvec4(0u);
+        for (int k = -r; k <= r; k++) {
+            ivec2 q = at + axis * k;
+            if (q.x >= b.x && q.y >= b.y && q.x < b.z && q.y < b.w) {
+                sum += texel(q);
+            }
+        }
+        c = boxQ4(sum, p.cols.x, p.cols.y);
+        break;
+    }
+    case kindDownsample: {
+        // render's downsample: the d x d block's average, a block cut by
+        // the region's edge averaging what it holds.
+        ivec2 at = ivec2(floor(px)) - ivec2(p.box.xy);
+        int d = int(p.radii.x);
+        ivec2 lo = ivec2(p.box.xy) + at * d;
+        ivec2 hi = min(lo + d, ivec2(p.box.zw));
+        uvec4 sum = uvec4(0u);
+        for (int y = lo.y; y < hi.y; y++) {
+            for (int x = lo.x; x < hi.x; x++) {
+                sum += texel(ivec2(x, y));
+            }
+        }
+        uint n = uint((hi.x - lo.x) * (hi.y - lo.y));
+        c = n == 1u ? sum : boxQ4(sum, n / 2u, boxRecip(n));
+        break;
+    }
+    case kindUpsample: {
+        // render's upsample: each row pair blended at the row weight,
+        // then across at the column weight, all in 1/256.
+        ivec2 at = ivec2(floor(px)) - ivec2(p.box.xy);
+        int d = int(p.radii.x);
+        ivec2 small = ivec2(p.box.zw) - ivec2(p.box.xy);
+        ivec2 sy = upSource(at.y, d);
+        ivec2 sx = upSource(at.x, d);
+        uint tx = sx.x < 0 ? 0u : uint(sx.y);
+        int x0 = clamp(sx.x, 0, small.x - 1);
+        int x1 = min(small.x - 1, x0 + 1);
+        int ya = clamp(sy.x, 0, small.y - 1);
+        int yb = clamp(sy.x + 1, 0, small.y - 1);
+        ivec2 o = ivec2(p.box.xy);
+        uvec4 c0 = lerp256(texel(o + ivec2(x0, ya)), texel(o + ivec2(x0, yb)), uint(sy.y));
+        uvec4 c1 = lerp256(texel(o + ivec2(x1, ya)), texel(o + ivec2(x1, yb)), uint(sy.y));
+        c = lerp256(c0, c1, tx);
         break;
     }
     case kindComposite: {

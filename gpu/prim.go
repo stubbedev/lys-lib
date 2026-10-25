@@ -39,6 +39,10 @@ const (
 	kindCrossFade
 	kindMaskLayer
 	kindPathMask
+	kindBoxH
+	kindBoxV
+	kindDownsample
+	kindUpsample
 )
 
 // The primitive flags, prim.frag's.

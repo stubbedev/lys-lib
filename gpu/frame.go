@@ -770,8 +770,15 @@ func (f *frame) ApplyPathMask(l *render.Layer, path *render.Path, region render.
 }
 
 func (f *frame) ApplyFilters(l *render.Layer, region render.Rect, fl *render.Filters, shape render.FilterShape) {
-	if steps, ok := fl.MatrixSteps(); ok && gpuSteps(steps) {
-		f.matrixSteps(f.layer(l), region, steps)
+	if steps, ok := fl.Steps(float64(f.num) / float64(f.denom)); ok && gpuSteps(steps) {
+		s := f.layer(l)
+		for _, st := range steps {
+			if st.IsBlur {
+				f.blur(s, region, st.Blur)
+			} else {
+				f.matrixStep(s, region, st.Matrix)
+			}
+		}
 		return
 	}
 	f.cpu(region, []*surface{f.layer(l)}, func(cvs []*render.Canvas) {
@@ -780,13 +787,16 @@ func (f *frame) ApplyFilters(l *render.Layer, region render.Rect, fl *render.Fil
 }
 
 // gpuSteps reports whether the shader's int32 fixed point holds every
-// linear step: a channel's three weighted products and the rounding
-// half stay below 2^31.
-func gpuSteps(steps []render.MatrixStep) bool {
+// linear color step: a channel's three weighted products and the
+// rounding half stay below 2^31.
+func gpuSteps(steps []render.FilterStep) bool {
 	for _, st := range steps {
+		if st.IsBlur {
+			continue
+		}
 		for row := range 3 {
 			var sum int64
-			for _, k := range st.K[row*3 : row*3+3] {
+			for _, k := range st.Matrix.K[row*3 : row*3+3] {
 				sum += max(int64(k), -int64(k)) * 255
 			}
 			if sum+32768 >= 1<<31 {
@@ -797,27 +807,64 @@ func gpuSteps(steps []render.MatrixStep) bool {
 	return true
 }
 
-// matrixSteps applies color matrix steps to s's region in place on the
-// GPU: each step copies the region aside and draws it back through the
-// matrix, as render's applyMatrixRegion computes it.
-func (f *frame) matrixSteps(s *surface, region render.Rect, steps []render.MatrixStep) {
-	r := region
-	for _, st := range steps {
-		if st.Identity {
+// matrixStep applies one color matrix step to s's region in place on
+// the GPU, as render's applyMatrixRegion computes it.
+func (f *frame) matrixStep(s *surface, region render.Rect, st render.MatrixStep) {
+	if st.Identity {
+		return
+	}
+	var p prim
+	m := st.M
+	p.box, p.radii, p.inner, p.iradii, p.widths = [4]float32(m[0:4]), [4]float32(m[4:8]), [4]float32(m[8:12]), [4]float32(m[12:16]), [4]float32(m[16:20])
+	if st.Linear {
+		k := st.K
+		p.m0 = [4]float32{float32(k[0]), float32(k[1]), float32(k[2]), 1}
+		p.m1 = [4]float32{float32(k[3]), float32(k[4]), float32(k[5])}
+		p.m2 = [4]float32{float32(k[6]), float32(k[7]), float32(k[8])}
+	}
+	p.m1[3] = render.Inv255
+	f.inPlace(s, region, nil, kindMatrix, p)
+}
+
+// blur blurs s's region in place on the GPU by render's plan, step for
+// step: at full resolution the region copies aside and the box passes
+// ping-pong between the two filter surfaces before copying back; at
+// 1/D the region area-averages into the first, the passes run there,
+// and it samples back into s.
+func (f *frame) blur(s *surface, region render.Rect, pl render.BlurPlan) {
+	r := region.Intersect(render.Rect{W: s.w, H: s.h})
+	if f.err != nil || r.Empty() {
+		return
+	}
+	t1, t2 := f.d.filterTemp, f.d.filterTemp2
+	work := r
+	if pl.D == 1 {
+		f.steps = append(f.steps, step{kind: stepCopy, src: s, dst: t1, region: rectOf(r)})
+	} else {
+		work = render.Rect{X: r.X, Y: r.Y, W: (r.W + pl.D - 1) / pl.D, H: (r.H + pl.D - 1) / pl.D}
+		p := prim{quad: quadOf(work), box: quadOf(r), info: [4]uint32{kindDownsample, 255, 0, flagRaw}}
+		p.radii[0] = float32(pl.D)
+		f.draw(t1, s, true, p)
+	}
+	for _, rad := range pl.Boxes {
+		if rad < 1 {
 			continue
 		}
-		var p prim
-		m := st.M
-		p.box, p.radii, p.inner, p.iradii, p.widths = [4]float32(m[0:4]), [4]float32(m[4:8]), [4]float32(m[8:12]), [4]float32(m[12:16]), [4]float32(m[16:20])
-		if st.Linear {
-			k := st.K
-			p.m0 = [4]float32{float32(k[0]), float32(k[1]), float32(k[2]), 1}
-			p.m1 = [4]float32{float32(k[3]), float32(k[4]), float32(k[5])}
-			p.m2 = [4]float32{float32(k[6]), float32(k[7]), float32(k[8])}
+		half, recip := render.BoxDivisor(2*rad + 1)
+		for _, kind := range [2]uint32{kindBoxH, kindBoxV} {
+			p := prim{quad: quadOf(work), box: quadOf(work), cols: [4]uint32{half, recip}, info: [4]uint32{kind, 255, 0, flagRaw}}
+			p.radii[0] = float32(rad)
+			f.draw(t2, t1, true, p)
+			t1, t2 = t2, t1
 		}
-		p.m1[3] = render.Inv255
-		f.inPlace(s, r, nil, kindMatrix, p)
 	}
+	if pl.D == 1 {
+		f.steps = append(f.steps, step{kind: stepCopy, src: t1, dst: s, region: rectOf(r)})
+		return
+	}
+	p := prim{quad: quadOf(r), box: quadOf(work), info: [4]uint32{kindUpsample, 255, 0, flagRaw}}
+	p.radii[0] = float32(pl.D)
+	f.draw(s, t1, true, p)
 }
 
 // inPlace reworks s's region r in place: it copies the region aside

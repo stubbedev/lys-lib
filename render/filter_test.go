@@ -221,7 +221,7 @@ func TestFilterHeavyBlurMatchesFullResolution(t *testing.T) {
 	n := w * h
 	buf := make([]Color, n)
 	readRegion(want.cv, want.cv.Rect(), buf)
-	want.blurPasses(buf, w, h, radius/2)
+	want.blurPasses(buf, w, h, blurBoxes(radius/2))
 	writeRegion(want.cv, want.cv.Rect(), buf)
 
 	// Within the blur's reach of the region's edge the two differ the

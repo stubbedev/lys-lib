@@ -266,6 +266,15 @@ func ApplyFilters(l *Layer, region Rect, f *Filters, shape FilterShape) {
 	}
 }
 
+// FilterStep is one function of a filter list as a GPU renderer
+// applies it: a color matrix step or a blur.
+type FilterStep struct {
+	Matrix MatrixStep
+	// Blur is the plan of a blur step; IsBlur marks one.
+	Blur   BlurPlan
+	IsBlur bool
+}
+
 // MatrixStep is one color function of a filter list as both renderers
 // apply it. A Linear step only mixes the color channels, so it runs on
 // the premultiplied pixels in 16.16 fixed point, K row by row, each
@@ -292,18 +301,23 @@ func stepOf(m colorMatrix) MatrixStep {
 	return st
 }
 
-// MatrixSteps is f's functions as color matrix steps, in order; false
-// when f holds one that is not a color function (blur, drop-shadow,
-// refract).
-func (f *Filters) MatrixSteps() ([]MatrixStep, bool) {
-	steps := make([]MatrixStep, 0, f.N)
+// Steps is f's functions as filter steps, in order, at device scale
+// (device pixels per CSS pixel, scale); false when f holds one a GPU
+// does not run (drop-shadow, refract).
+func (f *Filters) Steps(scale float64) ([]FilterStep, bool) {
+	steps := make([]FilterStep, 0, f.N)
 	for i := range f.N {
 		op := &f.Ops[i]
 		switch op.Kind {
-		case FilterBlur, FilterDropShadow, FilterRefract:
+		case FilterDropShadow, FilterRefract:
 			return nil, false
+		case FilterBlur:
+			if pl, ok := BlurPlanOf(op.Amount * scale); ok {
+				steps = append(steps, FilterStep{Blur: pl, IsBlur: true})
+			}
+		default:
+			steps = append(steps, FilterStep{Matrix: stepOf(filterMatrix(op.Kind, op.Amount))})
 		}
-		steps = append(steps, stepOf(filterMatrix(op.Kind, op.Amount)))
 	}
 	return steps, true
 }
@@ -411,32 +425,64 @@ func blurBoxes(sigma float64) [3]int {
 // back bilinearly: at that radius the difference is below what the
 // blur leaves visible, and the passes cost a fraction.
 func blurRegion(l *Layer, region Rect, radius float64) {
-	if radius <= 0 {
+	pl, ok := BlurPlanOf(radius)
+	if !ok {
 		return
 	}
-	sigma := radius / 2
 	n := region.W * region.H
 	l.blurA = growColors(l.blurA, n)
 	full := l.blurA[:n]
 	readRegion(l.cv, region, full)
-	d := blurScale(sigma)
-	if d == 1 {
-		l.blurPasses(full, region.W, region.H, sigma)
+	if pl.D == 1 {
+		l.blurPasses(full, region.W, region.H, pl.Boxes)
 		writeRegion(l.cv, region, full)
 		return
 	}
-	sw, sh := (region.W+d-1)/d, (region.H+d-1)/d
+	sw, sh := (region.W+pl.D-1)/pl.D, (region.H+pl.D-1)/pl.D
 	l.blurS = growColors(l.blurS, sw*sh)
 	small := l.blurS[:sw*sh]
-	downsample(small, full, region.W, region.H, d)
+	downsample(small, full, region.W, region.H, pl.D)
+	l.blurPasses(small, sw, sh, pl.Boxes)
+	l.upsample(full, small, region.W, region.H, sw, sh, pl.D)
+	writeRegion(l.cv, region, full)
+}
+
+// BlurPlan is how a blur of a device radius runs: at 1/D resolution
+// (D 1 runs at full), area-averaged down by D x D blocks and sampled
+// back bilinearly in 1/256 steps, through three separable box passes of
+// Boxes' radii (a pass of radius 0 is skipped). Every step is integer
+// arithmetic, so a GPU repeats it exactly.
+type BlurPlan struct {
+	D     int
+	Boxes [3]int
+}
+
+// BlurPlanOf is the plan for a blur of device radius radius; false for
+// none.
+func BlurPlanOf(radius float64) (BlurPlan, bool) {
+	if radius <= 0 {
+		return BlurPlan{}, false
+	}
+	sigma := radius / 2
+	d := blurScale(sigma)
+	if d == 1 {
+		return BlurPlan{D: 1, Boxes: blurBoxes(sigma)}, true
+	}
 	// The area average and the bilinear sampling blur too (variances
 	// (d²-1)/12 and d²/6 in full-resolution pixels): the passes make
 	// up only the rest, so the total stays sigma.
 	fd := float64(d)
 	rest := math.Max(0, sigma*sigma-(fd*fd-1)/12-fd*fd/6)
-	l.blurPasses(small, sw, sh, math.Sqrt(rest)/fd)
-	l.upsample(full, small, region.W, region.H, sw, sh, d)
-	writeRegion(l.cv, region, full)
+	return BlurPlan{D: d, Boxes: blurBoxes(math.Sqrt(rest) / fd)}, true
+}
+
+// BoxDivisor is how a box pass of 2r+1 taps, or a downsample block of
+// n pixels, divides its channel sums: (v + Half) * Recip >> 32, a
+// rounded division a shader repeats with a 32x32-bit multiply's high
+// word (Recip fits 32 bits from n 2 on; n 1 divides by nothing).
+func BoxDivisor(n int) (half, recip uint32) {
+	d := newBoxDiv(n)
+	return uint32(d.half), uint32(d.recip)
 }
 
 // blurScale is the downsampling factor for a blur of sigma: 1 (exact)
@@ -446,14 +492,14 @@ func blurScale(sigma float64) int {
 }
 
 // blurPasses runs the three box passes over a w x h buffer in place.
-func (l *Layer) blurPasses(buf []Color, w, h int, sigma float64) {
+func (l *Layer) blurPasses(buf []Color, w, h int, boxes [3]int) {
 	l.blurB = growColors(l.blurB, w*h)
 	scratch := l.blurB[:w*h]
 	if cap(l.blurAcc) < 4*w {
 		l.blurAcc = make([]uint32, 4*w)
 	}
 	acc := l.blurAcc[:4*w]
-	for _, r := range blurBoxes(sigma) {
+	for _, r := range boxes {
 		if r < 1 {
 			continue
 		}
