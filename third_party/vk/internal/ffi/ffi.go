@@ -85,8 +85,12 @@ func CallFunction(cif *CallInterface, fn unsafe.Pointer, rvalue unsafe.Pointer, 
 			args[i] = uintptr(*(*uint32)(avalue[i]))
 		case SInt32Type:
 			args[i] = uintptr(uint32(*(*int32)(avalue[i])))
-		case UInt64Type, PointerType:
+		case UInt64Type:
 			args[i] = *(*uintptr)(avalue[i])
+		case PointerType:
+			p := *(*unsafe.Pointer)(avalue[i])
+			onHeap(uintptr(p))
+			args[i] = uintptr(p)
 		default:
 			panic(fmt.Sprintf("ffi: argument %d of kind %d cannot pass through purego.SyscallN", i, kind))
 		}
@@ -105,6 +109,16 @@ func CallFunction(cif *CallInterface, fn unsafe.Pointer, rvalue unsafe.Pointer, 
 	}
 	return 0, nil
 }
+
+// onHeap keeps what its argument points at off the goroutine stack.
+// purego.SyscallN takes uintptrs, and only a pointer converted in the
+// call's own argument list is moved to the heap for it; converted
+// here, ahead of the call, a pointer into a stack the call then grows
+// and copies would leave C writing to the old one.
+//
+//go:uintptrescapes
+//go:noinline
+func onHeap(uintptr) {}
 
 // LoadLibrary opens the shared library name.
 func LoadLibrary(name string) (unsafe.Pointer, error) {
