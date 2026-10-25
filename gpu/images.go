@@ -1,12 +1,18 @@
 package gpu
 
 import (
+	"cmp"
 	"image"
+	"slices"
 )
 
 // imageIdleFrames is how many frames an image texture outlives its
 // last draw.
 const imageIdleFrames = 120
+
+// maxImages bounds the image textures kept, well inside the descriptor
+// sets (maxSurfaces) the device's layers and targets share.
+const maxImages = maxSurfaces / 2
 
 // imageTexture is an uploaded *image.RGBA and the frame it last drew.
 type imageTexture struct {
@@ -20,6 +26,9 @@ type imageTexture struct {
 type images struct {
 	byImage map[imageKey]*imageTexture
 	frames  uint64
+	// limit is the most textures kept, maxImages unless a test lowers
+	// it.
+	limit int
 }
 
 // imageKey is a raster's identity: its first pixel's memory, its rect
@@ -43,6 +52,12 @@ func (f *frame) imageTexture(img *image.RGBA) (*surface, bool) {
 		t.used = ims.frames
 		return t.s, true
 	}
+	if ims.limit == 0 {
+		ims.limit = maxImages
+	}
+	if len(ims.byImage) >= ims.limit {
+		ims.evictLRU()
+	}
 	s, err := f.d.newSurface(b.Dx(), b.Dy())
 	if err == nil {
 		err = s.ready()
@@ -63,6 +78,23 @@ func (f *frame) imageTexture(img *image.RGBA) (*surface, bool) {
 		}
 	}
 	return s, true
+}
+
+// evictLRU frees the least recently drawn quarter of the textures no
+// draw of this frame refers to. Earlier frames' work has finished (each
+// frame waits for its own), so they are free to go.
+func (ims *images) evictLRU() {
+	keys := make([]imageKey, 0, len(ims.byImage))
+	for key, t := range ims.byImage {
+		if t.used != ims.frames {
+			keys = append(keys, key)
+		}
+	}
+	slices.SortFunc(keys, func(a, b imageKey) int { return cmp.Compare(ims.byImage[a].used, ims.byImage[b].used) })
+	for _, key := range keys[:min(len(keys), max(1, ims.limit/4))] {
+		ims.byImage[key].s.close()
+		delete(ims.byImage, key)
+	}
 }
 
 // retireImages frees the textures no frame drew for imageIdleFrames,

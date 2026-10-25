@@ -405,3 +405,29 @@ func TestRenderBlurs(t *testing.T) {
 		})
 	}
 }
+
+// Image textures stay within their limit: new still images drawn frame
+// after frame evict the least recently drawn, never one this frame
+// draws, and the frames still match the CPU.
+func TestRenderImageTexturesStayBounded(t *testing.T) {
+	d := openDevice(t)
+	d.images.limit = 8
+	imgs := make([]render.StillImage, 30)
+	for i := range imgs {
+		img := image.NewRGBA(image.Rect(0, 0, 3, 3))
+		for p := range img.Pix {
+			img.Pix[p] = uint8(40 + 7*i + p)
+		}
+		imgs[i] = render.StillImage{RGBA: img}
+	}
+	parity(t, d, 64, 16, 1, 1, 10, func(cv *render.Canvas, frame int) {
+		cv.Clear(cv.Rect(), render.RGBA(0, 0, 0, 255))
+		for k := range 3 {
+			cv.DrawImageDevice(imgs[(3*frame+k)%len(imgs)], 4*k, 4)
+		}
+		cv.DrawImageDevice(imgs[0], 40, 4)
+	})
+	if n := len(d.images.byImage); n > 8 {
+		t.Errorf("%d image textures kept, limit 8", n)
+	}
+}
