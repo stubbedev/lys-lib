@@ -253,9 +253,41 @@ func (c *Canvas) RoundedBorderSides(r Rect, radii Corners, widths Insets, cols [
 		math.Max(0, rc[3]-math.Max(w[2], w[3])),
 	}
 	innerEmpty := in.x1 <= in.x0 || in.y1 <= in.y0
+	// ring is a pixel's coverage and side.
+	ring := func(px, py float64) (float64, int) {
+		cov := coverage(sdBox(px, py, b, rc))
+		if cov > 0 && !innerEmpty {
+			cov = math.Min(cov, 1-coverage(sdBox(px, py, in, irc)))
+		}
+		if cov <= 0 {
+			return 0, 0
+		}
+		return cov, borderSide(px, py, b, w)
+	}
 	sp := c.span(b)
+	// Across the top and bottom bands, clear of the corners' radii
+	// and of the side widths a pixel could be closer to, coverage and
+	// side vary only by row: one pixel stands for the run.
+	runX0 := min(max(sp.X, int(math.Ceil(b.x0+max(rc[0], rc[3], w[3])))+1), sp.X+sp.W)
+	runX1 := max(min(sp.X+sp.W, int(math.Floor(b.x1-max(rc[1], rc[2], w[1])))-1), runX0)
 	for y := sp.Y; y < sp.Y+sp.H; y++ {
 		py := float64(y) + 0.5
+		if !innerEmpty && (py < in.y0 || py > in.y1) && runX1 > runX0 {
+			for x := sp.X; x < runX0; x++ {
+				c.ringPixel(x, y, ring, py, cols)
+			}
+			if cov, side := ring(float64(runX0)+0.5, py); cov > 0 {
+				col := cols[side]
+				if cov < 1 {
+					col = coverageScale(col, uint32(math.Round(cov*255)))
+				}
+				c.blendRun(runX0, runX1, y, col)
+			}
+			for x := runX1; x < sp.X+sp.W; x++ {
+				c.ringPixel(x, y, ring, py, cols)
+			}
+			continue
+		}
 		// The inner shape's solid run is the ring's hole: coverage 0,
 		// skipped whole.
 		hs, he := sp.X+sp.W, sp.X+sp.W
@@ -263,26 +295,19 @@ func (c *Canvas) RoundedBorderSides(r Rect, radii Corners, widths Insets, cols [
 			hs = min(max(sp.X, int(math.Ceil(xa-0.5))), sp.X+sp.W)
 			he = min(max(hs, int(math.Floor(xb-0.5))+1), sp.X+sp.W)
 		}
-		for x := sp.X; x < sp.X+sp.W; x++ {
-			if x == hs {
-				x = he
-				if x >= sp.X+sp.W {
-					break
-				}
-			}
-			px := float64(x) + 0.5
-			cov := coverage(sdBox(px, py, b, rc))
-			if cov <= 0 {
-				continue
-			}
-			if !innerEmpty {
-				cov = math.Min(cov, 1-coverage(sdBox(px, py, in, irc)))
-			}
-			if cov <= 0 {
-				continue
-			}
-			c.blendCov(x, y, cols[borderSide(px, py, b, w)], cov)
+		for x := sp.X; x < hs; x++ {
+			c.ringPixel(x, y, ring, py, cols)
 		}
+		for x := he; x < sp.X+sp.W; x++ {
+			c.ringPixel(x, y, ring, py, cols)
+		}
+	}
+}
+
+// ringPixel blends one border ring pixel by its coverage and side.
+func (c *Canvas) ringPixel(x, y int, ring func(px, py float64) (float64, int), py float64, cols [4]Color) {
+	if cov, side := ring(float64(x)+0.5, py); cov > 0 {
+		c.blendCov(x, y, cols[side], cov)
 	}
 }
 
