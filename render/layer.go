@@ -114,13 +114,17 @@ type Layer struct {
 
 // Layer returns a layer the size and scale of c whose region (device
 // pixels) is transparent and is the layer's clip; drawing lands only
-// there. old's buffer is reused when it is the right size, so a layer
-// kept across frames allocates once.
+// there. old's buffer is reused whenever it is big enough, so a layer
+// kept across frames allocates once, and again only when it grows.
 func (c *Canvas) Layer(old *Layer, region Rect) *Layer {
 	n := c.stride * c.h
 	l := old
-	if l == nil || len(l.buf) != n || l.cv.w != c.w || l.cv.h != c.h || l.cv.num != c.num || l.cv.denom != c.denom {
+	switch {
+	case l == nil || cap(l.buf) < n:
 		l = &Layer{buf: make([]byte, n)}
+		l.cv = NewScaled(l.buf, c.stride, c.w, c.h, c.num, c.denom)
+	case len(l.buf) != n || l.cv.stride != c.stride || l.cv.w != c.w || l.cv.h != c.h || l.cv.num != c.num || l.cv.denom != c.denom:
+		l.buf = l.buf[:n]
 		l.cv = NewScaled(l.buf, c.stride, c.w, c.h, c.num, c.denom)
 	}
 	l.cv.alpha, l.cv.bright = 1, 0
