@@ -31,6 +31,9 @@ func UniformInsets(v int) Insets { return Insets{v, v, v, v} }
 // Zero reports whether every side is zero.
 func (i Insets) Zero() bool { return i == Insets{} }
 
+// Max is the widest of the four sides.
+func (i Insets) Max() int { return max(i.Top, i.Right, i.Bottom, i.Left) }
+
 // Shrink pulls r in by the insets, clamping at an empty rect.
 func (i Insets) Shrink(r Rect) Rect {
 	return Rect{
