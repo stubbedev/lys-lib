@@ -1,0 +1,74 @@
+//go:build !(js && wasm)
+
+package vk
+
+import (
+	"sync"
+	"unsafe"
+
+	"github.com/go-webgpu/goffi/ffi"
+	"github.com/go-webgpu/goffi/types"
+)
+
+// The call interfaces vk-gen has no template for, prepared on first use.
+var (
+	lysuiSigsOnce             sync.Once
+	lysuiSigsErr              error
+	sigVoidHandleHandlePtrPtr types.CallInterface
+	sigVoidCmdClearColorImage types.CallInterface
+	sigResultHandleU32I32Ptr  types.CallInterface
+)
+
+func lysuiSigs() error {
+	lysuiSigsOnce.Do(func() {
+		u64, u32, i32, ptr := types.UInt64TypeDescriptor, types.UInt32TypeDescriptor, types.SInt32TypeDescriptor, types.PointerTypeDescriptor
+		if lysuiSigsErr = ffi.PrepareCallInterface(&sigVoidHandleHandlePtrPtr, types.DefaultCall, types.VoidTypeDescriptor,
+			[]*types.TypeDescriptor{u64, u64, ptr, ptr}); lysuiSigsErr != nil {
+			return
+		}
+		if lysuiSigsErr = ffi.PrepareCallInterface(&sigVoidCmdClearColorImage, types.DefaultCall, types.VoidTypeDescriptor,
+			[]*types.TypeDescriptor{u64, u64, u32, ptr, u32, ptr}); lysuiSigsErr != nil {
+			return
+		}
+		lysuiSigsErr = ffi.PrepareCallInterface(&sigResultHandleU32I32Ptr, types.DefaultCall, types.SInt32TypeDescriptor,
+			[]*types.TypeDescriptor{u64, u32, i32, ptr})
+	})
+	return lysuiSigsErr
+}
+
+// GetImageSubresourceLayout wraps vkGetImageSubresourceLayout.
+func (c *Commands) GetImageSubresourceLayout(device Device, image Image, pSubresource *ImageSubresource, pLayout *SubresourceLayout) {
+	if c.getImageSubresourceLayout == nil || lysuiSigs() != nil {
+		return
+	}
+	args := [4]unsafe.Pointer{unsafe.Pointer(&device), unsafe.Pointer(&image), unsafe.Pointer(&pSubresource), unsafe.Pointer(&pLayout)}
+	_, _ = ffi.CallFunction(&sigVoidHandleHandlePtrPtr, c.getImageSubresourceLayout, nil, args[:])
+}
+
+// CmdClearColorImage wraps vkCmdClearColorImage.
+func (c *Commands) CmdClearColorImage(commandBuffer CommandBuffer, image Image, imageLayout ImageLayout, pColor *ClearColorValue, rangeCount uint32, pRanges *ImageSubresourceRange) {
+	if c.cmdClearColorImage == nil || lysuiSigs() != nil {
+		return
+	}
+	layout := uint32(imageLayout)
+	args := [6]unsafe.Pointer{unsafe.Pointer(&commandBuffer), unsafe.Pointer(&image), unsafe.Pointer(&layout), unsafe.Pointer(&pColor), unsafe.Pointer(&rangeCount), unsafe.Pointer(&pRanges)}
+	_, _ = ffi.CallFunction(&sigVoidCmdClearColorImage, c.cmdClearColorImage, nil, args[:])
+}
+
+// GetMemoryFdPropertiesKHR wraps vkGetMemoryFdPropertiesKHR: the
+// memory types an imported fd (a client's dmabuf) can bind as.
+func (c *Commands) GetMemoryFdPropertiesKHR(device Device, handleType ExternalMemoryHandleTypeFlagBits, fd int32, pMemoryFdProperties *MemoryFdPropertiesKHR) Result {
+	if c.getMemoryFdPropertiesKHR == nil {
+		return ErrorExtensionNotPresent
+	}
+	if err := lysuiSigs(); err != nil {
+		return ErrorInitializationFailed
+	}
+	var result int32
+	ht := uint32(handleType)
+	args := [4]unsafe.Pointer{unsafe.Pointer(&device), unsafe.Pointer(&ht), unsafe.Pointer(&fd), unsafe.Pointer(&pMemoryFdProperties)}
+	if _, err := ffi.CallFunction(&sigResultHandleU32I32Ptr, c.getMemoryFdPropertiesKHR, unsafe.Pointer(&result), args[:]); err != nil {
+		return ErrorInitializationFailed
+	}
+	return Result(result)
+}
