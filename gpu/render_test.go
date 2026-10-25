@@ -138,6 +138,8 @@ func TestRenderFallbacksAndLayers(t *testing.T) {
 			kept := keptBy[recorded]
 			cv.Clear(cv.Rect(), render.RGBA(16, 18, 24, 255))
 			cv.Line(2, 4, 60, 20, 2, red)
+			cv.Line(70, 30, 70, 30, 3, blue)
+			cv.Line(100, 2, 102, 40, 1, red)
 			cv.BoxShadow(render.Rect{X: 70, Y: 6, W: 40, H: 20}, render.UniformCorners(6), render.BoxShadow{Y: 3, Blur: 8, Color: render.RGBA(0, 0, 0, 160)})
 			cv.PaintGradient(render.Rect{X: 2, Y: 30, W: 60, H: 20}, render.UniformCorners(4), render.Linear(90, render.GradientStop{Color: red}, render.GradientStop{Pos: 1, Color: blue}))
 			face.DrawAligned(cv, "GPU text", render.Rect{X: 70, Y: 30, W: 80, H: 20}, 14, render.RGBA(240, 240, 240, 255), render.AlignStart)

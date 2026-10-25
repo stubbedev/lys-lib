@@ -8,6 +8,7 @@ import (
 
 	"github.com/go-text/typesetting/font"
 
+	"github.com/stubbedev/lys-ui/internal/debug"
 	"github.com/stubbedev/lys-ui/render"
 	"github.com/stubbedev/lys-ui/third_party/vk"
 )
@@ -60,6 +61,8 @@ type frame struct {
 	staging []byte
 	// downloads is how many bytes the segment's downloads take.
 	downloads int
+	// stats counts what the frame drew how, for the gpu debug line.
+	stats frameStats
 	// page is the sprite page being packed: x, y and the shelf height.
 	px, py, shelf int
 	err           error
@@ -81,11 +84,28 @@ func (d *Device) Render(l *render.List, t *Target) error {
 	f := &d.frame
 	f.d, f.target, f.num, f.denom, f.err = d, t, num, denom, nil
 	f.clear()
+	if debug.Enabled {
+		f.stats = frameStats{sprites: map[string]int{}}
+	}
 	l.Play(f)
 	if f.err != nil {
 		return f.err
 	}
-	return f.flush(true)
+	if debug.Enabled {
+		f.stats.prims += len(f.prims)
+	}
+	err := f.flush(true)
+	if debug.Enabled {
+		debug.Log("gpu", "frame %dx%d: %d prims, %d segments, %d readbacks, sprite pixels %v", t.s.w, t.s.h, f.stats.prims, f.stats.segments, f.stats.readbacks, f.stats.sprites)
+	}
+	return err
+}
+
+// frameStats is what a frame drew how: its primitives, the segments it
+// submitted in, its readbacks, and the pixels of CPU sprites per call.
+type frameStats struct {
+	prims, segments, readbacks int
+	sprites                    map[string]int
 }
 
 // fail records the frame's first error.
@@ -139,10 +159,13 @@ func (f *frame) draw(dst, tex *surface, replace bool, p prim) {
 // the result: exact for the source-over calls, whose pixels blended
 // onto transparency and then over the surface are the pixels blended
 // over it directly.
-func (f *frame) sprite(s render.State, paint func(cv *render.Canvas)) {
+func (f *frame) sprite(s render.State, call string, paint func(cv *render.Canvas)) {
 	b := s.Bounds
 	if f.err != nil || b.Empty() {
 		return
+	}
+	if debug.Enabled {
+		f.stats.sprites[call] += b.W * b.H
 	}
 	at, ok := f.place(b.W, b.H)
 	if !ok {
@@ -191,6 +214,10 @@ func (f *frame) cpu(region render.Rect, surfaces []*surface, fn func(cvs []*rend
 		f.steps = append(f.steps, step{kind: stepDownload, dst: s, region: r, first: uint32(f.downloads)})
 		f.downloads += r.Dx() * r.Dy() * 4
 	}
+	if debug.Enabled {
+		f.stats.readbacks++
+		f.stats.prims += len(f.prims)
+	}
 	if f.err = f.flush(false); f.err != nil {
 		return
 	}
@@ -228,6 +255,9 @@ func (f *frame) flush(final bool) error {
 	copy(d.staging.mapped, f.staging)
 	if d.readback, err = d.readback.fit(f.downloads); err != nil {
 		return err
+	}
+	if debug.Enabled {
+		f.stats.segments++
 	}
 	err = d.submit(func(cb vk.CommandBuffer) { f.record(cb, final) })
 	f.clear()
@@ -340,7 +370,7 @@ func (f *frame) FillRectDevice(s render.State, r render.Rect, col render.Color) 
 }
 
 func (f *frame) DrawCanvasDevice(s render.State, src *render.Canvas, x, y int) {
-	f.sprite(s, func(cv *render.Canvas) { cv.DrawCanvasDevice(src, x, y) })
+	f.sprite(s, "DrawCanvasDevice", func(cv *render.Canvas) { cv.DrawCanvasDevice(src, x, y) })
 }
 
 func (f *frame) DrawLayerAt(s render.State, src *render.Layer, x, y int) {
@@ -358,11 +388,19 @@ func (f *frame) RoundedRect(s render.State, r render.Rect, radius int, col rende
 }
 
 func (f *frame) Line(s render.State, x0, y0, x1, y1, width int, col render.Color) {
-	f.sprite(s, func(cv *render.Canvas) { cv.Line(x0, y0, x1, y1, width, col) })
+	if width < 1 {
+		return
+	}
+	g := render.LineOf(x0, y0, x1, y1, width, f.num, f.denom)
+	p := shaded(kindLine, s, 0)
+	p.quad, p.cols[0] = quadOf(s.Bounds), uint32(col)
+	p.box, p.radii = [4]float32{g.AX, g.AY, g.DX, g.DY}, [4]float32{g.InvLen2, g.Half}
+	f.draw(f.on(s), nil, false, p)
 }
 
+
 func (f *frame) Shadow(s render.State, r render.Rect, cornerRadius, blur int, col render.Color) {
-	f.sprite(s, func(cv *render.Canvas) { cv.Shadow(r, cornerRadius, blur, col) })
+	f.sprite(s, "Shadow", func(cv *render.Canvas) { cv.Shadow(r, cornerRadius, blur, col) })
 }
 
 func (f *frame) DrawImage(s render.State, img image.Image, x, y int) {
@@ -381,7 +419,7 @@ func (f *frame) scaledImage(s render.State, img image.Image, full render.Rect, r
 		tex, ok = f.imageTexture(rgba)
 	}
 	if !ok {
-		f.sprite(s, raster)
+		f.sprite(s, "scaled image", raster)
 		return
 	}
 	p := shaded(kindImage, s, 0)
@@ -391,7 +429,7 @@ func (f *frame) scaledImage(s render.State, img image.Image, full render.Rect, r
 }
 
 func (f *frame) DrawImageCover(s render.State, img image.Image, r render.Rect, radii render.Corners) {
-	f.sprite(s, func(cv *render.Canvas) { cv.DrawImageCover(img, r, radii) })
+	f.sprite(s, "DrawImageCover", func(cv *render.Canvas) { cv.DrawImageCover(img, r, radii) })
 }
 
 func (f *frame) DrawImageDevice(s render.State, img image.Image, x, y int) {
@@ -401,7 +439,7 @@ func (f *frame) DrawImageDevice(s render.State, img image.Image, x, y int) {
 		tex, ok = f.imageTexture(rgba)
 	}
 	if !ok {
-		f.sprite(s, func(cv *render.Canvas) { cv.DrawImageDevice(img, x, y) })
+		f.sprite(s, "DrawImageDevice", func(cv *render.Canvas) { cv.DrawImageDevice(img, x, y) })
 		return
 	}
 	p := shaded(kindTexture, s, flagOpaqueStores)
@@ -425,7 +463,7 @@ func (f *frame) DrawIcon(s render.State, ic *render.Icon, x, y int, m render.Aff
 		tex, ok = f.imageTexture(img)
 	}
 	if !ok {
-		f.sprite(s, func(cv *render.Canvas) { ic.DrawXformed(cv, x, y, m) })
+		f.sprite(s, "DrawIcon", func(cv *render.Canvas) { ic.DrawXformed(cv, x, y, m) })
 		return
 	}
 	p := shaded(kindComposite, s, 0)
@@ -435,7 +473,7 @@ func (f *frame) DrawIcon(s render.State, ic *render.Icon, x, y int, m render.Aff
 }
 
 func (f *frame) Arc(s render.State, cx, cy, radius, width, start, sweep float64, col render.Color) {
-	f.sprite(s, func(cv *render.Canvas) { cv.Arc(cx, cy, radius, width, start, sweep, col) })
+	f.sprite(s, "Arc", func(cv *render.Canvas) { cv.Arc(cx, cy, radius, width, start, sweep, col) })
 }
 
 func (f *frame) BoxShadow(s render.State, r render.Rect, radii render.Corners, sh render.BoxShadow) {
@@ -445,7 +483,7 @@ func (f *frame) BoxShadow(s render.State, r render.Rect, radii render.Corners, s
 	m, box, kw, kh := render.BoxShadowMask(r, radii, sh, f.num, f.denom)
 	pos, ok := f.maskSlot(m)
 	if !ok {
-		f.sprite(s, func(cv *render.Canvas) { cv.BoxShadow(r, radii, sh) })
+		f.sprite(s, "BoxShadow", func(cv *render.Canvas) { cv.BoxShadow(r, radii, sh) })
 		return
 	}
 	x0, y0 := m.Origin()
@@ -456,7 +494,7 @@ func (f *frame) BoxShadow(s render.State, r render.Rect, radii render.Corners, s
 }
 
 func (f *frame) PaintGrain(s render.State, r render.Rect, radii render.Corners, opacity float64, ox, oy int) {
-	f.sprite(s, func(cv *render.Canvas) { cv.PaintGrain(r, radii, opacity, ox, oy) })
+	f.sprite(s, "PaintGrain", func(cv *render.Canvas) { cv.PaintGrain(r, radii, opacity, ox, oy) })
 }
 
 func (f *frame) RoundedBorderSides(s render.State, r render.Rect, radii render.Corners, widths render.Insets, cols [4]render.Color) {
@@ -511,15 +549,15 @@ func (f *frame) PaintGradient(s render.State, r render.Rect, radii render.Corner
 }
 
 func (f *frame) PaintGradientTiles(s render.State, g render.Gradient, t render.Tile, clip render.Rect, radii render.Corners) {
-	f.sprite(s, func(cv *render.Canvas) { cv.PaintGradientTiles(g, t, clip, radii) })
+	f.sprite(s, "PaintGradientTiles", func(cv *render.Canvas) { cv.PaintGradientTiles(g, t, clip, radii) })
 }
 
 func (f *frame) PaintImageTiles(s render.State, img image.Image, t render.Tile, clip render.Rect, radii render.Corners) {
-	f.sprite(s, func(cv *render.Canvas) { cv.PaintImageTiles(img, t, clip, radii) })
+	f.sprite(s, "PaintImageTiles", func(cv *render.Canvas) { cv.PaintImageTiles(img, t, clip, radii) })
 }
 
 func (f *frame) FillPath(s render.State, p *render.Path, col render.Color) {
-	f.sprite(s, func(cv *render.Canvas) { cv.FillPath(p, col) })
+	f.sprite(s, "FillPath", func(cv *render.Canvas) { cv.FillPath(p, col) })
 }
 
 func (f *frame) Glyph(s render.State, face *render.Typeface, gid font.GID, scale, penX, penY float64, col render.Color) {
@@ -532,7 +570,7 @@ func (f *frame) Glyph(s render.State, face *render.Typeface, gid font.GID, scale
 		pos, ok = f.maskSlot(m)
 	}
 	if !ok {
-		f.sprite(s, func(cv *render.Canvas) { cv.DrawGlyph(face, gid, scale, penX, penY, col) })
+		f.sprite(s, "Glyph", func(cv *render.Canvas) { cv.DrawGlyph(face, gid, scale, penX, penY, col) })
 		return
 	}
 	p := shaded(kindMask, s, 0)

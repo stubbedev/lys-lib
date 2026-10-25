@@ -526,33 +526,50 @@ func (c *Canvas) Line(x0, y0, x1, y1, width int, col Color) {
 		return
 	}
 
-	dev := float64(c.num) / float64(c.denom)
-	half := float64(width) * dev / 2
-	ax := (float64(x0) + 0.5) * dev
-	ay := (float64(y0) + 0.5) * dev
-	dx := (float64(x1)+0.5)*dev - ax
-	dy := (float64(y1)+0.5)*dev - ay
-	len2 := dx*dx + dy*dy
+	ln := LineOf(x0, y0, x1, y1, width, c.num, c.denom)
 	for y := bx.Y; y < bx.Y+bx.H; y++ {
 		for x := bx.X; x < bx.X+bx.W; x++ {
-			px, py := float64(x)+0.5-ax, float64(y)+0.5-ay
-			t := 0.0
-			if len2 > 0 {
-				t = math.Min(1, math.Max(0, (px*dx+py*dy)/len2))
-			}
-			d := math.Hypot(px-dx*t, py-dy*t)
-			cov := math.Min(1, math.Max(0, half+0.5-d))
+			cov := ln.Coverage(x, y)
 			if cov == 0 {
 				continue
 			}
 			// Coverage scales all four premultiplied channels, alpha
 			// included, exactly as in RoundedRect and the text
 			// rasterizer.
-			a := uint32(math.Round(cov * 255))
-			partial := coverageScale(col, a)
-			c.blend(x, y, partial)
+			c.blend(x, y, coverageScale(col, uint32(math.Floor(float64(cov*255+0.5)))))
 		}
 	}
+}
+
+// LineGeometry is Line's segment in device pixels, in the float32 a GPU
+// shader evaluates it in: its start (the first point's pixel center),
+// its direction to the second's, the reciprocal of its squared length
+// (0 for a point) and its half width.
+type LineGeometry struct {
+	AX, AY, DX, DY, InvLen2, Half float32
+}
+
+// LineOf is the segment Line strokes at device scale num/denom.
+func LineOf(x0, y0, x1, y1, width, num, denom int) LineGeometry {
+	dev := float64(num) / float64(denom)
+	ax, ay := float32((float64(x0)+0.5)*dev), float32((float64(y0)+0.5)*dev)
+	dx, dy := float32((float64(x1)+0.5)*dev)-ax, float32((float64(y1)+0.5)*dev)-ay
+	g := LineGeometry{AX: ax, AY: ay, DX: dx, DY: dy, Half: float32(float64(width) * dev / 2)}
+	if len2 := float32(dx*dx) + float32(dy*dy); len2 > 0 {
+		g.InvLen2 = Reciprocal(len2)
+	}
+	return g
+}
+
+// Coverage is the stroke's coverage of pixel (x, y): its center's
+// distance to the segment (round caps), each product rounded on its
+// own, as the shader computes it.
+func (g LineGeometry) Coverage(x, y int) float32 {
+	px, py := float32(x)+0.5-g.AX, float32(y)+0.5-g.AY
+	t := min(1, max(0, float32(float32(px*g.DX)+float32(py*g.DY))*g.InvLen2))
+	ex, ey := px-float32(g.DX*t), py-float32(g.DY*t)
+	d := float32(math.Sqrt(float64(float32(ex*ex) + float32(ey*ey))))
+	return min(1, max(0, g.Half+0.5-d))
 }
 
 // Shadow blends a box shadow for the logical rect: the blurred

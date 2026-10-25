@@ -13,6 +13,7 @@ const uint kindComposite = 6u;
 const uint kindStretch = 7u;
 const uint kindImage = 8u;
 const uint kindGradient = 9u;
+const uint kindLine = 10u;
 
 // The info.w flags, gpu/prim.go's.
 const uint flagRaw = 1u;
@@ -344,6 +345,19 @@ void main() {
     case kindGradient:
         c = covered(sampleStops(p, gradientAt(p, px)), coverage(sdBox(px, p.box, p.radii)));
         break;
+    case kindLine: {
+        // render.LineGeometry.Coverage, in its order.
+        precise vec2 q = px - p.box.xy;
+        precise float t = clamp((q.x * p.box.z + q.y * p.box.w) * p.radii.x, 0.0, 1.0);
+        precise vec2 e = q - p.box.zw * t;
+        precise float d = sqrt(e.x * e.x + e.y * e.y);
+        precise float cov = clamp(p.radii.y + 0.5 - d, 0.0, 1.0);
+        if (cov == 0.0) {
+            discard;
+        }
+        c = coverageScale(unpack(p.cols.x), uint(floor(cov * 255.0 + 0.5)));
+        break;
+    }
     case kindComposite: {
         // render.Mapped.At, in its order.
         precise float w = mappedRow(p.m2.xyz, px);
