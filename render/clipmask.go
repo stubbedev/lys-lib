@@ -117,10 +117,10 @@ func walkPath(p *Path, move func(float64, float64), line func(float64, float64),
 	}
 }
 
-// PathMask is the coverage ApplyPathMask multiplies a layer's region by
-// at device scale num/denom: the path's coverage over box, the part of
-// region its bounds reach (nil when they miss it); the rest of region
-// is uncovered.
+// PathMask is the path's coverage at device scale num/denom over box,
+// the part of region its bounds reach (nil when they miss it); the rest
+// of region is uncovered. FillPath blends its color by it, and
+// ApplyPathMask multiplies a layer's region by it.
 func PathMask(p *Path, region Rect, num, denom int) (*image.Alpha, Rect) {
 	scale := float64(num) / float64(denom)
 	box := p.bounds(scale).Intersect(region)

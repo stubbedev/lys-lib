@@ -624,8 +624,37 @@ func (f *frame) PaintImageTiles(s render.State, img image.Image, t render.Tile, 
 	f.sprite(s, "PaintImageTiles", func(cv *render.Canvas) { cv.PaintImageTiles(img, t, clip, radii) })
 }
 
-func (f *frame) FillPath(s render.State, p *render.Path, col render.Color) {
-	f.sprite(s, "FillPath", func(cv *render.Canvas) { cv.FillPath(p, col) })
+func (f *frame) FillPath(s render.State, path *render.Path, col render.Color) {
+	if f.err != nil || col == 0 {
+		return
+	}
+	mask, box := render.PathMask(path, s.Bounds, f.num, f.denom)
+	if mask == nil {
+		return
+	}
+	at, ok := f.maskUpload(mask, box)
+	if !ok {
+		return
+	}
+	p := shaded(kindMask, s, 0)
+	p.quad, p.inner, p.cols[0] = quadOf(box), [4]float32{float32(box.X - at.X), float32(box.Y - at.Y)}, uint32(col)
+	f.draw(f.on(s), f.d.page, pipeOver, p)
+}
+
+// maskUpload uploads mask, box's coverage, to the sprite page this
+// segment and returns where; false after an error.
+func (f *frame) maskUpload(mask *image.Alpha, box render.Rect) (image.Point, bool) {
+	at, ok := f.pageSlot(box.W, box.H)
+	if !ok {
+		return image.Point{}, false
+	}
+	f.uploads = append(f.uploads, upload{dst: f.d.page, region: image.Rect(at.X, at.Y, at.X+box.W, at.Y+box.H), offset: len(f.staging), rowLength: box.W})
+	for y := range box.H {
+		for _, c := range mask.Pix[y*mask.Stride : y*mask.Stride+box.W] {
+			f.staging = append(f.staging, c, c, c, c)
+		}
+	}
+	return at, true
 }
 
 func (f *frame) Glyph(s render.State, face *render.Typeface, gid font.GID, scale, penX, penY float64, col render.Color) {
@@ -767,15 +796,9 @@ func (f *frame) ApplyPathMask(l *render.Layer, path *render.Path, region render.
 	var p prim
 	var page *surface
 	if mask != nil {
-		at, ok := f.pageSlot(box.W, box.H)
+		at, ok := f.maskUpload(mask, box)
 		if !ok {
 			return
-		}
-		f.uploads = append(f.uploads, upload{dst: f.d.page, region: image.Rect(at.X, at.Y, at.X+box.W, at.Y+box.H), offset: len(f.staging), rowLength: box.W})
-		for y := range box.H {
-			for _, c := range mask.Pix[y*mask.Stride : y*mask.Stride+box.W] {
-				f.staging = append(f.staging, c, c, c, c)
-			}
 		}
 		p.box, p.radii, page = quadOf(box), [4]float32{float32(at.X), float32(at.Y)}, f.d.page
 	}

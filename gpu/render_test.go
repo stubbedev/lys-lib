@@ -124,6 +124,22 @@ func TestRenderNativeShapes(t *testing.T) {
 			cv.Shadow(render.Rect{X: 64, Y: 88, W: 30, H: 22}, 0, 9, render.RGBA(30, 60, 200, 200))
 			cv.PopBrightness(b)
 			cv.PopAlpha(prev)
+			var path render.Path
+			path.MoveTo(104.3, 84.2)
+			path.CubeTo(130, 70, 150, 110, 156.7, 92.5)
+			path.LineTo(120.1, 118.6)
+			path.Close()
+			path.MoveTo(112, 92)
+			path.LineTo(118, 100)
+			path.LineTo(110, 104)
+			cv.FillPath(&path, blue)
+			prev = cv.PushAlpha(0.5)
+			b = cv.PushBrightness(1.3)
+			clip = cv.PushClip(render.Rect{X: 130, Y: 80, W: 30, H: 30})
+			cv.FillPath(path.Offset(-4, 3), red)
+			cv.PopClip(clip)
+			cv.PopBrightness(b)
+			cv.PopAlpha(prev)
 		})
 	}
 }

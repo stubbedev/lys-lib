@@ -1,11 +1,7 @@
 package render
 
 import (
-	"image"
-	"image/draw"
 	"math"
-
-	"golang.org/x/image/vector"
 )
 
 // Path is an outline in logical pixels for FillPath: straight and
@@ -88,51 +84,9 @@ func (c *Canvas) FillPath(p *Path, col Color) {
 	if p == nil || p.Empty() || col == 0 || c.clip.Empty() {
 		return
 	}
-	scale := float64(c.num) / float64(c.denom)
-	box := c.clip.Intersect(p.bounds(scale))
-	if box.Empty() {
-		return
-	}
-	z := vector.NewRasterizer(box.W, box.H)
-	pt := func(x, y float64) (float32, float32) {
-		return float32(x*scale - float64(box.X)), float32(y*scale - float64(box.Y))
-	}
-	open := false
-	for _, op := range p.ops {
-		switch op.kind {
-		case pathMove:
-			if open {
-				z.ClosePath()
-			}
-			z.MoveTo(pt(op.pts[0][0], op.pts[0][1]))
-			open = true
-		case pathLine:
-			z.LineTo(pt(op.pts[0][0], op.pts[0][1]))
-		case pathCube:
-			bx, by := pt(op.pts[0][0], op.pts[0][1])
-			cx, cy := pt(op.pts[1][0], op.pts[1][1])
-			dx, dy := pt(op.pts[2][0], op.pts[2][1])
-			z.CubeTo(bx, by, cx, cy, dx, dy)
-		case pathClose:
-			if open {
-				z.ClosePath()
-				open = false
-			}
-		}
-	}
-	if open {
-		z.ClosePath()
-	}
-	mask := image.NewAlpha(image.Rect(0, 0, box.W, box.H))
-	z.DrawOp = draw.Src
-	z.Draw(mask, mask.Bounds(), image.Opaque, image.Point{})
+	mask, box := PathMask(p, c.clip, c.num, c.denom)
 	for y := range box.H {
-		row := mask.Pix[y*mask.Stride : y*mask.Stride+box.W]
-		for x, a := range row {
-			if a != 0 {
-				c.blendCov(box.X+x, box.Y+y, col, float64(a)/255)
-			}
-		}
+		c.blendMask(box.X, box.Y+y, mask.Pix[y*mask.Stride:y*mask.Stride+box.W], col)
 	}
 }
 
