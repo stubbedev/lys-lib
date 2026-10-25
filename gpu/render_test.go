@@ -226,6 +226,8 @@ func TestRenderImages(t *testing.T) {
 			cv.DrawImageDevice(img, 30, 4)
 			cv.DrawImageRect(img, render.Rect{X: 44, Y: 2, W: 30, H: 20})
 			ic.Draw(cv, 80, 2)
+			ic.DrawRotated(cv, 92, 2, 33)
+			ic.DrawXformed(cv, 104, 2, render.Scale(1.6, 1.2).Mul(render.Rotate(-70)))
 			prev := cv.PushAlpha(0.5)
 			clip := cv.PushClip(render.Rect{X: 0, Y: 30, W: 60, H: 14})
 			cv.DrawImageRect(img, render.Rect{X: 4, Y: 28, W: 50, H: 25})

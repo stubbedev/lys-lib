@@ -411,7 +411,29 @@ func (f *frame) DrawIcon(s render.State, ic *render.Icon, x, y int, m render.Aff
 		f.DrawImage(s, ic.Image(), x, y)
 		return
 	}
-	f.sprite(s, func(cv *render.Canvas) { ic.DrawXformed(cv, x, y, m) })
+	inv, invertible := m.Invert()
+	img := ic.Image()
+	tex, ok := (*surface)(nil), invertible && f.err == nil
+	if ok {
+		tex, ok = f.imageTexture(img)
+	}
+	if !ok {
+		f.sprite(s, func(cv *render.Canvas) { ic.DrawXformed(cv, x, y, m) })
+		return
+	}
+	// render's DrawXformed: a device pixel center maps to logical
+	// pixels, about the icon's center, back through m, into the icon
+	// from its top-left; the composite samples it there less half a
+	// texel.
+	w, h := float64(img.Rect.Dx()), float64(img.Rect.Dy())
+	toLogical := render.Scale(float64(f.denom)/float64(f.num), float64(f.denom)/float64(f.num))
+	about := render.Translate(-(float64(x) + w/2), -(float64(y) + h/2))
+	full := render.Affine3(render.Translate(w/2, h/2).Mul(inv).Mul(about).Mul(toLogical))
+	p := shaded(kindComposite, s, 0)
+	p.quad, p.inner = quadOf(s.Bounds), [4]float32{0, 0, float32(w), float32(h)}
+	p.m0, p.m1, p.m2 = rowsOf(full)
+	p.widths = [4]float32{0, 0, 1}
+	f.draw(f.on(s), tex, false, p)
 }
 
 func (f *frame) Arc(s render.State, cx, cy, radius, width, start, sweep float64, col render.Color) {
