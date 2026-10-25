@@ -439,12 +439,13 @@ func (f *frame) DrawImage(s render.State, img image.Image, x, y int) {
 // scaledImage draws img nearest-sampled into the device rect full, as
 // render's DrawImage and DrawImageRect map it: a pixel's texel is its
 // offset into full scaled by the image's size over full's, in integers.
-// An image other than *image.RGBA draws as a sprite through raster.
+// An image other than a render.StillImage draws as a sprite through
+// raster, from its visible pixels.
 func (f *frame) scaledImage(s render.State, img image.Image, full render.Rect, raster func(cv *render.Canvas)) {
-	rgba, ok := img.(*image.RGBA)
+	still, ok := img.(render.StillImage)
 	var tex *surface
 	if ok && f.err == nil {
-		tex, ok = f.imageTexture(rgba)
+		tex, ok = f.imageTexture(still.RGBA)
 	}
 	if !ok {
 		f.sprite(s, "scaled image", raster)
@@ -460,10 +461,10 @@ func (f *frame) DrawImageCover(s render.State, img image.Image, r render.Rect, r
 	if img.Bounds().Empty() || r.Empty() {
 		return
 	}
-	rgba, ok := img.(*image.RGBA)
+	still, ok := img.(render.StillImage)
 	var tex *surface
 	if ok && f.err == nil {
-		tex, ok = f.imageTexture(rgba)
+		tex, ok = f.imageTexture(still.RGBA)
 	}
 	if !ok {
 		f.sprite(s, "DrawImageCover", func(cv *render.Canvas) { cv.DrawImageCover(img, r, radii) })
@@ -477,10 +478,10 @@ func (f *frame) DrawImageCover(s render.State, img image.Image, r render.Rect, r
 }
 
 func (f *frame) DrawImageDevice(s render.State, img image.Image, x, y int) {
-	rgba, ok := img.(*image.RGBA)
+	still, ok := img.(render.StillImage)
 	var tex *surface
 	if ok && f.err == nil {
-		tex, ok = f.imageTexture(rgba)
+		tex, ok = f.imageTexture(still.RGBA)
 	}
 	if !ok {
 		f.sprite(s, "DrawImageDevice", func(cv *render.Canvas) { cv.DrawImageDevice(img, x, y) })
@@ -497,7 +498,7 @@ func (f *frame) DrawImageRect(s render.State, img image.Image, r render.Rect) {
 
 func (f *frame) DrawIcon(s render.State, ic *render.Icon, x, y int, m render.Affine) {
 	if m == render.Identity {
-		f.DrawImage(s, ic.Image(), x, y)
+		f.DrawImage(s, render.StillImage{RGBA: ic.Image()}, x, y)
 		return
 	}
 	mp, invertible := render.MappedOf(ic.Xform(x, y, m, f.num, f.denom))

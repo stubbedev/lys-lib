@@ -184,7 +184,7 @@ func (c *Canvas) DrawImageDevice(img image.Image, x, y int) {
 	if r.Empty() {
 		return
 	}
-	if rgba, ok := img.(*image.RGBA); ok {
+	if rgba := rgbaOf(img); rgba != nil {
 		c.drawRGBADevice(rgba, x, y, r)
 		return
 	}
@@ -241,4 +241,33 @@ func (c *Canvas) DrawImageRect(img image.Image, r Rect) {
 			c.blend(px, py, Color(sa>>8<<24|sr>>8<<16|sg>>8<<8|sb>>8))
 		}
 	}
+}
+
+// StillImage is an *image.RGBA its owner never changes once wrapped: a
+// decoded picture, a cached raster, an icon. A GPU renderer uploads it
+// once and keeps the texture while it is drawn; any other image it
+// draws from its visible pixels each time, so changing an image's
+// pixels between draws (a video frame resampled into the same raster)
+// is always seen. Its sub-images are still too.
+type StillImage struct{ *image.RGBA }
+
+// SubImage is the still image's part within r.
+func (s StillImage) SubImage(r image.Rectangle) image.Image {
+	sub, ok := s.RGBA.SubImage(r).(*image.RGBA)
+	if !ok {
+		panic("render: an *image.RGBA's SubImage is not an *image.RGBA")
+	}
+	return StillImage{sub}
+}
+
+// rgbaOf is img's pixels as an *image.RGBA when it holds them so: the
+// image itself, or a still image's; nil otherwise.
+func rgbaOf(img image.Image) *image.RGBA {
+	switch v := img.(type) {
+	case *image.RGBA:
+		return v
+	case StillImage:
+		return v.RGBA
+	}
+	return nil
 }

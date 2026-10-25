@@ -630,7 +630,7 @@ func (c *Canvas) DrawImage(img image.Image, x, y int) {
 	if dst.Empty() {
 		return
 	}
-	rgba, _ := img.(*image.RGBA)
+	rgba := rgbaOf(img)
 	for py := dst.Y; py < dst.Y+dst.H; py++ {
 		sy := b.Min.Y + (py-full.Y)*b.Dy()/full.H
 		for px := dst.X; px < dst.X+dst.W; px++ {
@@ -669,7 +669,7 @@ func (c *Canvas) DrawImageCover(img image.Image, r Rect, radii Corners) {
 	if dst.Empty() {
 		return
 	}
-	rgba, _ := img.(*image.RGBA)
+	rgba := rgbaOf(img)
 	for py := dst.Y; py < dst.Y+dst.H; py++ {
 		for px := dst.X; px < dst.X+dst.W; px++ {
 			cov, sx, sy := g.At(px, py)
@@ -730,7 +730,7 @@ func (c *Canvas) DrawImageCoverImage(ic *Icon, r Rect, radii Corners) {
 	if ic == nil {
 		return
 	}
-	c.DrawImageCover(ic.img, r, radii)
+	c.DrawImageCover(StillImage{ic.img}, r, radii)
 }
 
 // BeginOverlays arms the frame's top layer: until FlushOverlays,

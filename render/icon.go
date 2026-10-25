@@ -181,7 +181,7 @@ func (i *Icon) At(x, y int) color.Color { return i.img.At(x, y) }
 
 // Draw blends the icon with its top-left corner at (x, y).
 func (i *Icon) Draw(cv *Canvas, x, y int) {
-	cv.DrawImage(i.img, x, y)
+	cv.DrawImage(StillImage{i.img}, x, y)
 }
 
 // DrawRotated blends the icon turned deg degrees clockwise about its

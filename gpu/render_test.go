@@ -1,6 +1,7 @@
 package gpu
 
 import (
+	"bytes"
 	"fmt"
 	"image"
 	"image/color"
@@ -190,41 +191,76 @@ func TestRenderGlyphAtlasRefills(t *testing.T) {
 	}
 }
 
-// Images draw from uploaded textures: scaled, one to one and into a
-// rect, clipped and faded, as the CPU draws them.
+// Images draw as the CPU draws them: still images from their uploaded
+// textures, scaled, one to one, into a rect and as a cover, clipped and
+// faded; any other image from its pixels as they are at the draw, so
+// one changed in place between frames shows its change.
 func TestRenderImages(t *testing.T) {
 	d := openDevice(t)
 	img := image.NewRGBA(image.Rect(0, 0, 7, 5))
-	for y := range 5 {
-		for x := range 7 {
-			a := uint8(255 - 30*x)
-			img.SetRGBA(x, y, color.RGBA{R: uint8(int(a) * x / 7), G: uint8(int(a) * y / 5), B: a / 2, A: a})
+	paintImg := func(shift int) {
+		for y := range 5 {
+			for x := range 7 {
+				a := uint8(255 - 30*((x+shift)%7))
+				img.SetRGBA(x, y, color.RGBA{R: uint8(int(a) * x / 7), G: uint8(int(a) * y / 5), B: a / 2, A: a})
+			}
 		}
 	}
-	sub := img.SubImage(image.Rect(2, 1, 6, 4)).(*image.RGBA)
+	paintImg(0)
+	still := render.StillImage{RGBA: &image.RGBA{Pix: bytes.Clone(img.Pix), Stride: img.Stride, Rect: img.Rect}}
 	ic, err := render.IconFromImage(img, 7, 5)
 	if err != nil {
 		t.Fatal(err)
 	}
 	for _, sc := range [][2]int{{1, 1}, {3, 2}} {
-		w, h := 120*sc[0]/sc[1], 60*sc[0]/sc[1]
-		parity(t, d, w, h, sc[0], sc[1], 2, func(cv *render.Canvas, _ int) {
+		w, h := 120*sc[0]/sc[1], 90*sc[0]/sc[1]
+		parity(t, d, w, h, sc[0], sc[1], 2, func(cv *render.Canvas, frame int) {
+			if cv.Recording() != nil {
+				paintImg(frame)
+			}
 			cv.Clear(cv.Rect(), render.RGBA(16, 18, 24, 255))
-			cv.DrawImage(img, 2, 2)
-			cv.DrawImage(sub, 14, 2)
-			cv.DrawImageDevice(img, 30, 4)
-			cv.DrawImageRect(img, render.Rect{X: 44, Y: 2, W: 30, H: 20})
-			ic.Draw(cv, 80, 2)
-			cv.DrawImageCover(img, render.Rect{X: 60, Y: 30, W: 50, H: 25}, render.UniformCorners(8))
-			cv.DrawImageCover(sub, render.Rect{X: 112, Y: 30, W: 6, H: 26}, render.Corners{})
-			ic.DrawRotated(cv, 92, 2, 33)
-			ic.DrawXformed(cv, 104, 2, render.Scale(1.6, 1.2).Mul(render.Rotate(-70)))
-			prev := cv.PushAlpha(0.5)
-			clip := cv.PushClip(render.Rect{X: 0, Y: 30, W: 60, H: 14})
-			cv.DrawImageRect(img, render.Rect{X: 4, Y: 28, W: 50, H: 25})
-			cv.PopClip(clip)
-			cv.PopAlpha(prev)
+			for row, src := range []image.Image{still, img} {
+				y := 2 + 60*row
+				sub := src.(interface {
+					SubImage(image.Rectangle) image.Image
+				}).SubImage(image.Rect(2, 1, 6, 4))
+				cv.DrawImage(src, 2, y)
+				cv.DrawImage(sub, 14, y)
+				cv.DrawImageDevice(src, 30, y+2)
+				cv.DrawImageRect(src, render.Rect{X: 44, Y: y, W: 30, H: 20})
+				cv.DrawImageCover(src, render.Rect{X: 78, Y: y, W: 30, H: 18}, render.UniformCorners(6))
+				prev := cv.PushAlpha(0.5)
+				clip := cv.PushClip(render.Rect{X: 0, Y: y + 22, W: 60, H: 6})
+				cv.DrawImageRect(src, render.Rect{X: 4, Y: y + 20, W: 50, H: 12})
+				cv.PopClip(clip)
+				cv.PopAlpha(prev)
+			}
+			ic.Draw(cv, 80, 30)
+			ic.DrawRotated(cv, 92, 30, 33)
+			ic.DrawXformed(cv, 104, 30, render.Scale(1.6, 1.2).Mul(render.Rotate(-70)))
 		})
+	}
+}
+
+// A still image keeps one texture however often it is drawn, even as a
+// sub-image taken anew each frame, as the image widget draws one.
+func TestRenderStillImageKeepsItsTexture(t *testing.T) {
+	d := openDevice(t)
+	img := image.NewRGBA(image.Rect(0, 0, 8, 8))
+	for i := range img.Pix {
+		img.Pix[i] = 0xff
+	}
+	tg := newTarget(t, d, 32, 32)
+	rec := render.NewRecorder(32, 32, 1, 1)
+	for range 4 {
+		rec.ResetRecorder(32, 32, 1, 1)
+		rec.DrawImageDevice(render.StillImage{RGBA: img}.SubImage(image.Rect(1, 1, 7, 7)), 4, 4)
+		if err := d.Render(rec.Recording(), tg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := len(d.images.byImage); n != 1 {
+		t.Errorf("%d textures for one still sub-image drawn four times, want 1", n)
 	}
 }
 
