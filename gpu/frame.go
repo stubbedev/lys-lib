@@ -428,7 +428,21 @@ func (f *frame) Line(s render.State, x0, y0, x1, y1, width int, col render.Color
 }
 
 func (f *frame) Shadow(s render.State, r render.Rect, cornerRadius, blur int, col render.Color) {
-	f.sprite(s, "Shadow", func(cv *render.Canvas) { cv.Shadow(r, cornerRadius, blur, col) })
+	if f.err != nil || col.A() == 0 {
+		return
+	}
+	m, at, ok := render.RectShadow(r, cornerRadius, blur, f.num, f.denom)
+	if !ok {
+		return
+	}
+	pos, ok := f.maskSlot(m)
+	if !ok {
+		f.sprite(s, "Shadow", func(cv *render.Canvas) { cv.Shadow(r, cornerRadius, blur, col) })
+		return
+	}
+	p := shaded(kindMask, s, 0)
+	p.quad, p.inner, p.cols[0] = quadOf(s.Bounds), [4]float32{float32(at.X - pos.X), float32(at.Y - pos.Y)}, uint32(col)
+	f.draw(f.on(s), f.d.masks.page, false, p)
 }
 
 func (f *frame) DrawImage(s render.State, img image.Image, x, y int) {

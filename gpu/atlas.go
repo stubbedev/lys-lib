@@ -2,17 +2,12 @@ package gpu
 
 import (
 	"image"
+
+	"github.com/stubbedev/lys-ui/render"
 )
 
 // atlasSize is a mask atlas page's width and height.
 const atlasSize = 2048
-
-// coverageMask is an immutable 8bpp coverage mask render caches: a
-// glyph's (render.GlyphMask) or a box-shadow core's (render.ShadowMask).
-type coverageMask interface {
-	Pix() []uint8
-	Size() (w, h int)
-}
 
 // maskAtlas is the page of coverage masks the device keeps across
 // frames: each mask is uploaded once and drawn from where it was
@@ -22,7 +17,7 @@ type maskAtlas struct {
 	// shrinks it before the first glyph.
 	size          int
 	page          *surface
-	slots         map[coverageMask]image.Point
+	slots         map[render.CoverageMask]image.Point
 	px, py, shelf int
 }
 
@@ -48,7 +43,7 @@ func (a *maskAtlas) reset() {
 
 // maskSlot is where m sits on the atlas page, uploading it first if
 // it is new; false for a mask no page holds or after an error.
-func (f *frame) maskSlot(m coverageMask) (image.Point, bool) {
+func (f *frame) maskSlot(m render.CoverageMask) (image.Point, bool) {
 	a := &f.d.masks
 	if a.page == nil {
 		if a.size == 0 {
@@ -62,7 +57,7 @@ func (f *frame) maskSlot(m coverageMask) (image.Point, bool) {
 			f.fail(err)
 			return image.Point{}, false
 		}
-		a.page, a.slots = s, map[coverageMask]image.Point{}
+		a.page, a.slots = s, map[render.CoverageMask]image.Point{}
 	}
 	if at, ok := a.slots[m]; ok {
 		return at, true

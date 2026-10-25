@@ -599,12 +599,6 @@ type ShadowMask struct {
 	x0, y0 int
 }
 
-// Pix is the mask's coverage, Size's width bytes per row.
-func (r *ShadowMask) Pix() []uint8 { return r.cov }
-
-// Size is the mask's size in device pixels.
-func (r *ShadowMask) Size() (w, h int) { return r.w, r.h }
-
 // Origin is the mask's top-left from its core box's.
 func (r *ShadowMask) Origin() (x0, y0 int) { return r.x0, r.y0 }
 

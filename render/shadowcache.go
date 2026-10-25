@@ -38,6 +38,37 @@ type covRaster struct {
 	cov  []uint8
 }
 
+// Pix is the field's coverage, Size's width bytes per row.
+func (r *covRaster) Pix() []uint8 { return r.cov }
+
+// Size is the field's size in device pixels.
+func (r *covRaster) Size() (w, h int) { return r.w, r.h }
+
+// CoverageMask is an immutable 8bpp coverage mask render caches and
+// blends a color through: a glyph's (GlyphMask), a box-shadow core's
+// (ShadowMask), a rect shadow's (RectShadow). A GPU renderer keys its
+// mask atlas by it.
+type CoverageMask interface {
+	Pix() []uint8
+	Size() (w, h int)
+}
+
+// RectShadow is how Shadow paints a shadow of blur around the logical
+// rect r with cornerRadius at device scale num/denom: the cached mask,
+// immutable once made, blended in the shadow's color over the device
+// rect at; false when there is none to paint.
+func RectShadow(r Rect, cornerRadius, blur, num, denom int) (CoverageMask, Rect, bool) {
+	if blur < 1 {
+		return nil, Rect{}, false
+	}
+	dev := MapRect(r, num, denom)
+	if dev.Empty() {
+		return nil, Rect{}, false
+	}
+	ras := shadowRasterFor(dev.W, dev.H, cornerRadius, blur, num, denom)
+	return ras, Rect{X: dev.X - ras.inset, Y: dev.Y - ras.inset, W: ras.w, H: ras.h}, true
+}
+
 // rasterCache memoizes coverage rasters by geometry. Canvases paint on
 // several goroutines (the application loop and a grabbed menu's nested
 // loop), so the map is lock-guarded. The counters are the paint-count

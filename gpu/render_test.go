@@ -118,6 +118,12 @@ func TestRenderNativeShapes(t *testing.T) {
 			clip := cv.PushClip(render.Rect{X: 115, Y: 45, W: 20, H: 20})
 			cv.RoundedRect(render.Rect{X: 110, Y: 40, W: 40, H: 40}, 12, red)
 			cv.PopClip(clip)
+			cv.Shadow(render.Rect{X: 8, Y: 90, W: 40, H: 18}, 6, 5, render.RGBA(0, 0, 0, 150))
+			prev = cv.PushAlpha(0.7)
+			b = cv.PushBrightness(1.2)
+			cv.Shadow(render.Rect{X: 64, Y: 88, W: 30, H: 22}, 0, 9, render.RGBA(30, 60, 200, 200))
+			cv.PopBrightness(b)
+			cv.PopAlpha(prev)
 		})
 	}
 }

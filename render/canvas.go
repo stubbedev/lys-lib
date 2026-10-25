@@ -642,22 +642,21 @@ func (c *Canvas) Shadow(r Rect, cornerRadius, blur int, col Color) {
 		c.record(op{kind: opShadow, r: r, i: [5]int{cornerRadius, blur}, col: col})
 		return
 	}
-	if blur < 1 || col.A() == 0 || c.clip.Empty() {
+	if col.A() == 0 || c.clip.Empty() {
 		return
 	}
-	dev := c.MapRect(r)
-	if dev.Empty() {
+	m, at, ok := RectShadow(r, cornerRadius, blur, c.num, c.denom)
+	if !ok {
 		return
 	}
-	ras := shadowRasterFor(dev.W, dev.H, cornerRadius, blur, c.num, c.denom)
-	ox, oy := dev.X-ras.inset, dev.Y-ras.inset
-	box := c.clip.Intersect(Rect{X: ox, Y: oy, W: ras.w, H: ras.h})
+	box := c.clip.Intersect(at)
 	if box.Empty() {
 		return
 	}
+	cov := m.Pix()
 	for y := box.Y; y < box.Y+box.H; y++ {
-		row := ras.cov[(y-oy)*ras.w:]
-		c.blendMask(box.X, y, row[box.X-ox:box.X-ox+box.W], col)
+		row := cov[(y-at.Y)*at.W:]
+		c.blendMask(box.X, y, row[box.X-at.X:box.X-at.X+box.W], col)
 	}
 }
 
