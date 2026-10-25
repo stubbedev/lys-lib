@@ -1,6 +1,7 @@
 package gpu
 
 import (
+	"fmt"
 	"image"
 	"image/color"
 	"testing"
@@ -55,9 +56,10 @@ func TestRenderIntoDmabuf(t *testing.T) {
 	}
 }
 
-// parity renders paint's recording on the GPU and on the CPU and
-// fails where a channel differs by more than tol.
-func parity(t *testing.T, d *Device, w, h, num, denom int, frames int, paint func(cv *render.Canvas, frame int), tol int) {
+// parity renders paint's recording on the GPU and on the CPU and fails
+// on any pixel whose premultiplied bytes differ: the GPU's shaders run
+// the CPU's arithmetic step for step.
+func parity(t *testing.T, d *Device, w, h, num, denom int, frames int, paint func(cv *render.Canvas, frame int)) {
 	t.Helper()
 	tg := newTarget(t, d, w, h)
 	rec := render.NewRecorder(w, h, num, denom)
@@ -74,41 +76,23 @@ func parity(t *testing.T, d *Device, w, h, num, denom int, frames int, paint fun
 		if err != nil {
 			t.Fatal(err)
 		}
-		want := render.NRGBA(buf, render.Stride(w), w, h)
-		bad, worst, at := 0, 0, image.Point{}
+		bad, first := 0, ""
 		for y := range h {
 			for x := range w {
-				g := premul(got.RGBAAt(x, y))
-				c := want.NRGBAAt(x, y)
-				wc := premul(nrgbaToRGBA(c))
-				diff := maxDiff(g, wc)
-				if diff > tol {
+				c := render.ColorFromBytes(buf[y*render.Stride(w)+x*4:])
+				want := color.RGBA{R: c.R(), G: c.G(), B: c.B(), A: c.A()}
+				if g := got.RGBAAt(x, y); g != want {
+					if bad == 0 {
+						first = fmt.Sprintf("(%d, %d): gpu %v cpu %v", x, y, g, want)
+					}
 					bad++
-				}
-				if diff > worst {
-					worst, at = diff, image.Pt(x, y)
 				}
 			}
 		}
 		if bad > 0 {
-			t.Errorf("frame %d at %d/%d: %d pixels differ by more than %d, worst %d at %v: gpu %v cpu %v", frame, num, denom, bad, tol, worst, at, got.RGBAAt(at.X, at.Y), nrgbaToRGBA(want.NRGBAAt(at.X, at.Y)))
+			t.Errorf("frame %d at %d/%d: %d pixels differ, first %s", frame, num, denom, bad, first)
 		}
 	}
-}
-
-func premul(c color.RGBA) [4]int { return [4]int{int(c.R), int(c.G), int(c.B), int(c.A)} }
-
-func nrgbaToRGBA(c color.NRGBA) color.RGBA {
-	r, g, b, a := c.RGBA()
-	return color.RGBA{uint8(r >> 8), uint8(g >> 8), uint8(b >> 8), uint8(a >> 8)}
-}
-
-func maxDiff(a, b [4]int) int {
-	m := 0
-	for i := range a {
-		m = max(m, a[i]-b[i], b[i]-a[i])
-	}
-	return m
 }
 
 // TestRenderNativeShapes pins the shapes the GPU draws itself against
@@ -133,7 +117,7 @@ func TestRenderNativeShapes(t *testing.T) {
 			clip := cv.PushClip(render.Rect{X: 115, Y: 45, W: 20, H: 20})
 			cv.RoundedRect(render.Rect{X: 110, Y: 40, W: 40, H: 40}, 12, red)
 			cv.PopClip(clip)
-		}, 1)
+		})
 	}
 }
 
@@ -177,7 +161,7 @@ func TestRenderFallbacksAndLayers(t *testing.T) {
 			cv.DrawLayer(a, area, render.BlendMultiply)
 			a.Release()
 			snap.Release()
-		}, 1)
+		})
 	}
 }
 
@@ -195,7 +179,7 @@ func TestRenderGlyphAtlasRefills(t *testing.T) {
 		for i, line := range []string{"The quick brown fox", "jumps over the lazy", "dog 0123456789 QWXZ"} {
 			face.DrawAligned(cv, line, render.Rect{X: 4, Y: 4 + 34*i, W: 190, H: 30}, float64(18+4*i), render.RGBA(240, 240, 240, 255), render.AlignStart)
 		}
-	}, 1)
+	})
 	if d.masks.py == 0 && d.masks.px == 0 {
 		t.Error("the atlas holds nothing after drawing text")
 	}
@@ -233,6 +217,36 @@ func TestRenderImages(t *testing.T) {
 			cv.DrawImageRect(img, render.Rect{X: 4, Y: 28, W: 50, H: 25})
 			cv.PopClip(clip)
 			cv.PopAlpha(prev)
-		}, 1)
+		})
+	}
+}
+
+// Gradients draw natively: linear, radial and conic geometry, the
+// extend modes, hard stops, rounded clips and opacity, as the CPU
+// paints them.
+func TestRenderGradients(t *testing.T) {
+	d := openDevice(t)
+	red, blue, clear := render.RGBA(220, 40, 50, 255), render.RGBA(30, 90, 220, 180), render.RGBA(0, 0, 0, 0)
+	stops := []render.GradientStop{{Pos: 0, Color: red}, {Pos: 0.4, Color: blue}, {Pos: 0.4, Color: clear}, {Pos: 1, Color: red}}
+	for _, sc := range [][2]int{{1, 1}, {3, 2}} {
+		w, h := 160*sc[0]/sc[1], 70*sc[0]/sc[1]
+		parity(t, d, w, h, sc[0], sc[1], 1, func(cv *render.Canvas, _ int) {
+			cv.Clear(cv.Rect(), render.RGBA(16, 18, 24, 255))
+			cv.PaintGradient(render.Rect{X: 2, Y: 2, W: 50, H: 30}, render.UniformCorners(8), render.Linear(70, stops...))
+			cv.PaintGradient(render.Rect{X: 56, Y: 2, W: 50, H: 30}, render.Corners{}, render.Radial(stops...))
+			cone := render.Gradient{Kind: render.GradientConic, CenterX: 0.4, CenterY: 0.6, Angle: 30, Stops: stops}
+			cv.PaintGradient(render.Rect{X: 110, Y: 2, W: 46, H: 30}, render.UniformCorners(23), cone)
+			// A repeat's hard edge, where t sits exactly on a period
+			// boundary, takes either band by rounding on both sides: a
+			// span whole rows land on would differ by a band there.
+			rep := render.Linear(0, render.GradientStop{Pos: 0.1, Color: red}, render.GradientStop{Pos: 0.35, Color: blue})
+			rep.Extend = render.ExtendRepeat
+			prev := cv.PushAlpha(0.6)
+			cv.PaintGradient(render.Rect{X: 2, Y: 36, W: 70, H: 30}, render.UniformCorners(4), rep)
+			cv.PopAlpha(prev)
+			rep.Extend = render.ExtendReflect
+			circle := render.Gradient{Kind: render.GradientRadial, CenterX: 0.3, CenterY: 0.5, Circle: true, Size: render.ClosestSide, Stops: rep.Stops, Extend: render.ExtendReflect}
+			cv.PaintGradient(render.Rect{X: 76, Y: 36, W: 80, H: 30}, render.Corners{}, circle)
+		})
 	}
 }

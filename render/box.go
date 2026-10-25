@@ -427,20 +427,23 @@ func borderSide(px, py float64, b frect, w [4]float64) int {
 	return best
 }
 
-// gradientAt samples the stop list at t.
-func gradientAt(stops []GradientStop, t float64) Color {
-	if t <= stops[0].Pos {
+// gradientAt samples the stop list at t, in float32 as At computes t:
+// between two stops each channel lerps and rounds half up.
+func gradientAt(stops []GradientStop, t float32) Color {
+	if t <= float32(stops[0].Pos) {
 		return stops[0].Color
 	}
 	for i := 1; i < len(stops); i++ {
-		if t <= stops[i].Pos {
-			a, b := stops[i-1], stops[i]
-			span := b.Pos - a.Pos
-			if span <= 0 {
-				return b.Color
-			}
-			return lerp(a.Color, b.Color, (t-a.Pos)/span)
+		a, b := stops[i-1], stops[i]
+		bp := float32(b.Pos)
+		if t > bp {
+			continue
 		}
+		ap := float32(a.Pos)
+		if bp-ap <= 0 {
+			return b.Color
+		}
+		return lerp32(a.Color, b.Color, (t-ap)*Reciprocal(bp-ap))
 	}
 	return stops[len(stops)-1].Color
 }

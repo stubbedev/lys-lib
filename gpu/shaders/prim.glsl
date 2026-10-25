@@ -18,6 +18,12 @@ layout(std430, set = 0, binding = 0) readonly buffer Prims {
     Prim prims[];
 };
 
+// The primitives' variable-length data: gradient stops, a position
+// (float bits) and a color word each.
+layout(std430, set = 0, binding = 1) readonly buffer Words {
+    uint words[];
+};
+
 layout(push_constant) uniform Frame {
     vec2 size;
 } frame;

@@ -128,8 +128,9 @@ func refCover(src, dst Color, cov float64) Color {
 // premultiplied channels, half-up rounding, matching the gradient's
 // pixel-center parameterization (t = (px+0.5-edge)/span).
 func refLerp(a, b Color, t float64) Color {
+	f := float32(t)
 	ch := func(x, y uint8) uint32 {
-		return uint32(float64(x) + (float64(y)-float64(x))*t + 0.5)
+		return uint32(float32(float32(x)+float32((float32(y)-float32(x))*f)) + 0.5)
 	}
 	return Color(ch(a.A(), b.A())<<24 |
 		ch(a.R(), b.R())<<16 |
@@ -891,12 +892,29 @@ func checkRow(t *testing.T, row blendRow, src, bg Color, crossCheck bool, ctx st
 
 	// Pass 2: the opaque variant must be a pure overwrite - dst channels
 	// irrelevant. This is what catches accidental double blending.
+	// The oracle comparison carries the row's tolerance (a reference
+	// computes positions its own way); that the background is
+	// irrelevant is exact: the same paint over another background
+	// gives the same pixels.
 	if row.noOpaque == "" {
 		op := src | 0xFF000000
 		cv, data := rowCanvas(row.scale)
 		cv.Clear(cv.Rect(), bg)
 		row.paint(t, cv, op)
-		checkProbes(t, row.probes, data, op, bg, 0, passOverwrite, "", ctx)
+		checkProbes(t, row.probes, data, op, bg, row.tol, passOverwrite, "", ctx)
+		other := ^bg | 0xFF000000
+		ocv, odata := rowCanvas(row.scale)
+		ocv.Clear(ocv.Rect(), other)
+		row.paint(t, ocv, op)
+		for _, p := range row.probes {
+			if p.mode != probeOver {
+				continue
+			}
+			if a, b := pxAt(data, Stride(blendW), p.x, p.y), pxAt(odata, Stride(blendW), p.x, p.y); a != b {
+				t.Errorf("%s: opaque source at (%d,%d) = %#08x over %#08x but %#08x over %#08x (dst channels must be irrelevant)",
+					ctx, p.x, p.y, uint32(a), uint32(bg), uint32(b), uint32(other))
+			}
+		}
 		if row.aa != nil {
 			cal := calibrateCoverage(t, row.aa, false)
 			sweepAA(t, row.aa, cal, data, op, bg, 0, true, row.why, ctx)
@@ -950,9 +968,9 @@ func checkProbes(t *testing.T, probes []probe, data []byte, paint, bg Color, tol
 			want := p.srcAt(paint)
 			switch pass {
 			case passOverwrite:
-				if got != want {
-					t.Errorf("%s: opaque source at (%d,%d) = %#08x, want pure overwrite %#08x (dst channels must be irrelevant)",
-						ctx, p.x, p.y, uint32(got), uint32(want))
+				if !blendNear(got, want, tol) {
+					t.Errorf("%s: opaque source at (%d,%d) = %#08x, want pure overwrite %#08x (+/-%d)",
+						ctx, p.x, p.y, uint32(got), uint32(want), tol)
 				}
 			case passNoop:
 				if got != bg {
@@ -1178,8 +1196,8 @@ func TestGradientRampPremul(t *testing.T) {
 		{0.25, refLerp(from, to, 0.25)},
 		{0.75, refLerp(from, to, 0.75)},
 	} {
-		if got := lerp(from, to, tt.t); !blendNear(got, tt.want, 1) {
-			t.Errorf("lerp at t=%v = %#08x, want %#08x (+/-1) - the ramp must interpolate premultiplied channels",
+		if got := lerp32(from, to, float32(tt.t)); !blendNear(got, tt.want, 1) {
+			t.Errorf("lerp32 at t=%v = %#08x, want %#08x (+/-1) - the ramp must interpolate premultiplied channels",
 				tt.t, uint32(got), uint32(tt.want))
 		}
 	}

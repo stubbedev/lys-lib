@@ -190,52 +190,11 @@ func (c *Canvas) Composite(l *Layer, src Rect, m Affine, alpha float64) {
 		}
 		return
 	}
-	inv, ok := m.Invert()
+	mp, ok := MappedOf(Affine3(m))
 	if !ok {
 		return
 	}
-	for y := dst.Y; y < dst.Y+dst.H; y++ {
-		for x := dst.X; x < dst.X+dst.W; x++ {
-			sx, sy := inv.Apply(float64(x)+0.5, float64(y)+0.5)
-			if col := l.sample(src, sx-0.5, sy-0.5); col != 0 {
-				c.blend(x, y, col)
-			}
-		}
-	}
-}
-
-// sample is the bilinear blend of the four pixels of l around (x, y);
-// pixels outside src are transparent.
-func (l *Layer) sample(src Rect, x, y float64) Color {
-	return bilinear(src, x, y, l.cv.get)
-}
-
-// bilinear is the bilinear blend of the four texels around (x, y),
-// each premultiplied channel weighted alike so the result stays
-// premultiplied; texels outside src are transparent, so a sampled edge
-// antialiases.
-func bilinear(src Rect, x, y float64, at func(px, py int) Color) Color {
-	x0, y0 := math.Floor(x), math.Floor(y)
-	fx, fy := x-x0, y-y0
-	ix, iy := int(x0), int(y0)
-	if ix < src.X-1 || iy < src.Y-1 || ix >= src.X+src.W || iy >= src.Y+src.H {
-		return 0
-	}
-	tap := func(px, py int) [4]float64 {
-		if px < src.X || py < src.Y || px >= src.X+src.W || py >= src.Y+src.H {
-			return [4]float64{}
-		}
-		col := at(px, py)
-		return [4]float64{float64(col.A()), float64(col.R()), float64(col.G()), float64(col.B())}
-	}
-	p00, p10, p01, p11 := tap(ix, iy), tap(ix+1, iy), tap(ix, iy+1), tap(ix+1, iy+1)
-	var ch [4]uint32
-	for i := range ch {
-		top := p00[i]*(1-fx) + p10[i]*fx
-		bottom := p01[i]*(1-fx) + p11[i]*fx
-		ch[i] = uint32(min(255, max(0, math.Round(top*(1-fy)+bottom*fy))))
-	}
-	return Color(ch[0]<<24 | ch[1]<<16 | ch[2]<<8 | ch[3])
+	c.blendMapped(dst, src, &mp, l.cv.get)
 }
 
 // CrossFade blends other into l over region: each pixel becomes

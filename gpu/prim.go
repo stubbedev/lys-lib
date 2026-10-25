@@ -31,6 +31,7 @@ const (
 	kindComposite
 	kindStretch
 	kindImage
+	kindGradient
 )
 
 // The primitive flags, prim.frag's.
@@ -63,11 +64,11 @@ func vec(v [4]float64) [4]float32 {
 	return [4]float32{float32(v[0]), float32(v[1]), float32(v[2]), float32(v[3])}
 }
 
-// rowsOf is m's rows as vectors, the last component zero.
-func rowsOf(m render.M3) (r0, r1, r2 [4]float32) {
-	return [4]float32{float32(m[0]), float32(m[1]), float32(m[2])},
-		[4]float32{float32(m[3]), float32(m[4]), float32(m[5])},
-		[4]float32{float32(m[6]), float32(m[7]), float32(m[8])}
+// mappedRows are m's inverse rows and forward last row as prim
+// vectors, the last component zero.
+func mappedRows(m *render.Mapped) (r0, r1, r2, fwd [4]float32) {
+	v := func(r [3]float32) [4]float32 { return [4]float32{r[0], r[1], r[2]} }
+	return v(m.Inv[0]), v(m.Inv[1]), v(m.Inv[2]), v(m.Fwd)
 }
 
 func rectOf(r render.Rect) image.Rectangle { return image.Rect(r.X, r.Y, r.X+r.W, r.Y+r.H) }

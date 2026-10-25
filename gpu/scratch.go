@@ -56,12 +56,12 @@ type scratch struct {
 	scratches []*scratchCanvas
 	// page holds a segment's sprites; blank is sampled by draws that
 	// sample nothing.
-	page, blank              *surface
-	prims, staging, readback *buffer
-	scratchW, scratchH       int
-	freeLayers               []*layerSurface
-	masks                    maskAtlas
-	images                   images
+	page, blank                     *surface
+	prims, words, staging, readback *buffer
+	scratchW, scratchH              int
+	freeLayers                      []*layerSurface
+	masks                           maskAtlas
+	images                          images
 	// frame is the frame Render plays into, kept so its slices keep
 	// their capacity from frame to frame.
 	frame  frame
@@ -79,7 +79,7 @@ func (d *Device) ensureScratch(w, h int) error {
 		if err := d.blank.ready(); err != nil {
 			return err
 		}
-		for _, b := range []**buffer{&d.prims, &d.staging, &d.readback} {
+		for _, b := range []**buffer{&d.prims, &d.words, &d.staging, &d.readback} {
 			usage := vk.BufferUsageStorageBufferBit
 			switch b {
 			case &d.staging:
@@ -208,7 +208,7 @@ func (d *Device) closeScratch() {
 			s.close()
 		}
 	}
-	for _, b := range []*buffer{d.prims, d.staging, d.readback} {
+	for _, b := range []*buffer{d.prims, d.words, d.staging, d.readback} {
 		if b != nil {
 			b.close()
 		}

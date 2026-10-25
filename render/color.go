@@ -67,15 +67,12 @@ func (src Color) over(dst Color) Color {
 		(uint32(src.B()) + db))
 }
 
-// lerp returns the premultiplied interpolation of a and b at t in [0, 1].
-// Interpolating premultiplied channels is the correct gradient arithmetic.
-func lerp(a, b Color, t float64) Color {
-	lerpCh := func(x, y uint8) uint32 {
-		v := float64(x) + (float64(y)-float64(x))*t
+// lerp32 is the color f of the way from a to b, each channel
+// a + (b-a)*f in float32, rounded half up.
+func lerp32(a, b Color, f float32) Color {
+	ch := func(x, y uint8) uint32 {
+		v := float32(x) + float32((float32(y)-float32(x))*f)
 		return uint32(v + 0.5)
 	}
-	return Color(lerpCh(a.A(), b.A())<<24 |
-		lerpCh(a.R(), b.R())<<16 |
-		lerpCh(a.G(), b.G())<<8 |
-		lerpCh(a.B(), b.B()))
+	return Color(ch(a.A(), b.A())<<24 | ch(a.R(), b.R())<<16 | ch(a.G(), b.G())<<8 | ch(a.B(), b.B()))
 }

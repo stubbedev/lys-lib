@@ -3,6 +3,7 @@ package gpu
 import (
 	"fmt"
 	"image"
+	"math"
 	"unsafe"
 
 	"github.com/go-text/typesetting/font"
@@ -52,9 +53,11 @@ type frame struct {
 	target     *Target
 	num, denom int
 	prims      []prim
-	steps      []step
-	uploads    []upload
-	staging    []byte
+	// words are the primitives' variable-length data: gradient stops.
+	words   []uint32
+	steps   []step
+	uploads []upload
+	staging []byte
 	// downloads is how many bytes the segment's downloads take.
 	downloads int
 	// page is the sprite page being packed: x, y and the shelf height.
@@ -213,8 +216,12 @@ func (f *frame) flush(final bool) error {
 	if d.prims, err = d.prims.fit(len(f.prims) * primSize); err != nil {
 		return err
 	}
-	d.bindPrims(d.prims)
 	copy(d.prims.mapped, unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(f.prims))), len(f.prims)*primSize))
+	if d.words, err = d.words.fit(len(f.words) * 4); err != nil {
+		return err
+	}
+	copy(d.words.mapped, unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(f.words))), len(f.words)*4))
+	d.bindPrims(d.prims, d.words)
 	if d.staging, err = d.staging.fit(len(f.staging)); err != nil {
 		return err
 	}
@@ -229,7 +236,7 @@ func (f *frame) flush(final bool) error {
 
 // clear empties the recorded segment, keeping its slices' capacity.
 func (f *frame) clear() {
-	f.prims, f.steps, f.uploads, f.staging = f.prims[:0], f.steps[:0], f.uploads[:0], f.staging[:0]
+	f.prims, f.words, f.steps, f.uploads, f.staging = f.prims[:0], f.words[:0], f.steps[:0], f.uploads[:0], f.staging[:0]
 	f.px, f.py, f.shelf, f.downloads = 0, 0, 0, 0
 }
 
@@ -411,7 +418,7 @@ func (f *frame) DrawIcon(s render.State, ic *render.Icon, x, y int, m render.Aff
 		f.DrawImage(s, ic.Image(), x, y)
 		return
 	}
-	inv, invertible := m.Invert()
+	mp, invertible := render.MappedOf(ic.Xform(x, y, m, f.num, f.denom))
 	img := ic.Image()
 	tex, ok := (*surface)(nil), invertible && f.err == nil
 	if ok {
@@ -421,18 +428,9 @@ func (f *frame) DrawIcon(s render.State, ic *render.Icon, x, y int, m render.Aff
 		f.sprite(s, func(cv *render.Canvas) { ic.DrawXformed(cv, x, y, m) })
 		return
 	}
-	// render's DrawXformed: a device pixel center maps to logical
-	// pixels, about the icon's center, back through m, into the icon
-	// from its top-left; the composite samples it there less half a
-	// texel.
-	w, h := float64(img.Rect.Dx()), float64(img.Rect.Dy())
-	toLogical := render.Scale(float64(f.denom)/float64(f.num), float64(f.denom)/float64(f.num))
-	about := render.Translate(-(float64(x) + w/2), -(float64(y) + h/2))
-	full := render.Affine3(render.Translate(w/2, h/2).Mul(inv).Mul(about).Mul(toLogical))
 	p := shaded(kindComposite, s, 0)
-	p.quad, p.inner = quadOf(s.Bounds), [4]float32{0, 0, float32(w), float32(h)}
-	p.m0, p.m1, p.m2 = rowsOf(full)
-	p.widths = [4]float32{0, 0, 1}
+	p.quad, p.inner = quadOf(s.Bounds), [4]float32{0, 0, float32(img.Rect.Dx()), float32(img.Rect.Dy())}
+	p.m0, p.m1, p.m2, p.widths = mappedRows(&mp)
 	f.draw(f.on(s), tex, false, p)
 }
 
@@ -483,7 +481,33 @@ func (f *frame) RoundedRectCorners(s render.State, r render.Rect, radii render.C
 }
 
 func (f *frame) PaintGradient(s render.State, r render.Rect, radii render.Corners, g render.Gradient) {
-	f.sprite(s, func(cv *render.Canvas) { cv.PaintGradient(r, radii, g) })
+	if len(g.Stops) == 0 {
+		return
+	}
+	m, ok := g.DeviceMap(r, radii, f.num, f.denom)
+	if !ok {
+		return
+	}
+	box, rc := render.DeviceBox(r, radii, f.num, f.denom)
+	p := shaded(kindGradient, s, 0)
+	p.quad, p.box, p.radii = quadOf(s.Bounds), vec(box), vec(rc)
+	p.m0 = [4]float32{float32(m.CX), float32(m.CY), float32(m.DX), float32(m.DY)}
+	p.m1 = [4]float32{m.InvLength, m.InvRX, m.InvRY, float32(m.From)}
+	p.m2 = [4]float32{float32(m.Kind), float32(g.Extend), float32(len(f.words)), float32(len(g.Stops))}
+	// The stops as the shader reads them: the stop range's reciprocal,
+	// then each stop's position, color, and its segment's reciprocal.
+	lo, hi := float32(g.Stops[0].Pos), float32(g.Stops[len(g.Stops)-1].Pos)
+	f.words = append(f.words, math.Float32bits(render.Reciprocal(hi-lo)))
+	prev := lo
+	for _, st := range g.Stops {
+		pos, inv := float32(st.Pos), float32(0)
+		if pos-prev > 0 {
+			inv = render.Reciprocal(pos - prev)
+		}
+		f.words = append(f.words, math.Float32bits(pos), uint32(st.Color), math.Float32bits(inv))
+		prev = pos
+	}
+	f.draw(f.on(s), nil, false, p)
 }
 
 func (f *frame) PaintGradientTiles(s render.State, g render.Gradient, t render.Tile, clip render.Rect, radii render.Corners) {
@@ -585,7 +609,7 @@ func (f *frame) CompositeProjective(s render.State, l *render.Layer, src render.
 func (f *frame) composite(s render.State, l *render.Layer, src render.Rect, m render.M3, alpha float64) {
 	ls := f.layer(l)
 	src = src.Intersect(render.Rect{W: ls.w, H: ls.h})
-	inv, ok := m.Invert()
+	mp, ok := render.MappedOf(m)
 	a := s.Alpha * min(1, max(0, alpha))
 	if src.Empty() || !ok || alphaScale(a) == 0 {
 		return
@@ -593,8 +617,7 @@ func (f *frame) composite(s render.State, l *render.Layer, src render.Rect, m re
 	s.Alpha = a
 	p := shaded(kindComposite, s, 0)
 	p.quad, p.inner = quadOf(s.Bounds.Intersect(render.Rect{W: f.target.s.w, H: f.target.s.h})), quadOf(src)
-	p.m0, p.m1, p.m2 = rowsOf(inv)
-	_, _, p.widths = rowsOf(m)
+	p.m0, p.m1, p.m2, p.widths = mappedRows(&mp)
 	f.draw(f.on(s), ls, false, p)
 }
 

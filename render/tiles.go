@@ -53,7 +53,7 @@ func (c *Canvas) PaintGradientTiles(g Gradient, t Tile, clip Rect, radii Corners
 		return
 	}
 	c.paintTiles(t, clip, radii, func(u, v, _, _ float64) Color {
-		return sampleStops(g.Stops, g.Extend, m.at(u, v))
+		return sampleStops(g.Stops, g.Extend, m.At(u, v))
 	})
 }
 

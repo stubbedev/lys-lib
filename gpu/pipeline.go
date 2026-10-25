@@ -60,8 +60,11 @@ func (d *Device) createPass() error {
 // sampled surface) and the push constant (the target size).
 func (d *Device) createLayouts() error {
 	both := vk.ShaderStageFlags(vk.ShaderStageVertexBit | vk.ShaderStageFragmentBit)
-	prim := vk.DescriptorSetLayoutBinding{Binding: 0, DescriptorType: vk.DescriptorTypeStorageBuffer, DescriptorCount: 1, StageFlags: both}
-	pci := vk.DescriptorSetLayoutCreateInfo{SType: vk.StructureTypeDescriptorSetLayoutCreateInfo, BindingCount: 1, PBindings: &prim}
+	prim := [2]vk.DescriptorSetLayoutBinding{
+		{Binding: 0, DescriptorType: vk.DescriptorTypeStorageBuffer, DescriptorCount: 1, StageFlags: both},
+		{Binding: 1, DescriptorType: vk.DescriptorTypeStorageBuffer, DescriptorCount: 1, StageFlags: vk.ShaderStageFlags(vk.ShaderStageFragmentBit)},
+	}
+	pci := vk.DescriptorSetLayoutCreateInfo{SType: vk.StructureTypeDescriptorSetLayoutCreateInfo, BindingCount: 2, PBindings: &prim[0]}
 	if r := d.cmds.CreateDescriptorSetLayout(d.device, &pci, nil, &d.primLayout); r != vk.Success {
 		return fmt.Errorf("gpu: vkCreateDescriptorSetLayout (primitives): %d", r)
 	}
@@ -94,7 +97,7 @@ func (d *Device) createDescriptors() error {
 		return fmt.Errorf("gpu: vkCreateSampler: %d", r)
 	}
 	sizes := [2]vk.DescriptorPoolSize{
-		{Type: vk.DescriptorTypeStorageBuffer, DescriptorCount: 1},
+		{Type: vk.DescriptorTypeStorageBuffer, DescriptorCount: 2},
 		{Type: vk.DescriptorTypeCombinedImageSampler, DescriptorCount: maxSurfaces},
 	}
 	dci := vk.DescriptorPoolCreateInfo{
@@ -133,11 +136,18 @@ func (d *Device) textureSet(view vk.ImageView) (vk.DescriptorSet, error) {
 	return set, nil
 }
 
-// bindPrims points set 0 at the primitive buffer.
-func (d *Device) bindPrims(b *buffer) {
-	bi := vk.DescriptorBufferInfo{Buffer: b.buf, Range: vk.DeviceSize(len(b.mapped))}
-	w := vk.WriteDescriptorSet{SType: vk.StructureTypeWriteDescriptorSet, DstSet: d.primSet, DescriptorCount: 1, DescriptorType: vk.DescriptorTypeStorageBuffer, PBufferInfo: &bi}
-	d.cmds.UpdateDescriptorSets(d.device, 1, &w, 0, nil)
+// bindPrims points set 0 at the primitive buffer and the word buffer
+// (gradient stops) primitives index into.
+func (d *Device) bindPrims(prims, words *buffer) {
+	bi := [2]vk.DescriptorBufferInfo{
+		{Buffer: prims.buf, Range: vk.DeviceSize(len(prims.mapped))},
+		{Buffer: words.buf, Range: vk.DeviceSize(len(words.mapped))},
+	}
+	w := [2]vk.WriteDescriptorSet{
+		{SType: vk.StructureTypeWriteDescriptorSet, DstSet: d.primSet, DstBinding: 0, DescriptorCount: 1, DescriptorType: vk.DescriptorTypeStorageBuffer, PBufferInfo: &bi[0]},
+		{SType: vk.StructureTypeWriteDescriptorSet, DstSet: d.primSet, DstBinding: 1, DescriptorCount: 1, DescriptorType: vk.DescriptorTypeStorageBuffer, PBufferInfo: &bi[1]},
+	}
+	d.cmds.UpdateDescriptorSets(d.device, 2, &w[0], 0, nil)
 }
 
 func (d *Device) shaderModule(spv []byte) (vk.ShaderModule, error) {

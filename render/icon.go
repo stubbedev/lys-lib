@@ -215,10 +215,10 @@ func (i *Icon) xformSpan(x, y int, m Affine, num, denom int) Rect {
 }
 
 // DrawXformed blends the icon through the affine m, applied about the
-// icon's center: each destination pixel's center inverse-maps into the
-// icon and samples it bilinearly, so turned edges antialias and a
-// symmetric icon turns about its exact center; past its edges it is
-// transparent. The identity draws straight.
+// icon's center (Xform): each destination pixel's center inverse-maps
+// into the icon (Mapped) and samples it bilinearly, so turned edges
+// antialias and a symmetric icon turns about its exact center; past its
+// edges it is transparent. The identity draws straight.
 func (i *Icon) DrawXformed(cv *Canvas, x, y int, m Affine) {
 	if cv.rec != nil {
 		cv.record(op{kind: opIcon, icon: i, i: [5]int{x, y}, aff: m})
@@ -228,32 +228,26 @@ func (i *Icon) DrawXformed(cv *Canvas, x, y int, m Affine) {
 		i.Draw(cv, x, y)
 		return
 	}
-	inv, ok := m.Invert()
+	num, denom := cv.DeviceScale()
+	mp, ok := MappedOf(i.Xform(x, y, m, num, denom))
 	if !ok {
 		return
 	}
 	b := i.img.Bounds()
-	w, h := b.Dx(), b.Dy()
-	cx := float64(x) + float64(w)/2
-	cy := float64(y) + float64(h)/2
-	num, denom := cv.DeviceScale()
-	span := i.xformSpan(x, y, m, num, denom)
-	full, texel := Rect{W: w, H: h}, i.texel
-	for py := span.Y; py < span.Y+span.H; py++ {
-		for px := span.X; px < span.X+span.W; px++ {
-			if !cv.clip.Contains(px, py) {
-				continue
-			}
-			// The device pixel's logical center, offset from the icon
-			// center and inverse-mapped into icon coordinates.
-			lx := (float64(px)+0.5)*float64(denom)/float64(num) - cx
-			ly := (float64(py)+0.5)*float64(denom)/float64(num) - cy
-			sx, sy := inv.Apply(lx, ly)
-			if col := bilinear(full, sx+float64(w)/2-0.5, sy+float64(h)/2-0.5, texel); col != 0 {
-				cv.blend(px, py, col)
-			}
-		}
-	}
+	span := i.xformSpan(x, y, m, num, denom).Intersect(cv.clip).Intersect(cv.Rect())
+	cv.blendMapped(span, Rect{W: b.Dx(), H: b.Dy()}, &mp, i.texel)
+}
+
+// Xform is the map DrawXformed draws the icon at (x, y) through m with:
+// icon pixels, about the icon's center, through m (logical pixels),
+// placed at the unturned draw's center and scaled to device pixels at
+// num/denom.
+func (i *Icon) Xform(x, y int, m Affine, num, denom int) M3 {
+	b := i.img.Bounds()
+	w, h := float64(b.Dx()), float64(b.Dy())
+	f := float64(num) / float64(denom)
+	toDevice := Scale(f, f).Mul(Translate(float64(x)+w/2, float64(y)+h/2))
+	return Affine3(toDevice.Mul(m).Mul(Translate(-w/2, -h/2)))
 }
 
 // texel is the premultiplied pixel at (x, y) from the icon's origin.

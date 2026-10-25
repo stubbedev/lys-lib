@@ -1,7 +1,5 @@
 package render
 
-import "math"
-
 // The effect-pipeline layer operations: sampling what is already on
 // the canvas (a backdrop-filter's input), blending a layer back with
 // a mix-blend-mode, and compositing one through a projective map.
@@ -94,19 +92,9 @@ func (c *Canvas) CompositeProjective(l *Layer, src Rect, m M3, alpha float64) {
 	if dst.Empty() {
 		return
 	}
-	inv, ok := m.Invert()
+	mp, ok := MappedOf(m)
 	if !ok {
 		return
 	}
-	for y := dst.Y; y < dst.Y+dst.H; y++ {
-		for x := dst.X; x < dst.X+dst.W; x++ {
-			sx, sy := inv.Apply(float64(x)+0.5, float64(y)+0.5)
-			if w := m[6]*sx + m[7]*sy + m[8]; w <= 1e-9 || math.IsNaN(w) {
-				continue
-			}
-			if col := l.sample(src, sx-0.5, sy-0.5); col != 0 {
-				c.blend(x, y, col)
-			}
-		}
-	}
+	c.blendMapped(dst, src, &mp, l.cv.get)
 }

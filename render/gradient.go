@@ -114,38 +114,60 @@ func (c *Canvas) PaintGradient(r Rect, radii Corners, g Gradient) {
 			if cov <= 0 {
 				continue
 			}
-			c.blendCov(x, y, sampleStops(g.Stops, g.Extend, m.at(px, py)), cov)
+			c.blendCov(x, y, sampleStops(g.Stops, g.Extend, m.At(px, py)), cov)
 		}
 	}
 }
 
-// gradientMap maps device pixel centers to gradient positions for one
-// box: a plain value, so the per-pixel loop allocates nothing.
-type gradientMap struct {
-	kind           GradientKind
-	cx, cy         float64 // the center (radial, conic, linear's box middle)
-	dx, dy, length float64 // linear direction and line length
-	rx, ry         float64 // radial radii
-	from           float64 // conic start
+// GradientMap maps device pixel centers to gradient positions for one
+// box: a plain value, so the per-pixel loop allocates nothing. At is
+// the mapping; a GPU renderer evaluates the same one.
+type GradientMap struct {
+	Kind           GradientKind
+	CX, CY         float64 // the center (radial, conic, linear's box middle)
+	DX, DY, Length float64 // linear direction and line length
+	RX, RY         float64 // radial radii
+	From           float64 // conic start
+	// InvLength, InvRX and InvRY are the reciprocals At multiplies by:
+	// a GPU's division may round loosely, its multiplication may not,
+	// so both renderers divide by multiplying with the same float32.
+	InvLength, InvRX, InvRY float32
+}
+
+// Reciprocal is 1/v rounded to float32: the factor both renderers
+// multiply by in place of dividing by v.
+func Reciprocal[F float32 | float64](v F) F { return F(1 / float64(v)) }
+
+// inv360 is 1/360, the conic turn's reciprocal.
+var inv360 = Reciprocal(float32(360))
+
+// DeviceMap is g's mapping over the box r at device scale num/denom,
+// as PaintGradient maps it; false when it is degenerate.
+func (g Gradient) DeviceMap(r Rect, radii Corners, num, denom int) (GradientMap, bool) {
+	c := Canvas{num: num, denom: denom}
+	b, _ := c.devBox(r, radii)
+	return g.mapping(b, float64(num)/float64(denom))
 }
 
 // mapping resolves g's geometry over the device box b (scale is device
 // pixels per logical pixel); false when it is degenerate.
-func (g Gradient) mapping(b frect, scale float64) (gradientMap, bool) {
+func (g Gradient) mapping(b frect, scale float64) (GradientMap, bool) {
 	w, h := b.x1-b.x0, b.y1-b.y0
-	m := gradientMap{kind: g.Kind, cx: b.x0 + g.CenterX*w, cy: b.y0 + g.CenterY*h, from: g.Angle}
+	m := GradientMap{Kind: g.Kind, CX: b.x0 + g.CenterX*w, CY: b.y0 + g.CenterY*h, From: g.Angle}
 	switch g.Kind {
 	case GradientRadial:
-		m.rx, m.ry = g.radii(b, m.cx, m.cy, scale)
-		return m, m.rx > 0 && m.ry > 0
+		m.RX, m.RY = g.radii(b, m.CX, m.CY, scale)
+		m.InvRX, m.InvRY = Reciprocal(float32(m.RX)), Reciprocal(float32(m.RY))
+		return m, m.RX > 0 && m.RY > 0
 	case GradientConic:
 		return m, true
 	}
 	rad := g.Angle * math.Pi / 180
-	m.dx, m.dy = math.Sin(rad), -math.Cos(rad)
-	m.length = math.Abs(w*m.dx) + math.Abs(h*m.dy)
-	m.cx, m.cy = (b.x0+b.x1)/2, (b.y0+b.y1)/2
-	return m, m.length != 0
+	m.DX, m.DY = math.Sin(rad), -math.Cos(rad)
+	m.Length = math.Abs(w*m.DX) + math.Abs(h*m.DY)
+	m.CX, m.CY = (b.x0+b.x1)/2, (b.y0+b.y1)/2
+	m.InvLength = Reciprocal(float32(m.Length))
+	return m, m.Length != 0
 }
 
 // LineLength is the length in logical pixels of g's gradient line over
@@ -159,22 +181,30 @@ func (g Gradient) LineLength(r Rect) float64 {
 	case !ok, g.Kind == GradientConic:
 		return 0
 	case g.Kind == GradientRadial:
-		return m.rx
+		return m.RX
 	}
-	return m.length
+	return m.Length
 }
 
-// at is the gradient position of the device point (px, py).
-func (m gradientMap) at(px, py float64) float64 {
-	switch m.kind {
+// At is the gradient position of the device point (px, py). It runs in
+// float32 in the GPU shader's operation order, each product rounded on
+// its own (no fused multiply-add), so the CPU and a GPU place hard stops
+// and repeat boundaries on the same pixels: their float32 add, multiply
+// and divide round alike, leaving only a GPU's looser sqrt and atan.
+func (m GradientMap) At(px, py float64) float32 {
+	x, y := float32(px), float32(py)
+	cx, cy := float32(m.CX), float32(m.CY)
+	switch m.Kind {
 	case GradientRadial:
-		dx, dy := (px-m.cx)/m.rx, (py-m.cy)/m.ry
-		return math.Sqrt(dx*dx + dy*dy)
+		dx := (x - cx) * m.InvRX
+		dy := (y - cy) * m.InvRY
+		return float32(math.Sqrt(float64(float32(dx*dx) + float32(dy*dy))))
 	case GradientConic:
-		a := math.Atan2(px-m.cx, -(py-m.cy)) * 180 / math.Pi // clockwise from up
-		return math.Mod(math.Mod(a-m.from, 360)+360, 360) / 360
+		a := atan2f(x-cx, -(y-cy)) * float32(180/math.Pi)
+		return modFloor(a-float32(m.From), 360, inv360) * inv360
 	}
-	return ((px-m.cx)*m.dx+(py-m.cy)*m.dy)/m.length + 0.5
+	d := float32((x-cx)*float32(m.DX)) + float32((y-cy)*float32(m.DY))
+	return d*m.InvLength + 0.5
 }
 
 // radii resolves a radial gradient's ending-shape radii in device
@@ -214,18 +244,66 @@ func (g Gradient) radii(b frect, cx, cy, scale float64) (rx, ry float64) {
 	return sx, sy
 }
 
+// atan2f is atan2(y, x) in float32 by Cephes' atanf: range reduction
+// and a fixed polynomial, each step rounded on its own. The GPU shader
+// runs the same steps, so a conic gradient's angles agree bit for bit
+// where a GPU's own atan, allowed thousands of ulps, would not.
+func atan2f(y, x float32) float32 {
+	const pi, halfPi, quarterPi = float32(math.Pi), float32(math.Pi / 2), float32(math.Pi / 4)
+	if x == 0 {
+		switch {
+		case y > 0:
+			return halfPi
+		case y < 0:
+			return -halfPi
+		}
+		return 0
+	}
+	a := atanf(float32(y / x))
+	switch {
+	case x > 0:
+		return a
+	case y >= 0:
+		return a + pi
+	}
+	return a - pi
+}
+
+// atanf is Cephes' float atan.
+func atanf(v float32) float32 {
+	const halfPi, quarterPi = float32(math.Pi / 2), float32(math.Pi / 4)
+	x, sign := v, float32(1)
+	if x < 0 {
+		x, sign = -x, -1
+	}
+	var y0 float32
+	switch {
+	case x > 2.414213562373095:
+		y0, x = halfPi, float32(-1/x)
+	case x > 0.4142135623730950:
+		y0, x = quarterPi, float32(float32(x-1)/float32(x+1))
+	}
+	z := float32(x * x)
+	p := float32(float32(8.05374449538e-2*z) - 1.38776856032e-1)
+	p = float32(float32(p*z) + 1.99777106478e-1)
+	p = float32(float32(p*z) - 3.33329491539e-1)
+	r := float32(float32(float32(p*z)*x) + x)
+	return sign * float32(y0+r)
+}
+
 // extendT folds a gradient position into the stop range [lo, hi] per
 // the extend mode; padding leaves it for the sampler to clamp.
-func extendT(t, lo, hi float64, ext Extend) float64 {
+func extendT[F float32 | float64](t, lo, hi F, ext Extend) F {
 	span := hi - lo
 	if span <= 0 {
 		return t
 	}
+	inv := Reciprocal(span)
 	switch ext {
 	case ExtendRepeat:
-		return lo + math.Mod(math.Mod(t-lo, span)+span, span)
+		return lo + modFloor(t-lo, span, inv)
 	case ExtendReflect:
-		u := math.Mod(math.Mod(t-lo, 2*span)+2*span, 2*span)
+		u := modFloor(t-lo, 2*span, inv*0.5)
 		if u > span {
 			u = 2*span - u
 		}
@@ -234,7 +312,14 @@ func extendT(t, lo, hi float64, ext Extend) float64 {
 	return t
 }
 
+// modFloor is x - y*floor(x*invY), GLSL's mod with the division as a
+// multiplication by invY, 1/y: in [0, y) for a positive y, by the
+// formula the GPU shader uses.
+func modFloor[F float32 | float64](x, y, invY F) F {
+	return x - F(y*F(math.Floor(float64(F(x*invY))))) //nolint:unconvert // the conversion rounds the product, so it cannot fuse into an FMA
+}
+
 // sampleStops is the color at position t of sorted stops under ext.
-func sampleStops(stops []GradientStop, ext Extend, t float64) Color {
-	return gradientAt(stops, extendT(t, stops[0].Pos, stops[len(stops)-1].Pos, ext))
+func sampleStops(stops []GradientStop, ext Extend, t float32) Color {
+	return gradientAt(stops, extendT(t, float32(stops[0].Pos), float32(stops[len(stops)-1].Pos), ext))
 }
