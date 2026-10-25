@@ -265,6 +265,34 @@ func (c *Canvas) blendRun(x0, x1, y int, src Color) {
 	}
 }
 
+// blendMask blends col scaled by each mask byte over row y from x0 on,
+// one pixel per byte, skipping zero coverage: blend(coverageScale(col,
+// m)) a row at a time, the byte arithmetic inline while no brightness
+// or opacity applies. Callers keep the row inside the canvas and clip.
+func (c *Canvas) blendMask(x0, y int, mask []uint8, col Color) {
+	ca, cr, cg, cb := uint32(col.A()), uint32(col.R()), uint32(col.G()), uint32(col.B())
+	plain := (c.bright == 0 || c.bright == 1) && c.alphaScale == 255
+	base := y*c.stride + x0*4
+	for i, mb := range mask {
+		m := uint32(mb)
+		if m == 0 {
+			continue
+		}
+		sa, sr, sg, sb := ca*m/255, cr*m/255, cg*m/255, cb*m/255
+		if !plain {
+			c.blend(x0+i, y, Color(sa<<24|sr<<16|sg<<8|sb))
+			continue
+		}
+		c.touched++
+		p := c.data[base+i*4 : base+i*4+4 : base+i*4+4]
+		keep := 255 - sa
+		p[0] = uint8(sb + (uint32(p[0])*keep+127)/255)
+		p[1] = uint8(sg + (uint32(p[1])*keep+127)/255)
+		p[2] = uint8(sr + (uint32(p[2])*keep+127)/255)
+		p[3] = uint8(sa + (uint32(p[3])*keep+127)/255)
+	}
+}
+
 // modulate scales a premultiplied color's every channel by scale/255
 // with round-half-up uint8 arithmetic. Scaling the premultiplied
 // channels together keeps the result premultiplied; it is the same
@@ -516,13 +544,7 @@ func (c *Canvas) Shadow(r Rect, cornerRadius, blur int, col Color) {
 	}
 	for y := box.Y; y < box.Y+box.H; y++ {
 		row := ras.cov[(y-oy)*ras.w:]
-		for x := box.X; x < box.X+box.W; x++ {
-			cov := uint32(row[x-ox])
-			if cov == 0 {
-				continue
-			}
-			c.blend(x, y, coverageScale(col, cov))
-		}
+		c.blendMask(box.X, y, row[box.X-ox:box.X-ox+box.W], col)
 	}
 }
 

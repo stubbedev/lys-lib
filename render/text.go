@@ -712,21 +712,12 @@ func drawGlyph(cv *Canvas, clip Rect, t *Typeface, gid font.GID, scale, penX, pe
 func blitMask(cv *Canvas, clip Rect, g *glyphRaster, ox, oy int, col Color) {
 	x0, y0 := max(ox, clip.X), max(oy, clip.Y)
 	x1, y1 := min(ox+g.w, clip.X+clip.W), min(oy+g.h, clip.Y+clip.H)
-	ar, ag, ab := uint32(col.A()), uint32(col.R()), uint32(col.G())
-	abB := uint32(col.B())
+	if x1 <= x0 {
+		return
+	}
 	for y := y0; y < y1; y++ {
 		row := (y - oy) * g.w
-		for x := x0; x < x1; x++ {
-			m := uint32(g.mask[row+x-ox])
-			if m == 0 {
-				continue
-			}
-			src := Color((ar*m/255)<<24 |
-				(ag*m/255)<<16 |
-				(ab*m/255)<<8 |
-				(abB*m)/255)
-			cv.blend(x, y, src)
-		}
+		cv.blendMask(x0, y, g.mask[row+x0-ox:row+x1-ox], col)
 	}
 }
 

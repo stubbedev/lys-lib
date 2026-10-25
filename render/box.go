@@ -336,11 +336,7 @@ func (c *Canvas) BoxShadow(r Rect, radii Corners, s BoxShadow) {
 	area := c.clip.Intersect(Rect{X: ox, Y: oy, W: ras.w, H: ras.h})
 	for y := area.Y; y < area.Y+area.H; y++ {
 		row := ras.cov[(y-oy)*ras.w:]
-		for x := area.X; x < area.X+area.W; x++ {
-			if q := uint32(row[x-ox]); q != 0 {
-				c.blend(x, y, coverageScale(s.Color, q))
-			}
-		}
+		c.blendMask(area.X, y, row[area.X-ox:area.X-ox+area.W], s.Color)
 	}
 }
 
