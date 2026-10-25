@@ -67,6 +67,7 @@ type frame struct {
 // device across frames.
 func (d *Device) Render(l *render.List, t *Target) error {
 	d.freeDeadLayers()
+	d.retireImages()
 	if err := d.ensureScratch(t.s.w, t.s.h); err != nil {
 		return err
 	}
@@ -74,7 +75,9 @@ func (d *Device) Render(l *render.List, t *Target) error {
 		return err
 	}
 	num, denom := l.Scale()
-	f := &frame{d: d, target: t, num: num, denom: denom}
+	f := &d.frame
+	f.d, f.target, f.num, f.denom, f.err = d, t, num, denom, nil
+	f.clear()
 	l.Play(f)
 	if f.err != nil {
 		return f.err
@@ -200,7 +203,6 @@ func (f *frame) cpu(region render.Rect, surfaces []*surface, fn func(cvs []*rend
 	for _, sc := range f.d.scratches[1:len(surfaces)] {
 		sc.clear(region)
 	}
-	f.downloads = 0
 }
 
 // flush runs the recorded segment on the GPU and waits for it; final
@@ -221,9 +223,14 @@ func (f *frame) flush(final bool) error {
 		return err
 	}
 	err = d.submit(func(cb vk.CommandBuffer) { f.record(cb, final) })
-	f.prims, f.steps, f.uploads, f.staging = f.prims[:0], f.steps[:0], f.uploads[:0], f.staging[:0]
-	f.px, f.py, f.shelf = 0, 0, 0
+	f.clear()
 	return err
+}
+
+// clear empties the recorded segment, keeping its slices' capacity.
+func (f *frame) clear() {
+	f.prims, f.steps, f.uploads, f.staging = f.prims[:0], f.steps[:0], f.uploads[:0], f.staging[:0]
+	f.px, f.py, f.shelf, f.downloads = 0, 0, 0, 0
 }
 
 // record records the segment: its uploads, then its steps, draws
@@ -352,7 +359,28 @@ func (f *frame) Shadow(s render.State, r render.Rect, cornerRadius, blur int, co
 }
 
 func (f *frame) DrawImage(s render.State, img image.Image, x, y int) {
-	f.sprite(s, func(cv *render.Canvas) { cv.DrawImage(img, x, y) })
+	b := img.Bounds()
+	f.scaledImage(s, img, render.MapRect(render.Rect{X: x, Y: y, W: b.Dx(), H: b.Dy()}, f.num, f.denom), func(cv *render.Canvas) { cv.DrawImage(img, x, y) })
+}
+
+// scaledImage draws img nearest-sampled into the device rect full, as
+// render's DrawImage and DrawImageRect map it: a pixel's texel is its
+// offset into full scaled by the image's size over full's, in integers.
+// An image other than *image.RGBA draws as a sprite through raster.
+func (f *frame) scaledImage(s render.State, img image.Image, full render.Rect, raster func(cv *render.Canvas)) {
+	rgba, ok := img.(*image.RGBA)
+	var tex *surface
+	if ok && f.err == nil {
+		tex, ok = f.imageTexture(rgba)
+	}
+	if !ok {
+		f.sprite(s, raster)
+		return
+	}
+	p := shaded(kindImage, s, 0)
+	p.quad, p.box = quadOf(s.Bounds), [4]float32{float32(full.X), float32(full.Y), float32(full.W), float32(full.H)}
+	p.radii = [4]float32{float32(tex.w), float32(tex.h)}
+	f.draw(f.on(s), tex, false, p)
 }
 
 func (f *frame) DrawImageCover(s render.State, img image.Image, r render.Rect, radii render.Corners) {
@@ -360,14 +388,29 @@ func (f *frame) DrawImageCover(s render.State, img image.Image, r render.Rect, r
 }
 
 func (f *frame) DrawImageDevice(s render.State, img image.Image, x, y int) {
-	f.sprite(s, func(cv *render.Canvas) { cv.DrawImageDevice(img, x, y) })
+	rgba, ok := img.(*image.RGBA)
+	var tex *surface
+	if ok && f.err == nil {
+		tex, ok = f.imageTexture(rgba)
+	}
+	if !ok {
+		f.sprite(s, func(cv *render.Canvas) { cv.DrawImageDevice(img, x, y) })
+		return
+	}
+	p := shaded(kindTexture, s, flagOpaqueStores)
+	p.quad, p.inner = quadOf(s.Bounds), [4]float32{float32(x), float32(y)}
+	f.draw(f.on(s), tex, false, p)
 }
 
 func (f *frame) DrawImageRect(s render.State, img image.Image, r render.Rect) {
-	f.sprite(s, func(cv *render.Canvas) { cv.DrawImageRect(img, r) })
+	f.scaledImage(s, img, s.Bounds, func(cv *render.Canvas) { cv.DrawImageRect(img, r) })
 }
 
 func (f *frame) DrawIcon(s render.State, ic *render.Icon, x, y int, m render.Affine) {
+	if m == render.Identity {
+		f.DrawImage(s, ic.Image(), x, y)
+		return
+	}
 	f.sprite(s, func(cv *render.Canvas) { ic.DrawXformed(cv, x, y, m) })
 }
 
@@ -376,7 +419,20 @@ func (f *frame) Arc(s render.State, cx, cy, radius, width, start, sweep float64,
 }
 
 func (f *frame) BoxShadow(s render.State, r render.Rect, radii render.Corners, sh render.BoxShadow) {
-	f.sprite(s, func(cv *render.Canvas) { cv.BoxShadow(r, radii, sh) })
+	if f.err != nil || sh.Color.A() == 0 {
+		return
+	}
+	m, box, kw, kh := render.BoxShadowMask(r, radii, sh, f.num, f.denom)
+	pos, ok := f.maskSlot(m)
+	if !ok {
+		f.sprite(s, func(cv *render.Canvas) { cv.BoxShadow(r, radii, sh) })
+		return
+	}
+	x0, y0 := m.Origin()
+	p := shaded(kindStretch, s, 0)
+	p.quad, p.box, p.cols[0] = quadOf(s.Bounds), [4]float32{float32(box.X), float32(box.Y), float32(box.W), float32(box.H)}, uint32(sh.Color)
+	p.radii, p.inner = [4]float32{float32(kw), float32(kh)}, [4]float32{float32(pos.X - x0), float32(pos.Y - y0)}
+	f.draw(f.on(s), f.d.masks.page, false, p)
 }
 
 func (f *frame) PaintGrain(s render.State, r render.Rect, radii render.Corners, opacity float64, ox, oy int) {
@@ -427,7 +483,7 @@ func (f *frame) Glyph(s render.State, face *render.Typeface, gid font.GID, scale
 	m, at, ok := render.GlyphCoverage(face, gid, scale, penX, penY, col)
 	var pos image.Point
 	if ok {
-		pos, ok = f.glyphSlot(m)
+		pos, ok = f.maskSlot(m)
 	}
 	if !ok {
 		f.sprite(s, func(cv *render.Canvas) { cv.DrawGlyph(face, gid, scale, penX, penY, col) })
@@ -435,7 +491,7 @@ func (f *frame) Glyph(s render.State, face *render.Typeface, gid font.GID, scale
 	}
 	p := shaded(kindMask, s, 0)
 	p.quad, p.inner, p.cols[0] = quadOf(s.Bounds), [4]float32{float32(at.X - pos.X), float32(at.Y - pos.Y)}, uint32(col)
-	f.draw(f.on(s), f.d.glyphs.page, false, p)
+	f.draw(f.on(s), f.d.masks.page, false, p)
 }
 
 func (f *frame) Layer(s render.State, l *render.Layer, region render.Rect) {

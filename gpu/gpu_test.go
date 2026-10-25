@@ -12,7 +12,7 @@ import (
 // openDevice opens the test's device (internal/gputest picks the
 // driver); with none the test skips, unless LYS_UI_TEST_GPU asks for
 // one.
-func openDevice(t *testing.T) *Device {
+func openDevice(t testing.TB) *Device {
 	t.Helper()
 	icd, required, err := gputest.Driver()
 	if err != nil {
@@ -39,7 +39,7 @@ func openDevice(t *testing.T) *Device {
 // exportingDevice is openDevice for a test of dmabuf targets: it
 // skips on a device that renders only offscreen (lavapipe without a
 // DRM node, as in CI).
-func exportingDevice(t *testing.T) *Device {
+func exportingDevice(t testing.TB) *Device {
 	t.Helper()
 	d := openDevice(t)
 	if !d.Exports() {

@@ -185,7 +185,7 @@ func TestRenderFallbacksAndLayers(t *testing.T) {
 // refills: text needing more than a page still matches the CPU.
 func TestRenderGlyphAtlasRefills(t *testing.T) {
 	d := openDevice(t)
-	d.glyphs.size = 48
+	d.masks.size = 48
 	face, err := render.NewFixtureTypeface()
 	if err != nil {
 		t.Fatal(err)
@@ -196,7 +196,41 @@ func TestRenderGlyphAtlasRefills(t *testing.T) {
 			face.DrawAligned(cv, line, render.Rect{X: 4, Y: 4 + 34*i, W: 190, H: 30}, float64(18+4*i), render.RGBA(240, 240, 240, 255), render.AlignStart)
 		}
 	}, 1)
-	if d.glyphs.py == 0 && d.glyphs.px == 0 {
+	if d.masks.py == 0 && d.masks.px == 0 {
 		t.Error("the atlas holds nothing after drawing text")
+	}
+}
+
+// Images draw from uploaded textures: scaled, one to one and into a
+// rect, clipped and faded, as the CPU draws them.
+func TestRenderImages(t *testing.T) {
+	d := openDevice(t)
+	img := image.NewRGBA(image.Rect(0, 0, 7, 5))
+	for y := range 5 {
+		for x := range 7 {
+			a := uint8(255 - 30*x)
+			img.SetRGBA(x, y, color.RGBA{R: uint8(int(a) * x / 7), G: uint8(int(a) * y / 5), B: a / 2, A: a})
+		}
+	}
+	sub := img.SubImage(image.Rect(2, 1, 6, 4)).(*image.RGBA)
+	ic, err := render.IconFromImage(img, 7, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sc := range [][2]int{{1, 1}, {3, 2}} {
+		w, h := 120*sc[0]/sc[1], 60*sc[0]/sc[1]
+		parity(t, d, w, h, sc[0], sc[1], 2, func(cv *render.Canvas, _ int) {
+			cv.Clear(cv.Rect(), render.RGBA(16, 18, 24, 255))
+			cv.DrawImage(img, 2, 2)
+			cv.DrawImage(sub, 14, 2)
+			cv.DrawImageDevice(img, 30, 4)
+			cv.DrawImageRect(img, render.Rect{X: 44, Y: 2, W: 30, H: 20})
+			ic.Draw(cv, 80, 2)
+			prev := cv.PushAlpha(0.5)
+			clip := cv.PushClip(render.Rect{X: 0, Y: 30, W: 60, H: 14})
+			cv.DrawImageRect(img, render.Rect{X: 4, Y: 28, W: 50, H: 25})
+			cv.PopClip(clip)
+			cv.PopAlpha(prev)
+		}, 1)
 	}
 }

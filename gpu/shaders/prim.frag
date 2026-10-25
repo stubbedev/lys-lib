@@ -10,6 +10,8 @@ const uint kindBorder = 3u;
 const uint kindTexture = 4u;
 const uint kindMask = 5u;
 const uint kindComposite = 6u;
+const uint kindStretch = 7u;
+const uint kindImage = 8u;
 
 // The info.w flags, gpu/prim.go's.
 const uint flagRaw = 1u;
@@ -105,6 +107,19 @@ uvec4 covered(uvec4 c, float cov) {
     return coverageScale(c, uint(floor(cov * 255.0 + 0.5)));
 }
 
+// stretch maps a box column onto its core's, render.BoxShadow's: the
+// core's middle one repeats across a longer box.
+int stretch(int b, int full, int core) {
+    int mid = core / 2;
+    if (b < mid) {
+        return b;
+    }
+    if (b >= mid + full - core) {
+        return b - (full - core);
+    }
+    return mid;
+}
+
 // bilinear is render.Layer.sample: texels outside src are transparent.
 uvec4 bilinear(vec4 src, vec2 at) {
     vec2 f0 = floor(at);
@@ -174,6 +189,24 @@ void main() {
             discard;
         }
         c = coverageScale(unpack(p.cols.x), m);
+        break;
+    }
+    case kindStretch: {
+        ivec2 b = ivec2(floor(px)) - ivec2(p.box.xy);
+        ivec2 at = ivec2(stretch(b.x, int(p.box.z), int(p.radii.x)), stretch(b.y, int(p.box.w), int(p.radii.y)));
+        uint m = uint(floor(texelFetch(tex, at + ivec2(p.inner.xy), 0).r * 255.0 + 0.5));
+        if (m == 0u) {
+            discard;
+        }
+        c = coverageScale(unpack(p.cols.x), m);
+        break;
+    }
+    case kindImage: {
+        ivec2 at = (ivec2(floor(px)) - ivec2(p.box.xy)) * ivec2(p.radii.xy) / ivec2(p.box.zw);
+        c = texel(at);
+        if (c == uvec4(0u)) {
+            discard;
+        }
         break;
     }
     case kindComposite: {

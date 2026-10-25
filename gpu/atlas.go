@@ -2,27 +2,32 @@ package gpu
 
 import (
 	"image"
-
-	"github.com/stubbedev/lys-ui/render"
 )
 
-// atlasSize is a glyph atlas page's width and height.
+// atlasSize is a mask atlas page's width and height.
 const atlasSize = 2048
 
-// glyphAtlas is the page of glyph coverage masks the device keeps
-// across frames: each mask is uploaded once and drawn from where it
-// was placed. A full page empties and refills.
-type glyphAtlas struct {
+// coverageMask is an immutable 8bpp coverage mask render caches: a
+// glyph's (render.GlyphMask) or a box-shadow core's (render.ShadowMask).
+type coverageMask interface {
+	Pix() []uint8
+	Size() (w, h int)
+}
+
+// maskAtlas is the page of coverage masks the device keeps across
+// frames: each mask is uploaded once and drawn from where it was
+// placed. A full page empties and refills.
+type maskAtlas struct {
 	// size is the page's width and height, atlasSize unless a test
 	// shrinks it before the first glyph.
 	size          int
 	page          *surface
-	slots         map[*render.GlyphMask]image.Point
+	slots         map[coverageMask]image.Point
 	px, py, shelf int
 }
 
 // place packs a w x h mask, false when the page is full.
-func (a *glyphAtlas) place(w, h int) (image.Point, bool) {
+func (a *maskAtlas) place(w, h int) (image.Point, bool) {
 	if a.px+w > a.size {
 		a.px, a.py, a.shelf = 0, a.py+a.shelf, 0
 	}
@@ -36,15 +41,15 @@ func (a *glyphAtlas) place(w, h int) (image.Point, bool) {
 }
 
 // reset empties the page; nothing drawn from it may still be pending.
-func (a *glyphAtlas) reset() {
+func (a *maskAtlas) reset() {
 	clear(a.slots)
 	a.px, a.py, a.shelf = 0, 0, 0
 }
 
-// glyphSlot is where m sits on the atlas page, uploading it first if
+// maskSlot is where m sits on the atlas page, uploading it first if
 // it is new; false for a mask no page holds or after an error.
-func (f *frame) glyphSlot(m *render.GlyphMask) (image.Point, bool) {
-	a := &f.d.glyphs
+func (f *frame) maskSlot(m coverageMask) (image.Point, bool) {
+	a := &f.d.masks
 	if a.page == nil {
 		if a.size == 0 {
 			a.size = atlasSize
@@ -57,7 +62,7 @@ func (f *frame) glyphSlot(m *render.GlyphMask) (image.Point, bool) {
 			f.fail(err)
 			return image.Point{}, false
 		}
-		a.page, a.slots = s, map[*render.GlyphMask]image.Point{}
+		a.page, a.slots = s, map[coverageMask]image.Point{}
 	}
 	if at, ok := a.slots[m]; ok {
 		return at, true

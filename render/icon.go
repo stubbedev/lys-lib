@@ -172,6 +172,10 @@ func (i *Icon) Tint(tint Color) *Icon {
 	return &Icon{img: out}
 }
 
+// Image is the icon's raster, premultiplied, shared by every draw:
+// read-only.
+func (i *Icon) Image() *image.RGBA { return i.img }
+
 // At returns the pixel at (x, y) in icon coordinates.
 func (i *Icon) At(x, y int) color.Color { return i.img.At(x, y) }
 

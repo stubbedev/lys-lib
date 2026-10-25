@@ -60,9 +60,13 @@ type scratch struct {
 	prims, staging, readback *buffer
 	scratchW, scratchH       int
 	freeLayers               []*layerSurface
-	glyphs                   glyphAtlas
-	deadMu                   sync.Mutex
-	dead                     []*layerSurface
+	masks                    maskAtlas
+	images                   images
+	// frame is the frame Render plays into, kept so its slices keep
+	// their capacity from frame to frame.
+	frame  frame
+	deadMu sync.Mutex
+	dead   []*layerSurface
 }
 
 // ensureScratch sizes the working set for a w x h target.
@@ -104,14 +108,21 @@ func (d *Device) ensureScratch(w, h int) error {
 }
 
 // scratchCanvas is scratch canvas i for a w x h canvas at num/denom.
+// Its buffer is kept by capacity: transparent between calls, a bigger
+// one serves any size, so a resize allocates only when it grows.
 func (d *Device) scratchCanvas(i, w, h, num, denom int) *scratchCanvas {
 	for len(d.scratches) <= i {
 		d.scratches = append(d.scratches, nil)
 	}
 	sc := d.scratches[i]
-	if sc == nil || sc.cv.Rect().W != w || sc.cv.Rect().H != h {
+	need := render.Stride(w) * h
+	switch {
+	case sc == nil || cap(sc.buf) < need:
 		sc = newScratchCanvas(w, h, num, denom)
 		d.scratches[i] = sc
+	case len(sc.buf) != need || sc.cv.Rect().W != w || sc.cv.Rect().H != h:
+		sc.buf = sc.buf[:need]
+		sc.cv.Reset(sc.buf, render.Stride(w), w, h, num, denom)
 	}
 	if n, dn := sc.cv.DeviceScale(); n != num || dn != denom {
 		sc.cv.Reset(sc.buf, render.Stride(w), w, h, num, denom)
@@ -188,10 +199,11 @@ func (d *Device) freeDeadLayers() {
 
 func (d *Device) closeScratch() {
 	d.freeDeadLayers()
+	d.closeImages()
 	for _, ls := range d.freeLayers {
 		ls.s.close()
 	}
-	for _, s := range []*surface{d.page, d.blank, d.glyphs.page} {
+	for _, s := range []*surface{d.page, d.blank, d.masks.page} {
 		if s != nil {
 			s.close()
 		}

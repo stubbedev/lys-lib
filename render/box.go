@@ -448,14 +448,14 @@ func gradientAt(stops []GradientStop, t float64) Color {
 // boxShadowRaster is BoxShadow's cached raster for the box r, the
 // box's device rect, the raster's core size, and the device rect the
 // shadow covers once the core is stretched to the box.
-func (c *Canvas) boxShadowRaster(r Rect, radii Corners, s BoxShadow) (Rect, *boxShadowRaster, int, int, Rect) {
+func (c *Canvas) boxShadowRaster(r Rect, radii Corners, s BoxShadow) (Rect, *ShadowMask, int, int, Rect) {
 	dev := c.MapRect(r)
 	kw, kh := shadowCore(dev, radii, s, c.num, c.denom)
 	ras := boxShadows.get(boxShadowKey{
 		w: kw, h: kh, radii: radii,
 		x: s.X, y: s.Y, blur: s.Blur, spread: s.Spread, inset: s.Inset,
 		num: c.num, denom: c.denom,
-	}, func() *boxShadowRaster { return buildBoxShadow(kw, kh, radii, s, c.num, c.denom) })
+	}, func() *ShadowMask { return buildBoxShadow(kw, kh, radii, s, c.num, c.denom) })
 	full := Rect{X: dev.X + ras.x0, Y: dev.Y + ras.y0, W: ras.w + dev.W - kw, H: ras.h + dev.H - kh}
 	return dev, ras, kw, kh, full
 }
@@ -538,16 +538,40 @@ type boxShadowKey struct {
 	num, denom         int
 }
 
-// boxShadowRaster is a box-shadow's coverage field over its span,
-// whose top-left sits at (x0, y0) from the box's.
-type boxShadowRaster struct {
+// ShadowMask is a box-shadow's coverage field over its core box's
+// span, whose top-left sits at (x0, y0) from the box's, immutable once
+// made: a GPU renderer keys its atlas by it.
+type ShadowMask struct {
 	covRaster
 	x0, y0 int
 }
 
-func (r *boxShadowRaster) size() int { return len(r.cov) }
+// Pix is the mask's coverage, Size's width bytes per row.
+func (r *ShadowMask) Pix() []uint8 { return r.cov }
 
-var boxShadows rasterCache[boxShadowKey, *boxShadowRaster]
+// Size is the mask's size in device pixels.
+func (r *ShadowMask) Size() (w, h int) { return r.w, r.h }
+
+// Origin is the mask's top-left from its core box's.
+func (r *ShadowMask) Origin() (x0, y0 int) { return r.x0, r.y0 }
+
+// BoxShadowMask is how BoxShadow paints s for the box r at device scale
+// num/denom: the cached mask of a core box coreW x coreH, the box's
+// device rect, and the core's size. A shadow pixel (x, y) takes the
+// mask's coverage at (stretch(x-box.X, box.W, coreW), stretch(y-box.Y,
+// box.H, coreH)) less Origin, where stretch maps the box's columns onto
+// the core's, repeating its middle one across a longer box: b below
+// core/2 stays b, b from core/2+full-core on drops full-core, and the
+// rest is core/2.
+func BoxShadowMask(r Rect, radii Corners, s BoxShadow, num, denom int) (m *ShadowMask, box Rect, coreW, coreH int) {
+	c := Canvas{num: num, denom: denom}
+	box, m, coreW, coreH, _ = c.boxShadowRaster(r, radii, s)
+	return m, box, coreW, coreH
+}
+
+func (r *ShadowMask) size() int { return len(r.cov) }
+
+var boxShadows rasterCache[boxShadowKey, *ShadowMask]
 
 // buildBoxShadow rasterizes one shadow layer's coverage for a w x h
 // device box at the origin: an outer shadow is the box offset and
@@ -556,7 +580,7 @@ var boxShadows rasterCache[boxShadowKey, *boxShadowRaster]
 // spread-shrunk hole, blurred at the hole's edge. The blur is Gaussian
 // with sigma half the blur radius, evaluated per pixel from the
 // silhouette's signed distance.
-func buildBoxShadow(w, h int, radii Corners, s BoxShadow, num, denom int) *boxShadowRaster {
+func buildBoxShadow(w, h int, radii Corners, s BoxShadow, num, denom int) *ShadowMask {
 	f := float64(num) / float64(denom)
 	box := frect{0, 0, float64(w), float64(h)}
 	rc := clampRadii(box, fcorners{
@@ -602,7 +626,7 @@ func buildBoxShadow(w, h int, radii Corners, s BoxShadow, num, denom int) *boxSh
 		span = frect{sb.x0 - reach, sb.y0 - reach, sb.x1 + reach, sb.y1 + reach}
 	}
 	x0, y0 := int(math.Floor(span.x0)), int(math.Floor(span.y0))
-	ras := &boxShadowRaster{x0: x0, y0: y0}
+	ras := &ShadowMask{x0: x0, y0: y0}
 	ras.w, ras.h = int(math.Ceil(span.x1))-x0, int(math.Ceil(span.y1))-y0
 	ras.cov = make([]uint8, max(0, ras.w*ras.h))
 	put := func(x, y int, cov float64) {

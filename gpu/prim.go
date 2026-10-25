@@ -29,6 +29,8 @@ const (
 	kindTexture
 	kindMask
 	kindComposite
+	kindStretch
+	kindImage
 )
 
 // The primitive flags, prim.frag's.
