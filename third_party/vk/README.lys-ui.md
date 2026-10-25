@@ -62,9 +62,10 @@ exported memory enables no surface extension. Surface users check
 Upstream: https://github.com/gogpu/wgpu/pull/376
 
 `commands_lysui.go`: wrappers for `vkGetImageSubresourceLayout` (a dmabuf
-plane's offset and stride), `vkCmdClearColorImage`, and
+plane's offset and stride), `vkCmdClearColorImage`,
 `vkGetMemoryFdPropertiesKHR` (the memory types an imported dmabuf binds
-as), which vk-gen skips as unsupported signatures.
+as) and `vkCmdPushConstants`, which vk-gen skips as unsupported
+signatures.
 
 ### Core 1.1 structure types
 

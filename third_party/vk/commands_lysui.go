@@ -17,6 +17,7 @@ var (
 	sigVoidHandleHandlePtrPtr types.CallInterface
 	sigVoidCmdClearColorImage types.CallInterface
 	sigResultHandleU32I32Ptr  types.CallInterface
+	sigVoidCmdPushConstants   types.CallInterface
 )
 
 func lysuiSigs() error {
@@ -30,8 +31,12 @@ func lysuiSigs() error {
 			[]*types.TypeDescriptor{u64, u64, u32, ptr, u32, ptr}); lysuiSigsErr != nil {
 			return
 		}
-		lysuiSigsErr = ffi.PrepareCallInterface(&sigResultHandleU32I32Ptr, types.DefaultCall, types.SInt32TypeDescriptor,
-			[]*types.TypeDescriptor{u64, u32, i32, ptr})
+		if lysuiSigsErr = ffi.PrepareCallInterface(&sigResultHandleU32I32Ptr, types.DefaultCall, types.SInt32TypeDescriptor,
+			[]*types.TypeDescriptor{u64, u32, i32, ptr}); lysuiSigsErr != nil {
+			return
+		}
+		lysuiSigsErr = ffi.PrepareCallInterface(&sigVoidCmdPushConstants, types.DefaultCall, types.VoidTypeDescriptor,
+			[]*types.TypeDescriptor{u64, u64, u32, u32, u32, ptr})
 	})
 	return lysuiSigsErr
 }
@@ -71,4 +76,14 @@ func (c *Commands) GetMemoryFdPropertiesKHR(device Device, handleType ExternalMe
 		return ErrorInitializationFailed
 	}
 	return Result(result)
+}
+
+// CmdPushConstants wraps vkCmdPushConstants.
+func (c *Commands) CmdPushConstants(commandBuffer CommandBuffer, layout PipelineLayout, stageFlags ShaderStageFlags, offset, size uint32, pValues unsafe.Pointer) {
+	if c.cmdPushConstants == nil || lysuiSigs() != nil {
+		return
+	}
+	stages := uint32(stageFlags)
+	args := [6]unsafe.Pointer{unsafe.Pointer(&commandBuffer), unsafe.Pointer(&layout), unsafe.Pointer(&stages), unsafe.Pointer(&offset), unsafe.Pointer(&size), unsafe.Pointer(&pValues)}
+	_, _ = ffi.CallFunction(&sigVoidCmdPushConstants, c.cmdPushConstants, nil, args[:])
 }
