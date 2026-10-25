@@ -529,3 +529,56 @@ func TestSVGClipBounds(t *testing.T) {
 		t.Errorf("bounds = (%v,%v)-(%v,%v), want (0,0)-(10,7.5)", b.minX, b.minY, b.maxX, b.maxY)
 	}
 }
+
+// crossIcon is a 20 x 20 icon of a plus sign, symmetric under quarter
+// turns about its center.
+func crossIcon(t *testing.T) *Icon {
+	t.Helper()
+	img := image.NewRGBA(image.Rect(0, 0, 20, 20))
+	for y := range 20 {
+		for x := range 20 {
+			if (x >= 8 && x < 12) || (y >= 8 && y < 12) {
+				img.SetRGBA(x, y, color.RGBA{255, 255, 255, 255})
+			}
+		}
+	}
+	ic, err := IconFromImage(img, 20, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return ic
+}
+
+// A turned icon turns about its exact center: its ink's centroid stays
+// there and the ink stays symmetric under a half turn, and a turn off
+// the pixel grid antialiases its edges.
+func TestDrawRotatedTurnsAboutTheCenter(t *testing.T) {
+	ic := crossIcon(t)
+	const n = 40
+	for _, deg := range []float64{45, 90, 180, 30} {
+		buf := make([]byte, Stride(n)*n)
+		cv := New(buf, Stride(n), n, n)
+		ic.DrawRotated(cv, 10, 10, deg)
+		alpha := func(x, y int) float64 { return float64(ColorFromBytes(buf[y*Stride(n)+x*4:]).A()) }
+		var sum, sx, sy float64
+		partial := 0
+		for y := range n {
+			for x := range n {
+				a := alpha(x, y)
+				sum, sx, sy = sum+a, sx+a*(float64(x)+0.5), sy+a*(float64(y)+0.5)
+				if a > 0 && a < 255 {
+					partial++
+				}
+				if b := alpha(n-1-x, n-1-y); a != b {
+					t.Fatalf("%v°: ink at (%d, %d) is %v, its half-turn mirror %v", deg, x, y, a, b)
+				}
+			}
+		}
+		if cx, cy := sx/sum, sy/sum; cx < 19.5 || cx > 20.5 || cy < 19.5 || cy > 20.5 {
+			t.Errorf("%v°: ink centroid (%.2f, %.2f), want the icon center (20, 20)", deg, cx, cy)
+		}
+		if deg == 45 && partial == 0 {
+			t.Error("45°: no edge pixel is partly covered")
+		}
+	}
+}

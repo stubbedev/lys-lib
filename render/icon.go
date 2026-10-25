@@ -181,16 +181,15 @@ func (i *Icon) Draw(cv *Canvas, x, y int) {
 }
 
 // DrawRotated blends the icon turned deg degrees clockwise about its
-// center, the center staying where the unrotated draw's center is.
-// Destination pixels inverse-map into the icon with nearest sampling;
-// the corners past the rotated bounds stay transparent.
+// center, the center staying where the unrotated draw's center is,
+// sampled as DrawXformed samples.
 func (i *Icon) DrawRotated(cv *Canvas, x, y int, deg float64) {
 	i.DrawXformed(cv, x, y, Rotate(deg))
 }
 
 // xformSpan is the device rect DrawXformed visits for a non-identity
 // m: the icon's corners mapped forward about its center, padded a
-// device pixel, since nearest sampling reaches one past the exact
+// device pixel, since bilinear sampling reaches one past the exact
 // footprint at the edges and corners.
 func (i *Icon) xformSpan(x, y int, m Affine, num, denom int) Rect {
 	b := i.img.Bounds()
@@ -212,8 +211,9 @@ func (i *Icon) xformSpan(x, y int, m Affine, num, denom int) Rect {
 }
 
 // DrawXformed blends the icon through the affine m, applied about the
-// icon's center: destination pixels inverse-map into the icon with
-// nearest sampling; corners past the transformed bounds stay
+// icon's center: each destination pixel's center inverse-maps into the
+// icon and samples it bilinearly, so turned edges antialias and a
+// symmetric icon turns about its exact center; past its edges it is
 // transparent. The identity draws straight.
 func (i *Icon) DrawXformed(cv *Canvas, x, y int, m Affine) {
 	if cv.rec != nil {
@@ -234,6 +234,7 @@ func (i *Icon) DrawXformed(cv *Canvas, x, y int, m Affine) {
 	cy := float64(y) + float64(h)/2
 	num, denom := cv.DeviceScale()
 	span := i.xformSpan(x, y, m, num, denom)
+	full, texel := Rect{W: w, H: h}, i.texel
 	for py := span.Y; py < span.Y+span.H; py++ {
 		for px := span.X; px < span.X+span.W; px++ {
 			if !cv.clip.Contains(px, py) {
@@ -244,15 +245,15 @@ func (i *Icon) DrawXformed(cv *Canvas, x, y int, m Affine) {
 			lx := (float64(px)+0.5)*float64(denom)/float64(num) - cx
 			ly := (float64(py)+0.5)*float64(denom)/float64(num) - cy
 			sx, sy := inv.Apply(lx, ly)
-			ix, iy := int(sx)+w/2, int(sy)+h/2
-			if ix < 0 || iy < 0 || ix >= w || iy >= h {
-				continue
+			if col := bilinear(full, sx+float64(w)/2-0.5, sy+float64(h)/2-0.5, texel); col != 0 {
+				cv.blend(px, py, col)
 			}
-			sr, sg, sb, sa := i.img.At(b.Min.X+ix, b.Min.Y+iy).RGBA()
-			if sa == 0 {
-				continue
-			}
-			cv.blend(px, py, Color(sa>>8<<24|sr>>8<<16|sg>>8<<8|sb>>8))
 		}
 	}
+}
+
+// texel is the premultiplied pixel at (x, y) from the icon's origin.
+func (i *Icon) texel(x, y int) Color {
+	p := i.img.Pix[i.img.PixOffset(i.img.Rect.Min.X+x, i.img.Rect.Min.Y+y):]
+	return Color(uint32(p[3])<<24 | uint32(p[0])<<16 | uint32(p[1])<<8 | uint32(p[2]))
 }
