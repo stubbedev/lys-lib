@@ -43,16 +43,15 @@ import (
 	"sync"
 	"unsafe"
 
-	"github.com/go-webgpu/goffi/ffi"
-	"github.com/go-webgpu/goffi/types"
+	"github.com/stubbedev/lys-ui/third_party/vk/internal/ffi"
 )
 
 var (
 	vulkanLib              unsafe.Pointer
 	vkGetInstanceProcAddr  unsafe.Pointer
 	vkGetDeviceProcAddr    unsafe.Pointer
-	cifGetInstanceProcAddr types.CallInterface
-	cifGetDeviceProcAddr   types.CallInterface
+	cifGetInstanceProcAddr ffi.CallInterface
+	cifGetDeviceProcAddr   ffi.CallInterface
 
 	initOnce sync.Once
 	errInit  error
@@ -102,11 +101,11 @@ func doInit() error {
 
 	// Prepare CallInterface for vkGetInstanceProcAddr
 	// PFN_vkVoidFunction vkGetInstanceProcAddr(VkInstance instance, const char* pName)
-	err = ffi.PrepareCallInterface(&cifGetInstanceProcAddr, types.DefaultCall,
-		types.PointerTypeDescriptor, // returns function pointer
-		[]*types.TypeDescriptor{
-			types.UInt64TypeDescriptor,  // VkInstance (handle, can be 0)
-			types.PointerTypeDescriptor, // const char* pName
+	err = ffi.PrepareCallInterface(&cifGetInstanceProcAddr, ffi.DefaultCall,
+		ffi.PointerTypeDescriptor, // returns function pointer
+		[]*ffi.TypeDescriptor{
+			ffi.UInt64TypeDescriptor,  // VkInstance (handle, can be 0)
+			ffi.PointerTypeDescriptor, // const char* pName
 		})
 	if err != nil {
 		return fmt.Errorf("failed to prepare GetInstanceProcAddr interface: %w", err)
@@ -114,11 +113,11 @@ func doInit() error {
 
 	// Prepare CallInterface for vkGetDeviceProcAddr
 	// PFN_vkVoidFunction vkGetDeviceProcAddr(VkDevice device, const char* pName)
-	err = ffi.PrepareCallInterface(&cifGetDeviceProcAddr, types.DefaultCall,
-		types.PointerTypeDescriptor,
-		[]*types.TypeDescriptor{
-			types.UInt64TypeDescriptor,  // VkDevice
-			types.PointerTypeDescriptor, // const char* pName
+	err = ffi.PrepareCallInterface(&cifGetDeviceProcAddr, ffi.DefaultCall,
+		ffi.PointerTypeDescriptor,
+		[]*ffi.TypeDescriptor{
+			ffi.UInt64TypeDescriptor,  // VkDevice
+			ffi.PointerTypeDescriptor, // const char* pName
 		})
 	if err != nil {
 		return fmt.Errorf("failed to prepare GetDeviceProcAddr interface: %w", err)

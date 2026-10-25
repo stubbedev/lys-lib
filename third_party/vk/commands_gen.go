@@ -13,7 +13,7 @@ package vk
 import (
 	"unsafe"
 
-	"github.com/go-webgpu/goffi/ffi"
+	"github.com/stubbedev/lys-ui/third_party/vk/internal/ffi"
 )
 
 // Prevent unused import error

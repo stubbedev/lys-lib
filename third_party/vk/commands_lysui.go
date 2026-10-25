@@ -6,37 +6,36 @@ import (
 	"sync"
 	"unsafe"
 
-	"github.com/go-webgpu/goffi/ffi"
-	"github.com/go-webgpu/goffi/types"
+	"github.com/stubbedev/lys-ui/third_party/vk/internal/ffi"
 )
 
 // The call interfaces vk-gen has no template for, prepared on first use.
 var (
 	lysuiSigsOnce             sync.Once
 	lysuiSigsErr              error
-	sigVoidHandleHandlePtrPtr types.CallInterface
-	sigVoidCmdClearColorImage types.CallInterface
-	sigResultHandleU32I32Ptr  types.CallInterface
-	sigVoidCmdPushConstants   types.CallInterface
+	sigVoidHandleHandlePtrPtr ffi.CallInterface
+	sigVoidCmdClearColorImage ffi.CallInterface
+	sigResultHandleU32I32Ptr  ffi.CallInterface
+	sigVoidCmdPushConstants   ffi.CallInterface
 )
 
 func lysuiSigs() error {
 	lysuiSigsOnce.Do(func() {
-		u64, u32, i32, ptr := types.UInt64TypeDescriptor, types.UInt32TypeDescriptor, types.SInt32TypeDescriptor, types.PointerTypeDescriptor
-		if lysuiSigsErr = ffi.PrepareCallInterface(&sigVoidHandleHandlePtrPtr, types.DefaultCall, types.VoidTypeDescriptor,
-			[]*types.TypeDescriptor{u64, u64, ptr, ptr}); lysuiSigsErr != nil {
+		u64, u32, i32, ptr := ffi.UInt64TypeDescriptor, ffi.UInt32TypeDescriptor, ffi.SInt32TypeDescriptor, ffi.PointerTypeDescriptor
+		if lysuiSigsErr = ffi.PrepareCallInterface(&sigVoidHandleHandlePtrPtr, ffi.DefaultCall, ffi.VoidTypeDescriptor,
+			[]*ffi.TypeDescriptor{u64, u64, ptr, ptr}); lysuiSigsErr != nil {
 			return
 		}
-		if lysuiSigsErr = ffi.PrepareCallInterface(&sigVoidCmdClearColorImage, types.DefaultCall, types.VoidTypeDescriptor,
-			[]*types.TypeDescriptor{u64, u64, u32, ptr, u32, ptr}); lysuiSigsErr != nil {
+		if lysuiSigsErr = ffi.PrepareCallInterface(&sigVoidCmdClearColorImage, ffi.DefaultCall, ffi.VoidTypeDescriptor,
+			[]*ffi.TypeDescriptor{u64, u64, u32, ptr, u32, ptr}); lysuiSigsErr != nil {
 			return
 		}
-		if lysuiSigsErr = ffi.PrepareCallInterface(&sigResultHandleU32I32Ptr, types.DefaultCall, types.SInt32TypeDescriptor,
-			[]*types.TypeDescriptor{u64, u32, i32, ptr}); lysuiSigsErr != nil {
+		if lysuiSigsErr = ffi.PrepareCallInterface(&sigResultHandleU32I32Ptr, ffi.DefaultCall, ffi.SInt32TypeDescriptor,
+			[]*ffi.TypeDescriptor{u64, u32, i32, ptr}); lysuiSigsErr != nil {
 			return
 		}
-		lysuiSigsErr = ffi.PrepareCallInterface(&sigVoidCmdPushConstants, types.DefaultCall, types.VoidTypeDescriptor,
-			[]*types.TypeDescriptor{u64, u64, u32, u32, u32, ptr})
+		lysuiSigsErr = ffi.PrepareCallInterface(&sigVoidCmdPushConstants, ffi.DefaultCall, ffi.VoidTypeDescriptor,
+			[]*ffi.TypeDescriptor{u64, u64, u32, u32, u32, ptr})
 	})
 	return lysuiSigsErr
 }

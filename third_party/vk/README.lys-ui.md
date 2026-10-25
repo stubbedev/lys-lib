@@ -14,11 +14,29 @@ As with `third_party/oksvg`: Go ignores a dependency's `replace`
 directives, so a patched copy wired in through go.mod would reach lys-ui's
 own builds and none of its consumers' (lys-shell, lys-wm). As a package
 of the lys-ui module, the patches reach every application importing it.
-Only this package is carried: it depends on nothing of gogpu but goffi.
+Only this package is carried: it depends on nothing of gogpu but goffi,
+which it no longer uses either (below).
 
 ## Patches
 
-Each goes upstream as its own pull request; drop it here once merged.
+Each bug fix goes upstream as its own pull request; drop it here once
+merged.
+
+### Calls go through purego, not goffi
+
+`internal/ffi` is the slice of goffi's API the bindings use
+(`PrepareCallInterface`, `CallFunction`, `LoadLibrary`, `GetSymbol`,
+`FreeLibrary` and the type descriptors), carried out by
+github.com/ebitengine/purego. Every source imports it in place of
+`goffi/ffi` and `goffi/types`. goffi and purego each link a runtime
+shim (`internal/fakecgo`), so a cgo-free program holding both fails to
+link with a duplicated `_cgo_init`. lys-shell loads its other native
+libraries through purego. Vulkan's arguments and results are integers,
+handles and pointers; a float argument (vkCmdSetLineWidth and a few
+others, which lys-ui does not call) panics, since purego.SyscallN
+passes integer registers only. gpu's TestOneFakecgo keeps a second
+shim out. This is a lys-ui integration choice rather than an upstream
+bug.
 
 ### C `int` is `int32`
 
