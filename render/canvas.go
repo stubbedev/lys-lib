@@ -47,6 +47,9 @@ type Canvas struct {
 	focus    focusMark
 	armed    bool
 	frame    Rect
+	// ringCells is RoundedBorderSides' side-column scratch, reused
+	// across rings.
+	ringCells []ringCell
 }
 
 // overlay is one deferred top-layer paint and the opacity in force when

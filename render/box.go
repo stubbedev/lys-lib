@@ -127,23 +127,30 @@ func clampRadii(b frect, rc fcorners) fcorners {
 
 // sdBox is the signed distance from (px, py) to a rounded rect with
 // per-corner radii: negative inside, positive outside, in device pixels.
+// It works from the point's distances to its nearest edges, exact in
+// half pixels, so a pixel the same distance from an edge gets the same
+// value wherever the box sits and however long it is.
 func sdBox(px, py float64, b frect, rc fcorners) float64 {
-	cx, cy := (b.x0+b.x1)/2, (b.y0+b.y1)/2
+	left, top := px < (b.x0+b.x1)/2, py < (b.y0+b.y1)/2
+	ex, ey := b.x1-px, b.y1-py
+	if left {
+		ex = px - b.x0
+	}
+	if top {
+		ey = py - b.y0
+	}
 	var rad float64
 	switch {
-	case px < cx && py < cy:
+	case left && top:
 		rad = rc[0]
-	case px >= cx && py < cy:
+	case top:
 		rad = rc[1]
-	case px >= cx:
+	case !left:
 		rad = rc[2]
 	default:
 		rad = rc[3]
 	}
-	hw := (b.x1-b.x0)/2 - rad
-	hh := (b.y1-b.y0)/2 - rad
-	qx := math.Abs(px-cx) - hw
-	qy := math.Abs(py-cy) - hh
+	qx, qy := rad-ex, rad-ey
 	return math.Hypot(math.Max(qx, 0), math.Max(qy, 0)) + math.Min(math.Max(qx, qy), 0) - rad
 }
 
@@ -270,6 +277,12 @@ func (c *Canvas) RoundedBorderSides(r Rect, radii Corners, widths Insets, cols [
 	// side vary only by row: one pixel stands for the run.
 	runX0 := min(max(sp.X, int(math.Ceil(b.x0+max(rc[0], rc[3], w[3])))+1), sp.X+sp.W)
 	runX1 := max(min(sp.X+sp.W, int(math.Floor(b.x1-max(rc[1], rc[2], w[1])))-1), runX0)
+	// Down the side columns, rows clear of the corners and of the
+	// bands, past every width a pixel there could be closer to, vary
+	// only by column: one row's cells stand for them all.
+	reachY := max(rc[0], rc[1], rc[2], rc[3], w[0], w[1], w[2], w[3]) + 2
+	colY0, colY1 := b.y0+reachY, b.y1-reachY
+	var cols1, cols2 []ringCell
 	for y := sp.Y; y < sp.Y+sp.H; y++ {
 		py := float64(y) + 0.5
 		if !innerEmpty && (py < in.y0 || py > in.y1) && runX1 > runX0 {
@@ -295,11 +308,49 @@ func (c *Canvas) RoundedBorderSides(r Rect, radii Corners, widths Insets, cols [
 			hs = min(max(sp.X, int(math.Ceil(xa-0.5))), sp.X+sp.W)
 			he = min(max(hs, int(math.Floor(xb-0.5))+1), sp.X+sp.W)
 		}
+		if py > colY0 && py < colY1 {
+			if cols1 == nil {
+				n1, n2 := max(0, hs-sp.X), max(0, sp.X+sp.W-he)
+				if cap(c.ringCells) < n1+n2 {
+					c.ringCells = make([]ringCell, n1+n2)
+				}
+				cols1, cols2 = c.ringCells[:n1], c.ringCells[n1:n1+n2]
+				ringColumn(cols1, sp.X, py, ring)
+				ringColumn(cols2, he, py, ring)
+			}
+			c.ringColumnRow(sp.X, y, cols1, cols)
+			c.ringColumnRow(he, y, cols2, cols)
+			continue
+		}
 		for x := sp.X; x < hs; x++ {
 			c.ringPixel(x, y, ring, py, cols)
 		}
 		for x := he; x < sp.X+sp.W; x++ {
 			c.ringPixel(x, y, ring, py, cols)
+		}
+	}
+}
+
+// ringCell is a ring column's coverage and side.
+type ringCell struct {
+	cov  float64
+	side int
+}
+
+// ringColumn fills out with the ring's cells from x0 on, on a row
+// between the corners and clear of the top and bottom bands, where
+// they hold for every such row.
+func ringColumn(out []ringCell, x0 int, py float64, ring func(px, py float64) (float64, int)) {
+	for i := range out {
+		out[i].cov, out[i].side = ring(float64(x0+i)+0.5, py)
+	}
+}
+
+// ringColumnRow blends a row of ring cells from x0 on.
+func (c *Canvas) ringColumnRow(x0, y int, cells []ringCell, cols [4]Color) {
+	for i, cell := range cells {
+		if cell.cov > 0 {
+			c.blendCov(x0+i, y, cols[cell.side], cell.cov)
 		}
 	}
 }
