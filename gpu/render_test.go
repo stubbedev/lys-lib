@@ -437,3 +437,42 @@ func TestRenderImageTexturesStayBounded(t *testing.T) {
 		t.Errorf("%d image textures kept, limit 8", n)
 	}
 }
+
+// Drop shadows draw on the GPU as the CPU draws them: offsets either
+// way, sharp or blurred, one whose silhouette outgrows the filter
+// surfaces (they grow), and one wider than the device makes images
+// (through the CPU).
+func TestRenderDropShadows(t *testing.T) {
+	d := openDevice(t)
+	face, err := render.NewFixtureTypeface()
+	if err != nil {
+		t.Fatal(err)
+	}
+	shadows := []render.DropShadow{
+		{DX: 4, DY: 6, Blur: 0, Color: render.RGBA(0, 0, 0, 160)},
+		{DX: -3.5, DY: 2.7, Blur: 5, Color: render.RGBA(20, 200, 90, 255)},
+		{DX: 0, DY: -4, Blur: 12, Color: render.RGBA(0, 0, 0, 90)},
+		{DX: 200, DY: 0, Blur: 2, Color: render.RGBA(200, 30, 30, 200)},
+		{DX: -40000, DY: 1, Blur: 0, Color: render.RGBA(0, 0, 0, 255)},
+	}
+	for _, sc := range [][2]int{{1, 1}, {3, 2}} {
+		w, h := 320*sc[0]/sc[1], 90*sc[0]/sc[1]
+		parity(t, d, w, h, sc[0], sc[1], 1, func(cv *render.Canvas, _ int) {
+			cv.Clear(cv.Rect(), render.RGBA(230, 232, 236, 255))
+			for i, s := range shadows {
+				box := render.Rect{X: 14 + 63*i, Y: 16, W: 40, H: 56}
+				var fl render.Filters
+				fl.Append(render.FilterOp{Kind: render.FilterDropShadow, Shadow: s})
+				fl.Append(render.FilterOp{Kind: render.FilterSaturate, Amount: 1.4})
+				region := cv.MapRect(fl.Extent().Grow(box)).Intersect(cv.Rect())
+				l := cv.ScratchLayer(region)
+				lc := l.Canvas()
+				lc.RoundedRectCorners(box, render.UniformCorners(8), render.RGBA(180, 60, 40, 200))
+				face.DrawAligned(lc, "Sh", render.Rect{X: box.X + 4, Y: box.Y + 20, W: 34, H: 18}, 14, render.RGBA(30, 30, 240, 255), render.AlignStart)
+				render.ApplyFilters(l, region, &fl, render.FilterShape{})
+				cv.DrawLayer(l, region, render.BlendNormal)
+				l.Release()
+			}
+		})
+	}
+}

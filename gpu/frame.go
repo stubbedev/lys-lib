@@ -30,7 +30,7 @@ type step struct {
 	kind         stepKind
 	dst, src     *surface
 	tex, tex2    *surface
-	replace      bool
+	pipe         pipe
 	first, count uint32
 	region       image.Rectangle
 }
@@ -132,15 +132,16 @@ func (f *frame) layer(l *render.Layer) *surface {
 	return s.s
 }
 
-// draw adds p, drawn into dst sampling tex (nil for none), to the
-// frame, joining the previous draw when it shares all three.
-func (f *frame) draw(dst, tex *surface, replace bool, p prim) {
-	f.draw2(dst, tex, nil, replace, p)
+// draw adds p, drawn into dst sampling tex (nil for none) through the
+// pipeline pp, to the frame, joining the previous draw when it shares
+// all three.
+func (f *frame) draw(dst, tex *surface, pp pipe, p prim) {
+	f.draw2(dst, tex, nil, pp, p)
 }
 
 // draw2 is draw sampling a second surface, tex2, as well: an in-place
 // layer call's other layer or mask.
-func (f *frame) draw2(dst, tex, tex2 *surface, replace bool, p prim) {
+func (f *frame) draw2(dst, tex, tex2 *surface, pp pipe, p prim) {
 	if f.err != nil {
 		return
 	}
@@ -156,12 +157,12 @@ func (f *frame) draw2(dst, tex, tex2 *surface, replace bool, p prim) {
 	f.prims = append(f.prims, p)
 	if n := len(f.steps); n > 0 {
 		last := &f.steps[n-1]
-		if last.kind == stepDraw && last.dst == dst && last.tex == tex && last.tex2 == tex2 && last.replace == replace {
+		if last.kind == stepDraw && last.dst == dst && last.tex == tex && last.tex2 == tex2 && last.pipe == pp {
 			last.count++
 			return
 		}
 	}
-	f.steps = append(f.steps, step{kind: stepDraw, dst: dst, tex: tex, tex2: tex2, replace: replace, first: uint32(len(f.prims) - 1), count: 1})
+	f.steps = append(f.steps, step{kind: stepDraw, dst: dst, tex: tex, tex2: tex2, pipe: pp, first: uint32(len(f.prims) - 1), count: 1})
 }
 
 // sprite rasterizes one call on the CPU, within s's bounds, and draws
@@ -186,7 +187,7 @@ func (f *frame) sprite(s render.State, call string, paint func(cv *render.Canvas
 	f.uploads = append(f.uploads, upload{dst: f.d.page, region: image.Rect(at.X, at.Y, at.X+b.W, at.Y+b.H), offset: len(f.staging), rowLength: b.W})
 	f.staging = sc.take(f.staging, b)
 	p := prim{quad: quadOf(b), inner: [4]float32{float32(b.X - at.X), float32(b.Y - at.Y)}, info: [4]uint32{kindTexture, 255, 0, flagRaw}}
-	f.draw(f.on(s), f.d.page, false, p)
+	f.draw(f.on(s), f.d.page, pipeOver, p)
 }
 
 // pageSlot is where a w x h upload goes on the sprite page this
@@ -344,10 +345,7 @@ func (f *frame) record(cb vk.CommandBuffer, final bool) {
 				f.begin(cb, st.dst)
 				pass, pipe, tex, tex2 = st.dst, 0, nil, nil
 			}
-			want := d.over
-			if st.replace {
-				want = d.replace
-			}
+			want := d.pipelineOf(st.pipe)
 			if pipe != want {
 				d.cmds.CmdBindPipeline(cb, vk.PipelineBindPointGraphics, want)
 				pipe = want
@@ -387,7 +385,7 @@ func (f *frame) begin(cb vk.CommandBuffer, s *surface) {
 
 func (f *frame) ClearDevice(s render.State, r render.Rect, col render.Color) {
 	p := prim{quad: quadOf(s.Bounds), cols: [4]uint32{uint32(col)}, info: [4]uint32{kindRect, 255, 0, flagRaw}}
-	f.draw(f.on(s), nil, true, p)
+	f.draw(f.on(s), nil, pipeReplace, p)
 }
 
 func (f *frame) FillRectDevice(s render.State, r render.Rect, col render.Color) {
@@ -396,7 +394,7 @@ func (f *frame) FillRectDevice(s render.State, r render.Rect, col render.Color) 
 	}
 	p := shaded(kindRect, s, 0)
 	p.quad, p.cols[0] = quadOf(s.Bounds), uint32(col)
-	f.draw(f.on(s), nil, false, p)
+	f.draw(f.on(s), nil, pipeOver, p)
 }
 
 func (f *frame) DrawCanvasDevice(s render.State, src *render.Canvas, x, y int) {
@@ -406,14 +404,14 @@ func (f *frame) DrawCanvasDevice(s render.State, src *render.Canvas, x, y int) {
 func (f *frame) DrawLayerAt(s render.State, src *render.Layer, x, y int) {
 	p := shaded(kindTexture, s, flagOpaqueStores)
 	p.quad, p.inner = quadOf(s.Bounds), [4]float32{float32(x), float32(y)}
-	f.draw(f.on(s), f.layer(src), false, p)
+	f.draw(f.on(s), f.layer(src), pipeOver, p)
 }
 
 func (f *frame) RoundedRect(s render.State, r render.Rect, radius int, col render.Color) {
 	full := render.MapRect(r, f.num, f.denom)
 	p := shaded(kindRounded, s, 0)
 	p.quad, p.box, p.radii[0], p.cols[0] = quadOf(s.Bounds), quadOf(full), render.RoundedRadius(full, radius, f.num, f.denom), uint32(col)
-	f.draw(f.on(s), nil, false, p)
+	f.draw(f.on(s), nil, pipeOver, p)
 }
 
 func (f *frame) Line(s render.State, x0, y0, x1, y1, width int, col render.Color) {
@@ -424,7 +422,7 @@ func (f *frame) Line(s render.State, x0, y0, x1, y1, width int, col render.Color
 	p := shaded(kindLine, s, 0)
 	p.quad, p.cols[0] = quadOf(s.Bounds), uint32(col)
 	p.box, p.radii = [4]float32{g.AX, g.AY, g.DX, g.DY}, [4]float32{g.InvLen2, g.Half}
-	f.draw(f.on(s), nil, false, p)
+	f.draw(f.on(s), nil, pipeOver, p)
 }
 
 func (f *frame) Shadow(s render.State, r render.Rect, cornerRadius, blur int, col render.Color) {
@@ -442,7 +440,7 @@ func (f *frame) Shadow(s render.State, r render.Rect, cornerRadius, blur int, co
 	}
 	p := shaded(kindMask, s, 0)
 	p.quad, p.inner, p.cols[0] = quadOf(s.Bounds), [4]float32{float32(at.X - pos.X), float32(at.Y - pos.Y)}, uint32(col)
-	f.draw(f.on(s), f.d.masks.page, false, p)
+	f.draw(f.on(s), f.d.masks.page, pipeOver, p)
 }
 
 func (f *frame) DrawImage(s render.State, img image.Image, x, y int) {
@@ -468,7 +466,7 @@ func (f *frame) scaledImage(s render.State, img image.Image, full render.Rect, r
 	p := shaded(kindImage, s, 0)
 	p.quad, p.box = quadOf(s.Bounds), [4]float32{float32(full.X), float32(full.Y), float32(full.W), float32(full.H)}
 	p.radii = [4]float32{float32(tex.w), float32(tex.h)}
-	f.draw(f.on(s), tex, false, p)
+	f.draw(f.on(s), tex, pipeOver, p)
 }
 
 func (f *frame) DrawImageCover(s render.State, img image.Image, r render.Rect, radii render.Corners) {
@@ -488,7 +486,7 @@ func (f *frame) DrawImageCover(s render.State, img image.Image, r render.Rect, r
 	p := shaded(kindCover, s, 0)
 	p.quad, p.box = quadOf(s.Bounds), quadOf(g.Full)
 	p.radii, p.inner = [4]float32{g.Rad, g.OffX, g.OffY, g.InvScale}, [4]float32{float32(g.W), float32(g.H)}
-	f.draw(f.on(s), tex, false, p)
+	f.draw(f.on(s), tex, pipeOver, p)
 }
 
 func (f *frame) DrawImageDevice(s render.State, img image.Image, x, y int) {
@@ -503,7 +501,7 @@ func (f *frame) DrawImageDevice(s render.State, img image.Image, x, y int) {
 	}
 	p := shaded(kindTexture, s, flagOpaqueStores)
 	p.quad, p.inner = quadOf(s.Bounds), [4]float32{float32(x), float32(y)}
-	f.draw(f.on(s), tex, false, p)
+	f.draw(f.on(s), tex, pipeOver, p)
 }
 
 func (f *frame) DrawImageRect(s render.State, img image.Image, r render.Rect) {
@@ -528,7 +526,7 @@ func (f *frame) DrawIcon(s render.State, ic *render.Icon, x, y int, m render.Aff
 	p := shaded(kindComposite, s, 0)
 	p.quad, p.inner = quadOf(s.Bounds), [4]float32{0, 0, float32(img.Rect.Dx()), float32(img.Rect.Dy())}
 	p.m0, p.m1, p.m2, p.widths = mappedRows(&mp)
-	f.draw(f.on(s), tex, false, p)
+	f.draw(f.on(s), tex, pipeOver, p)
 }
 
 func (f *frame) Arc(s render.State, cx, cy, radius, width, start, sweep float64, col render.Color) {
@@ -543,7 +541,7 @@ func (f *frame) Arc(s render.State, cx, cy, radius, width, start, sweep float64,
 	p := shaded(kindArc, s, 0)
 	p.quad, p.cols[0] = quadOf(s.Bounds), uint32(col)
 	p.box, p.radii, p.inner = [4]float32{g.CX, g.CY, g.R, g.Half}, [4]float32{g.Start, g.Sweep, full}, [4]float32{g.SX, g.SY, g.EX, g.EY}
-	f.draw(f.on(s), nil, false, p)
+	f.draw(f.on(s), nil, pipeOver, p)
 }
 
 func (f *frame) BoxShadow(s render.State, r render.Rect, radii render.Corners, sh render.BoxShadow) {
@@ -560,7 +558,7 @@ func (f *frame) BoxShadow(s render.State, r render.Rect, radii render.Corners, s
 	p := shaded(kindStretch, s, 0)
 	p.quad, p.box, p.cols[0] = quadOf(s.Bounds), [4]float32{float32(box.X), float32(box.Y), float32(box.W), float32(box.H)}, uint32(sh.Color)
 	p.radii, p.inner = [4]float32{float32(kw), float32(kh)}, [4]float32{float32(pos.X - x0), float32(pos.Y - y0)}
-	f.draw(f.on(s), f.d.masks.page, false, p)
+	f.draw(f.on(s), f.d.masks.page, pipeOver, p)
 }
 
 func (f *frame) PaintGrain(s render.State, r render.Rect, radii render.Corners, opacity float64, ox, oy int) {
@@ -575,7 +573,7 @@ func (f *frame) RoundedBorderSides(s render.State, r render.Rect, radii render.C
 	p := shaded(kindBorder, s, 0)
 	p.quad, p.box, p.radii, p.inner, p.iradii, p.widths = quadOf(s.Bounds), vec(outer), vec(oradii), vec(inner), vec(iradii), render.SideReciprocals(w)
 	p.cols = [4]uint32{uint32(cols[0]), uint32(cols[1]), uint32(cols[2]), uint32(cols[3])}
-	f.draw(f.on(s), nil, false, p)
+	f.draw(f.on(s), nil, pipeOver, p)
 }
 
 func (f *frame) RoundedRectCorners(s render.State, r render.Rect, radii render.Corners, col render.Color) {
@@ -585,7 +583,7 @@ func (f *frame) RoundedRectCorners(s render.State, r render.Rect, radii render.C
 	box, rc := render.DeviceBox(r, radii, f.num, f.denom)
 	p := shaded(kindRRect, s, 0)
 	p.quad, p.box, p.radii, p.cols[0] = quadOf(s.Bounds), vec(box), vec(rc), uint32(col)
-	f.draw(f.on(s), nil, false, p)
+	f.draw(f.on(s), nil, pipeOver, p)
 }
 
 func (f *frame) PaintGradient(s render.State, r render.Rect, radii render.Corners, g render.Gradient) {
@@ -615,7 +613,7 @@ func (f *frame) PaintGradient(s render.State, r render.Rect, radii render.Corner
 		f.words = append(f.words, math.Float32bits(pos), uint32(st.Color), math.Float32bits(inv))
 		prev = pos
 	}
-	f.draw(f.on(s), nil, false, p)
+	f.draw(f.on(s), nil, pipeOver, p)
 }
 
 func (f *frame) PaintGradientTiles(s render.State, g render.Gradient, t render.Tile, clip render.Rect, radii render.Corners) {
@@ -645,7 +643,7 @@ func (f *frame) Glyph(s render.State, face *render.Typeface, gid font.GID, scale
 	}
 	p := shaded(kindMask, s, 0)
 	p.quad, p.inner, p.cols[0] = quadOf(s.Bounds), [4]float32{float32(at.X - pos.X), float32(at.Y - pos.Y)}, uint32(col)
-	f.draw(f.on(s), f.d.masks.page, false, p)
+	f.draw(f.on(s), f.d.masks.page, pipeOver, p)
 }
 
 func (f *frame) Layer(s render.State, l *render.Layer, region render.Rect) {
@@ -684,7 +682,7 @@ func (f *frame) readyLayer(l *render.Layer, region render.Rect, scratch bool) {
 	if clear.Empty() {
 		return
 	}
-	f.draw(ls.s, nil, true, prim{quad: quadOf(clear), info: [4]uint32{kindRect, 255, 0, flagRaw}})
+	f.draw(ls.s, nil, pipeReplace, prim{quad: quadOf(clear), info: [4]uint32{kindRect, 255, 0, flagRaw}})
 }
 
 func (f *frame) Snapshot(s render.State, l *render.Layer, region render.Rect) {
@@ -726,7 +724,7 @@ func (f *frame) composite(s render.State, l *render.Layer, src render.Rect, m re
 	p := shaded(kindComposite, s, 0)
 	p.quad, p.inner = quadOf(s.Bounds.Intersect(render.Rect{W: f.target.s.w, H: f.target.s.h})), quadOf(src)
 	p.m0, p.m1, p.m2, p.widths = mappedRows(&mp)
-	f.draw(f.on(s), ls, false, p)
+	f.draw(f.on(s), ls, pipeOver, p)
 }
 
 func (f *frame) DrawLayer(s render.State, l *render.Layer, src render.Rect, mode render.BlendMode) {
@@ -740,7 +738,7 @@ func (f *frame) DrawLayer(s render.State, l *render.Layer, src render.Rect, mode
 	}
 	p := shaded(kindTexture, s, flagNoBright)
 	p.quad = quadOf(s.Bounds)
-	f.draw(f.on(s), f.layer(l), false, p)
+	f.draw(f.on(s), f.layer(l), pipeOver, p)
 }
 
 func (f *frame) CrossFade(l, other *render.Layer, region render.Rect, t float64) {
@@ -785,28 +783,40 @@ func (f *frame) ApplyPathMask(l *render.Layer, path *render.Path, region render.
 }
 
 func (f *frame) ApplyFilters(l *render.Layer, region render.Rect, fl *render.Filters, shape render.FilterShape) {
-	if steps, ok := fl.Steps(float64(f.num) / float64(f.denom)); ok && gpuSteps(steps) {
-		s := f.layer(l)
+	s := f.layer(l)
+	region = region.Intersect(render.Rect{W: s.w, H: s.h})
+	if steps, ok := fl.Steps(float64(f.num) / float64(f.denom)); ok && f.gpuSteps(steps, region) {
 		for _, st := range steps {
-			if st.IsBlur {
-				f.blur(s, region, st.Blur)
-			} else {
+			switch st.Kind {
+			case render.StepMatrix:
 				f.matrixStep(s, region, st.Matrix)
+			case render.StepBlur:
+				f.blur(s, region, st.Blur)
+			case render.StepShadow:
+				f.dropShadow(s, region, st.Shadow)
 			}
 		}
 		return
 	}
-	f.cpu(region, []*surface{f.layer(l)}, func(cvs []*render.Canvas) {
+	f.cpu(region, []*surface{s}, func(cvs []*render.Canvas) {
 		render.ApplyFilters(render.LayerOf(cvs[0]), region, fl, shape)
 	})
 }
 
-// gpuSteps reports whether the shader's int32 fixed point holds every
-// linear color step: a channel's three weighted products and the
-// rounding half stay below 2^31.
-func gpuSteps(steps []render.FilterStep) bool {
+// gpuSteps reports whether the GPU runs steps on region: the
+// shader's int32 fixed point holds every linear color step (a
+// channel's three weighted products and the rounding half stay below
+// 2^31), and every shadow's silhouette fits a filter surface the
+// device can make.
+func (f *frame) gpuSteps(steps []render.FilterStep, region render.Rect) bool {
 	for _, st := range steps {
-		if st.IsBlur {
+		switch st.Kind {
+		case render.StepBlur:
+			continue
+		case render.StepShadow:
+			if w, h := st.Shadow.Size(region); !f.filterRoom(w, h) {
+				return false
+			}
 			continue
 		}
 		for row := range 3 {
@@ -859,9 +869,61 @@ func (f *frame) blur(s *surface, region render.Rect, pl render.BlurPlan) {
 		work = render.Rect{X: r.X, Y: r.Y, W: (r.W + pl.D - 1) / pl.D, H: (r.H + pl.D - 1) / pl.D}
 		p := prim{quad: quadOf(work), box: quadOf(r), info: [4]uint32{kindDownsample, 255, 0, flagRaw}}
 		p.radii[0] = float32(pl.D)
-		f.draw(t1, s, true, p)
+		f.draw(t1, s, pipeReplace, p)
 	}
-	for _, rad := range pl.Boxes {
+	f.boxPasses(t1, t2, work, pl.Boxes)
+	if pl.D == 1 {
+		f.steps = append(f.steps, step{kind: stepCopy, src: t1, dst: s, region: rectOf(r)})
+		return
+	}
+	p := prim{quad: quadOf(r), box: quadOf(work), info: [4]uint32{kindUpsample, 255, 0, flagRaw}}
+	p.radii[0] = float32(pl.D)
+	f.draw(s, t1, pipeReplace, p)
+}
+
+// filterRoom reports whether the filter surfaces hold w x h, growing
+// them when the device allows, after flushing the segment that may
+// still use the old ones.
+func (f *frame) filterRoom(w, h int) bool {
+	d := f.d
+	if w <= d.filterW && h <= d.filterH {
+		return true
+	}
+	if f.err != nil || w > d.maxDim || h > d.maxDim {
+		return false
+	}
+	if f.err = f.flush(false); f.err != nil {
+		return false
+	}
+	f.err = d.fitFilters(w, h)
+	return f.err == nil
+}
+
+// dropShadow draws pl's shadow under s's region on the GPU, as
+// render's dropShadowRegion does: the region's alpha silhouette goes
+// into the second filter surface at the origin, the box passes
+// ping-pong it with the first (an even count, so it ends where it
+// started), and the region composites over it in place.
+func (f *frame) dropShadow(s *surface, r render.Rect, pl render.ShadowPlan) {
+	w, h := pl.Size(r)
+	if f.err != nil || r.Empty() || w <= 0 || h <= 0 {
+		return
+	}
+	work := render.Rect{W: w, H: h}
+	p := prim{quad: quadOf(work), box: quadOf(r), info: [4]uint32{kindSilhouette, 255, 0, flagRaw}}
+	p.radii[0] = float32(pl.Margin)
+	t1, t2 := f.d.filterTemp2, f.d.filterTemp
+	f.draw(t1, s, pipeReplace, p)
+	f.boxPasses(t1, t2, work, pl.Boxes)
+	p = prim{box: quadOf(r), radii: [4]float32{float32(pl.Margin - pl.DX), float32(pl.Margin - pl.DY), float32(w), float32(h)}}
+	p.cols[0] = uint32(pl.Tint)
+	f.inPlace(s, r, t1, kindShadow, p)
+}
+
+// boxPasses runs render's box passes of radii over t1's work rect,
+// ping-ponging through t2; each pass pair leaves the result in t1.
+func (f *frame) boxPasses(t1, t2 *surface, work render.Rect, radii [3]int) {
+	for _, rad := range radii {
 		if rad < 1 {
 			continue
 		}
@@ -869,17 +931,10 @@ func (f *frame) blur(s *surface, region render.Rect, pl render.BlurPlan) {
 		for _, kind := range [2]uint32{kindBoxH, kindBoxV} {
 			p := prim{quad: quadOf(work), box: quadOf(work), cols: [4]uint32{half, recip}, info: [4]uint32{kind, 255, 0, flagRaw}}
 			p.radii[0] = float32(rad)
-			f.draw(t2, t1, true, p)
+			f.draw(t2, t1, pipeReplace, p)
 			t1, t2 = t2, t1
 		}
 	}
-	if pl.D == 1 {
-		f.steps = append(f.steps, step{kind: stepCopy, src: t1, dst: s, region: rectOf(r)})
-		return
-	}
-	p := prim{quad: quadOf(r), box: quadOf(work), info: [4]uint32{kindUpsample, 255, 0, flagRaw}}
-	p.radii[0] = float32(pl.D)
-	f.draw(s, t1, true, p)
 }
 
 // inPlace reworks s's region r in place: it copies the region aside
@@ -892,5 +947,5 @@ func (f *frame) inPlace(s *surface, r render.Rect, tex2 *surface, kind uint32, p
 	}
 	f.steps = append(f.steps, step{kind: stepCopy, src: s, dst: f.d.filterTemp, region: rectOf(r)})
 	p.quad, p.info = quadOf(r), [4]uint32{kind, 255, 0, flagRaw}
-	f.draw2(s, f.d.filterTemp, tex2, true, p)
+	f.draw2(s, f.d.filterTemp, tex2, pipeReplace, p)
 }

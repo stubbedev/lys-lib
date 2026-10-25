@@ -252,9 +252,7 @@ func ApplyFilters(l *Layer, region Rect, f *Filters, shape FilterShape) {
 		case FilterBlur:
 			blurRegion(l, region, op.Amount*scale)
 		case FilterDropShadow:
-			s := op.Shadow
-			s.DX, s.DY, s.Blur = s.DX*scale, s.DY*scale, s.Blur*scale
-			dropShadowRegion(l, region, &s)
+			dropShadowRegion(l, region, ShadowPlanOf(op.Shadow, scale))
 		case FilterRefract:
 			refractRegion(l, region, shape, op.Bezel*scale, op.Amount*scale)
 		default:
@@ -266,13 +264,25 @@ func ApplyFilters(l *Layer, region Rect, f *Filters, shape FilterShape) {
 	}
 }
 
+// FilterStepKind is what a FilterStep applies.
+type FilterStepKind uint8
+
+const (
+	// StepMatrix applies the step's Matrix.
+	StepMatrix FilterStepKind = iota
+	// StepBlur blurs by the step's Blur plan.
+	StepBlur
+	// StepShadow draws the step's Shadow plan.
+	StepShadow
+)
+
 // FilterStep is one function of a filter list as a GPU renderer
-// applies it: a color matrix step or a blur.
+// applies it: the field its Kind names holds it.
 type FilterStep struct {
+	Kind   FilterStepKind
 	Matrix MatrixStep
-	// Blur is the plan of a blur step; IsBlur marks one.
 	Blur   BlurPlan
-	IsBlur bool
+	Shadow ShadowPlan
 }
 
 // MatrixStep is one color function of a filter list as both renderers
@@ -303,20 +313,22 @@ func stepOf(m colorMatrix) MatrixStep {
 
 // Steps is f's functions as filter steps, in order, at device scale
 // (device pixels per CSS pixel, scale); false when f holds one a GPU
-// does not run (drop-shadow, refract).
+// does not run (refract).
 func (f *Filters) Steps(scale float64) ([]FilterStep, bool) {
 	steps := make([]FilterStep, 0, f.N)
 	for i := range f.N {
 		op := &f.Ops[i]
 		switch op.Kind {
-		case FilterDropShadow, FilterRefract:
+		case FilterRefract:
 			return nil, false
+		case FilterDropShadow:
+			steps = append(steps, FilterStep{Kind: StepShadow, Shadow: ShadowPlanOf(op.Shadow, scale)})
 		case FilterBlur:
 			if pl, ok := BlurPlanOf(op.Amount * scale); ok {
-				steps = append(steps, FilterStep{Blur: pl, IsBlur: true})
+				steps = append(steps, FilterStep{Kind: StepBlur, Blur: pl})
 			}
 		default:
-			steps = append(steps, FilterStep{Matrix: stepOf(filterMatrix(op.Kind, op.Amount))})
+			steps = append(steps, FilterStep{Kind: StepMatrix, Matrix: stepOf(filterMatrix(op.Kind, op.Amount))})
 		}
 	}
 	return steps, true
@@ -771,43 +783,68 @@ func subAcc(acc *[4]uint32, c Color) {
 	acc[3] -= uint32(c.B())
 }
 
-// dropShadowRegion composites a blurred, tinted copy of region's
-// alpha silhouette at the shadow's offset under region's pixels.
-func dropShadowRegion(l *Layer, region Rect, s *DropShadow) {
-	w := region.W + int(math.Ceil(s.Blur*1.5))*2 + max(0, int(math.Abs(s.DX)))*2
-	h := region.H + int(math.Ceil(s.Blur*1.5))*2 + max(0, int(math.Abs(s.DY)))*2
+// ShadowPlan is how a drop-shadow runs, in device pixels: the region's
+// alpha silhouette is laid into a buffer (Size) at (Margin, Margin) and
+// blurred by box passes of Boxes' radii (a pass of radius 0 is
+// skipped); each region pixel then reads the buffer at (Margin-DX,
+// Margin-DY) from its own place, scales the premultiplied Tint by that
+// alpha (each channel tint*a/255, floored) and goes over the result.
+type ShadowPlan struct {
+	Margin, DX, DY int
+	Boxes          [3]int
+	Tint           Color
+}
+
+// ShadowPlanOf is the plan for s at device scale (device pixels per
+// CSS pixel, scale).
+func ShadowPlanOf(s DropShadow, scale float64) ShadowPlan {
+	blur := s.Blur * scale
+	return ShadowPlan{
+		Margin: int(math.Ceil(blur * 1.5)),
+		DX:     int(s.DX * scale),
+		DY:     int(s.DY * scale),
+		Boxes:  blurBoxes(blur / 2),
+		Tint:   s.Color,
+	}
+}
+
+// Size is the silhouette buffer's size for region: the margin on every
+// side and twice the offset across.
+func (p ShadowPlan) Size(region Rect) (w, h int) {
+	return region.W + 2*p.Margin + 2*max(p.DX, -p.DX), region.H + 2*p.Margin + 2*max(p.DY, -p.DY)
+}
+
+// dropShadowRegion composites p's shadow of region's alpha silhouette
+// under region's pixels.
+func dropShadowRegion(l *Layer, region Rect, p ShadowPlan) {
+	w, h := p.Size(region)
 	if w <= 0 || h <= 0 {
 		return
 	}
-	sil := make([]Color, w*h)
+	l.blurA = growColors(l.blurA, w*h)
+	sil := l.blurA[:w*h]
+	clear(sil)
 	for y := range region.H {
+		row := l.cv.data[(region.Y+y)*l.cv.stride+region.X*4:]
+		out := sil[(y+p.Margin)*w+p.Margin:]
 		for x := range region.W {
-			if a := l.cv.get(region.X+x, region.Y+y).A(); a != 0 {
-				sil[(y+int(math.Ceil(s.Blur*1.5)))*w+x+int(math.Ceil(s.Blur*1.5))] = Color(uint32(a) << 24)
-			}
+			out[x] = Color(uint32(row[x*4+3]) << 24)
 		}
 	}
-	tmp := make([]Color, w*h)
-	copy(tmp, sil)
-	if s.Blur > 0 {
-		acc := make([]uint32, 4*w)
-		for _, r := range blurBoxes(s.Blur / 2) {
-			if r < 1 {
-				continue
-			}
-			boxPassH(tmp, sil, w, h, r)
-			boxPassV(sil, tmp, w, h, r, acc)
-		}
-	}
-	tint := s.Color
+	l.blurPasses(sil, w, h, p.Boxes)
+	tint := p.Tint
 	for y := range region.H {
+		sy := y + p.Margin - p.DY
+		if sy < 0 || sy >= h {
+			continue
+		}
+		row := l.cv.data[(region.Y+y)*l.cv.stride+region.X*4:]
 		for x := range region.W {
-			dx := x + int(math.Ceil(s.Blur*1.5)) - int(s.DX)
-			dy := y + int(math.Ceil(s.Blur*1.5)) - int(s.DY)
-			if dx < 0 || dy < 0 || dx >= w || dy >= h {
+			sx := x + p.Margin - p.DX
+			if sx < 0 || sx >= w {
 				continue
 			}
-			a := uint32(sil[dy*w+dx].A())
+			a := uint32(sil[sy*w+sx].A())
 			if a == 0 {
 				continue
 			}
@@ -817,7 +854,9 @@ func dropShadowRegion(l *Layer, region Rect, s *DropShadow) {
 				uint32(tint.R())*a/255<<16 |
 				uint32(tint.G())*a/255<<8 |
 				uint32(tint.B())*a/255)
-			l.cv.set(region.X+x, region.Y+y, l.cv.get(region.X+x, region.Y+y).over(shadow))
+			px := Color(binary.LittleEndian.Uint32(row[x*4:]))
+			binary.LittleEndian.PutUint32(row[x*4:], uint32(px.over(shadow)))
 		}
 	}
+	l.cv.touched += region.W * region.H
 }

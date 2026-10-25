@@ -43,6 +43,8 @@ const (
 	kindBoxV
 	kindDownsample
 	kindUpsample
+	kindSilhouette
+	kindShadow
 )
 
 // The primitive flags, prim.frag's.

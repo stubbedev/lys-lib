@@ -167,8 +167,7 @@ func (d *Device) shaderModule(spv []byte) (vk.ShaderModule, error) {
 	return m, nil
 }
 
-// createPrimPipelines makes the primitive pipelines: over blends a
-// premultiplied source over the surface, replace writes it as is.
+// createPrimPipelines makes the primitive pipelines (pipe).
 func (d *Device) createPrimPipelines() error {
 	var err error
 	if d.primModules[0], err = d.shaderModule(primVert); err != nil {
@@ -216,6 +215,25 @@ func (d *Device) createPrimPipelines() error {
 	err = make(vk.PipelineColorBlendAttachmentState{ColorWriteMask: rgba}, &d.replace)
 	runtime.KeepAlive(main)
 	return err
+}
+
+// pipe names a primitive pipeline: how a prim's color meets the
+// surface's.
+type pipe uint8
+
+const (
+	// pipeOver blends the color over the surface (source-over).
+	pipeOver pipe = iota
+	// pipeReplace writes the color as is.
+	pipeReplace
+)
+
+// pipelineOf is pp's pipeline.
+func (d *Device) pipelineOf(pp pipe) vk.Pipeline {
+	if pp == pipeReplace {
+		return d.replace
+	}
+	return d.over
 }
 
 func (d *Device) destroyPipelines() {

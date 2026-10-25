@@ -49,6 +49,8 @@ type Device struct {
 	pool     vk.CommandPool
 	memProps vk.PhysicalDeviceMemoryProperties
 	name     string
+	// maxDim is the largest image side the device makes.
+	maxDim int
 	// exports is whether the device renders into dmabufs.
 	exports bool
 	// targets are the live targets, closed with the device.
@@ -146,7 +148,7 @@ func (d *Device) pick(p vk.PhysicalDevice, exporting bool) error {
 	}
 	for i, f := range fams {
 		if f.QueueFlags&vk.QueueFlags(vk.QueueGraphicsBit) != 0 {
-			d.phys, d.family, d.name, d.exports = p, uint32(i), name, exporting
+			d.phys, d.family, d.name, d.exports, d.maxDim = p, uint32(i), name, exporting, int(props.Limits.MaxImageDimension2D)
 			return nil
 		}
 	}

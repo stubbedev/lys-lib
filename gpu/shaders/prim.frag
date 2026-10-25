@@ -24,6 +24,8 @@ const uint kindBoxH = 17u;
 const uint kindBoxV = 18u;
 const uint kindDownsample = 19u;
 const uint kindUpsample = 20u;
+const uint kindSilhouette = 21u;
+const uint kindShadow = 22u;
 
 // The info.w flags, gpu/prim.go's.
 const uint flagRaw = 1u;
@@ -599,6 +601,30 @@ void main() {
         uvec4 c0 = lerp256(texel(o + ivec2(x0, ya)), texel(o + ivec2(x0, yb)), uint(sy.y));
         uvec4 c1 = lerp256(texel(o + ivec2(x1, ya)), texel(o + ivec2(x1, yb)), uint(sy.y));
         c = lerp256(c0, c1, tx);
+        break;
+    }
+    case kindSilhouette: {
+        // render's dropShadowRegion: the region's alpha laid into the
+        // buffer at the margin, nothing around it.
+        ivec2 at = ivec2(floor(px)) - int(p.radii.x) + ivec2(p.box.xy);
+        ivec4 b = ivec4(p.box);
+        c = uvec4(0u);
+        if (at.x >= b.x && at.y >= b.y && at.x < b.z && at.y < b.w) {
+            c.x = texel(at).x;
+        }
+        break;
+    }
+    case kindShadow: {
+        // render's dropShadowRegion: the tint scaled by the blurred
+        // silhouette's alpha at the offset, under the pixel.
+        ivec2 at = ivec2(floor(px));
+        ivec2 q = at - ivec2(p.box.xy) + ivec2(p.radii.xy);
+        c = texel(at);
+        if (q.x >= 0 && q.y >= 0 && q.x < int(p.radii.z) && q.y < int(p.radii.w)) {
+            uint a = texel2(q).x;
+            uvec4 sh = unpack(p.cols.x) * a / 255u;
+            c += (sh * (255u - c.x) + 127u) / 255u;
+        }
         break;
     }
     case kindComposite: {

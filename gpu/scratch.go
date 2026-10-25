@@ -1,6 +1,7 @@
 package gpu
 
 import (
+	"fmt"
 	"runtime"
 	"slices"
 	"sync"
@@ -58,10 +59,13 @@ type scratch struct {
 	// sample nothing.
 	page, blank *surface
 	// filterTemp and filterTemp2 hold a layer region an in-place
-	// call reads while it writes the layer, and a blur's passes.
+	// call reads while it writes the layer, a blur's passes and a
+	// shadow's silhouette, filterW x filterH: at least the target, more
+	// when a silhouette needed it.
 	filterTemp, filterTemp2         *surface
 	prims, words, staging, readback *buffer
 	scratchW, scratchH              int
+	filterW, filterH                int
 	freeLayers                      []*layerSurface
 	masks                           maskAtlas
 	images                          images
@@ -99,25 +103,40 @@ func (d *Device) ensureScratch(w, h int) error {
 		return nil
 	}
 	d.scratchW, d.scratchH = max(w, d.scratchW), max(h, d.scratchH)
-	for _, s := range []*surface{d.page, d.filterTemp, d.filterTemp2} {
-		if s != nil {
-			s.close()
-		}
+	if d.page != nil {
+		d.page.close()
 	}
 	var err error
 	if d.page, err = d.newSurface(d.scratchW, d.scratchH); err != nil {
 		return err
 	}
+	if err := d.fitFilters(w, h); err != nil {
+		return err
+	}
+	d.scratches = nil
+	return d.page.ready()
+}
+
+// fitFilters grows the filter surfaces to hold w x h. Nothing pending
+// may still use them.
+func (d *Device) fitFilters(w, h int) error {
+	if w <= d.filterW && h <= d.filterH {
+		return nil
+	}
+	d.filterW, d.filterH = max(w, d.filterW), max(h, d.filterH)
 	for _, t := range []**surface{&d.filterTemp, &d.filterTemp2} {
-		if *t, err = d.newSurface(d.scratchW, d.scratchH); err != nil {
-			return err
+		if *t != nil {
+			(*t).close()
+		}
+		var err error
+		if *t, err = d.newSurface(d.filterW, d.filterH); err != nil {
+			return fmt.Errorf("gpu: filter surface %dx%d: %w", d.filterW, d.filterH, err)
 		}
 		if err := (*t).ready(); err != nil {
 			return err
 		}
 	}
-	d.scratches = nil
-	return d.page.ready()
+	return nil
 }
 
 // scratchCanvas is scratch canvas i for a w x h canvas at num/denom.
