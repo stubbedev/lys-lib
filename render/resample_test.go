@@ -87,3 +87,24 @@ func BenchmarkResamplePhotoToOutput(b *testing.B) {
 		Resample(src, src.Bounds(), 2560, 1440)
 	}
 }
+
+// A clipped image keeps its scale and loses its clipped part: the
+// source mapping is the whole destination's, not the visible part's.
+func TestDrawImageClipsWithoutSquashing(t *testing.T) {
+	img := image.NewRGBA(image.Rect(0, 0, 4, 1))
+	for x := range 4 {
+		img.SetRGBA(x, 0, color.RGBA{R: uint8(60 * (x + 1)), A: 0xff})
+	}
+	cv := New(make([]byte, Stride(8)*2), Stride(8), 8, 2)
+	prev := cv.PushClip(Rect{X: 2, W: 6, H: 2})
+	cv.DrawImage(img, 0, 0)
+	cv.PopClip(prev)
+	for x, want := range map[int]uint8{2: 180, 3: 240} {
+		if got := cv.get(x, 0).R(); got != want {
+			t.Errorf("pixel %d is %d, want source column %d's %d", x, got, x, want)
+		}
+	}
+	if cv.get(1, 0) != 0 || cv.get(4, 0) != 0 {
+		t.Error("the image painted outside its own or the clip's bounds")
+	}
+}

@@ -547,18 +547,28 @@ func abs(v int) int {
 // size to the device rect its logical placement spans.
 func (c *Canvas) DrawImage(img image.Image, x, y int) {
 	b := img.Bounds()
-	dst := c.MapRect(Rect{X: x, Y: y, W: b.Dx(), H: b.Dy()})
-	dst = c.clip.Intersect(dst)
+	full := c.MapRect(Rect{X: x, Y: y, W: b.Dx(), H: b.Dy()})
+	dst := c.clip.Intersect(full)
 	if dst.Empty() {
 		return
 	}
+	rgba, _ := img.(*image.RGBA)
 	for py := dst.Y; py < dst.Y+dst.H; py++ {
-		for pxx := dst.X; pxx < dst.X+dst.W; pxx++ {
-			sx := (pxx - dst.X) * b.Dx() / dst.W
-			sy := (py - dst.Y) * b.Dy() / dst.H
-			sr, sg, sb, sa := img.At(b.Min.X+sx, b.Min.Y+sy).RGBA()
-			src := Color(sa>>8<<24 | sr>>8<<16 | sg>>8<<8 | sb>>8)
-			c.blend(pxx, py, src)
+		sy := b.Min.Y + (py-full.Y)*b.Dy()/full.H
+		for px := dst.X; px < dst.X+dst.W; px++ {
+			sx := b.Min.X + (px-full.X)*b.Dx()/full.W
+			var src Color
+			if rgba != nil {
+				o := rgba.PixOffset(sx, sy)
+				p := rgba.Pix[o : o+4 : o+4]
+				src = Color(uint32(p[3])<<24 | uint32(p[0])<<16 | uint32(p[1])<<8 | uint32(p[2]))
+			} else {
+				sr, sg, sb, sa := img.At(sx, sy).RGBA()
+				src = Color(sa>>8<<24 | sr>>8<<16 | sg>>8<<8 | sb>>8)
+			}
+			if src != 0 {
+				c.blend(px, py, src)
+			}
 		}
 	}
 }
