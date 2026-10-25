@@ -33,6 +33,7 @@ const (
 	kindImage
 	kindGradient
 	kindLine
+	kindArc
 )
 
 // The primitive flags, prim.frag's.

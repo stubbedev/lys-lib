@@ -14,6 +14,7 @@ const uint kindStretch = 7u;
 const uint kindImage = 8u;
 const uint kindGradient = 9u;
 const uint kindLine = 10u;
+const uint kindArc = 11u;
 
 // The info.w flags, gpu/prim.go's.
 const uint flagRaw = 1u;
@@ -373,6 +374,22 @@ void main() {
             discard;
         }
         c = coverageScale(unpack(p.cols.x), cov255(cov));
+        break;
+    }
+    case kindArc: {
+        // render.ArcGeometry.Coverage, in its order.
+        const float turn = 6.283185307179586;
+        precise float dx = px.x - p.box.x;
+        precise float dy = px.y - p.box.y;
+        precise float d;
+        if (p.radii.z != 0.0 || modFloor(atan2f(dy, dx) - p.radii.x, turn, 1.0 / turn) <= p.radii.y) {
+            d = abs(sqrt(dx * dx + dy * dy) - p.box.z) - p.box.w;
+        } else {
+            precise vec2 a = px - p.inner.xy;
+            precise vec2 b = px - p.inner.zw;
+            d = min(sqrt(a.x * a.x + a.y * a.y), sqrt(b.x * b.x + b.y * b.y)) - p.box.w;
+        }
+        c = covered(unpack(p.cols.x), coverage(d));
         break;
     }
     case kindComposite: {

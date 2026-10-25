@@ -472,7 +472,18 @@ func (f *frame) DrawIcon(s render.State, ic *render.Icon, x, y int, m render.Aff
 }
 
 func (f *frame) Arc(s render.State, cx, cy, radius, width, start, sweep float64, col render.Color) {
-	f.sprite(s, "Arc", func(cv *render.Canvas) { cv.Arc(cx, cy, radius, width, start, sweep, col) })
+	if width <= 0 || radius <= 0 || sweep <= 0 || col == 0 {
+		return
+	}
+	g := render.ArcOf(cx, cy, radius, width, start, sweep, f.num, f.denom)
+	full := float32(0)
+	if g.Full {
+		full = 1
+	}
+	p := shaded(kindArc, s, 0)
+	p.quad, p.cols[0] = quadOf(s.Bounds), uint32(col)
+	p.box, p.radii, p.inner = [4]float32{g.CX, g.CY, g.R, g.Half}, [4]float32{g.Start, g.Sweep, full}, [4]float32{g.SX, g.SY, g.EX, g.EY}
+	f.draw(f.on(s), nil, false, p)
 }
 
 func (f *frame) BoxShadow(s render.State, r render.Rect, radii render.Corners, sh render.BoxShadow) {
