@@ -257,3 +257,43 @@ func TestRenderGradients(t *testing.T) {
 		})
 	}
 }
+
+// Color filter lists apply natively, as the CPU applies them: the
+// fixed-point functions on premultiplied pixels and the float32 ones on
+// straight colors, alone and chained, over translucent content.
+func TestRenderColorFilters(t *testing.T) {
+	d := openDevice(t)
+	face, err := render.NewFixtureTypeface()
+	if err != nil {
+		t.Fatal(err)
+	}
+	lists := [][]render.FilterOp{
+		{{Kind: render.FilterContrast, Amount: 1.7}},
+		{{Kind: render.FilterInvert, Amount: 0.8}},
+		{{Kind: render.FilterOpacity, Amount: 0.45}},
+		{{Kind: render.FilterSaturate, Amount: 2.5}, {Kind: render.FilterHueRotate, Amount: 75}},
+		{{Kind: render.FilterSepia, Amount: 0.7}, {Kind: render.FilterBrightness, Amount: 1.3}, {Kind: render.FilterGrayscale, Amount: 0.4}},
+	}
+	for _, sc := range [][2]int{{1, 1}, {3, 2}} {
+		w, h := 200*sc[0]/sc[1], 50*sc[0]/sc[1]
+		parity(t, d, w, h, sc[0], sc[1], 1, func(cv *render.Canvas, _ int) {
+			cv.Clear(cv.Rect(), render.RGBA(16, 18, 24, 255))
+			for i, ops := range lists {
+				box := render.Rect{X: 4 + 39*i, Y: 4, W: 36, H: 40}
+				region := cv.MapRect(box)
+				l := cv.ScratchLayer(region)
+				lc := l.Canvas()
+				lc.RoundedRectCorners(box, render.UniformCorners(6), render.RGBA(180, 60, 40, 200))
+				lc.FillRect(render.Rect{X: box.X + 4, Y: box.Y + 20, W: 28, H: 12}, render.RGBA(20, 90, 200, 140))
+				face.DrawAligned(lc, "Fx", render.Rect{X: box.X + 6, Y: box.Y + 4, W: 30, H: 14}, 12, render.RGBA(240, 240, 240, 255), render.AlignStart)
+				var fl render.Filters
+				for _, op := range ops {
+					fl.Append(op)
+				}
+				render.ApplyFilters(l, region, &fl, render.FilterShape{})
+				cv.DrawLayer(l, region, render.BlendNormal)
+				l.Release()
+			}
+		})
+	}
+}

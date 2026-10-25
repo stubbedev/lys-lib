@@ -56,7 +56,10 @@ type scratch struct {
 	scratches []*scratchCanvas
 	// page holds a segment's sprites; blank is sampled by draws that
 	// sample nothing.
-	page, blank                     *surface
+	page, blank *surface
+	// filterTemp holds a layer region a color matrix step reads while
+	// it writes the layer.
+	filterTemp                      *surface
 	prims, words, staging, readback *buffer
 	scratchW, scratchH              int
 	freeLayers                      []*layerSurface
@@ -96,14 +99,22 @@ func (d *Device) ensureScratch(w, h int) error {
 		return nil
 	}
 	d.scratchW, d.scratchH = max(w, d.scratchW), max(h, d.scratchH)
-	if d.page != nil {
-		d.page.close()
+	for _, s := range []*surface{d.page, d.filterTemp} {
+		if s != nil {
+			s.close()
+		}
 	}
 	var err error
 	if d.page, err = d.newSurface(d.scratchW, d.scratchH); err != nil {
 		return err
 	}
+	if d.filterTemp, err = d.newSurface(d.scratchW, d.scratchH); err != nil {
+		return err
+	}
 	d.scratches = nil
+	if err := d.filterTemp.ready(); err != nil {
+		return err
+	}
 	return d.page.ready()
 }
 
@@ -203,7 +214,7 @@ func (d *Device) closeScratch() {
 	for _, ls := range d.freeLayers {
 		ls.s.close()
 	}
-	for _, s := range []*surface{d.page, d.blank, d.masks.page} {
+	for _, s := range []*surface{d.page, d.blank, d.masks.page, d.filterTemp} {
 		if s != nil {
 			s.close()
 		}

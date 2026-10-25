@@ -35,6 +35,7 @@ const (
 	kindLine
 	kindArc
 	kindCover
+	kindMatrix
 )
 
 // The primitive flags, prim.frag's.

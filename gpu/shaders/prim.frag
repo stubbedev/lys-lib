@@ -16,6 +16,7 @@ const uint kindGradient = 9u;
 const uint kindLine = 10u;
 const uint kindArc = 11u;
 const uint kindCover = 12u;
+const uint kindMatrix = 13u;
 
 // The info.w flags, gpu/prim.go's.
 const uint flagRaw = 1u;
@@ -263,6 +264,12 @@ uvec4 sampleStops(Prim p, float t0) {
     return stopColor(first, n - 1u);
 }
 
+// dot3 is one 16.16 fixed-point channel: the weighted sum rounded,
+// render's applyLinearRegion.
+int dot3(ivec3 k, ivec3 c) {
+    return (k.x * c.x + k.y * c.y + k.z * c.z + 32768) >> 16;
+}
+
 // bilinear is render.Layer.sample: texels outside src are transparent.
 uvec4 bilinear(vec4 src, vec2 at) {
     vec2 f0 = floor(at);
@@ -407,6 +414,44 @@ void main() {
         if (c == uvec4(0u)) {
             discard;
         }
+        break;
+    }
+    case kindMatrix: {
+        // render's applyMatrixRegion: the linear step in 16.16 fixed
+        // point on the premultiplied pixel, any other in float32 on the
+        // straight color, re-premultiplied.
+        c = texel(ivec2(floor(px)));
+        if (c == uvec4(0u)) {
+            break;
+        }
+        ivec4 q = ivec4(c);
+        if (p.m0.w != 0.0) {
+            ivec3 rgb = q.yzw;
+            ivec3 v = ivec3(dot3(ivec3(p.m0.xyz), rgb), dot3(ivec3(p.m1.xyz), rgb), dot3(ivec3(p.m2.xyz), rgb));
+            c = uvec4(c.x, uvec3(clamp(v, ivec3(0), ivec3(q.x))));
+            break;
+        }
+        uint a = c.x;
+        uvec4 st = uvec4((c.yzw * 255u + a / 2u) / a, a);
+        float m[20] = float[20](p.box.x, p.box.y, p.box.z, p.box.w, p.radii.x, p.radii.y, p.radii.z, p.radii.w,
+            p.inner.x, p.inner.y, p.inner.z, p.inner.w, p.iradii.x, p.iradii.y, p.iradii.z, p.iradii.w,
+            p.widths.x, p.widths.y, p.widths.z, p.widths.w);
+        uvec4 o;
+        for (int r = 0; r < 4; r++) {
+            precise float v = m[r * 5 + 4];
+            for (int k = 0; k < 4; k++) {
+                precise float prod = m[r * 5 + k] * float(st[k]);
+                v = v + prod;
+            }
+            o[r] = uint(clamp(floor(v + 0.5), 0.0, 255.0));
+        }
+        precise float pm = float(o.w) * p.m1.w;
+        uvec3 rgb;
+        for (int i = 0; i < 3; i++) {
+            precise float x = float(o[i]) * pm;
+            rgb[i] = uint(clamp(floor(x + 0.5), 0.0, 255.0));
+        }
+        c = uvec4(o.w, rgb);
         break;
     }
     case kindComposite: {

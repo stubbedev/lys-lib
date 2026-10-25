@@ -717,7 +717,57 @@ func (f *frame) ApplyPathMask(l *render.Layer, p *render.Path, region render.Rec
 }
 
 func (f *frame) ApplyFilters(l *render.Layer, region render.Rect, fl *render.Filters, shape render.FilterShape) {
+	if steps, ok := fl.MatrixSteps(); ok && gpuSteps(steps) {
+		f.matrixSteps(f.layer(l), region, steps)
+		return
+	}
 	f.cpu(region, []*surface{f.layer(l)}, func(cvs []*render.Canvas) {
 		render.ApplyFilters(render.LayerOf(cvs[0]), region, fl, shape)
 	})
+}
+
+// gpuSteps reports whether the shader's int32 fixed point holds every
+// linear step: a channel's three weighted products and the rounding
+// half stay below 2^31.
+func gpuSteps(steps []render.MatrixStep) bool {
+	for _, st := range steps {
+		for row := range 3 {
+			var sum int64
+			for _, k := range st.K[row*3 : row*3+3] {
+				sum += max(int64(k), -int64(k)) * 255
+			}
+			if sum+32768 >= 1<<31 {
+				return false
+			}
+		}
+	}
+	return true
+}
+
+// matrixSteps applies color matrix steps to s's region in place on the
+// GPU: each step copies the region aside and draws it back through the
+// matrix, as render's applyMatrixRegion computes it.
+func (f *frame) matrixSteps(s *surface, region render.Rect, steps []render.MatrixStep) {
+	r := region.Intersect(render.Rect{W: s.w, H: s.h})
+	if f.err != nil || r.Empty() {
+		return
+	}
+	tmp := f.d.filterTemp
+	for _, st := range steps {
+		if st.Identity {
+			continue
+		}
+		f.steps = append(f.steps, step{kind: stepCopy, src: s, dst: tmp, region: rectOf(r)})
+		p := prim{quad: quadOf(r), info: [4]uint32{kindMatrix, 255, 0, flagRaw}}
+		m := st.M
+		p.box, p.radii, p.inner, p.iradii, p.widths = [4]float32(m[0:4]), [4]float32(m[4:8]), [4]float32(m[8:12]), [4]float32(m[12:16]), [4]float32(m[16:20])
+		if st.Linear {
+			k := st.K
+			p.m0 = [4]float32{float32(k[0]), float32(k[1]), float32(k[2]), 1}
+			p.m1 = [4]float32{float32(k[3]), float32(k[4]), float32(k[5])}
+			p.m2 = [4]float32{float32(k[6]), float32(k[7]), float32(k[8])}
+		}
+		p.m1[3] = render.Inv255
+		f.draw(s, tmp, true, p)
+	}
 }

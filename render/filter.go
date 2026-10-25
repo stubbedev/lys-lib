@@ -139,16 +139,30 @@ var matrixIdentity = colorMatrix{
 }
 
 // apply maps one straight color through the matrix.
-func (m colorMatrix) apply(c [4]byte) [4]byte {
+// apply maps a straight color through the float32 matrix, each row
+// its offset plus the channels' weighted products in order, each
+// product rounded on its own, rounded half up and clamped.
+func (st *MatrixStep) apply(c [4]byte) [4]byte {
+	m := &st.M
 	var out [4]byte
 	for r := range 4 {
 		v := m[r*5+4]
 		for k := range 4 {
-			v += m[r*5+k] * float64(c[k])
+			v += float32(m[r*5+k] * float32(c[k]))
 		}
-		out[r] = uint8(min(255, max(0, math.Round(v))))
+		out[r] = uint8(min(255, max(0, math.Floor(float64(v+0.5)))))
 	}
 	return out
+}
+
+// premultiply is a straight color premultiplied by its alpha in
+// float32, rounding half up, as the GPU's shader computes it.
+func premultiply(c [4]byte) Color {
+	pm := float32(c[3]) * Inv255
+	ch := func(v byte) uint32 {
+		return uint32(min(255, max(0, math.Floor(float64(float32(float32(v)*pm)+0.5)))))
+	}
+	return Color(uint32(c[3])<<24 | ch(c[0])<<16 | ch(c[1])<<8 | ch(c[2]))
 }
 
 // filterMatrix builds one function's color matrix; Amount's meaning
@@ -247,10 +261,55 @@ func ApplyFilters(l *Layer, region Rect, f *Filters, shape FilterShape) {
 			// Each color function applies on its own: the spec clamps
 			// every function's output, and composing the matrices would
 			// let a saturating function pass its overshoot to the next.
-			applyMatrixRegion(l, region, filterMatrix(op.Kind, op.Amount))
+			applyMatrixRegion(l, region, stepOf(filterMatrix(op.Kind, op.Amount)))
 		}
 	}
 }
+
+// MatrixStep is one color function of a filter list as both renderers
+// apply it. A Linear step only mixes the color channels, so it runs on
+// the premultiplied pixels in 16.16 fixed point, K row by row, each
+// channel clamped to its pixel's alpha; any other runs the float32
+// matrix M (4 rows of 4 channel weights and an offset) on the straight
+// color and re-premultiplies. An Identity step changes nothing.
+type MatrixStep struct {
+	Identity, Linear bool
+	K                [9]int32
+	M                [20]float32
+}
+
+// stepOf is m as a MatrixStep.
+func stepOf(m colorMatrix) MatrixStep {
+	st := MatrixStep{Identity: m == matrixIdentity, Linear: m.colorLinear()}
+	for i, v := range m {
+		st.M[i] = float32(v)
+	}
+	for row := range 3 {
+		for col := range 3 {
+			st.K[row*3+col] = int32(math.Round(m[row*5+col] * 65536))
+		}
+	}
+	return st
+}
+
+// MatrixSteps is f's functions as color matrix steps, in order; false
+// when f holds one that is not a color function (blur, drop-shadow,
+// refract).
+func (f *Filters) MatrixSteps() ([]MatrixStep, bool) {
+	steps := make([]MatrixStep, 0, f.N)
+	for i := range f.N {
+		op := &f.Ops[i]
+		switch op.Kind {
+		case FilterBlur, FilterDropShadow, FilterRefract:
+			return nil, false
+		}
+		steps = append(steps, stepOf(filterMatrix(op.Kind, op.Amount)))
+	}
+	return steps, true
+}
+
+// Inv255 is 1/255 in float32, what re-premultiplying scales by.
+var Inv255 = Reciprocal(float32(255))
 
 // applyMatrixRegion maps region's pixels through the color matrix,
 // un-premultiplying before and re-premultiplying after. A matrix that
@@ -258,12 +317,12 @@ func ApplyFilters(l *Layer, region Rect, f *Filters, shape FilterShape) {
 // premultiplication, so it runs on the premultiplied pixels directly in
 // fixed point (applyLinearRegion): saturate, grayscale, sepia,
 // brightness and hue-rotate, the backdrop's usual functions.
-func applyMatrixRegion(l *Layer, region Rect, m colorMatrix) {
-	if m == matrixIdentity {
+func applyMatrixRegion(l *Layer, region Rect, st MatrixStep) {
+	if st.Identity {
 		return
 	}
-	if m.colorLinear() {
-		applyLinearRegion(l.cv, region, m)
+	if st.Linear {
+		applyLinearRegion(l.cv, region, &st.K)
 		return
 	}
 	for y := region.Y; y < region.Y+region.H; y++ {
@@ -272,14 +331,9 @@ func applyMatrixRegion(l *Layer, region Rect, m colorMatrix) {
 			if col == 0 {
 				continue
 			}
-			out := m.apply(col.Straight())
 			// Re-premultiply: the straight channels scale by the new
 			// alpha, the opacity() case's own move.
-			pm := float64(out[3]) / 255
-			l.cv.set(x, y, Color(uint32(out[3])<<24|
-				clamp8(math.Round(float64(out[0])*pm))<<16|
-				clamp8(math.Round(float64(out[1])*pm))<<8|
-				clamp8(math.Round(float64(out[2])*pm))))
+			l.cv.set(x, y, premultiply(st.apply(col.Straight())))
 		}
 	}
 }
@@ -298,15 +352,9 @@ func (m colorMatrix) colorLinear() bool {
 // applyLinearRegion applies a colorLinear matrix to region's
 // premultiplied pixels in 16.16 fixed point, each channel clamped to
 // its pixel's alpha (the premultiplied form of clamping to 255).
-func applyLinearRegion(c *Canvas, region Rect, m colorMatrix) {
-	var k [9]int64
-	for row := range 3 {
-		for col := range 3 {
-			k[row*3+col] = int64(math.Round(m[row*5+col] * 65536))
-		}
-	}
+func applyLinearRegion(c *Canvas, region Rect, k *[9]int32) {
 	ch := func(row int, r, g, b, a int64) uint32 {
-		v := (k[row*3]*r + k[row*3+1]*g + k[row*3+2]*b + 32768) >> 16
+		v := (int64(k[row*3])*r + int64(k[row*3+1])*g + int64(k[row*3+2])*b + 32768) >> 16
 		return uint32(min(a, max(0, v)))
 	}
 	for y := range region.H {
