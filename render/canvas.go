@@ -227,6 +227,44 @@ func (c *Canvas) blend(x, y int, src Color) {
 	c.set(x, y, src.over(c.get(x, y)))
 }
 
+// blendRun is blend over the pixels x0 <= x < x1 of row y, with the
+// source's brightness and opacity resolved once: an opaque source
+// stores, a translucent one blends with its factors hoisted. Callers
+// keep the run inside the canvas and the clip.
+func (c *Canvas) blendRun(x0, x1, y int, src Color) {
+	if x1 <= x0 {
+		return
+	}
+	if c.bright != 0 && c.bright != 1 {
+		src = brighten(src, c.bright)
+	}
+	switch c.alphaScale {
+	case 0:
+		return
+	case 255:
+	default:
+		src = modulate(src, c.alphaScale)
+	}
+	c.touched += x1 - x0
+	row := c.data[y*c.stride+x0*4 : y*c.stride+x1*4]
+	if src.A() == 0xff {
+		binary.LittleEndian.PutUint32(row, uint32(src))
+		for n := 4; n < len(row); n *= 2 {
+			copy(row[n:], row[:n])
+		}
+		return
+	}
+	keep := 255 - uint32(src.A())
+	sb, sg, sr, sa := uint32(src.B()), uint32(src.G()), uint32(src.R()), uint32(src.A())
+	for o := 0; o < len(row); o += 4 {
+		p := row[o : o+4 : o+4]
+		p[0] = uint8(sb + (uint32(p[0])*keep+127)/255)
+		p[1] = uint8(sg + (uint32(p[1])*keep+127)/255)
+		p[2] = uint8(sr + (uint32(p[2])*keep+127)/255)
+		p[3] = uint8(sa + (uint32(p[3])*keep+127)/255)
+	}
+}
+
 // modulate scales a premultiplied color's every channel by scale/255
 // with round-half-up uint8 arithmetic. Scaling the premultiplied
 // channels together keeps the result premultiplied; it is the same

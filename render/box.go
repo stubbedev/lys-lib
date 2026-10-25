@@ -209,14 +209,17 @@ func (c *Canvas) RoundedRectCorners(r Rect, radii Corners, col Color) {
 	sp := c.span(b)
 	for y := sp.Y; y < sp.Y+sp.H; y++ {
 		py := float64(y) + 0.5
-		xa, xb, solid := solidRun(b, rc, py)
-		for x := sp.X; x < sp.X+sp.W; x++ {
-			px := float64(x) + 0.5
-			if solid && px >= xa && px <= xb {
-				c.blend(x, y, col)
-				continue
-			}
-			c.blendCov(x, y, col, coverage(sdBox(px, py, b, rc)))
+		xs, xe := sp.X+sp.W, sp.X+sp.W
+		if xa, xb, solid := solidRun(b, rc, py); solid {
+			xs = min(max(sp.X, int(math.Ceil(xa-0.5))), sp.X+sp.W)
+			xe = min(max(xs, int(math.Floor(xb-0.5))+1), sp.X+sp.W)
+		}
+		for x := sp.X; x < xs; x++ {
+			c.blendCov(x, y, col, coverage(sdBox(float64(x)+0.5, py, b, rc)))
+		}
+		c.blendRun(xs, xe, y, col)
+		for x := xe; x < sp.X+sp.W; x++ {
+			c.blendCov(x, y, col, coverage(sdBox(float64(x)+0.5, py, b, rc)))
 		}
 	}
 }
