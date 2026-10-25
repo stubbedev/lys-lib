@@ -117,6 +117,19 @@ func walkPath(p *Path, move func(float64, float64), line func(float64, float64),
 	}
 }
 
+// PathMask is the coverage ApplyPathMask multiplies a layer's region by
+// at device scale num/denom: the path's coverage over box, the part of
+// region its bounds reach (nil when they miss it); the rest of region
+// is uncovered.
+func PathMask(p *Path, region Rect, num, denom int) (*image.Alpha, Rect) {
+	scale := float64(num) / float64(denom)
+	box := p.bounds(scale).Intersect(region)
+	if box.Empty() {
+		return nil, box
+	}
+	return PathCoverage(p, box, scale), box
+}
+
 // ApplyPathMask multiplies l's pixels inside region by the path's
 // coverage, scaled by the layer's device scale: the clip-path and the
 // alpha mask both land here.
@@ -129,12 +142,7 @@ func (l *Layer) ApplyPathMask(p *Path, region Rect) {
 	if region.Empty() {
 		return
 	}
-	scale := float64(l.cv.num) / float64(l.cv.denom)
-	box := p.bounds(scale).Intersect(region)
-	var mask *image.Alpha
-	if !box.Empty() {
-		mask = PathCoverage(p, box, scale)
-	}
+	mask, box := PathMask(p, region, l.cv.num, l.cv.denom)
 	for y := region.Y; y < region.Y+region.H; y++ {
 		for x := region.X; x < region.X+region.W; x++ {
 			var cov uint32

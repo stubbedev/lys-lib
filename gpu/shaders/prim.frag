@@ -17,6 +17,9 @@ const uint kindLine = 10u;
 const uint kindArc = 11u;
 const uint kindCover = 12u;
 const uint kindMatrix = 13u;
+const uint kindCrossFade = 14u;
+const uint kindMaskLayer = 15u;
+const uint kindPathMask = 16u;
 
 // The info.w flags, gpu/prim.go's.
 const uint flagRaw = 1u;
@@ -24,6 +27,7 @@ const uint flagOpaqueStores = 2u;
 const uint flagNoBright = 4u;
 
 layout(set = 1, binding = 0) uniform sampler2D tex;
+layout(set = 2, binding = 0) uniform sampler2D tex2;
 
 layout(location = 0) flat in uint vPrim;
 layout(location = 0) out vec4 outColor;
@@ -38,6 +42,24 @@ uvec4 texel(ivec2 at) {
     vec4 t = texelFetch(tex, at, 0);
     uvec4 c = uvec4(floor(t * 255.0 + 0.5));
     return uvec4(c.a, c.r, c.g, c.b);
+}
+
+uvec4 texel2(ivec2 at) {
+    vec4 t = texelFetch(tex2, at, 0);
+    uvec4 c = uvec4(floor(t * 255.0 + 0.5));
+    return uvec4(c.a, c.r, c.g, c.b);
+}
+
+// masked is render's layer masking: full coverage keeps the pixel, none
+// clears it, the rest scales it.
+uvec4 masked(uvec4 c, uint cov) {
+    if (cov == 255u) {
+        return c;
+    }
+    if (cov == 0u) {
+        return uvec4(0u);
+    }
+    return c * cov / 255u;
 }
 
 uvec4 coverageScale(uvec4 c, uint cov) {
@@ -452,6 +474,40 @@ void main() {
             rgb[i] = uint(clamp(floor(x + 0.5), 0.0, 255.0));
         }
         c = uvec4(o.w, rgb);
+        break;
+    }
+    case kindCrossFade: {
+        // render.Layer.CrossFade: each channel (a*(255-w) + b*w + 127)/255.
+        ivec2 at = ivec2(floor(px));
+        uvec4 a = texel(at);
+        uvec4 b = texel2(at);
+        uint w = p.cols.x;
+        c = a == b ? a : (a * (255u - w) + b * w + 127u) / 255u;
+        break;
+    }
+    case kindMaskLayer: {
+        // render.Layer.ApplyMaskLayer: the mask's alpha, or its
+        // luminance (integer weights over the straight channels).
+        ivec2 at = ivec2(floor(px));
+        uvec4 m = texel2(at);
+        uint cov = m.x;
+        if (p.cols.x != 0u) {
+            uvec3 st = m.x == 0u ? uvec3(0u) : (m.yzw * 255u + m.x / 2u) / m.x;
+            cov = (st.x * 77u + st.y * 151u + st.z * 28u) / 256u * m.x / 255u;
+        }
+        c = masked(texel(at), cov);
+        break;
+    }
+    case kindPathMask: {
+        // render.Layer.ApplyPathMask: the path's coverage inside its
+        // box (from the mask uploaded at radii.xy), none outside.
+        ivec2 at = ivec2(floor(px));
+        ivec4 b = ivec4(p.box);
+        uint cov = 0u;
+        if (at.x >= b.x && at.y >= b.y && at.x < b.z && at.y < b.w) {
+            cov = uint(floor(texelFetch(tex2, at - b.xy + ivec2(p.radii.xy), 0).r * 255.0 + 0.5));
+        }
+        c = masked(texel(at), cov);
         break;
     }
     case kindComposite: {

@@ -297,3 +297,36 @@ func TestRenderColorFilters(t *testing.T) {
 		})
 	}
 }
+
+// Cross-fades, mask layers and path masks rework layers in place on the
+// GPU, as the CPU does.
+func TestRenderLayerMasks(t *testing.T) {
+	d := openDevice(t)
+	red, blue := render.RGBA(220, 40, 50, 255), render.RGBA(30, 90, 220, 180)
+	for _, sc := range [][2]int{{1, 1}, {3, 2}} {
+		w, h := 200*sc[0]/sc[1], 50*sc[0]/sc[1]
+		parity(t, d, w, h, sc[0], sc[1], 1, func(cv *render.Canvas, _ int) {
+			cv.Clear(cv.Rect(), render.RGBA(16, 18, 24, 255))
+			for i := range 5 {
+				box := render.Rect{X: 4 + 39*i, Y: 4, W: 36, H: 40}
+				region := cv.MapRect(box)
+				a, b := cv.ScratchLayer(region), cv.ScratchLayer(region)
+				a.Canvas().RoundedRectCorners(box, render.UniformCorners(8), red)
+				b.Canvas().PaintGradient(box, render.Corners{}, render.Linear(30, render.GradientStop{Color: blue}, render.GradientStop{Pos: 1, Color: render.RGBA(240, 240, 60, 120)}))
+				switch i {
+				case 0, 1:
+					a.CrossFade(b, region, []float64{0.3, 0.82}[i])
+				case 2, 3:
+					a.ApplyMaskLayer(b, region, i == 3)
+				default:
+					p := &render.Path{}
+					render.RoundedRectPath(p, render.Rect{X: box.X + 3, Y: box.Y + 5, W: 30, H: 28}, render.UniformCorners(11))
+					a.ApplyPathMask(p, region)
+				}
+				cv.DrawLayer(a, region, render.BlendNormal)
+				b.Release()
+				a.Release()
+			}
+		})
+	}
+}

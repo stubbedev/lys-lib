@@ -56,8 +56,9 @@ func (d *Device) createPass() error {
 	return nil
 }
 
-// createLayouts makes set 0 (the frame's primitives), set 1 (the
-// sampled surface) and the push constant (the target size).
+// createLayouts makes set 0 (the frame's primitives), sets 1 and 2
+// (the sampled surfaces: a layer copy and the other layer or mask an
+// in-place layer call reads) and the push constant (the target size).
 func (d *Device) createLayouts() error {
 	both := vk.ShaderStageFlags(vk.ShaderStageVertexBit | vk.ShaderStageFragmentBit)
 	prim := [2]vk.DescriptorSetLayoutBinding{
@@ -73,9 +74,9 @@ func (d *Device) createLayouts() error {
 	if r := d.cmds.CreateDescriptorSetLayout(d.device, &tci, nil, &d.texLayout); r != vk.Success {
 		return fmt.Errorf("gpu: vkCreateDescriptorSetLayout (texture): %d", r)
 	}
-	sets := [2]vk.DescriptorSetLayout{d.primLayout, d.texLayout}
+	sets := [3]vk.DescriptorSetLayout{d.primLayout, d.texLayout, d.texLayout}
 	push := vk.PushConstantRange{StageFlags: both, Size: uint32(unsafe.Sizeof(frameConstants{}))}
-	lci := vk.PipelineLayoutCreateInfo{SType: vk.StructureTypePipelineLayoutCreateInfo, SetLayoutCount: 2, PSetLayouts: &sets[0], PushConstantRangeCount: 1, PPushConstantRanges: &push}
+	lci := vk.PipelineLayoutCreateInfo{SType: vk.StructureTypePipelineLayoutCreateInfo, SetLayoutCount: 3, PSetLayouts: &sets[0], PushConstantRangeCount: 1, PPushConstantRanges: &push}
 	if r := d.cmds.CreatePipelineLayout(d.device, &lci, nil, &d.layout); r != vk.Success {
 		return fmt.Errorf("gpu: vkCreatePipelineLayout: %d", r)
 	}

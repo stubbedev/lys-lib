@@ -36,6 +36,9 @@ const (
 	kindArc
 	kindCover
 	kindMatrix
+	kindCrossFade
+	kindMaskLayer
+	kindPathMask
 )
 
 // The primitive flags, prim.frag's.

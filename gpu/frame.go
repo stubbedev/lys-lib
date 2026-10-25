@@ -29,7 +29,7 @@ const (
 type step struct {
 	kind         stepKind
 	dst, src     *surface
-	tex          *surface
+	tex, tex2    *surface
 	replace      bool
 	first, count uint32
 	region       image.Rectangle
@@ -135,11 +135,20 @@ func (f *frame) layer(l *render.Layer) *surface {
 // draw adds p, drawn into dst sampling tex (nil for none), to the
 // frame, joining the previous draw when it shares all three.
 func (f *frame) draw(dst, tex *surface, replace bool, p prim) {
+	f.draw2(dst, tex, nil, replace, p)
+}
+
+// draw2 is draw sampling a second surface, tex2, as well: an in-place
+// layer call's other layer or mask.
+func (f *frame) draw2(dst, tex, tex2 *surface, replace bool, p prim) {
 	if f.err != nil {
 		return
 	}
-	if tex != nil {
-		if err := tex.ready(); err != nil {
+	for _, t := range [2]*surface{tex, tex2} {
+		if t == nil {
+			continue
+		}
+		if err := t.ready(); err != nil {
 			f.fail(err)
 			return
 		}
@@ -147,12 +156,12 @@ func (f *frame) draw(dst, tex *surface, replace bool, p prim) {
 	f.prims = append(f.prims, p)
 	if n := len(f.steps); n > 0 {
 		last := &f.steps[n-1]
-		if last.kind == stepDraw && last.dst == dst && last.tex == tex && last.replace == replace {
+		if last.kind == stepDraw && last.dst == dst && last.tex == tex && last.tex2 == tex2 && last.replace == replace {
 			last.count++
 			return
 		}
 	}
-	f.steps = append(f.steps, step{kind: stepDraw, dst: dst, tex: tex, replace: replace, first: uint32(len(f.prims) - 1), count: 1})
+	f.steps = append(f.steps, step{kind: stepDraw, dst: dst, tex: tex, tex2: tex2, replace: replace, first: uint32(len(f.prims) - 1), count: 1})
 }
 
 // sprite rasterizes one call on the CPU, within s's bounds, and draws
@@ -167,12 +176,9 @@ func (f *frame) sprite(s render.State, call string, paint func(cv *render.Canvas
 	if debug.Enabled {
 		f.stats.sprites[call] += b.W * b.H
 	}
-	at, ok := f.place(b.W, b.H)
+	at, ok := f.pageSlot(b.W, b.H)
 	if !ok {
-		if f.err = f.flush(false); f.err != nil {
-			return
-		}
-		at, _ = f.place(b.W, b.H)
+		return
 	}
 	sc := f.d.scratchCanvas(0, f.target.s.w, f.target.s.h, f.num, f.denom)
 	sc.cv.ApplyState(render.State{Clip: b, Alpha: s.Alpha, Bright: s.Bright})
@@ -181,6 +187,21 @@ func (f *frame) sprite(s render.State, call string, paint func(cv *render.Canvas
 	f.staging = sc.take(f.staging, b)
 	p := prim{quad: quadOf(b), inner: [4]float32{float32(b.X - at.X), float32(b.Y - at.Y)}, info: [4]uint32{kindTexture, 255, 0, flagRaw}}
 	f.draw(f.on(s), f.d.page, false, p)
+}
+
+// pageSlot is where a w x h upload goes on the sprite page this
+// segment, flushing the segment first when the page is full; false
+// after an error.
+func (f *frame) pageSlot(w, h int) (image.Point, bool) {
+	at, ok := f.place(w, h)
+	if ok {
+		return at, true
+	}
+	if f.err = f.flush(false); f.err != nil {
+		return image.Point{}, false
+	}
+	at, _ = f.place(w, h)
+	return at, true
 }
 
 // place packs a w x h sprite onto the page, false when it is full.
@@ -280,7 +301,7 @@ func (f *frame) record(cb vk.CommandBuffer, final bool) {
 	}
 	var pass *surface
 	var pipe vk.Pipeline
-	var tex *surface
+	var tex, tex2 *surface
 	end := func() {
 		if pass != nil {
 			d.cmds.CmdEndRenderPass(cb)
@@ -305,18 +326,23 @@ func (f *frame) record(cb vk.CommandBuffer, final bool) {
 			end()
 			st.dst.download(cb, st.region, d.readback, int(st.first))
 		case stepDraw:
-			sampled := st.tex
+			sampled, sampled2 := st.tex, st.tex2
 			if sampled == nil {
 				sampled = d.blank
 			}
-			if sampled.layout != vk.ImageLayoutShaderReadOnlyOptimal {
-				end()
-				sampled.to(cb, vk.ImageLayoutShaderReadOnlyOptimal)
+			if sampled2 == nil {
+				sampled2 = d.blank
+			}
+			for _, t := range [2]*surface{sampled, sampled2} {
+				if t.layout != vk.ImageLayoutShaderReadOnlyOptimal {
+					end()
+					t.to(cb, vk.ImageLayoutShaderReadOnlyOptimal)
+				}
 			}
 			if pass != st.dst {
 				end()
 				f.begin(cb, st.dst)
-				pass, pipe, tex = st.dst, 0, nil
+				pass, pipe, tex, tex2 = st.dst, 0, nil, nil
 			}
 			want := d.over
 			if st.replace {
@@ -329,6 +355,10 @@ func (f *frame) record(cb vk.CommandBuffer, final bool) {
 			if tex != sampled {
 				d.cmds.CmdBindDescriptorSets(cb, vk.PipelineBindPointGraphics, d.layout, 1, 1, &sampled.set, 0, nil)
 				tex = sampled
+			}
+			if tex2 != sampled2 {
+				d.cmds.CmdBindDescriptorSets(cb, vk.PipelineBindPointGraphics, d.layout, 2, 1, &sampled2.set, 0, nil)
+				tex2 = sampled2
 			}
 			d.cmds.CmdDraw(cb, 4, st.count, 0, st.first)
 		}
@@ -699,21 +729,44 @@ func (f *frame) DrawLayer(s render.State, l *render.Layer, src render.Rect, mode
 }
 
 func (f *frame) CrossFade(l, other *render.Layer, region render.Rect, t float64) {
-	f.cpu(region, []*surface{f.layer(l), f.layer(other)}, func(cvs []*render.Canvas) {
-		render.LayerOf(cvs[0]).CrossFade(render.LayerOf(cvs[1]), region, t)
-	})
+	o := f.layer(other)
+	var p prim
+	p.cols[0] = uint32(math.Round(min(1, max(0, t)) * 255))
+	f.inPlace(f.layer(l), region.Intersect(render.Rect{W: o.w, H: o.h}), o, kindCrossFade, p)
 }
 
 func (f *frame) ApplyMaskLayer(l, mask *render.Layer, region render.Rect, luminance bool) {
-	f.cpu(region, []*surface{f.layer(l), f.layer(mask)}, func(cvs []*render.Canvas) {
-		render.LayerOf(cvs[0]).ApplyMaskLayer(render.LayerOf(cvs[1]), region, luminance)
-	})
+	m := f.layer(mask)
+	var p prim
+	if luminance {
+		p.cols[0] = 1
+	}
+	f.inPlace(f.layer(l), region.Intersect(render.Rect{W: m.w, H: m.h}), m, kindMaskLayer, p)
 }
 
-func (f *frame) ApplyPathMask(l *render.Layer, p *render.Path, region render.Rect) {
-	f.cpu(region, []*surface{f.layer(l)}, func(cvs []*render.Canvas) {
-		render.LayerOf(cvs[0]).ApplyPathMask(p, region)
-	})
+func (f *frame) ApplyPathMask(l *render.Layer, path *render.Path, region render.Rect) {
+	s := f.layer(l)
+	r := region.Intersect(render.Rect{W: s.w, H: s.h})
+	if f.err != nil || r.Empty() {
+		return
+	}
+	mask, box := render.PathMask(path, r, f.num, f.denom)
+	var p prim
+	var page *surface
+	if mask != nil {
+		at, ok := f.pageSlot(box.W, box.H)
+		if !ok {
+			return
+		}
+		f.uploads = append(f.uploads, upload{dst: f.d.page, region: image.Rect(at.X, at.Y, at.X+box.W, at.Y+box.H), offset: len(f.staging), rowLength: box.W})
+		for y := range box.H {
+			for _, c := range mask.Pix[y*mask.Stride : y*mask.Stride+box.W] {
+				f.staging = append(f.staging, c, c, c, c)
+			}
+		}
+		p.box, p.radii, page = quadOf(box), [4]float32{float32(at.X), float32(at.Y)}, f.d.page
+	}
+	f.inPlace(s, r, page, kindPathMask, p)
 }
 
 func (f *frame) ApplyFilters(l *render.Layer, region render.Rect, fl *render.Filters, shape render.FilterShape) {
@@ -748,17 +801,12 @@ func gpuSteps(steps []render.MatrixStep) bool {
 // GPU: each step copies the region aside and draws it back through the
 // matrix, as render's applyMatrixRegion computes it.
 func (f *frame) matrixSteps(s *surface, region render.Rect, steps []render.MatrixStep) {
-	r := region.Intersect(render.Rect{W: s.w, H: s.h})
-	if f.err != nil || r.Empty() {
-		return
-	}
-	tmp := f.d.filterTemp
+	r := region
 	for _, st := range steps {
 		if st.Identity {
 			continue
 		}
-		f.steps = append(f.steps, step{kind: stepCopy, src: s, dst: tmp, region: rectOf(r)})
-		p := prim{quad: quadOf(r), info: [4]uint32{kindMatrix, 255, 0, flagRaw}}
+		var p prim
 		m := st.M
 		p.box, p.radii, p.inner, p.iradii, p.widths = [4]float32(m[0:4]), [4]float32(m[4:8]), [4]float32(m[8:12]), [4]float32(m[12:16]), [4]float32(m[16:20])
 		if st.Linear {
@@ -768,6 +816,19 @@ func (f *frame) matrixSteps(s *surface, region render.Rect, steps []render.Matri
 			p.m2 = [4]float32{float32(k[6]), float32(k[7]), float32(k[8])}
 		}
 		p.m1[3] = render.Inv255
-		f.draw(s, tmp, true, p)
+		f.inPlace(s, r, nil, kindMatrix, p)
 	}
+}
+
+// inPlace reworks s's region r in place: it copies the region aside
+// and draws a prim of kind over it that reads the copy (and tex2, the
+// other layer, mask or coverage it combines with), writing as is.
+func (f *frame) inPlace(s *surface, r render.Rect, tex2 *surface, kind uint32, p prim) {
+	r = r.Intersect(render.Rect{W: s.w, H: s.h})
+	if f.err != nil || r.Empty() {
+		return
+	}
+	f.steps = append(f.steps, step{kind: stepCopy, src: s, dst: f.d.filterTemp, region: rectOf(r)})
+	p.quad, p.info = quadOf(r), [4]uint32{kind, 255, 0, flagRaw}
+	f.draw2(s, f.d.filterTemp, tex2, true, p)
 }
