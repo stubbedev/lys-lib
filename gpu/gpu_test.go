@@ -101,3 +101,18 @@ func TestNewTargetRejectsBadRequests(t *testing.T) {
 		t.Error("a target with no modifier was made")
 	}
 }
+
+// Closing the device closes its targets, and a target closed after
+// its device does nothing.
+func TestDeviceCloseClosesTargets(t *testing.T) {
+	d := openDevice(t)
+	tg, err := d.NewOffscreen(8, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.Close()
+	if !tg.closed {
+		t.Fatal("the device closed and left its target open")
+	}
+	tg.Close()
+}

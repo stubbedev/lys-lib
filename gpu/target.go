@@ -24,6 +24,8 @@ type Target struct {
 	held bool
 	// offscreen marks a target no consumer imports (NewOffscreen).
 	offscreen bool
+	// closed marks a target Close released.
+	closed bool
 }
 
 // NewOffscreen allocates a width x height target in device memory no
@@ -37,7 +39,9 @@ func (d *Device) NewOffscreen(width, height int) (*Target, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Target{s: *s, offscreen: true, buf: dmabuf.Buffer{Width: width, Height: height}}, nil
+	t := &Target{s: *s, offscreen: true, buf: dmabuf.Buffer{Width: width, Height: height}}
+	d.targets[t] = struct{}{}
+	return t, nil
 }
 
 // vkFormatOf maps a DRM fourcc to the Vulkan format with the same byte
@@ -76,6 +80,7 @@ func (d *Device) NewTarget(width, height int, format uint32, modifiers []uint64)
 		return nil, err
 	}
 	t.buf.Format = format
+	d.targets[t] = struct{}{}
 	return t, nil
 }
 
@@ -151,9 +156,15 @@ func (t *Target) Dmabuf() dmabuf.Buffer { return t.buf }
 // Size is the target's size in pixels.
 func (t *Target) Size() image.Point { return image.Pt(t.buf.Width, t.buf.Height) }
 
-// Close releases the target and its dmabuf fd.
+// Close releases the target and its dmabuf fd; closing it again, or
+// after its device, does nothing.
 func (t *Target) Close() {
+	if t.closed {
+		return
+	}
+	t.closed = true
 	d := t.s.d
+	delete(d.targets, t)
 	for _, p := range t.buf.Planes {
 		_ = syscall.Close(p.FD)
 	}

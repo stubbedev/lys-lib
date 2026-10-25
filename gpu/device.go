@@ -51,6 +51,10 @@ type Device struct {
 	name     string
 	// exports is whether the device renders into dmabufs.
 	exports bool
+	// targets are the live targets, closed with the device.
+	targets map[*Target]struct{}
+	// closed marks a device Close released.
+	closed bool
 	pipelines
 	scratch
 }
@@ -61,7 +65,7 @@ func Open() (*Device, error) {
 	if err := vk.Init(); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrNoVulkan, err)
 	}
-	d := &Device{cmds: vk.NewCommands()}
+	d := &Device{cmds: vk.NewCommands(), targets: map[*Target]struct{}{}}
 	if err := d.cmds.LoadGlobal(); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrNoVulkan, err)
 	}
@@ -184,9 +188,16 @@ func (d *Device) Exports() bool { return d.exports }
 // "llvmpipe (LLVM 21.1.8, 256 bits)".
 func (d *Device) Name() string { return d.name }
 
-// Close releases the device. Everything made from it must be closed
-// first.
+// Close releases the device and the targets still open on it: a target
+// closed after is already closed. Closing it again does nothing.
 func (d *Device) Close() {
+	if d.closed {
+		return
+	}
+	d.closed = true
+	for t := range d.targets {
+		t.Close()
+	}
 	d.closeDevice()
 	d.cmds.DestroyInstance(d.instance, nil)
 }
