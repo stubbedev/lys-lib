@@ -9,19 +9,50 @@ import (
 	"github.com/stubbedev/lys-ui/render"
 )
 
-// newTarget is a w x h target on d.
+// newTarget is a w x h offscreen target on d.
 func newTarget(t *testing.T, d *Device, w, h int) *Target {
 	t.Helper()
-	mods, err := d.Modifiers(dmabuf.FormatARGB8888)
-	if err != nil {
-		t.Fatal(err)
-	}
-	tg, err := d.NewTarget(w, h, dmabuf.FormatARGB8888, mods)
+	tg, err := d.NewOffscreen(w, h)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(tg.Close)
 	return tg
+}
+
+// A frame renders into a dmabuf target, handed back to its consumer,
+// and the next frame draws over what the last left.
+func TestRenderIntoDmabuf(t *testing.T) {
+	d := exportingDevice(t)
+	mods, err := d.Modifiers(dmabuf.FormatARGB8888)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tg, err := d.NewTarget(32, 16, dmabuf.FormatARGB8888, mods)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tg.Close()
+	rec := render.NewRecorder(32, 16, 1, 1)
+	rec.Clear(rec.Rect(), render.RGBA(10, 20, 30, 255))
+	if err := d.Render(rec.Recording(), tg); err != nil {
+		t.Fatal(err)
+	}
+	rec.ResetRecorder(32, 16, 1, 1)
+	rec.FillRect(render.Rect{X: 16, W: 16, H: 16}, render.RGBA(200, 0, 0, 255))
+	if err := d.Render(rec.Recording(), tg); err != nil {
+		t.Fatal(err)
+	}
+	img, err := tg.ReadPixels()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c := img.RGBAAt(4, 4); c != (color.RGBA{10, 20, 30, 255}) {
+		t.Errorf("the first frame's pixel reads %v after the second", c)
+	}
+	if c := img.RGBAAt(20, 4); c != (color.RGBA{200, 0, 0, 255}) {
+		t.Errorf("the second frame's pixel reads %v", c)
+	}
 }
 
 // parity renders paint's recording on the GPU and on the CPU and

@@ -57,6 +57,9 @@ func (d *Device) NewTarget(width, height int, format uint32, modifiers []uint64)
 	if width <= 0 || height <= 0 {
 		return nil, fmt.Errorf("gpu: target size %dx%d is not positive", width, height)
 	}
+	if !d.exports {
+		return nil, ErrNoDmabuf
+	}
 	if len(modifiers) == 0 {
 		return nil, errors.New("gpu: no modifier to allocate a target in")
 	}
@@ -232,6 +235,9 @@ func (t *Target) ReadPixels() (*image.RGBA, error) {
 // single-plane color attachment: what to intersect with the ones a
 // consumer imports before NewTarget.
 func (d *Device) Modifiers(format uint32) ([]uint64, error) {
+	if !d.exports {
+		return nil, ErrNoDmabuf
+	}
 	vf, err := vkFormatOf(format)
 	if err != nil {
 		return nil, err

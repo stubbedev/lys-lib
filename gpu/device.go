@@ -5,7 +5,9 @@
 //
 // Vulkan loads at runtime (third_party/vk, pure Go, no cgo). Open fails
 // with ErrNoVulkan or ErrNoDevice where there is no loader or no device
-// that exports dmabufs; callers then draw on the CPU (package render).
+// that draws; callers then draw on the CPU (package render). A device
+// that cannot export dmabufs still renders offscreen (NewOffscreen);
+// its NewTarget fails with ErrNoDmabuf.
 //
 // A Device and everything made from it belong to one goroutine.
 package gpu
@@ -23,11 +25,14 @@ import (
 // ErrNoVulkan reports that the Vulkan loader (libvulkan) is missing.
 var ErrNoVulkan = errors.New("gpu: no Vulkan loader")
 
-// ErrNoDevice reports that no Vulkan device exports dmabufs.
-var ErrNoDevice = errors.New("gpu: no Vulkan device exports dmabufs")
+// ErrNoDevice reports that no Vulkan device has a graphics queue.
+var ErrNoDevice = errors.New("gpu: no Vulkan device draws")
 
-// deviceExtensions are what rendering into exported dmabufs needs.
-var deviceExtensions = []string{
+// ErrNoDmabuf reports a device that cannot render into dmabufs.
+var ErrNoDmabuf = errors.New("gpu: the device does not export dmabufs")
+
+// exportExtensions are what rendering into exported dmabufs needs.
+var exportExtensions = []string{
 	"VK_KHR_external_memory_fd",
 	"VK_EXT_external_memory_dma_buf",
 	"VK_EXT_image_drm_format_modifier",
@@ -44,12 +49,14 @@ type Device struct {
 	pool     vk.CommandPool
 	memProps vk.PhysicalDeviceMemoryProperties
 	name     string
+	// exports is whether the device renders into dmabufs.
+	exports bool
 	pipelines
 	scratch
 }
 
-// Open picks the first Vulkan device that exports dmabufs and has a
-// graphics queue.
+// Open picks the first Vulkan device with a graphics queue that
+// exports dmabufs, else the first with a graphics queue.
 func Open() (*Device, error) {
 	if err := vk.Init(); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrNoVulkan, err)
@@ -68,17 +75,21 @@ func Open() (*Device, error) {
 		d.cmds.EnumeratePhysicalDevices(d.instance, &n, &phys[0])
 	}
 	var reasons []error
-	for _, p := range phys {
-		err := d.pick(p)
-		if err == nil {
-			if err = d.open(); err == nil {
-				if err = d.createPipelines(); err == nil {
-					return d, nil
+	for _, exporting := range []bool{true, false} {
+		for _, p := range phys {
+			err := d.pick(p, exporting)
+			if err == nil {
+				if err = d.open(); err == nil {
+					if err = d.createPipelines(); err == nil {
+						return d, nil
+					}
+					d.closeDevice()
 				}
-				d.closeDevice()
+			}
+			if exporting {
+				reasons = append(reasons, err)
 			}
 		}
-		reasons = append(reasons, err)
 	}
 	d.cmds.DestroyInstance(d.instance, nil)
 	return nil, fmt.Errorf("%w: %w", ErrNoDevice, errors.Join(reasons...))
@@ -101,8 +112,9 @@ func (d *Device) createInstance() error {
 	return nil
 }
 
-// pick takes p when it has the export extensions and a graphics queue.
-func (d *Device) pick(p vk.PhysicalDevice) error {
+// pick takes p when it has a graphics queue and, exporting, the
+// dmabuf export extensions.
+func (d *Device) pick(p vk.PhysicalDevice, exporting bool) error {
 	var props vk.PhysicalDeviceProperties
 	d.cmds.GetPhysicalDeviceProperties(p, &props)
 	name := cname(props.DeviceName[:])
@@ -116,9 +128,11 @@ func (d *Device) pick(p vk.PhysicalDevice) error {
 	for _, e := range exts {
 		have[cname(e.ExtensionName[:])] = true
 	}
-	for _, want := range deviceExtensions {
-		if !have[want] {
-			return fmt.Errorf("%s lacks %s", name, want)
+	if exporting {
+		for _, want := range exportExtensions {
+			if !have[want] {
+				return fmt.Errorf("%s lacks %s", name, want)
+			}
 		}
 	}
 	d.cmds.GetPhysicalDeviceQueueFamilyProperties(p, &n, nil)
@@ -128,7 +142,7 @@ func (d *Device) pick(p vk.PhysicalDevice) error {
 	}
 	for i, f := range fams {
 		if f.QueueFlags&vk.QueueFlags(vk.QueueGraphicsBit) != 0 {
-			d.phys, d.family, d.name = p, uint32(i), name
+			d.phys, d.family, d.name, d.exports = p, uint32(i), name, exporting
 			return nil
 		}
 	}
@@ -138,10 +152,10 @@ func (d *Device) pick(p vk.PhysicalDevice) error {
 func (d *Device) open() error {
 	prio := float32(1)
 	qci := vk.DeviceQueueCreateInfo{SType: vk.StructureTypeDeviceQueueCreateInfo, QueueFamilyIndex: d.family, QueueCount: 1, PQueuePriorities: &prio}
-	ptrs, keep := cstrs(deviceExtensions)
-	dci := vk.DeviceCreateInfo{
-		SType: vk.StructureTypeDeviceCreateInfo, QueueCreateInfoCount: 1, PQueueCreateInfos: &qci,
-		EnabledExtensionCount: uint32(len(ptrs)), PpEnabledExtensionNames: uintptr(unsafe.Pointer(&ptrs[0])),
+	dci := vk.DeviceCreateInfo{SType: vk.StructureTypeDeviceCreateInfo, QueueCreateInfoCount: 1, PQueueCreateInfos: &qci}
+	ptrs, keep := cstrs(exportExtensions)
+	if d.exports {
+		dci.EnabledExtensionCount, dci.PpEnabledExtensionNames = uint32(len(ptrs)), uintptr(unsafe.Pointer(&ptrs[0]))
 	}
 	r := d.cmds.CreateDevice(d.phys, &dci, nil, &d.device)
 	runtime.KeepAlive(keep)
@@ -161,6 +175,10 @@ func (d *Device) open() error {
 	}
 	return nil
 }
+
+// Exports reports whether the device renders into dmabufs, for
+// NewTarget.
+func (d *Device) Exports() bool { return d.exports }
 
 // Name is the device's name, "NVIDIA GeForce RTX 3060 Ti" or
 // "llvmpipe (LLVM 21.1.8, 256 bits)".

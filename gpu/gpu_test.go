@@ -36,10 +36,25 @@ func openDevice(t *testing.T) *Device {
 	return d
 }
 
+// exportingDevice is openDevice for a test of dmabuf targets: it
+// skips on a device that renders only offscreen (lavapipe without a
+// DRM node, as in CI).
+func exportingDevice(t *testing.T) *Device {
+	t.Helper()
+	d := openDevice(t)
+	if !d.Exports() {
+		if _, err := d.NewTarget(4, 4, dmabuf.FormatARGB8888, []uint64{0}); !errors.Is(err, ErrNoDmabuf) {
+			t.Fatalf("NewTarget on a device without dmabuf export: %v, want ErrNoDmabuf", err)
+		}
+		t.Skipf("%s does not export dmabufs", d.Name())
+	}
+	return d
+}
+
 // A target's memory is a dmabuf in a modifier the device renders to,
 // and what the GPU writes into it reads back.
 func TestTargetClearsAndReadsBack(t *testing.T) {
-	d := openDevice(t)
+	d := exportingDevice(t)
 	mods, err := d.Modifiers(dmabuf.FormatARGB8888)
 	if err != nil || len(mods) == 0 {
 		t.Fatalf("modifiers %v, %v", mods, err)
@@ -74,7 +89,7 @@ func TestTargetClearsAndReadsBack(t *testing.T) {
 
 // A size or format the device cannot target fails at once.
 func TestNewTargetRejectsBadRequests(t *testing.T) {
-	d := openDevice(t)
+	d := exportingDevice(t)
 	mods, _ := d.Modifiers(dmabuf.FormatARGB8888)
 	if _, err := d.NewTarget(0, 10, dmabuf.FormatARGB8888, mods); err == nil {
 		t.Error("a zero-width target was made")
