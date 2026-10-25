@@ -449,10 +449,10 @@ func (c *Canvas) RoundedRect(r Rect, radius int, col Color) {
 	if r.Empty() {
 		return
 	}
-	rad := math.Min(float64(radius)*float64(c.num)/float64(c.denom), math.Min(float64(r.W), float64(r.H))/2)
+	rad := float32(math.Min(float64(radius)*float64(c.num)/float64(c.denom), math.Min(float64(r.W), float64(r.H))/2))
 	for y := r.Y; y < r.Y+r.H; y++ {
 		for x := r.X; x < r.X+r.W; x++ {
-			d := sdRoundRect(float64(x)+0.5, float64(y)+0.5, r, rad)
+			d := sdRoundRect(float32(x)+0.5, float32(y)+0.5, r, rad)
 			cov := 0.5 - d
 			if cov < 0 {
 				continue
@@ -464,24 +464,19 @@ func (c *Canvas) RoundedRect(r Rect, radius int, col Color) {
 			// included: scaling alpha alone leaves full-strength color on
 			// edge pixels (the halo class), and dropping the source's own
 			// alpha would paint translucent fills opaque, unlike FillRect.
-			a := uint32(math.Round(cov * 255))
-			partial := coverageScale(col, a)
-			c.blend(x, y, partial)
+			c.blend(x, y, coverageScale(col, cov255(cov)))
 		}
 	}
 }
 
 // sdRoundRect is the signed distance from (px, py) to a rounded rect.
 // Negative inside, positive outside, in pixels.
-func sdRoundRect(px, py float64, r Rect, radius float64) float64 {
-	cx := float64(r.X) + float64(r.W)/2
-	cy := float64(r.Y) + float64(r.H)/2
-	hw := float64(r.W)/2 - radius
-	hh := float64(r.H)/2 - radius
-	qx := math.Abs(px-cx) - hw
-	qy := math.Abs(py-cy) - hh
-	out := math.Hypot(math.Max(qx, 0), math.Max(qy, 0))
-	return out + math.Min(math.Max(qx, qy), 0) - radius
+func sdRoundRect[F float](px, py F, r Rect, radius F) F {
+	x0, y0, x1, y1 := F(r.X), F(r.Y), F(r.X+r.W), F(r.Y+r.H)
+	cx, cy := (x0+x1)*0.5, (y0+y1)*0.5
+	hw, hh := F((x1-x0)*0.5)-radius, F((y1-y0)*0.5)-radius //nolint:unconvert // each conversion rounds its product, so it cannot fuse into an FMA
+	qx, qy := abs(px-cx)-hw, abs(py-cy)-hh
+	return lengthF(max(qx, 0), max(qy, 0)) + min(max(qx, qy), 0) - radius
 }
 
 // coverageScale scales a premultiplied color's every channel by
@@ -608,7 +603,7 @@ func (c *Canvas) Shadow(r Rect, cornerRadius, blur int, col Color) {
 	}
 }
 
-func abs(v int) int {
+func abs[T ~int | ~float32 | ~float64](v T) T {
 	if v < 0 {
 		return -v
 	}

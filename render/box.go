@@ -135,21 +135,27 @@ func clampRadii(b frect, rc fcorners) fcorners {
 	return rc
 }
 
-// sdBox is the signed distance from (px, py) to a rounded rect with
-// per-corner radii: negative inside, positive outside, in device pixels.
-// It works from the point's distances to its nearest edges, exact in
-// half pixels, so a pixel the same distance from an edge gets the same
-// value wherever the box sits and however long it is.
-func sdBox(px, py float64, b frect, rc fcorners) float64 {
-	left, top := px < (b.x0+b.x1)/2, py < (b.y0+b.y1)/2
-	ex, ey := b.x1-px, b.y1-py
+// float is the precision a distance field evaluates in: float32 where
+// a GPU shader repeats it step for step (the shapes a GPU draws
+// natively), float64 where only the CPU runs it.
+type float interface{ ~float32 | ~float64 }
+
+// sdBoxF is the signed distance from (px, py) to the rounded rect b
+// (x0, y0, x1, y1) with per-corner radii rc: negative inside, positive
+// outside, in device pixels. It works from the point's distances to its
+// nearest edges, exact in half pixels, so a pixel the same distance
+// from an edge gets the same value wherever the box sits and however
+// long it is. Each step rounds on its own, in the shader's order.
+func sdBoxF[F float](px, py F, b, rc [4]F) F {
+	left, top := px < (b[0]+b[2])*0.5, py < (b[1]+b[3])*0.5
+	ex, ey := b[2]-px, b[3]-py
 	if left {
-		ex = px - b.x0
+		ex = px - b[0]
 	}
 	if top {
-		ey = py - b.y0
+		ey = py - b[1]
 	}
-	var rad float64
+	var rad F
 	switch {
 	case left && top:
 		rad = rc[0]
@@ -161,7 +167,23 @@ func sdBox(px, py float64, b frect, rc fcorners) float64 {
 		rad = rc[3]
 	}
 	qx, qy := rad-ex, rad-ey
-	return math.Hypot(math.Max(qx, 0), math.Max(qy, 0)) + math.Min(math.Max(qx, qy), 0) - rad
+	return lengthF(max(qx, 0), max(qy, 0)) + min(max(qx, qy), 0) - rad
+}
+
+// lengthF is sqrt(x*x + y*y), each product rounded on its own and the
+// root correctly rounded.
+func lengthF[F float](x, y F) F {
+	return F(math.Sqrt(float64(F(x*x) + F(y*y)))) //nolint:unconvert // each conversion rounds its product, so neither fuses into an FMA
+}
+
+// sdBox is sdBoxF in float64, for the fields only the CPU evaluates.
+func sdBox(px, py float64, b frect, rc fcorners) float64 {
+	return sdBoxF(px, py, b.array(), rc)
+}
+
+// to32 rounds a box or radii to float32.
+func to32(v [4]float64) [4]float32 {
+	return [4]float32{float32(v[0]), float32(v[1]), float32(v[2]), float32(v[3])}
 }
 
 // solidRun returns the pixel-center x range [xa, xb] of row center py
@@ -191,7 +213,7 @@ func solidRun(b frect, rc fcorners, py float64) (xa, xb float64, ok bool) {
 }
 
 // coverage maps a signed distance to anti-aliased pixel coverage.
-func coverage(d float64) float64 { return math.Min(1, math.Max(0, 0.5-d)) }
+func coverage[F float](d F) F { return min(1, max(0, 0.5-d)) }
 
 // span returns the device pixel span of b, clipped.
 func (c *Canvas) span(b frect) Rect {
@@ -204,7 +226,11 @@ func (c *Canvas) span(b frect) Rect {
 }
 
 // blendCov blends col at coverage cov in [0, 1].
-func (c *Canvas) blendCov(x, y int, col Color, cov float64) {
+func (c *Canvas) blendCov(x, y int, col Color, cov float64) { blendCovF(c, x, y, col, cov) }
+
+// blendCovF is blendCov in either precision, the coverage quantized as
+// floor(cov*255 + 0.5), as the shader does.
+func blendCovF[F float](c *Canvas, x, y int, col Color, cov F) {
 	if cov <= 0 {
 		return
 	}
@@ -212,7 +238,12 @@ func (c *Canvas) blendCov(x, y int, col Color, cov float64) {
 		c.blend(x, y, col)
 		return
 	}
-	c.blend(x, y, coverageScale(col, uint32(math.Round(cov*255))))
+	c.blend(x, y, coverageScale(col, cov255(cov)))
+}
+
+// cov255 quantizes coverage in [0, 1] to 0..255, rounding half up.
+func cov255[F float](cov F) uint32 {
+	return uint32(math.Floor(float64(F(cov*255) + 0.5))) //nolint:unconvert // the conversion rounds the product, so it cannot fuse into an FMA
 }
 
 // RoundedRectCorners blends col over r with each corner rounded by its
@@ -227,20 +258,22 @@ func (c *Canvas) RoundedRectCorners(r Rect, radii Corners, col Color) {
 		return
 	}
 	b, rc := c.devBox(r, radii)
+	b32, rc32 := to32(b.array()), to32(rc)
 	sp := c.span(b)
 	for y := sp.Y; y < sp.Y+sp.H; y++ {
 		py := float64(y) + 0.5
+		py32 := float32(y) + 0.5
 		xs, xe := sp.X+sp.W, sp.X+sp.W
 		if xa, xb, solid := solidRun(b, rc, py); solid {
 			xs = min(max(sp.X, int(math.Ceil(xa-0.5))), sp.X+sp.W)
 			xe = min(max(xs, int(math.Floor(xb-0.5))+1), sp.X+sp.W)
 		}
 		for x := sp.X; x < xs; x++ {
-			c.blendCov(x, y, col, coverage(sdBox(float64(x)+0.5, py, b, rc)))
+			blendCovF(c, x, y, col, coverage(sdBoxF(float32(x)+0.5, py32, b32, rc32)))
 		}
 		c.blendRun(xs, xe, y, col)
 		for x := xe; x < sp.X+sp.W; x++ {
-			c.blendCov(x, y, col, coverage(sdBox(float64(x)+0.5, py, b, rc)))
+			blendCovF(c, x, y, col, coverage(sdBoxF(float32(x)+0.5, py32, b32, rc32)))
 		}
 	}
 }
@@ -267,16 +300,19 @@ func (c *Canvas) RoundedBorderSides(r Rect, radii Corners, widths Insets, cols [
 	g := c.borderRing(r, radii, widths)
 	b, rc, w, in, irc := g.outer, g.radii, g.widths, g.inner, g.iradii
 	innerEmpty := in.x1 <= in.x0 || in.y1 <= in.y0
-	// ring is a pixel's coverage and side.
-	ring := func(px, py float64) (float64, int) {
-		cov := coverage(sdBox(px, py, b, rc))
+	b32, rc32, in32, irc32, inv := to32(b.array()), to32(rc), to32(in.array()), to32(irc), SideReciprocals(w)
+	// ring is a pixel's coverage and side, in float32 as the shader
+	// computes them.
+	ring := func(x, y int) (float32, int) {
+		px, py := float32(x)+0.5, float32(y)+0.5
+		cov := coverage(sdBoxF(px, py, b32, rc32))
 		if cov > 0 && !innerEmpty {
-			cov = math.Min(cov, 1-coverage(sdBox(px, py, in, irc)))
+			cov = min(cov, 1-coverage(sdBoxF(px, py, in32, irc32)))
 		}
 		if cov <= 0 {
 			return 0, 0
 		}
-		return cov, borderSide(px, py, b, w)
+		return cov, borderSide(px, py, b32, inv)
 	}
 	sp := c.span(b)
 	// Across the top and bottom bands, clear of the corners' radii
@@ -294,17 +330,17 @@ func (c *Canvas) RoundedBorderSides(r Rect, radii Corners, widths Insets, cols [
 		py := float64(y) + 0.5
 		if !innerEmpty && (py < in.y0 || py > in.y1) && runX1 > runX0 {
 			for x := sp.X; x < runX0; x++ {
-				c.ringPixel(x, y, ring, py, cols)
+				c.ringPixel(x, y, ring, cols)
 			}
-			if cov, side := ring(float64(runX0)+0.5, py); cov > 0 {
+			if cov, side := ring(runX0, y); cov > 0 {
 				col := cols[side]
 				if cov < 1 {
-					col = coverageScale(col, uint32(math.Round(cov*255)))
+					col = coverageScale(col, cov255(cov))
 				}
 				c.blendRun(runX0, runX1, y, col)
 			}
 			for x := runX1; x < sp.X+sp.W; x++ {
-				c.ringPixel(x, y, ring, py, cols)
+				c.ringPixel(x, y, ring, cols)
 			}
 			continue
 		}
@@ -322,18 +358,18 @@ func (c *Canvas) RoundedBorderSides(r Rect, radii Corners, widths Insets, cols [
 					c.ringCells = make([]ringCell, n1+n2)
 				}
 				cols1, cols2 = c.ringCells[:n1], c.ringCells[n1:n1+n2]
-				ringColumn(cols1, sp.X, py, ring)
-				ringColumn(cols2, he, py, ring)
+				ringColumn(cols1, sp.X, y, ring)
+				ringColumn(cols2, he, y, ring)
 			}
 			c.ringColumnRow(sp.X, y, cols1, cols)
 			c.ringColumnRow(he, y, cols2, cols)
 			continue
 		}
 		for x := sp.X; x < hs; x++ {
-			c.ringPixel(x, y, ring, py, cols)
+			c.ringPixel(x, y, ring, cols)
 		}
 		for x := he; x < sp.X+sp.W; x++ {
-			c.ringPixel(x, y, ring, py, cols)
+			c.ringPixel(x, y, ring, cols)
 		}
 	}
 }
@@ -381,16 +417,16 @@ func (b frect) array() [4]float64 { return [4]float64{b.x0, b.y0, b.x1, b.y1} }
 
 // ringCell is a ring column's coverage and side.
 type ringCell struct {
-	cov  float64
+	cov  float32
 	side int
 }
 
 // ringColumn fills out with the ring's cells from x0 on, on a row
 // between the corners and clear of the top and bottom bands, where
 // they hold for every such row.
-func ringColumn(out []ringCell, x0 int, py float64, ring func(px, py float64) (float64, int)) {
+func ringColumn(out []ringCell, x0, y int, ring func(x, y int) (float32, int)) {
 	for i := range out {
-		out[i].cov, out[i].side = ring(float64(x0+i)+0.5, py)
+		out[i].cov, out[i].side = ring(x0+i, y)
 	}
 }
 
@@ -398,33 +434,47 @@ func ringColumn(out []ringCell, x0 int, py float64, ring func(px, py float64) (f
 func (c *Canvas) ringColumnRow(x0, y int, cells []ringCell, cols [4]Color) {
 	for i, cell := range cells {
 		if cell.cov > 0 {
-			c.blendCov(x0+i, y, cols[cell.side], cell.cov)
+			blendCovF(c, x0+i, y, cols[cell.side], cell.cov)
 		}
 	}
 }
 
 // ringPixel blends one border ring pixel by its coverage and side.
-func (c *Canvas) ringPixel(x, y int, ring func(px, py float64) (float64, int), py float64, cols [4]Color) {
-	if cov, side := ring(float64(x)+0.5, py); cov > 0 {
-		c.blendCov(x, y, cols[side], cov)
+func (c *Canvas) ringPixel(x, y int, ring func(x, y int) (float32, int), cols [4]Color) {
+	if cov, side := ring(x, y); cov > 0 {
+		blendCovF(c, x, y, cols[side], cov)
 	}
 }
 
 // borderSide picks the side a ring pixel belongs to: the one whose
-// width-normalized distance from its edge is smallest, skipping
-// zero-width sides.
-func borderSide(px, py float64, b frect, w [4]float64) int {
-	d := [4]float64{py - b.y0, b.x1 - px, b.y1 - py, px - b.x0}
-	best, bestV := 0, math.Inf(1)
+// width-normalized distance from its edge (the distance times the
+// side's reciprocal width, inv) is smallest, skipping zero-width sides,
+// whose inv is 0.
+func borderSide(px, py float32, b, inv [4]float32) int {
+	d := [4]float32{py - b[1], b[2] - px, b[3] - py, px - b[0]}
+	best, bestV := 0, float32(math.Inf(1))
 	for i := range 4 {
-		if w[i] <= 0 {
+		if inv[i] == 0 {
 			continue
 		}
-		if v := d[i] / w[i]; v < bestV {
+		if v := d[i] * inv[i]; v < bestV {
 			best, bestV = i, v
 		}
 	}
 	return best
+}
+
+// SideReciprocals are a border's reciprocal side widths (top, right,
+// bottom, left), 0 for a side of no width: what borderSide, on the CPU
+// and in the shader, scales each side's distance by.
+func SideReciprocals(w [4]float64) [4]float32 {
+	var inv [4]float32
+	for i, v := range w {
+		if v > 0 {
+			inv[i] = Reciprocal(float32(v))
+		}
+	}
+	return inv
 }
 
 // gradientAt samples the stop list at t, in float32 as At computes t:

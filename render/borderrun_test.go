@@ -2,7 +2,6 @@ package render
 
 import (
 	"bytes"
-	"math"
 	"math/rand/v2"
 	"testing"
 )
@@ -11,26 +10,20 @@ import (
 // through the coverage and side maths: the reference the run fills
 // must match.
 func borderPerPixel(c *Canvas, r Rect, radii Corners, widths Insets, cols [4]Color) {
-	b, rc := c.devBox(r, radii)
-	f := float64(c.num) / float64(c.denom)
-	w := [4]float64{float64(widths.Top) * f, float64(widths.Right) * f, float64(widths.Bottom) * f, float64(widths.Left) * f}
-	in := frect{b.x0 + w[3], b.y0 + w[0], b.x1 - w[1], b.y1 - w[2]}
-	irc := fcorners{
-		math.Max(0, rc[0]-math.Max(w[3], w[0])), math.Max(0, rc[1]-math.Max(w[0], w[1])),
-		math.Max(0, rc[2]-math.Max(w[1], w[2])), math.Max(0, rc[3]-math.Max(w[2], w[3])),
-	}
-	innerEmpty := in.x1 <= in.x0 || in.y1 <= in.y0
-	sp := c.span(b)
+	g := c.borderRing(r, radii, widths)
+	b, rc, in, irc, inv := to32(g.outer.array()), to32(g.radii), to32(g.inner.array()), to32(g.iradii), SideReciprocals(g.widths)
+	innerEmpty := g.inner.x1 <= g.inner.x0 || g.inner.y1 <= g.inner.y0
+	sp := c.span(g.outer)
 	for y := sp.Y; y < sp.Y+sp.H; y++ {
-		py := float64(y) + 0.5
+		py := float32(y) + 0.5
 		for x := sp.X; x < sp.X+sp.W; x++ {
-			px := float64(x) + 0.5
-			cov := coverage(sdBox(px, py, b, rc))
+			px := float32(x) + 0.5
+			cov := coverage(sdBoxF(px, py, b, rc))
 			if cov > 0 && !innerEmpty {
-				cov = math.Min(cov, 1-coverage(sdBox(px, py, in, irc)))
+				cov = min(cov, 1-coverage(sdBoxF(px, py, in, irc)))
 			}
 			if cov > 0 {
-				c.blendCov(x, y, cols[borderSide(px, py, b, w)], cov)
+				blendCovF(c, x, y, cols[borderSide(px, py, b, inv)], cov)
 			}
 		}
 	}

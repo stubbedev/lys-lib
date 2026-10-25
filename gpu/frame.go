@@ -502,7 +502,7 @@ func (f *frame) RoundedBorderSides(s render.State, r render.Rect, radii render.C
 	}
 	outer, oradii, inner, iradii, w := render.BorderRing(r, radii, widths, f.num, f.denom)
 	p := shaded(kindBorder, s, 0)
-	p.quad, p.box, p.radii, p.inner, p.iradii, p.widths = quadOf(s.Bounds), vec(outer), vec(oradii), vec(inner), vec(iradii), vec(w)
+	p.quad, p.box, p.radii, p.inner, p.iradii, p.widths = quadOf(s.Bounds), vec(outer), vec(oradii), vec(inner), vec(iradii), render.SideReciprocals(w)
 	p.cols = [4]uint32{uint32(cols[0]), uint32(cols[1]), uint32(cols[2]), uint32(cols[3])}
 	f.draw(f.on(s), nil, false, p)
 }

@@ -106,15 +106,16 @@ func (c *Canvas) PaintGradient(r Rect, radii Corners, g Gradient) {
 	if !ok {
 		return
 	}
+	b32, rc32 := to32(b.array()), to32(rc)
 	sp := c.span(b)
 	for y := sp.Y; y < sp.Y+sp.H; y++ {
 		for x := sp.X; x < sp.X+sp.W; x++ {
-			px, py := float64(x)+0.5, float64(y)+0.5
-			cov := coverage(sdBox(px, py, b, rc))
+			px, py := float32(x)+0.5, float32(y)+0.5
+			cov := coverage(sdBoxF(px, py, b32, rc32))
 			if cov <= 0 {
 				continue
 			}
-			c.blendCov(x, y, sampleStops(g.Stops, g.Extend, m.At(px, py)), cov)
+			blendCovF(c, x, y, sampleStops(g.Stops, g.Extend, m.At(float64(px), float64(py))), cov)
 		}
 	}
 }

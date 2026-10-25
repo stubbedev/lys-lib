@@ -59,43 +59,60 @@ uvec4 shade(uvec4 c, uint alpha, float bright, bool noBright) {
 }
 
 float coverage(float d) {
-    return clamp(0.5 - d, 0.0, 1.0);
+    precise float c = clamp(0.5 - d, 0.0, 1.0);
+    return c;
 }
 
+// sdBox, sdRoundRect and borderSide are render's sdBoxF, sdRoundRect
+// and borderSide, step for step in float32.
 float sdBox(vec2 p, vec4 b, vec4 rc) {
-    bool left = p.x < (b.x + b.z) / 2.0;
-    bool top = p.y < (b.y + b.w) / 2.0;
-    float ex = left ? p.x - b.x : b.z - p.x;
-    float ey = top ? p.y - b.y : b.w - p.y;
+    bool left = p.x < (b.x + b.z) * 0.5;
+    bool top = p.y < (b.y + b.w) * 0.5;
+    precise float ex = left ? p.x - b.x : b.z - p.x;
+    precise float ey = top ? p.y - b.y : b.w - p.y;
     float rad = left ? (top ? rc.x : rc.w) : (top ? rc.y : rc.z);
-    float qx = rad - ex;
-    float qy = rad - ey;
-    return length(vec2(max(qx, 0.0), max(qy, 0.0))) + min(max(qx, qy), 0.0) - rad;
+    precise float qx = rad - ex;
+    precise float qy = rad - ey;
+    precise float mx = max(qx, 0.0);
+    precise float my = max(qy, 0.0);
+    precise float d = sqrt(mx * mx + my * my) + min(max(qx, qy), 0.0) - rad;
+    return d;
 }
 
 float sdRoundRect(vec2 p, vec4 r, float radius) {
-    vec2 c = (r.xy + r.zw) / 2.0;
-    vec2 h = (r.zw - r.xy) / 2.0 - radius;
-    vec2 q = abs(p - c) - h;
-    return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - radius;
+    precise vec2 c = (r.xy + r.zw) * 0.5;
+    precise vec2 h = (r.zw - r.xy) * 0.5 - radius;
+    precise vec2 q = abs(p - c) - h;
+    precise float mx = max(q.x, 0.0);
+    precise float my = max(q.y, 0.0);
+    precise float d = sqrt(mx * mx + my * my) + min(max(q.x, q.y), 0.0) - radius;
+    return d;
 }
 
-uint borderSide(vec2 p, vec4 b, vec4 w) {
+uint borderSide(vec2 p, vec4 b, vec4 inv) {
     float d[4] = float[4](p.y - b.y, b.z - p.x, b.w - p.y, p.x - b.x);
-    float wv[4] = float[4](w.x, w.y, w.z, w.w);
+    float iv[4] = float[4](inv.x, inv.y, inv.z, inv.w);
     uint best = 0u;
     float bestV = 1.0 / 0.0;
     for (uint i = 0u; i < 4u; i++) {
-        if (wv[i] <= 0.0) {
+        if (iv[i] == 0.0) {
             continue;
         }
-        float v = d[i] / wv[i];
+        precise float v = d[i] * iv[i];
         if (v < bestV) {
             best = i;
             bestV = v;
         }
     }
     return best;
+}
+
+// cov255 is render's: coverage quantized to 0..255, rounding half up,
+// the product rounded before the half is added.
+uint cov255(float cov) {
+    precise float q = cov * 255.0;
+    precise float r = q + 0.5;
+    return uint(floor(r));
 }
 
 // covered applies render.Canvas.blendCov's coverage step.
@@ -106,7 +123,7 @@ uvec4 covered(uvec4 c, float cov) {
     if (cov >= 1.0) {
         return c;
     }
-    return coverageScale(c, uint(floor(cov * 255.0 + 0.5)));
+    return coverageScale(c, cov255(cov));
 }
 
 // stretch maps a box column onto its core's, render.BoxShadow's: the
@@ -292,7 +309,7 @@ void main() {
         if (cov < 0.0) {
             discard;
         }
-        c = coverageScale(unpack(p.cols.x), uint(floor(min(cov, 1.0) * 255.0 + 0.5)));
+        c = coverageScale(unpack(p.cols.x), cov255(min(cov, 1.0)));
         break;
     }
     case kindBorder: {
@@ -355,7 +372,7 @@ void main() {
         if (cov == 0.0) {
             discard;
         }
-        c = coverageScale(unpack(p.cols.x), uint(floor(cov * 255.0 + 0.5)));
+        c = coverageScale(unpack(p.cols.x), cov255(cov));
         break;
     }
     case kindComposite: {
