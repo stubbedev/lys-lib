@@ -254,15 +254,9 @@ func (c *Canvas) blendRun(x0, x1, y int, src Color) {
 	if x1 <= x0 {
 		return
 	}
-	if c.bright != 0 && c.bright != 1 {
-		src = brighten(src, c.bright)
-	}
-	switch c.alphaScale {
-	case 0:
+	src, ok := c.shade(src)
+	if !ok {
 		return
-	case 255:
-	default:
-		src = modulate(src, c.alphaScale)
 	}
 	c.touched += x1 - x0
 	row := c.data[y*c.stride+x0*4 : y*c.stride+x1*4]
@@ -282,6 +276,24 @@ func (c *Canvas) blendRun(x0, x1, y int, src Color) {
 		p[2] = uint8(sr + (uint32(p[2])*keep+127)/255)
 		p[3] = uint8(sa + (uint32(p[3])*keep+127)/255)
 	}
+}
+
+// shade is src as blend writes it: brightened and scaled by the
+// opacity; false when the opacity is zero and nothing would be written.
+// blend, the per-pixel path, spells it out inline, as a call there
+// costs a frame measurably.
+func (c *Canvas) shade(src Color) (Color, bool) {
+	if c.bright != 0 && c.bright != 1 {
+		src = brighten(src, c.bright)
+	}
+	switch c.alphaScale {
+	case 0:
+		return 0, false
+	case 255:
+	default:
+		src = modulate(src, c.alphaScale)
+	}
+	return src, true
 }
 
 // blendMask blends col scaled by each mask byte over row y from x0 on,
@@ -357,20 +369,17 @@ func (c *Canvas) ClearDevice(r Rect, col Color) {
 	if r.Empty() {
 		return
 	}
-	for y := r.Y; y < r.Y+r.H; y++ {
-		row := c.data[y*c.stride:]
-		px := binary.LittleEndian.Uint32(colBytes(col))
-		for x := r.X; x < r.X+r.W; x++ {
-			binary.LittleEndian.PutUint32(row[x*4:x*4+4], px)
-		}
+	// The first row fills by doubling copies of one pixel; every later
+	// row copies it whole.
+	first := c.data[r.Y*c.stride+r.X*4 : r.Y*c.stride+(r.X+r.W)*4]
+	binary.LittleEndian.PutUint32(first, uint32(col))
+	for n := 4; n < len(first); n *= 2 {
+		copy(first[n:], first[:n])
+	}
+	for y := r.Y + 1; y < r.Y+r.H; y++ {
+		copy(c.data[y*c.stride+r.X*4:y*c.stride+(r.X+r.W)*4], first)
 	}
 	c.touched += r.W * r.H
-}
-
-func colBytes(c Color) []byte {
-	var b [4]byte
-	binary.LittleEndian.PutUint32(b[:], uint32(c))
-	return b[:]
 }
 
 // FillRect blends col over the logical rect with source-over compositing.
@@ -398,7 +407,17 @@ func (c *Canvas) FillRectDevice(r Rect, col Color) {
 	if r.Empty() || col == 0 {
 		return
 	}
-	for y := r.Y; y < r.Y+r.H; y++ {
+	c.blendRun(r.X, r.X+r.W, r.Y, col)
+	if src, ok := c.shade(col); ok && src.A() == 0xff {
+		// An opaque fill overwrites: every later row copies the first.
+		first := c.data[r.Y*c.stride+r.X*4 : r.Y*c.stride+(r.X+r.W)*4]
+		for y := r.Y + 1; y < r.Y+r.H; y++ {
+			copy(c.data[y*c.stride+r.X*4:y*c.stride+(r.X+r.W)*4], first)
+		}
+		c.touched += r.W * (r.H - 1)
+		return
+	}
+	for y := r.Y + 1; y < r.Y+r.H; y++ {
 		c.blendRun(r.X, r.X+r.W, y, col)
 	}
 }
