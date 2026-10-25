@@ -380,10 +380,9 @@ func (f *frame) DrawLayerAt(s render.State, src *render.Layer, x, y int) {
 }
 
 func (f *frame) RoundedRect(s render.State, r render.Rect, radius int, col render.Color) {
-	b := s.Bounds
-	rad := min(float64(radius)*float64(f.num)/float64(f.denom), float64(min(b.W, b.H))/2)
+	full := render.MapRect(r, f.num, f.denom)
 	p := shaded(kindRounded, s, 0)
-	p.quad, p.box, p.radii[0], p.cols[0] = quadOf(b), quadOf(b), float32(rad), uint32(col)
+	p.quad, p.box, p.radii[0], p.cols[0] = quadOf(s.Bounds), quadOf(full), render.RoundedRadius(full, radius, f.num, f.denom), uint32(col)
 	f.draw(f.on(s), nil, false, p)
 }
 
@@ -447,7 +446,7 @@ func (f *frame) DrawImageDevice(s render.State, img image.Image, x, y int) {
 }
 
 func (f *frame) DrawImageRect(s render.State, img image.Image, r render.Rect) {
-	f.scaledImage(s, img, s.Bounds, func(cv *render.Canvas) { cv.DrawImageRect(img, r) })
+	f.scaledImage(s, img, render.MapRect(r, f.num, f.denom), func(cv *render.Canvas) { cv.DrawImageRect(img, r) })
 }
 
 func (f *frame) DrawIcon(s render.State, ic *render.Icon, x, y int, m render.Affine) {

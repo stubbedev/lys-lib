@@ -445,14 +445,15 @@ func (c *Canvas) RoundedRect(r Rect, radius int, col Color) {
 		c.record(op{kind: opRoundedRect, r: r, i: [5]int{radius}, col: col})
 		return
 	}
-	r = c.clip.Intersect(c.MapRect(r))
-	if r.Empty() {
+	full := c.MapRect(r)
+	box := c.clip.Intersect(full)
+	if box.Empty() {
 		return
 	}
-	rad := float32(math.Min(float64(radius)*float64(c.num)/float64(c.denom), math.Min(float64(r.W), float64(r.H))/2))
-	for y := r.Y; y < r.Y+r.H; y++ {
-		for x := r.X; x < r.X+r.W; x++ {
-			d := sdRoundRect(float32(x)+0.5, float32(y)+0.5, r, rad)
+	rad := RoundedRadius(full, radius, c.num, c.denom)
+	for y := box.Y; y < box.Y+box.H; y++ {
+		for x := box.X; x < box.X+box.W; x++ {
+			d := sdRoundRect(float32(x)+0.5, float32(y)+0.5, full, rad)
 			cov := 0.5 - d
 			if cov < 0 {
 				continue
@@ -467,6 +468,12 @@ func (c *Canvas) RoundedRect(r Rect, radius int, col Color) {
 			c.blend(x, y, coverageScale(col, cov255(cov)))
 		}
 	}
+}
+
+// RoundedRadius is RoundedRect's corner radius over its device rect
+// full at num/denom: radius scaled, at most half the shorter side.
+func RoundedRadius(full Rect, radius, num, denom int) float32 {
+	return float32(math.Min(float64(radius)*float64(num)/float64(denom), math.Min(float64(full.W), float64(full.H))/2))
 }
 
 // sdRoundRect is the signed distance from (px, py) to a rounded rect.
@@ -657,27 +664,28 @@ func (c *Canvas) DrawImageCover(img image.Image, r Rect, radii Corners) {
 	if b.Empty() || r.Empty() {
 		return
 	}
-	dst := c.clip.Intersect(c.MapRect(r))
+	full := c.MapRect(r)
+	dst := c.clip.Intersect(full)
 	if dst.Empty() {
 		return
 	}
-	rad := math.Min(float64(radii.TopLeft)*float64(c.num)/float64(c.denom), math.Min(float64(dst.W), float64(dst.H))/2)
+	rad := math.Min(float64(radii.TopLeft)*float64(c.num)/float64(c.denom), math.Min(float64(full.W), float64(full.H))/2)
 	sw, sh := float64(b.Dx()), float64(b.Dy())
-	scale := math.Max(float64(dst.W)/sw, float64(dst.H)/sh)
+	scale := math.Max(float64(full.W)/sw, float64(full.H)/sh)
 	cw, ch := sw*scale, sh*scale
-	offX := (cw - float64(dst.W)) / 2
-	offY := (ch - float64(dst.H)) / 2
+	offX := (cw - float64(full.W)) / 2
+	offY := (ch - float64(full.H)) / 2
 	for py := dst.Y; py < dst.Y+dst.H; py++ {
 		for pxx := dst.X; pxx < dst.X+dst.W; pxx++ {
-			cov := 0.5 - sdRoundRect(float64(pxx)+0.5, float64(py)+0.5, dst, rad)
+			cov := 0.5 - sdRoundRect(float64(pxx)+0.5, float64(py)+0.5, full, rad)
 			if cov <= 0 {
 				continue
 			}
 			if cov > 1 {
 				cov = 1
 			}
-			sx := b.Min.X + int((float64(pxx-dst.X)+offX)/scale)
-			sy := b.Min.Y + int((float64(py-dst.Y)+offY)/scale)
+			sx := b.Min.X + int((float64(pxx-full.X)+offX)/scale)
+			sy := b.Min.Y + int((float64(py-full.Y)+offY)/scale)
 			sx = min(max(sx, b.Min.X), b.Max.X-1)
 			sy = min(max(sy, b.Min.Y), b.Max.Y-1)
 			sr, sg, sb, sa := img.At(sx, sy).RGBA()

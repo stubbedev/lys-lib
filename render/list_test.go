@@ -228,3 +228,40 @@ func diffBytes(a, b []byte) int {
 	}
 	return n
 }
+
+// TestClippedPaintMatchesFull pins what damage-limited repainting
+// relies on: repainting a frame's buffer under a clip, over the frame
+// it already holds, as a window repaints its damage, leaves the frame
+// a full paint gives, for every call the scene makes, so a repainted
+// region shows no seam at its edge. A filter reads around its pixels, so
+// its region must repaint whole (the widget layer grows damage to it):
+// each clip here keeps clear of the scene's effect block or holds it.
+func TestClippedPaintMatchesFull(t *testing.T) {
+	for _, sc := range [][2]int{{1, 1}, {3, 2}} {
+		const lw, lh = 130, 132
+		w, h := lw*sc[0]/sc[1], lh*sc[0]/sc[1]
+		full := make([]byte, Stride(w)*h)
+		newListScene(t).paint(NewScaled(full, Stride(w), w, h, sc[0], sc[1]))
+		for _, clip := range []Rect{
+			{X: 0, Y: 0, W: w / 2, H: h / 3},
+			{X: w / 3, Y: h / 4, W: w / 3, H: h / 2},
+			{X: 7, Y: 3, W: 9, H: h * 2 / 3},
+			{X: 0, Y: h * 2 / 3, W: w / 2, H: h / 3},
+			{X: w - 40, Y: h - 30, W: 40, H: 30},
+		} {
+			part := bytes.Clone(full)
+			cv := NewScaled(part, Stride(w), w, h, sc[0], sc[1])
+			prev := cv.PushClipDevice(clip)
+			newListScene(t).paint(cv)
+			cv.PopClip(prev)
+			for y := range h {
+				for x := range w {
+					at := y*Stride(w) + x*4
+					if !bytes.Equal(full[at:at+4], part[at:at+4]) {
+						t.Fatalf("scale %d/%d clip %v: (%d, %d) is %v painted under the clip, %v painted whole", sc[0], sc[1], clip, x, y, part[at:at+4], full[at:at+4])
+					}
+				}
+			}
+		}
+	}
+}
