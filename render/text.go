@@ -73,6 +73,11 @@ type Typeface struct {
 	// tabular memoizes this face's tnum twin, so the variant keys its
 	// own shaping cache entries instead of missing every style pass.
 	tabular *Typeface
+	// slant shears the outlines, x by slant times y in font units: a
+	// synthetic oblique's tan(14°), 0 for an upright face; oblique
+	// memoizes the slanted twin.
+	slant   float64
+	oblique *Typeface
 
 	// strikePpem is the pixels-per-em of the largest embedded bitmap
 	// strike (0 when the face has none), and bitmaps caches decoded
@@ -177,12 +182,38 @@ func (t *Typeface) Tabular() *Typeface {
 		c := *t
 		c.features = []shaping.FontFeature{{Tag: ot.MustNewTag("tnum"), Value: 1}}
 		c.shaper = shaping.HarfbuzzShaper{}
-		c.tabular = nil
+		c.tabular, c.oblique = nil, nil
 		c.strikePpem, c.strikeRead, c.bitmaps = 0, false, nil
 		t.tabular = &c
 	}
 	return t.tabular
 }
+
+// syntheticSlant is a synthetic oblique's shear, tan(14°): CSS's
+// default oblique angle, what a browser slants an italic request to
+// when the family has no italic face.
+var syntheticSlant = math.Tan(14 * math.Pi / 180)
+
+// Oblique returns the face slanted as a synthetic italic, for a family
+// that has no italic face of its own: the same glyphs and advances, the
+// outlines sheared. Memoized, a distinct face to every cache.
+func (t *Typeface) Oblique() *Typeface {
+	if t.slant != 0 {
+		return t
+	}
+	if t.oblique == nil {
+		c := *t
+		c.slant = syntheticSlant
+		c.shaper = shaping.HarfbuzzShaper{}
+		c.tabular, c.oblique = nil, nil
+		c.strikePpem, c.strikeRead, c.bitmaps = 0, false, nil
+		t.oblique = &c
+	}
+	return t.oblique
+}
+
+// Slanted reports whether the face is a synthetic oblique.
+func (t *Typeface) Slanted() bool { return t.slant != 0 }
 
 // LoadFont parses font data (TTF or OTF).
 func LoadFont(data []byte) (*Typeface, error) {

@@ -106,23 +106,19 @@ func cachedOutlineRaster(t *Typeface, gid font.GID, scale, penX, penY float64) (
 		glyphs.put(key, nil, 16)
 		return nil, false
 	}
-	g := rasterOutline(outline, scale, bucketOffset(key.fx), bucketOffset(key.fy))
+	// Font units to pixels: scaled, y flipped, sheared by the face's
+	// slant, offset by the pen's fractional position.
+	g := rasterOutlineXform(outline, Affine{A: scale, C: scale * t.slant, D: -scale, E: bucketOffset(key.fx), F: bucketOffset(key.fy)})
 	glyphs.put(key, g, len(g.mask))
 	return g, true
 }
 
-// rasterOutline rasterizes one glyph outline into an 8bpp coverage
-// mask, with the outline's fractional pen offset (fx, fy) at the mask's
-// coordinates and the mask origin at the integer pen position. The
-// bounds grow a pixel on every side, the anti-aliasing margin the
-// per-pixel blit has always worked in.
-func rasterOutline(outline font.GlyphOutline, scale, fx, fy float64) *glyphRaster {
-	return rasterOutlineXform(outline, Affine{A: scale, D: -scale, E: fx, F: fy})
-}
-
 // rasterOutlineXform rasterizes an outline mapped from font units to
-// pixels by m (rasterOutline's map, or a color glyph's transformed
-// clip), with the same pixel margin.
+// pixels by m into an 8bpp coverage mask, the mask origin at the
+// integer pen position: a glyph's map (its scale, y flipped, the
+// face's slant, the fractional pen offset) or a color glyph's
+// transformed clip. The bounds grow a pixel on every side, the
+// anti-aliasing margin the per-pixel blit has always worked in.
 func rasterOutlineXform(outline font.GlyphOutline, m Affine) *glyphRaster {
 	minX, minY, maxX, maxY := math.Inf(1), math.Inf(1), math.Inf(-1), math.Inf(-1)
 	for _, seg := range outline.Segments {

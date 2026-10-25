@@ -352,3 +352,57 @@ func TestTypefaceTabular(t *testing.T) {
 	}
 	_ = w
 }
+
+// The oblique twin draws the same glyphs leaning right: an l's top
+// sits right of its foot by about tan(14°) of its height, where the
+// upright face draws it straight, and the advance is unchanged (#282).
+func TestObliqueLeans(t *testing.T) {
+	tf, err := NewFixtureTypeface()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ob := tf.Oblique()
+	if !ob.Slanted() || tf.Slanted() || ob.Oblique() != ob || tf.Oblique() != ob {
+		t.Fatal("Oblique is not a memoized slanted twin")
+	}
+	if a, b := tf.Shape("l", 40).Advance(), ob.Shape("l", 40).Advance(); a != b {
+		t.Errorf("oblique advance %v, upright %v", b, a)
+	}
+	lean := func(face *Typeface) (top, bottom float64) {
+		w, h := 80, 80
+		data := make([]byte, Stride(w)*h)
+		cv := New(data, Stride(w), w, h)
+		face.Shape("l", 40).Draw(cv, 20, 60, RGB(255, 255, 255))
+		rowMid := func(y int) float64 {
+			sum, n := 0, 0
+			for x := range w {
+				if ColorFromBytes(data[y*Stride(w)+x*4:]).A() > 128 {
+					sum += x
+					n++
+				}
+			}
+			if n == 0 {
+				return -1
+			}
+			return float64(sum) / float64(n)
+		}
+		first, last := -1, -1
+		for y := range h {
+			if rowMid(y) >= 0 {
+				if first < 0 {
+					first = y
+				}
+				last = y
+			}
+		}
+		return rowMid(first + 2), rowMid(last - 2)
+	}
+	ut, ub := lean(tf)
+	if d := ut - ub; d > 1 || d < -1 {
+		t.Errorf("upright l leans %.1fpx", d)
+	}
+	ot, ob2 := lean(ob)
+	if d := ot - ob2; d < 4 {
+		t.Errorf("oblique l leans %.1fpx, want several pixels right at its top", d)
+	}
+}
