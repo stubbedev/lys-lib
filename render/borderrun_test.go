@@ -51,3 +51,43 @@ func TestBorderRunsMatchPerPixel(t *testing.T) {
 		}
 	}
 }
+
+// roundedPerPixel is RoundedRect as every pixel through the distance
+// field: the reference its run fill must match.
+func roundedPerPixel(c *Canvas, r Rect, radius int, col Color) {
+	full := c.MapRect(r)
+	box := c.clip.Intersect(full)
+	rad := RoundedRadius(full, radius, c.num, c.denom)
+	for y := box.Y; y < box.Y+box.H; y++ {
+		for x := box.X; x < box.X+box.W; x++ {
+			cov := 0.5 - sdRoundRect(float32(x)+0.5, float32(y)+0.5, full, rad)
+			if cov < 0 {
+				continue
+			}
+			c.blend(x, y, coverageScale(col, cov255(min(cov, 1))))
+		}
+	}
+}
+
+// RoundedRect's run fill paints what the per-pixel field paints, for
+// any rect, radius, color, clip and device scale.
+func TestRoundedRectRunsMatchPerPixel(t *testing.T) {
+	rng := rand.New(rand.NewPCG(3, 4))
+	const w, h = 160, 120
+	for i := range 600 {
+		num, denom := []int{1, 5, 2, 3}[i%4], []int{1, 4, 1, 2}[i%4]
+		r := Rect{X: rng.IntN(30) - 5, Y: rng.IntN(30) - 5, W: 1 + rng.IntN(70), H: 1 + rng.IntN(60)}
+		radius := rng.IntN(40)
+		col := []Color{RGBA(200, 0, 0, 255), RGBA(0, 160, 0, 200), RGBA(0, 0, 0, 0), RGBA(9, 9, 220, 3)}[i%4]
+		clip := Rect{X: rng.IntN(40), Y: rng.IntN(40), W: 20 + rng.IntN(120), H: 20 + rng.IntN(80)}
+		got := NewScaled(make([]byte, Stride(w)*h), Stride(w), w, h, num, denom)
+		want := NewScaled(make([]byte, Stride(w)*h), Stride(w), w, h, num, denom)
+		got.PushClipDevice(clip)
+		want.PushClipDevice(clip)
+		got.RoundedRect(r, radius, col)
+		roundedPerPixel(want, r, radius, col)
+		if !bytes.Equal(got.data, want.data) {
+			t.Fatalf("case %d (%v radius %d at %d/%d, clip %v): run fill differs from per-pixel", i, r, radius, num, denom, clip)
+		}
+	}
+}

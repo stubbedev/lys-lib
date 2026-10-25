@@ -470,21 +470,53 @@ func (c *Canvas) RoundedRect(r Rect, radius int, col Color) {
 		return
 	}
 	rad := RoundedRadius(full, radius, c.num, c.denom)
+	// Coverage scales all four premultiplied channels, alpha included:
+	// scaling alpha alone leaves full-strength color on edge pixels (the
+	// halo class), and dropping the source's own alpha would paint
+	// translucent fills opaque, unlike FillRect.
+	shaded := func(d float32) (Color, bool) {
+		cov := 0.5 - d
+		if cov < 0 {
+			return 0, false
+		}
+		return coverageScale(col, cov255(min(cov, 1))), true
+	}
+	pixel := func(x, y int) {
+		if src, ok := shaded(sdRoundRect(float32(x)+0.5, float32(y)+0.5, full, rad)); ok {
+			c.blend(x, y, src)
+		}
+	}
+	x0, x1 := float32(full.X), float32(full.X+full.W)
+	y0, y1 := float32(full.Y), float32(full.Y+full.H)
+	cx, cy := (x0+x1)*0.5, (y0+y1)*0.5
+	hw, hh := float32((x1-x0)*0.5)-rad, float32((y1-y0)*0.5)-rad
+	qx := func(x int) float32 { return abs(float32(x)+0.5-cx) - hw }
+	end := box.X + box.W
 	for y := box.Y; y < box.Y+box.H; y++ {
-		for x := box.X; x < box.X+box.W; x++ {
-			d := sdRoundRect(float32(x)+0.5, float32(y)+0.5, full, rad)
-			cov := 0.5 - d
-			if cov < 0 {
-				continue
-			}
-			if cov > 1 {
-				cov = 1
-			}
-			// Coverage scales all four premultiplied channels, alpha
-			// included: scaling alpha alone leaves full-strength color on
-			// edge pixels (the halo class), and dropping the source's own
-			// alpha would paint translucent fills opaque, unlike FillRect.
-			c.blend(x, y, coverageScale(col, cov255(cov)))
+		// Where qx <= min(qy, 0) the distance is qy - rad whatever x is
+		// (sqrt of a square is exact), so one value covers the run; qx
+		// falls then rises along the row, so the run is one interval.
+		qy := abs(float32(y)+0.5-cy) - hh
+		m := min(qy, 0)
+		xs := min(max(box.X, int(math.Ceil(float64(cx-(hw+m)-0.5)))), end)
+		for xs < end && qx(xs) > m {
+			xs++
+		}
+		for xs > box.X && qx(xs-1) <= m {
+			xs--
+		}
+		xe := xs
+		for xe < end && qx(xe) <= m {
+			xe++
+		}
+		for x := box.X; x < xs; x++ {
+			pixel(x, y)
+		}
+		if src, ok := shaded(qy - rad); ok && xe > xs {
+			c.blendRun(xs, xe, y, src)
+		}
+		for x := xe; x < end; x++ {
+			pixel(x, y)
 		}
 	}
 }
