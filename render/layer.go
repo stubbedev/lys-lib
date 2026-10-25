@@ -107,6 +107,9 @@ type Layer struct {
 	blurA, blurB, blurS, blurRow []Color
 	blurAcc                      []uint32
 	blurCols                     []upCol
+	// scratch marks a pooled layer (ScratchLayer), which Release
+	// returns.
+	scratch bool
 }
 
 // Layer returns a layer the size and scale of c whose region (device

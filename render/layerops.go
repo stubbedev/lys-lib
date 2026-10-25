@@ -12,12 +12,17 @@ import "math"
 // filters: what has been painted under the region so far this frame.
 func (c *Canvas) Snapshot(old *Layer, region Rect) *Layer {
 	l := c.Layer(old, region)
-	for y := region.Y; y < region.Y+region.H; y++ {
-		for x := region.X; x < region.X+region.W; x++ {
-			l.cv.set(x, y, c.get(x, y))
-		}
-	}
+	l.copyFrom(c, region)
 	return l
+}
+
+// copyFrom copies c's device region into the layer's, row by row.
+func (l *Layer) copyFrom(c *Canvas, region Rect) {
+	for y := region.Y; y < region.Y+region.H; y++ {
+		o := y*c.stride + region.X*4
+		copy(l.cv.data[o:o+region.W*4], c.data[o:o+region.W*4])
+	}
+	l.cv.touched += region.W * region.H
 }
 
 // DrawLayer draws l's device rect over c one to one through the blend
