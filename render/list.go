@@ -25,6 +25,8 @@ type List struct {
 	// free holds the released recorded scratch layers, reused by the
 	// next ScratchLayer.
 	free []*Layer
+	// num/denom is the recording canvas's device scale.
+	num, denom int
 }
 
 // State is the canvas state a recorded call ran under. Layer is the
@@ -172,8 +174,20 @@ func (c *Canvas) ResetRecorder(width, height, num, denom int) *Canvas {
 		panic("render: ResetRecorder of a raster canvas")
 	}
 	c.rec.ops, c.rec.stops = c.rec.ops[:0], c.rec.stops[:0]
+	c.rec.num, c.rec.denom = num, denom
 	c.resetFrame(width, height, num, denom)
 	return c
+}
+
+// Scale is the recording's device scale: num device pixels per denom
+// logical pixels.
+func (l *List) Scale() (num, denom int) { return l.num, l.denom }
+
+// ApplyState gives c the clip, opacity and brightness of s: a player
+// rasterizing one recorded call onto a canvas of its own.
+func (c *Canvas) ApplyState(s State) {
+	c.clip, c.alpha, c.bright = s.Clip, s.Alpha, s.Bright
+	c.rescaleAlpha()
 }
 
 // Recording is the List c records into, nil for a raster canvas.
@@ -335,8 +349,7 @@ func (p rasterPlayer) on(s State) *Canvas {
 	if s.Layer != nil {
 		c = rasterOf(s.Layer).cv
 	}
-	c.clip, c.alpha, c.bright = s.Clip, s.Alpha, s.Bright
-	c.rescaleAlpha()
+	c.ApplyState(s)
 	return c
 }
 
@@ -426,8 +439,7 @@ func (p rasterPlayer) PaintImageTiles(s State, img image.Image, t Tile, clip Rec
 func (p rasterPlayer) FillPath(s State, path *Path, col Color) { p.on(s).FillPath(path, col) }
 
 func (p rasterPlayer) Glyph(s State, face *Typeface, gid font.GID, scale, penX, penY float64, col Color) {
-	c := p.on(s)
-	drawGlyph(c, c.clip, face, gid, scale, penX, penY, col)
+	p.on(s).DrawGlyph(face, gid, scale, penX, penY, col)
 }
 
 func (p rasterPlayer) Layer(s State, l *Layer, region Rect) {

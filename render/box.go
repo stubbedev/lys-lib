@@ -103,6 +103,16 @@ func (c *Canvas) devBox(r Rect, radii Corners) (frect, fcorners) {
 	return b, clampRadii(b, rc)
 }
 
+// DeviceBox is the rounded box r with radii as the shape painters
+// rasterize it at device scale num/denom: its device rect as x0, y0,
+// x1, y1 and its radii clockwise from top-left, scaled down together
+// where adjacent ones overlap.
+func DeviceBox(r Rect, radii Corners, num, denom int) ([4]float64, [4]float64) {
+	c := Canvas{num: num, denom: denom}
+	b, rc := c.devBox(r, radii)
+	return b.array(), rc
+}
+
 // clampRadii applies CSS's overlap rule: when two radii on one side sum
 // past its length, every radius shrinks by the same factor.
 func clampRadii(b frect, rc fcorners) fcorners {
@@ -254,19 +264,8 @@ func (c *Canvas) RoundedBorderSides(r Rect, radii Corners, widths Insets, cols [
 	if widths.Zero() {
 		return
 	}
-	b, rc := c.devBox(r, radii)
-	f := float64(c.num) / float64(c.denom)
-	w := [4]float64{
-		float64(widths.Top) * f, float64(widths.Right) * f,
-		float64(widths.Bottom) * f, float64(widths.Left) * f,
-	}
-	in := frect{b.x0 + w[3], b.y0 + w[0], b.x1 - w[1], b.y1 - w[2]}
-	irc := fcorners{
-		math.Max(0, rc[0]-math.Max(w[3], w[0])),
-		math.Max(0, rc[1]-math.Max(w[0], w[1])),
-		math.Max(0, rc[2]-math.Max(w[1], w[2])),
-		math.Max(0, rc[3]-math.Max(w[2], w[3])),
-	}
+	g := c.borderRing(r, radii, widths)
+	b, rc, w, in, irc := g.outer, g.radii, g.widths, g.inner, g.iradii
 	innerEmpty := in.x1 <= in.x0 || in.y1 <= in.y0
 	// ring is a pixel's coverage and side.
 	ring := func(px, py float64) (float64, int) {
@@ -338,6 +337,47 @@ func (c *Canvas) RoundedBorderSides(r Rect, radii Corners, widths Insets, cols [
 		}
 	}
 }
+
+// ring is a border's geometry in device pixels: the outer box and
+// radii, the side widths (top, right, bottom, left), and the inner box
+// and radii, each inner radius shrunk by its corner's wider side.
+type ring struct {
+	outer, inner  frect
+	radii, iradii fcorners
+	widths        [4]float64
+}
+
+// borderRing is the ring RoundedBorderSides strokes.
+func (c *Canvas) borderRing(r Rect, radii Corners, widths Insets) ring {
+	b, rc := c.devBox(r, radii)
+	f := float64(c.num) / float64(c.denom)
+	w := [4]float64{
+		float64(widths.Top) * f, float64(widths.Right) * f,
+		float64(widths.Bottom) * f, float64(widths.Left) * f,
+	}
+	return ring{
+		outer: b, radii: rc, widths: w,
+		inner: frect{b.x0 + w[3], b.y0 + w[0], b.x1 - w[1], b.y1 - w[2]},
+		iradii: fcorners{
+			math.Max(0, rc[0]-math.Max(w[3], w[0])),
+			math.Max(0, rc[1]-math.Max(w[0], w[1])),
+			math.Max(0, rc[2]-math.Max(w[1], w[2])),
+			math.Max(0, rc[3]-math.Max(w[2], w[3])),
+		},
+	}
+}
+
+// BorderRing is RoundedBorderSides' ring at device scale num/denom:
+// the outer box (x0, y0, x1, y1) and radii, the inner box and radii,
+// and the side widths, top, right, bottom, left.
+func BorderRing(r Rect, radii Corners, widths Insets, num, denom int) (outer, oradii, inner, iradii, w [4]float64) {
+	c := Canvas{num: num, denom: denom}
+	g := c.borderRing(r, radii, widths)
+	return g.outer.array(), g.radii, g.inner.array(), g.iradii, g.widths
+}
+
+// array is b as x0, y0, x1, y1.
+func (b frect) array() [4]float64 { return [4]float64{b.x0, b.y0, b.x1, b.y1} }
 
 // ringCell is a ring column's coverage and side.
 type ringCell struct {

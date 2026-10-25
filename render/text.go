@@ -705,6 +705,13 @@ func drawGlyph(cv *Canvas, clip Rect, t *Typeface, gid font.GID, scale, penX, pe
 	drawBitmapGlyph(cv, clip, t, gid, scale, penX, penY, col)
 }
 
+// DrawGlyph paints one glyph of face with its baseline pen at the
+// device point (penX, penY) at scale (device pixels per font unit), as
+// shaped text paints each: a Player's Glyph.
+func (c *Canvas) DrawGlyph(face *Typeface, gid font.GID, scale, penX, penY float64, col Color) {
+	drawGlyph(c, c.clip, face, gid, scale, penX, penY, col)
+}
+
 // glyphBounds is the device rect drawGlyph covers for gid at the pen.
 func glyphBounds(t *Typeface, gid font.GID, scale, penX, penY float64, col Color) Rect {
 	if r := colorRasterOf(t, gid, scale, penX, penY, col); r != nil {

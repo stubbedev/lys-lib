@@ -140,6 +140,16 @@ func (c *Canvas) Layer(old *Layer, region Rect) *Layer {
 	return l
 }
 
+// LayerOf is a layer whose pixels are c's own, for the layer
+// operations (ApplyFilters, masks, CrossFade, DrawLayer) on pixels a
+// player holds in a canvas of its own.
+func LayerOf(c *Canvas) *Layer {
+	if c.rec != nil {
+		panic("render: LayerOf a recording canvas")
+	}
+	return &Layer{buf: c.data, cv: c}
+}
+
 // Canvas is the layer's canvas to paint into.
 func (l *Layer) Canvas() *Canvas { return l.cv }
 
