@@ -15,6 +15,7 @@ const uint kindImage = 8u;
 const uint kindGradient = 9u;
 const uint kindLine = 10u;
 const uint kindArc = 11u;
+const uint kindCover = 12u;
 
 // The info.w flags, gpu/prim.go's.
 const uint flagRaw = 1u;
@@ -390,6 +391,22 @@ void main() {
             d = min(sqrt(a.x * a.x + a.y * a.y), sqrt(b.x * b.x + b.y * b.y)) - p.box.w;
         }
         c = covered(unpack(p.cols.x), coverage(d));
+        break;
+    }
+    case kindCover: {
+        // render.CoverGeometry.At, in its order.
+        precise float cov = min(1.0, 0.5 - sdRoundRect(px, p.box, p.radii.x));
+        if (cov <= 0.0) {
+            discard;
+        }
+        ivec2 b = ivec2(floor(px)) - ivec2(p.box.xy);
+        precise float fx = (float(b.x) + p.radii.y) * p.radii.w;
+        precise float fy = (float(b.y) + p.radii.z) * p.radii.w;
+        ivec2 at = clamp(ivec2(int(fx), int(fy)), ivec2(0), ivec2(p.inner.xy) - 1);
+        c = coverageScale(texel(at), cov255(cov));
+        if (c == uvec4(0u)) {
+            discard;
+        }
         break;
     }
     case kindComposite: {

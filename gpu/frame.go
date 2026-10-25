@@ -427,7 +427,23 @@ func (f *frame) scaledImage(s render.State, img image.Image, full render.Rect, r
 }
 
 func (f *frame) DrawImageCover(s render.State, img image.Image, r render.Rect, radii render.Corners) {
-	f.sprite(s, "DrawImageCover", func(cv *render.Canvas) { cv.DrawImageCover(img, r, radii) })
+	if img.Bounds().Empty() || r.Empty() {
+		return
+	}
+	rgba, ok := img.(*image.RGBA)
+	var tex *surface
+	if ok && f.err == nil {
+		tex, ok = f.imageTexture(rgba)
+	}
+	if !ok {
+		f.sprite(s, "DrawImageCover", func(cv *render.Canvas) { cv.DrawImageCover(img, r, radii) })
+		return
+	}
+	g := render.CoverOf(img.Bounds(), r, radii, f.num, f.denom)
+	p := shaded(kindCover, s, 0)
+	p.quad, p.box = quadOf(s.Bounds), quadOf(g.Full)
+	p.radii, p.inner = [4]float32{g.Rad, g.OffX, g.OffY, g.InvScale}, [4]float32{float32(g.W), float32(g.H)}
+	f.draw(f.on(s), tex, false, p)
 }
 
 func (f *frame) DrawImageDevice(s render.State, img image.Image, x, y int) {

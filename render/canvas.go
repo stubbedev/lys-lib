@@ -664,35 +664,65 @@ func (c *Canvas) DrawImageCover(img image.Image, r Rect, radii Corners) {
 	if b.Empty() || r.Empty() {
 		return
 	}
-	full := c.MapRect(r)
-	dst := c.clip.Intersect(full)
+	g := CoverOf(b, r, radii, c.num, c.denom)
+	dst := c.clip.Intersect(g.Full)
 	if dst.Empty() {
 		return
 	}
-	rad := math.Min(float64(radii.TopLeft)*float64(c.num)/float64(c.denom), math.Min(float64(full.W), float64(full.H))/2)
-	sw, sh := float64(b.Dx()), float64(b.Dy())
-	scale := math.Max(float64(full.W)/sw, float64(full.H)/sh)
-	cw, ch := sw*scale, sh*scale
-	offX := (cw - float64(full.W)) / 2
-	offY := (ch - float64(full.H)) / 2
+	rgba, _ := img.(*image.RGBA)
 	for py := dst.Y; py < dst.Y+dst.H; py++ {
-		for pxx := dst.X; pxx < dst.X+dst.W; pxx++ {
-			cov := 0.5 - sdRoundRect(float64(pxx)+0.5, float64(py)+0.5, full, rad)
+		for px := dst.X; px < dst.X+dst.W; px++ {
+			cov, sx, sy := g.At(px, py)
 			if cov <= 0 {
 				continue
 			}
-			if cov > 1 {
-				cov = 1
+			var src Color
+			if rgba != nil {
+				p := rgba.Pix[rgba.PixOffset(b.Min.X+sx, b.Min.Y+sy):]
+				src = Color(uint32(p[3])<<24 | uint32(p[0])<<16 | uint32(p[1])<<8 | uint32(p[2]))
+			} else {
+				sr, sg, sb, sa := img.At(b.Min.X+sx, b.Min.Y+sy).RGBA()
+				src = Color(sa>>8<<24 | sr>>8<<16 | sg>>8<<8 | sb>>8)
 			}
-			sx := b.Min.X + int((float64(pxx-full.X)+offX)/scale)
-			sy := b.Min.Y + int((float64(py-full.Y)+offY)/scale)
-			sx = min(max(sx, b.Min.X), b.Max.X-1)
-			sy = min(max(sy, b.Min.Y), b.Max.Y-1)
-			sr, sg, sb, sa := img.At(sx, sy).RGBA()
-			src := Color(sa>>8<<24 | sr>>8<<16 | sg>>8<<8 | sb>>8)
-			c.blend(pxx, py, coverageScale(src, uint32(math.Round(cov*255))))
+			c.blend(px, py, coverageScale(src, cov255(cov)))
 		}
 	}
+}
+
+// CoverGeometry is DrawImageCover's placement of an image of size
+// W x H over its device rect Full, in the float32 a GPU shader
+// evaluates it in: the uniform scale that covers Full (as its
+// reciprocal InvScale), the overflow cropped evenly (OffX, OffY), and
+// Full's rounded corners (Rad, the top-left radius, at most half the
+// shorter side).
+type CoverGeometry struct {
+	Full                      Rect
+	W, H                      int
+	Rad, OffX, OffY, InvScale float32
+}
+
+// CoverOf is the cover of image bounds b over the logical rect r with
+// radii at device scale num/denom.
+func CoverOf(b image.Rectangle, r Rect, radii Corners, num, denom int) CoverGeometry {
+	full := MapRect(r, num, denom)
+	sw, sh := float64(b.Dx()), float64(b.Dy())
+	scale := math.Max(float64(full.W)/sw, float64(full.H)/sh)
+	return CoverGeometry{
+		Full: full, W: b.Dx(), H: b.Dy(),
+		Rad:      float32(math.Min(float64(radii.TopLeft)*float64(num)/float64(denom), math.Min(float64(full.W), float64(full.H))/2)),
+		OffX:     float32((sw*scale - float64(full.W)) / 2),
+		OffY:     float32((sh*scale - float64(full.H)) / 2),
+		InvScale: Reciprocal(float32(scale)),
+	}
+}
+
+// At is pixel (x, y)'s coverage by the rounded rect and the image
+// texel it shows, from the image's top-left.
+func (g CoverGeometry) At(x, y int) (cov float32, sx, sy int) {
+	cov = min(1, 0.5-sdRoundRect(float32(x)+0.5, float32(y)+0.5, g.Full, g.Rad))
+	sx = min(max(int(float32((float32(x-g.Full.X)+g.OffX)*g.InvScale)), 0), g.W-1)
+	sy = min(max(int(float32((float32(y-g.Full.Y)+g.OffY)*g.InvScale)), 0), g.H-1)
+	return cov, sx, sy
 }
 
 // DrawImageCoverImage is DrawImageCover for an Icon's pixels.
