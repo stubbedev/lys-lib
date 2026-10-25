@@ -398,7 +398,6 @@ func (f *frame) Line(s render.State, x0, y0, x1, y1, width int, col render.Color
 	f.draw(f.on(s), nil, false, p)
 }
 
-
 func (f *frame) Shadow(s render.State, r render.Rect, cornerRadius, blur int, col render.Color) {
 	f.sprite(s, "Shadow", func(cv *render.Canvas) { cv.Shadow(r, cornerRadius, blur, col) })
 }
