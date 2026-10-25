@@ -256,14 +256,21 @@ func (c *Canvas) RoundedBorderSides(r Rect, radii Corners, widths Insets, cols [
 	sp := c.span(b)
 	for y := sp.Y; y < sp.Y+sp.H; y++ {
 		py := float64(y) + 0.5
-		// The inner shape's solid run is the ring's hole: coverage 0.
-		xa, xb, hole := solidRun(in, irc, py)
-		hole = hole && !innerEmpty
+		// The inner shape's solid run is the ring's hole: coverage 0,
+		// skipped whole.
+		hs, he := sp.X+sp.W, sp.X+sp.W
+		if xa, xb, hole := solidRun(in, irc, py); hole && !innerEmpty {
+			hs = min(max(sp.X, int(math.Ceil(xa-0.5))), sp.X+sp.W)
+			he = min(max(hs, int(math.Floor(xb-0.5))+1), sp.X+sp.W)
+		}
 		for x := sp.X; x < sp.X+sp.W; x++ {
-			px := float64(x) + 0.5
-			if hole && px >= xa && px <= xb {
-				continue
+			if x == hs {
+				x = he
+				if x >= sp.X+sp.W {
+					break
+				}
 			}
+			px := float64(x) + 0.5
 			cov := coverage(sdBox(px, py, b, rc))
 			if cov <= 0 {
 				continue

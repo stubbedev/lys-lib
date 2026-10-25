@@ -351,17 +351,7 @@ func colBytes(c Color) []byte {
 }
 
 // FillRect blends col over the logical rect with source-over compositing.
-func (c *Canvas) FillRect(r Rect, col Color) {
-	r = c.clip.Intersect(c.MapRect(r))
-	if r.Empty() {
-		return
-	}
-	for y := r.Y; y < r.Y+r.H; y++ {
-		for x := r.X; x < r.X+r.W; x++ {
-			c.blend(x, y, col)
-		}
-	}
-}
+func (c *Canvas) FillRect(r Rect, col Color) { c.FillRectDevice(c.MapRect(r), col) }
 
 // BorderRect blends col over a hollow rect of the given logical thickness.
 // The stroke grows inward from the rect edges.
@@ -378,13 +368,11 @@ func (c *Canvas) BorderRect(r Rect, width int, col Color) {
 // compositing; the device counterpart of FillRect.
 func (c *Canvas) FillRectDevice(r Rect, col Color) {
 	r = c.clip.Intersect(r)
-	if r.Empty() {
+	if r.Empty() || col == 0 {
 		return
 	}
 	for y := r.Y; y < r.Y+r.H; y++ {
-		for x := r.X; x < r.X+r.W; x++ {
-			c.blend(x, y, col)
-		}
+		c.blendRun(r.X, r.X+r.W, y, col)
 	}
 }
 
