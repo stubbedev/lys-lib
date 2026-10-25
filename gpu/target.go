@@ -22,6 +22,22 @@ type Target struct {
 	buf    dmabuf.Buffer
 	// held is whether the device holds t, between acquire and release.
 	held bool
+	// offscreen marks a target no consumer imports (NewOffscreen).
+	offscreen bool
+}
+
+// NewOffscreen allocates a width x height target in device memory no
+// other process imports: a frame rendered for its pixels (ReadPixels),
+// a screenshot or a test.
+func (d *Device) NewOffscreen(width, height int) (*Target, error) {
+	if width <= 0 || height <= 0 {
+		return nil, fmt.Errorf("gpu: target size %dx%d is not positive", width, height)
+	}
+	s, err := d.newSurface(width, height)
+	if err != nil {
+		return nil, err
+	}
+	return &Target{s: *s, offscreen: true, buf: dmabuf.Buffer{Width: width, Height: height}}, nil
 }
 
 // vkFormatOf maps a DRM fourcc to the Vulkan format with the same byte
@@ -126,7 +142,7 @@ func (t *Target) create(width, height int, modifiers []uint64) error {
 }
 
 // Dmabuf describes the target's memory for its consumer. Its fd is the
-// target's, open until Close.
+// target's, open until Close; an offscreen target has none.
 func (t *Target) Dmabuf() dmabuf.Buffer { return t.buf }
 
 // Size is the target's size in pixels.
@@ -157,7 +173,7 @@ func (t *Target) acquire(cb vk.CommandBuffer) {
 		return
 	}
 	t.held = true
-	if t.s.layout == vk.ImageLayoutUndefined {
+	if t.offscreen || t.s.layout == vk.ImageLayoutUndefined {
 		return
 	}
 	t.s.barrier(cb, vk.ImageLayoutGeneral, vk.QueueFamilyForeignExt, t.s.d.family)
@@ -167,6 +183,9 @@ func (t *Target) acquire(cb vk.CommandBuffer) {
 // queue-family release to the foreign family, its writes made visible.
 func (t *Target) release(cb vk.CommandBuffer) {
 	t.held = false
+	if t.offscreen {
+		return
+	}
 	t.s.barrier(cb, vk.ImageLayoutGeneral, t.s.d.family, vk.QueueFamilyForeignExt)
 }
 

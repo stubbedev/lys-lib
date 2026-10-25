@@ -6,23 +6,24 @@ import (
 	"testing"
 
 	"github.com/stubbedev/lys-ui/dmabuf"
+	"github.com/stubbedev/lys-ui/internal/gputest"
 )
 
-// openDevice opens the test's device: the lavapipe CPU driver when
-// LYS_UI_TEST_GPU=lavapipe (CI, no GPU needed), else the host's. With
-// no Vulkan the tests skip, unless LYS_UI_TEST_GPU names a driver.
+// openDevice opens the test's device (internal/gputest picks the
+// driver); with none the test skips, unless LYS_UI_TEST_GPU asks for
+// one.
 func openDevice(t *testing.T) *Device {
 	t.Helper()
-	if os.Getenv("LYS_UI_TEST_GPU") == "lavapipe" {
-		icd := os.Getenv("LYS_UI_TEST_LAVAPIPE")
-		if icd == "" {
-			t.Fatal("LYS_UI_TEST_GPU=lavapipe without LYS_UI_TEST_LAVAPIPE (the dev shell sets it)")
-		}
+	icd, required, err := gputest.Driver()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if icd != "" {
 		t.Setenv("VK_DRIVER_FILES", icd)
 	}
 	d, err := Open()
 	if errors.Is(err, ErrNoVulkan) || errors.Is(err, ErrNoDevice) {
-		if os.Getenv("LYS_UI_TEST_GPU") != "" {
+		if required {
 			t.Fatalf("no GPU device for LYS_UI_TEST_GPU=%s: %v", os.Getenv("LYS_UI_TEST_GPU"), err)
 		}
 		t.Skipf("no Vulkan device: %v", err)

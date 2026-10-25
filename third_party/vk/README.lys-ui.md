@@ -59,7 +59,8 @@ exported memory enables no surface extension. Surface users check
 
 ### Commands vk-gen has no signature for
 
-Upstream: https://github.com/gogpu/wgpu/pull/376
+Upstream: https://github.com/gogpu/wgpu/pull/376 and, for
+`vkCmdPushConstants`, https://github.com/gogpu/wgpu/pull/377
 
 `commands_lysui.go`: wrappers for `vkGetImageSubresourceLayout` (a dmabuf
 plane's offset and stride), `vkCmdClearColorImage`,
