@@ -60,6 +60,7 @@ type scratch struct {
 	prims, staging, readback *buffer
 	scratchW, scratchH       int
 	freeLayers               []*layerSurface
+	glyphs                   glyphAtlas
 	deadMu                   sync.Mutex
 	dead                     []*layerSurface
 }
@@ -190,7 +191,7 @@ func (d *Device) closeScratch() {
 	for _, ls := range d.freeLayers {
 		ls.s.close()
 	}
-	for _, s := range []*surface{d.page, d.blank} {
+	for _, s := range []*surface{d.page, d.blank, d.glyphs.page} {
 		if s != nil {
 			s.close()
 		}

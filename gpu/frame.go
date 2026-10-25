@@ -421,7 +421,21 @@ func (f *frame) FillPath(s render.State, p *render.Path, col render.Color) {
 }
 
 func (f *frame) Glyph(s render.State, face *render.Typeface, gid font.GID, scale, penX, penY float64, col render.Color) {
-	f.sprite(s, func(cv *render.Canvas) { cv.DrawGlyph(face, gid, scale, penX, penY, col) })
+	if f.err != nil {
+		return
+	}
+	m, at, ok := render.GlyphCoverage(face, gid, scale, penX, penY, col)
+	var pos image.Point
+	if ok {
+		pos, ok = f.glyphSlot(m)
+	}
+	if !ok {
+		f.sprite(s, func(cv *render.Canvas) { cv.DrawGlyph(face, gid, scale, penX, penY, col) })
+		return
+	}
+	p := shaded(kindMask, s, 0)
+	p.quad, p.inner, p.cols[0] = quadOf(s.Bounds), [4]float32{float32(at.X - pos.X), float32(at.Y - pos.Y)}, uint32(col)
+	f.draw(f.on(s), f.d.glyphs.page, false, p)
 }
 
 func (f *frame) Layer(s render.State, l *render.Layer, region render.Rect) {

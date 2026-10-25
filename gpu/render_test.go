@@ -180,3 +180,23 @@ func TestRenderFallbacksAndLayers(t *testing.T) {
 		}, 1)
 	}
 }
+
+// A glyph atlas that fills mid-frame draws what it holds, empties and
+// refills: text needing more than a page still matches the CPU.
+func TestRenderGlyphAtlasRefills(t *testing.T) {
+	d := openDevice(t)
+	d.glyphs.size = 48
+	face, err := render.NewFixtureTypeface()
+	if err != nil {
+		t.Fatal(err)
+	}
+	parity(t, d, 200, 120, 1, 1, 2, func(cv *render.Canvas, _ int) {
+		cv.Clear(cv.Rect(), render.RGBA(16, 18, 24, 255))
+		for i, line := range []string{"The quick brown fox", "jumps over the lazy", "dog 0123456789 QWXZ"} {
+			face.DrawAligned(cv, line, render.Rect{X: 4, Y: 4 + 34*i, W: 190, H: 30}, float64(18+4*i), render.RGBA(240, 240, 240, 255), render.AlignStart)
+		}
+	}, 1)
+	if d.glyphs.py == 0 && d.glyphs.px == 0 {
+		t.Error("the atlas holds nothing after drawing text")
+	}
+}

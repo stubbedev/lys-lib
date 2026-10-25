@@ -42,24 +42,46 @@ type bitmapKey struct {
 	w, h int
 }
 
-// glyphRaster is one cached 8bpp coverage mask. ox, oy locate the
-// mask's origin relative to the glyph's integer pen position: the
-// blit's target pixel is (penX + ox, penY + oy).
-type glyphRaster struct {
+// GlyphMask is one cached 8bpp coverage mask, immutable once made: a
+// GPU renderer keys its atlas by it. ox, oy locate the mask's origin
+// relative to the glyph's integer pen position: the blit's target
+// pixel is (penX + ox, penY + oy).
+type GlyphMask struct {
 	mask []uint8
 	w, h int
 	ox   int
 	oy   int
 }
 
+// Pix is the mask's coverage, Size's width bytes per row.
+func (g *GlyphMask) Pix() []uint8 { return g.mask }
+
+// Size is the mask's size in device pixels.
+func (g *GlyphMask) Size() (w, h int) { return g.w, g.h }
+
+// GlyphCoverage is the coverage mask DrawGlyph tints with the text color
+// for an outline glyph, and the device rect it covers with the pen at
+// (penX, penY); false for a glyph drawn in color or from a bitmap, or a
+// blank one.
+func GlyphCoverage(face *Typeface, gid font.GID, scale, penX, penY float64, col Color) (*GlyphMask, Rect, bool) {
+	if colorRasterOf(face, gid, scale, penX, penY, col) != nil {
+		return nil, Rect{}, false
+	}
+	g, ok := cachedOutlineRaster(face, gid, scale, penX, penY)
+	if !ok {
+		return nil, Rect{}, false
+	}
+	return g, g.bounds(penX, penY), true
+}
+
 // bounds is the device rect the raster covers with its pen at
 // (penX, penY): the integer pen plus the raster's origin offset.
-func (g *glyphRaster) bounds(penX, penY float64) Rect {
+func (g *GlyphMask) bounds(penX, penY float64) Rect {
 	return Rect{X: int(math.Floor(penX)) + g.ox, Y: int(math.Floor(penY)) + g.oy, W: g.w, H: g.h}
 }
 
 var (
-	glyphs = newLRU[glyphKey, *glyphRaster](glyphCacheBudget)
+	glyphs = newLRU[glyphKey, *GlyphMask](glyphCacheBudget)
 	// bitmapScales caches embedded bitmap strikes - the color-emoji
 	// PNGs and black-and-white masks - scaled to device size. The
 	// scale is the expensive half (CatmullRom over a PNG-sized
@@ -88,7 +110,7 @@ func bucketOffset(b uint8) float64 { return float64(b) / subpixelBuckets }
 // has no outline segments for gid (a space, or a bitmap-only glyph);
 // that negative is cached too, so blank glyphs stop re-parsing their
 // empty outlines per draw.
-func cachedOutlineRaster(t *Typeface, gid font.GID, scale, penX, penY float64) (*glyphRaster, bool) {
+func cachedOutlineRaster(t *Typeface, gid font.GID, scale, penX, penY float64) (*GlyphMask, bool) {
 	key := glyphKey{
 		face:  t,
 		scale: scale,
@@ -125,7 +147,7 @@ func cachedOutlineRaster(t *Typeface, gid font.GID, scale, penX, penY float64) (
 // face's slant, the fractional pen offset) or a color glyph's
 // transformed clip. The bounds grow a pixel on every side, the
 // anti-aliasing margin the per-pixel blit has always worked in.
-func rasterOutlineXform(outline font.GlyphOutline, m Affine) *glyphRaster {
+func rasterOutlineXform(outline font.GlyphOutline, m Affine) *GlyphMask {
 	minX, minY, maxX, maxY := math.Inf(1), math.Inf(1), math.Inf(-1), math.Inf(-1)
 	for _, seg := range outline.Segments {
 		for _, p := range seg.Args {
@@ -139,7 +161,7 @@ func rasterOutlineXform(outline font.GlyphOutline, m Affine) *glyphRaster {
 	w := int(math.Ceil(maxX)) + 1 - ox
 	h := int(math.Ceil(maxY)) + 1 - oy
 	if w <= 0 || h <= 0 {
-		return &glyphRaster{}
+		return &GlyphMask{}
 	}
 	rast := vector.NewRasterizer(w, h)
 	toRaster := func(p ot.SegmentPoint) (float32, float32) {
@@ -167,7 +189,7 @@ func rasterOutlineXform(outline font.GlyphOutline, m Affine) *glyphRaster {
 	}
 	mask := image.NewAlpha(image.Rect(0, 0, w, h))
 	rast.Draw(mask, mask.Bounds(), image.NewUniform(color.Alpha{A: 255}), image.Point{})
-	return &glyphRaster{mask: mask.Pix, w: w, h: h, ox: ox, oy: oy}
+	return &GlyphMask{mask: mask.Pix, w: w, h: h, ox: ox, oy: oy}
 }
 
 // cachedScaledBitmap returns the embedded bitmap strike scaled to the

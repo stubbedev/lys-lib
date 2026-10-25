@@ -731,7 +731,7 @@ func glyphBounds(t *Typeface, gid font.GID, scale, penX, penY float64, col Color
 // premultiplied channels exactly as the per-draw rasterizer always
 // did, and every write goes through cv.blend, so the PushAlpha stack
 // and source-over discipline hold by construction.
-func blitMask(cv *Canvas, clip Rect, g *glyphRaster, ox, oy int, col Color) {
+func blitMask(cv *Canvas, clip Rect, g *GlyphMask, ox, oy int, col Color) {
 	x0, y0 := max(ox, clip.X), max(oy, clip.Y)
 	x1, y1 := min(ox+g.w, clip.X+clip.W), min(oy+g.h, clip.Y+clip.H)
 	if x1 <= x0 {
