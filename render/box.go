@@ -327,17 +327,61 @@ func (c *Canvas) BoxShadow(r Rect, radii Corners, s BoxShadow) {
 		return
 	}
 	dev := c.MapRect(r)
+	kw, kh := shadowCore(dev, radii, s, c.num, c.denom)
 	ras := boxShadows.get(boxShadowKey{
-		w: dev.W, h: dev.H, radii: radii,
+		w: kw, h: kh, radii: radii,
 		x: s.X, y: s.Y, blur: s.Blur, spread: s.Spread, inset: s.Inset,
 		num: c.num, denom: c.denom,
-	}, func() *boxShadowRaster { return buildBoxShadow(dev.W, dev.H, radii, s, c.num, c.denom) })
+	}, func() *boxShadowRaster { return buildBoxShadow(kw, kh, radii, s, c.num, c.denom) })
+	// The raster is the core box's; a longer box repeats the core's
+	// middle row and column, where every edge is straight.
+	midX, midY := kw/2, kh/2
 	ox, oy := dev.X+ras.x0, dev.Y+ras.y0
-	area := c.clip.Intersect(Rect{X: ox, Y: oy, W: ras.w, H: ras.h})
-	for y := area.Y; y < area.Y+area.H; y++ {
-		row := ras.cov[(y-oy)*ras.w:]
-		c.blendMask(area.X, y, row[area.X-ox:area.X-ox+area.W], s.Color)
+	area := c.clip.Intersect(Rect{X: ox, Y: oy, W: ras.w + dev.W - kw, H: ras.h + dev.H - kh})
+	if area.Empty() {
+		return
 	}
+	stretch := func(b, full, core, mid int) int {
+		switch {
+		case b < mid:
+			return b
+		case b >= mid+full-core:
+			return b - (full - core)
+		}
+		return mid
+	}
+	// Box-relative columns of the stretched middle, clipped to the area.
+	m0 := min(max(dev.X+midX, area.X), area.X+area.W)
+	m1 := min(max(dev.X+midX+dev.W-kw, m0), area.X+area.W)
+	for y := area.Y; y < area.Y+area.H; y++ {
+		sy := stretch(y-dev.Y, dev.H, kh, midY) - ras.y0
+		row := ras.cov[sy*ras.w : (sy+1)*ras.w]
+		at := func(x int) int { return stretch(x-dev.X, dev.W, kw, midX) - ras.x0 }
+		c.blendMask(area.X, y, row[at(area.X):at(area.X)+m0-area.X], s.Color)
+		if q := uint32(row[midX-ras.x0]); q != 0 && m1 > m0 {
+			c.blendRun(m0, m1, y, coverageScale(s.Color, q))
+		}
+		if end := area.X + area.W; end > m1 {
+			c.blendMask(m1, y, row[at(m1):at(m1)+end-m1], s.Color)
+		}
+	}
+}
+
+// shadowCore is the box a shadow's raster is built for: dev itself,
+// or, past the extent its corners reach (radius, offset, spread and
+// blur), a core just long enough to hold both corners and one straight
+// middle row or column. Overlapping radii scale with the box (CSS), so
+// a box whose radii overlap keeps its own size.
+func shadowCore(dev Rect, radii Corners, s BoxShadow, num, denom int) (w, h int) {
+	f := float64(num) / float64(denom)
+	tl, tr := float64(radii.TopLeft)*f, float64(radii.TopRight)*f
+	br, bl := float64(radii.BottomRight)*f, float64(radii.BottomLeft)*f
+	if tl+tr > float64(dev.W) || bl+br > float64(dev.W) || tl+bl > float64(dev.H) || tr+br > float64(dev.H) {
+		return dev.W, dev.H
+	}
+	reach := max(tl, tr, br, bl) + float64(max(abs(s.X), abs(s.Y))+abs(s.Spread))*f + 1.5*float64(s.Blur)*f
+	core := 2*(int(math.Ceil(reach))+2) + 1
+	return min(dev.W, core), min(dev.H, core)
 }
 
 // boxShadowKey identifies a CSS box-shadow's coverage: everything but
