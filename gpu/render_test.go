@@ -507,6 +507,24 @@ func TestRenderBrightnessRounding(t *testing.T) {
 	})
 }
 
+// Grain draws on the GPU as the CPU draws it: rounded, offset either
+// way, under opacity and brightness.
+func TestRenderGrain(t *testing.T) {
+	d := openDevice(t)
+	for _, sc := range [][2]int{{1, 1}, {3, 2}} {
+		w, h := 200*sc[0]/sc[1], 80*sc[0]/sc[1]
+		parity(t, d, w, h, sc[0], sc[1], 1, func(cv *render.Canvas, _ int) {
+			cv.Clear(cv.Rect(), render.RGBA(120, 130, 140, 255))
+			cv.PaintGrain(render.Rect{X: 4, Y: 4, W: 90, H: 70}, render.UniformCorners(14), 0.3, 4, 4)
+			prev := cv.PushAlpha(0.6)
+			b := cv.PushBrightness(1.3)
+			cv.PaintGrain(render.Rect{X: 100, Y: 6, W: 94, H: 66}, render.Corners{TopLeft: 20, BottomRight: 9}, 1.4, -37, 211)
+			cv.PopBrightness(b)
+			cv.PopAlpha(prev)
+		})
+	}
+}
+
 // Closing a device frees its layers' surfaces, a kept layer's too, and
 // a layer it backed records on the next device into one of that
 // device's own.

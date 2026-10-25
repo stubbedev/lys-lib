@@ -818,17 +818,18 @@ func (c *Canvas) PaintGrain(r Rect, radii Corners, opacity float64, ox, oy int) 
 		return
 	}
 	b, rc := c.devBox(r, radii)
+	b32, rc32 := to32(b.array()), to32(rc)
 	o := c.MapRect(Rect{X: ox, Y: oy})
-	strength := uint32(math.Round(math.Min(opacity, 1) * 255))
+	strength := GrainStrength(opacity)
 	sp := c.span(b)
 	for y := sp.Y; y < sp.Y+sp.H; y++ {
-		py := float64(y) + 0.5
+		py, py32 := float64(y)+0.5, float32(y)+0.5
 		xa, xb, solid := solidRun(b, rc, py)
 		for x := sp.X; x < sp.X+sp.W; x++ {
 			px := float64(x) + 0.5
 			cov := uint32(255)
 			if !solid || px < xa || px > xb {
-				cov = uint32(math.Round(coverage(sdBox(px, py, b, rc)) * 255))
+				cov = cov255(coverage(sdBoxF(float32(x)+0.5, py32, b32, rc32)))
 			}
 			n := grainNoise(x-o.X, y-o.Y)
 			// Signed around the midpoint: above lightens, below darkens.
@@ -843,8 +844,15 @@ func (c *Canvas) PaintGrain(r Rect, radii Corners, opacity float64, ox, oy int) 
 	}
 }
 
+// GrainStrength is PaintGrain's opacity as the 0..255 factor its noise
+// scales by.
+func GrainStrength(opacity float64) uint32 {
+	return uint32(math.Round(math.Min(opacity, 1) * 255))
+}
+
 // grainNoise is a hashed byte for a pixel offset: white noise without
-// a texture to store, the same for the same offset everywhere.
+// a texture to store, the same for the same offset everywhere. The
+// shader's grainNoise repeats it.
 func grainNoise(x, y int) uint32 {
 	h := uint32(x)*0x27d4eb2d ^ uint32(y)*0x165667b1
 	h ^= h >> 15

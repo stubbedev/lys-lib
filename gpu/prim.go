@@ -45,6 +45,7 @@ const (
 	kindUpsample
 	kindSilhouette
 	kindShadow
+	kindGrain
 )
 
 // The primitive flags, prim.frag's.

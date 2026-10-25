@@ -26,6 +26,7 @@ const uint kindDownsample = 19u;
 const uint kindUpsample = 20u;
 const uint kindSilhouette = 21u;
 const uint kindShadow = 22u;
+const uint kindGrain = 23u;
 
 // The info.w flags, gpu/prim.go's.
 const uint flagRaw = 1u;
@@ -140,6 +141,15 @@ uint borderSide(vec2 p, vec4 b, vec4 inv) {
 
 // cov255 is render's: coverage quantized to 0..255, rounding half up,
 // the product rounded before the half is added.
+// grainNoise is render's grainNoise: a hashed byte for a pixel offset.
+uint grainNoise(ivec2 at) {
+    uint h = uint(at.x) * 0x27d4eb2du ^ uint(at.y) * 0x165667b1u;
+    h ^= h >> 15;
+    h *= 0x85ebca6bu;
+    h ^= h >> 13;
+    return h & 255u;
+}
+
 uint cov255(float cov) {
     precise float q = cov * 255.0;
     precise float r = q + 0.5;
@@ -601,6 +611,18 @@ void main() {
         uvec4 c0 = lerp256(texel(o + ivec2(x0, ya)), texel(o + ivec2(x0, yb)), uint(sy.y));
         uvec4 c1 = lerp256(texel(o + ivec2(x1, ya)), texel(o + ivec2(x1, yb)), uint(sy.y));
         c = lerp256(c0, c1, tx);
+        break;
+    }
+    case kindGrain: {
+        // render.Canvas.PaintGrain: the noise around its midpoint
+        // lightens or darkens, by the strength and the box's coverage.
+        uint n = grainNoise(ivec2(floor(px)) - ivec2(p.cols.yz));
+        uint amt = n < 128u ? 127u - n : n - 128u;
+        uint a = amt * 2u * p.cols.x / 255u * cov255(coverage(sdBox(px, p.box, p.radii))) / 255u;
+        if (a == 0u) {
+            discard;
+        }
+        c = n < 128u ? uvec4(a, 0u, 0u, 0u) : uvec4(a);
         break;
     }
     case kindSilhouette: {

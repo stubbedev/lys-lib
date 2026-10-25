@@ -565,7 +565,15 @@ func (f *frame) BoxShadow(s render.State, r render.Rect, radii render.Corners, s
 }
 
 func (f *frame) PaintGrain(s render.State, r render.Rect, radii render.Corners, opacity float64, ox, oy int) {
-	f.sprite(s, "PaintGrain", func(cv *render.Canvas) { cv.PaintGrain(r, radii, opacity, ox, oy) })
+	if opacity <= 0 {
+		return
+	}
+	box, rc := render.DeviceBox(r, radii, f.num, f.denom)
+	o := render.MapRect(render.Rect{X: ox, Y: oy}, f.num, f.denom)
+	p := shaded(kindGrain, s, 0)
+	p.quad, p.box, p.radii = quadOf(s.Bounds), vec(box), vec(rc)
+	p.cols = [4]uint32{render.GrainStrength(opacity), uint32(int32(o.X)), uint32(int32(o.Y))}
+	f.draw(f.on(s), nil, pipeOver, p)
 }
 
 func (f *frame) RoundedBorderSides(s render.State, r render.Rect, radii render.Corners, widths render.Insets, cols [4]render.Color) {
