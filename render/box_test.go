@@ -165,6 +165,18 @@ func TestPushBrightness(t *testing.T) {
 	}
 }
 
+// Brightness rounds each channel's float32 product, as the GPU does:
+// 45 x 1.3 is 58.4999985 in float32, so 58, where float64 gives 58.5
+// and 59.
+func TestBrightnessRoundsInFloat32(t *testing.T) {
+	cv, data := newTestCanvas(1, 1)
+	cv.PushBrightness(1.3)
+	cv.FillRect(Rect{W: 1, H: 1}, RGB(45, 0, 0))
+	if got := pxAt(data, Stride(1), 0, 0); got.R() != 58 {
+		t.Errorf("45 at brightness 1.3 = %d, want 58", got.R())
+	}
+}
+
 func TestInsetsShrinkGrow(t *testing.T) {
 	r := Rect{X: 10, Y: 10, W: 20, H: 10}
 	in := Insets{Top: 1, Right: 2, Bottom: 3, Left: 4}

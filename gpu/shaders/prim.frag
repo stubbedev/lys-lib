@@ -73,8 +73,8 @@ uvec4 coverageScale(uvec4 c, uint cov) {
 }
 
 uvec4 brighten(uvec4 c, float f) {
-    uvec4 o = uvec4(floor(vec4(c) * f + 0.5));
-    return uvec4(c.x, min(uvec3(c.x), o.yzw));
+    precise vec4 o = floor(vec4(c) * f + 0.5);
+    return uvec4(c.x, min(uvec3(c.x), uvec3(o.yzw)));
 }
 
 // shade is render.Canvas.blend's source half: brightness, then the

@@ -742,10 +742,13 @@ func (c *Canvas) PushBrightness(f float64) float64 {
 // PopBrightness restores a factor returned by PushBrightness.
 func (c *Canvas) PopBrightness(prev float64) { c.bright = prev }
 
-// brighten scales a premultiplied color's RGB by f, clamped to alpha.
+// brighten scales a premultiplied color's RGB by f, clamped to alpha,
+// in float32 as the shader does: each channel floor(v*f + 0.5).
 func brighten(col Color, f float64) Color {
-	a := float64(col.A())
-	ch := func(v uint8) uint32 { return uint32(math.Min(a, math.Round(float64(v)*f))) }
+	a, f32 := uint32(col.A()), float32(f)
+	ch := func(v uint8) uint32 {
+		return min(a, uint32(math.Floor(float64(float32(float32(v)*f32)+0.5))))
+	}
 	return Color(uint32(col.A())<<24 | ch(col.R())<<16 | ch(col.G())<<8 | ch(col.B()))
 }
 

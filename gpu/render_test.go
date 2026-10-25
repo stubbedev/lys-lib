@@ -476,3 +476,17 @@ func TestRenderDropShadows(t *testing.T) {
 		})
 	}
 }
+
+// Brightness rounds every channel value as the CPU does.
+func TestRenderBrightnessRounding(t *testing.T) {
+	d := openDevice(t)
+	parity(t, d, 256, 4, 1, 1, 1, func(cv *render.Canvas, _ int) {
+		for y, f := range []float64{1.3, 0.7, 1.1, 2.9} {
+			b := cv.PushBrightness(f)
+			for v := range 256 {
+				cv.FillRect(render.Rect{X: v, Y: y, W: 1, H: 1}, render.RGB(uint8(v), uint8(255-v), uint8(v/2)))
+			}
+			cv.PopBrightness(b)
+		}
+	})
+}
