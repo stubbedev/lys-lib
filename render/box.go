@@ -209,6 +209,10 @@ func (c *Canvas) blendCov(x, y int, col Color, cov float64) {
 // own radius, anti-aliased. Radii that overlap scale down together, per
 // CSS.
 func (c *Canvas) RoundedRectCorners(r Rect, radii Corners, col Color) {
+	if c.rec != nil {
+		c.record(op{kind: opRRect, r: r, radii: radii, col: col})
+		return
+	}
 	if col == 0 {
 		return
 	}
@@ -243,6 +247,10 @@ func (c *Canvas) RoundedBorder(r Rect, radii Corners, widths Insets, col Color) 
 // relatively closest to, which splits the corners along their
 // diagonals the way CSS borders join.
 func (c *Canvas) RoundedBorderSides(r Rect, radii Corners, widths Insets, cols [4]Color) {
+	if c.rec != nil {
+		c.record(op{kind: opBorder, r: r, radii: radii, ins: widths, cols: cols})
+		return
+	}
 	if widths.Zero() {
 		return
 	}
@@ -406,6 +414,10 @@ func gradientAt(stops []GradientStop, t float64) Color {
 // blur radius, evaluated per pixel from the silhouette's signed
 // distance.
 func (c *Canvas) BoxShadow(r Rect, radii Corners, s BoxShadow) {
+	if c.rec != nil {
+		c.record(op{kind: opBoxShadow, r: r, radii: radii, sh: s})
+		return
+	}
 	if s.Color.A() == 0 || c.clip.Empty() {
 		return
 	}
@@ -676,6 +688,10 @@ func RoundedRectRegion(r Rect, radii Corners) []Rect {
 // with the surface and repaints identically: a pure function of the
 // pixel's offset from the origin, deterministic on every machine.
 func (c *Canvas) PaintGrain(r Rect, radii Corners, opacity float64, ox, oy int) {
+	if c.rec != nil {
+		c.record(op{kind: opGrain, r: r, radii: radii, f: [6]float64{opacity}, i: [5]int{ox, oy}})
+		return
+	}
 	if opacity <= 0 || c.clip.Empty() {
 		return
 	}

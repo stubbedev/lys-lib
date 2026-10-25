@@ -94,6 +94,10 @@ func (g Gradient) Repeating() Gradient {
 // stops. A linear gradient's line spans the box's corners along its
 // angle, CSS's rule; radial and conic geometry sizes against the box.
 func (c *Canvas) PaintGradient(r Rect, radii Corners, g Gradient) {
+	if c.rec != nil {
+		c.record(op{kind: opGradient, r: r, radii: radii, grad: c.keepGradient(&g)})
+		return
+	}
 	if len(g.Stops) == 0 {
 		return
 	}

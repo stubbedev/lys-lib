@@ -171,6 +171,10 @@ func ResampleInto(dst, src *image.RGBA, srcRect image.Rectangle) {
 // channels together (blend then modulate) keeps a modulated raster
 // premultiplied, exactly like the AA coverage ramps.
 func (c *Canvas) DrawImageDevice(img image.Image, x, y int) {
+	if c.rec != nil {
+		c.record(op{kind: opImageDevice, img: img, i: [5]int{x, y}})
+		return
+	}
 	b := img.Bounds()
 	if b.Empty() {
 		return
@@ -219,6 +223,10 @@ func (c *Canvas) drawRGBADevice(img *image.RGBA, x, y int, r image.Rectangle) {
 // DrawImageRect blends img onto the canvas scaled into the logical
 // rect r: nearest-neighbor sampling, the mask-image rasterizer's own.
 func (c *Canvas) DrawImageRect(img image.Image, r Rect) {
+	if c.rec != nil {
+		c.record(op{kind: opImageRect, img: img, r: r})
+		return
+	}
 	b := img.Bounds()
 	dst := c.clip.Intersect(c.MapRect(r))
 	if dst.Empty() || b.Empty() {

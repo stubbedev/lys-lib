@@ -689,6 +689,10 @@ func (t *Typeface) Draw(cv *Canvas, s *ShapedText, x, baselineY int, col Color) 
 // else the cached 8bpp coverage raster when the face has an outline,
 // else the cached scaled bitmap strike (CBDT/sbix emoji).
 func drawGlyph(cv *Canvas, clip Rect, t *Typeface, gid font.GID, scale, penX, penY float64, col Color) {
+	if cv.rec != nil {
+		cv.record(op{kind: opGlyph, face: t, gid: gid, f: [6]float64{scale, penX, penY}, col: col})
+		return
+	}
 	if drawColorGlyph(cv, clip, t, gid, scale, penX, penY, col) {
 		return
 	}

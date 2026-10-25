@@ -222,6 +222,10 @@ func ApplyFilters(l *Layer, region Rect, f *Filters, shape FilterShape) {
 	if l == nil || f.Empty() {
 		return
 	}
+	if l.cv.rec != nil {
+		l.cv.record(op{kind: opFilters, layer: l, r: region, filt: f, shape: shape})
+		return
+	}
 	region = region.Intersect(l.cv.Rect())
 	if region.Empty() {
 		return

@@ -20,6 +20,10 @@ type Tile struct {
 // image scaled to the tile's size and nearest sampled, all clipped to
 // clip's rounded outline (radii in logical pixels).
 func (c *Canvas) PaintImageTiles(img image.Image, t Tile, clip Rect, radii Corners) {
+	if c.rec != nil {
+		c.record(op{kind: opImageTiles, img: img, tile: t, r: clip, radii: radii})
+		return
+	}
 	ib := img.Bounds()
 	if ib.Empty() {
 		return
@@ -36,6 +40,10 @@ func (c *Canvas) PaintImageTiles(img image.Image, t Tile, clip Rect, radii Corne
 // PaintGradientTiles paints g over every tile t lays out, each tile
 // its own gradient box, clipped to clip's rounded outline.
 func (c *Canvas) PaintGradientTiles(g Gradient, t Tile, clip Rect, radii Corners) {
+	if c.rec != nil {
+		c.record(op{kind: opGradientTiles, grad: c.keepGradient(&g), tile: t, r: clip, radii: radii})
+		return
+	}
 	if len(g.Stops) == 0 {
 		return
 	}

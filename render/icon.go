@@ -193,6 +193,10 @@ func (i *Icon) DrawRotated(cv *Canvas, x, y int, deg float64) {
 // nearest sampling; corners past the transformed bounds stay
 // transparent. The identity draws straight.
 func (i *Icon) DrawXformed(cv *Canvas, x, y int, m Affine) {
+	if cv.rec != nil {
+		cv.record(op{kind: opIcon, icon: i, i: [5]int{x, y}, aff: m})
+		return
+	}
 	if m == Identity {
 		i.Draw(cv, x, y)
 		return

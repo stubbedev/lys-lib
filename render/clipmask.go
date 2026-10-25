@@ -121,6 +121,10 @@ func walkPath(p *Path, move func(float64, float64), line func(float64, float64),
 // coverage, scaled by the layer's device scale: the clip-path and the
 // alpha mask both land here.
 func (l *Layer) ApplyPathMask(p *Path, region Rect) {
+	if l.cv.rec != nil {
+		l.cv.record(op{kind: opPathMask, layer: l, path: p, r: region})
+		return
+	}
 	region = region.Intersect(l.cv.Rect())
 	if region.Empty() {
 		return
@@ -156,6 +160,10 @@ func (l *Layer) ApplyPathMask(p *Path, region Rect) {
 // mask-mode luminance. The mask is positioned at its own coordinates.
 func (l *Layer) ApplyMaskLayer(mask *Layer, region Rect, luminance bool) {
 	if mask == nil {
+		return
+	}
+	if l.cv.rec != nil {
+		l.cv.record(op{kind: opMaskLayer, layer: l, other: mask, r: region, flag: luminance})
 		return
 	}
 	region = region.Intersect(l.cv.Rect()).Intersect(mask.cv.Rect())

@@ -18,6 +18,10 @@ func (c *Canvas) Snapshot(old *Layer, region Rect) *Layer {
 
 // copyFrom copies c's device region into the layer's, row by row.
 func (l *Layer) copyFrom(c *Canvas, region Rect) {
+	if c.rec != nil {
+		c.record(op{kind: opSnapshot, layer: l, r: region})
+		return
+	}
 	for y := region.Y; y < region.Y+region.H; y++ {
 		o := y*c.stride + region.X*4
 		copy(l.cv.data[o:o+region.W*4], c.data[o:o+region.W*4])
@@ -31,6 +35,10 @@ func (l *Layer) copyFrom(c *Canvas, region Rect) {
 // BlendNormal is the plain source-over copy.
 func (c *Canvas) DrawLayer(l *Layer, src Rect, mode BlendMode) {
 	if l == nil {
+		return
+	}
+	if c.rec != nil {
+		c.record(op{kind: opDrawLayer, layer: l, r: src, mode: mode})
 		return
 	}
 	src = src.Intersect(l.cv.Rect()).Intersect(c.clip)
@@ -70,6 +78,10 @@ func (c *Canvas) DrawLayer(l *Layer, src Rect, mode BlendMode) {
 // are skipped — the classic near-plane clip a one-plane raster owes.
 func (c *Canvas) CompositeProjective(l *Layer, src Rect, m M3, alpha float64) {
 	if l == nil || src.Empty() {
+		return
+	}
+	if c.rec != nil {
+		c.record(op{kind: opProjective, layer: l, r: src, m3: m, f: [6]float64{alpha}})
 		return
 	}
 	src = src.Intersect(l.cv.Rect())

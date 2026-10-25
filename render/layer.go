@@ -110,6 +110,8 @@ type Layer struct {
 	// scratch marks a pooled layer (ScratchLayer), which Release
 	// returns.
 	scratch bool
+	// backing is what a player keeps for a recorded layer (SetBacking).
+	backing any
 }
 
 // Layer returns a layer the size and scale of c whose region (device
@@ -117,6 +119,9 @@ type Layer struct {
 // there. old's buffer is reused whenever it is big enough, so a layer
 // kept across frames allocates once, and again only when it grows.
 func (c *Canvas) Layer(old *Layer, region Rect) *Layer {
+	if c.rec != nil {
+		return c.recordLayer(old, region, false)
+	}
 	n := c.stride * c.h
 	l := old
 	switch {
@@ -145,6 +150,10 @@ func (l *Layer) Canvas() *Canvas { return l.cv }
 // whole-pixel translation copies without filtering.
 func (c *Canvas) Composite(l *Layer, src Rect, m Affine, alpha float64) {
 	if l == nil || src.Empty() {
+		return
+	}
+	if c.rec != nil {
+		c.record(op{kind: opComposite, layer: l, r: src, aff: m, f: [6]float64{alpha}})
 		return
 	}
 	src = src.Intersect(l.cv.Rect())
@@ -216,6 +225,10 @@ func (l *Layer) sample(src Rect, x, y float64) Color {
 // l·(1−t) + other·t, premultiplied channels alike - GSK's cross-fade,
 // exact where drawing one over the other at partial opacity is not.
 func (l *Layer) CrossFade(other *Layer, region Rect, t float64) {
+	if l.cv.rec != nil {
+		l.cv.record(op{kind: opCrossFade, layer: l, other: other, r: region, f: [6]float64{t}})
+		return
+	}
 	region = region.Intersect(l.cv.Rect()).Intersect(other.cv.Rect())
 	t = min(1, max(0, t))
 	w := uint32(math.Round(t * 255))

@@ -81,6 +81,10 @@ func (p *Path) bounds(scale float64) Rect {
 // FillPath fills the path's subpaths with col, anti-aliased, under the
 // clip and the pushed opacity. Overlapping subpaths fill once.
 func (c *Canvas) FillPath(p *Path, col Color) {
+	if c.rec != nil {
+		c.record(op{kind: opPath, path: p, col: col})
+		return
+	}
 	if p == nil || p.Empty() || col == 0 || c.clip.Empty() {
 		return
 	}

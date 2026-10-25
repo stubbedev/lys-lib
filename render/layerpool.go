@@ -25,6 +25,9 @@ var scratchLayers struct {
 // rather than one per widget held for good, and none at a new size
 // while a pooled buffer is big enough.
 func (c *Canvas) ScratchLayer(region Rect) *Layer {
+	if c.rec != nil {
+		return c.recordLayer(nil, region, true)
+	}
 	need := c.stride * c.h
 	scratchLayers.mu.Lock()
 	var l *Layer
@@ -57,6 +60,11 @@ func (c *Canvas) ScratchSnapshot(region Rect) *Layer {
 func (l *Layer) Release() {
 	if !l.scratch {
 		panic("render: Release of a layer that is not a scratch layer")
+	}
+	if rec := l.cv.rec; rec != nil {
+		l.cv.record(op{kind: opRelease, layer: l})
+		rec.free = append(rec.free, l)
+		return
 	}
 	scratchLayers.mu.Lock()
 	defer scratchLayers.mu.Unlock()

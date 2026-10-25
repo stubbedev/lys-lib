@@ -50,6 +50,11 @@ type Canvas struct {
 	// ringCells is RoundedBorderSides' side-column scratch, reused
 	// across rings.
 	ringCells []ringCell
+	// rec is the List a recording canvas (NewRecorder) appends its
+	// calls to instead of painting; it has no pixels. owner is the
+	// recorded layer whose canvas it is, nil for the frame's.
+	rec   *List
+	owner *Layer
 }
 
 // overlay is one deferred top-layer paint and the opacity in force when
@@ -105,10 +110,22 @@ func NewScaled(data []byte, stride, width, height, num, denom int) *Canvas {
 // as NewScaled's. Frame state (overlays, focus, counters) starts
 // clean, as after a completed frame.
 func (c *Canvas) Reset(data []byte, stride, width, height, num, denom int) *Canvas {
+	if c.rec != nil {
+		panic("render: Reset of a recording canvas")
+	}
+	c.data, c.stride = data, stride
+	c.resetFrame(width, height, num, denom)
+	return c
+}
+
+// resetFrame gives c the device size and scale, the full clip and the
+// clean frame state (opacity, overlays, focus, counters) of a new
+// frame.
+func (c *Canvas) resetFrame(width, height, num, denom int) {
 	if num <= 0 || denom <= 0 {
 		panic(fmt.Sprintf("render: invalid device scale %d/%d", num, denom))
 	}
-	c.data, c.stride, c.w, c.h = data, stride, width, height
+	c.w, c.h = width, height
 	c.num, c.denom = num, denom
 	c.alpha, c.alphaScale = 1, 255
 	c.bright = 0
@@ -117,7 +134,6 @@ func (c *Canvas) Reset(data []byte, stride, width, height, num, denom int) *Canv
 	c.focus = focusMark{}
 	c.armed = false
 	c.clip = c.Rect()
-	return c
 }
 
 // DeviceScale returns the canvas's device scale as a rational: num
@@ -333,6 +349,10 @@ func (c *Canvas) Clear(r Rect, col Color) {
 // is underneath. Unlike Clear it applies no logical mapping: it is the
 // bridge for frame pipelines that track damage in device pixels.
 func (c *Canvas) ClearDevice(r Rect, col Color) {
+	if c.rec != nil {
+		c.record(op{kind: opClear, r: r, col: col})
+		return
+	}
 	r = c.clip.Intersect(r)
 	if r.Empty() {
 		return
@@ -370,6 +390,10 @@ func (c *Canvas) BorderRect(r Rect, width int, col Color) {
 // FillRectDevice blends col over the device-pixel rect with source-over
 // compositing; the device counterpart of FillRect.
 func (c *Canvas) FillRectDevice(r Rect, col Color) {
+	if c.rec != nil {
+		c.record(op{kind: opFill, r: r, col: col})
+		return
+	}
 	r = c.clip.Intersect(r)
 	if r.Empty() || col == 0 {
 		return
@@ -385,6 +409,17 @@ func (c *Canvas) FillRectDevice(r Rect, col Color) {
 // clip, blends through c's opacity, and overwrites where both pixels
 // are opaque.
 func (c *Canvas) DrawCanvasDevice(src *Canvas, x, y int) {
+	if c.rec != nil {
+		if src.owner != nil {
+			c.record(op{kind: opLayerAt, layer: src.owner, i: [5]int{x, y}})
+			return
+		}
+		c.record(op{kind: opCanvas, cv: src, i: [5]int{x, y}})
+		return
+	}
+	if src.rec != nil {
+		panic("render: DrawCanvasDevice of a recording canvas onto a raster one")
+	}
 	dr := Rect{X: x, Y: y, W: src.w, H: src.h}.Intersect(c.clip)
 	if dr.Empty() {
 		return
@@ -406,6 +441,10 @@ func (c *Canvas) DrawCanvasDevice(src *Canvas, x, y int) {
 // by radius logical pixels, anti-aliased with per-pixel signed-distance
 // coverage. The rasterization runs at the device scale.
 func (c *Canvas) RoundedRect(r Rect, radius int, col Color) {
+	if c.rec != nil {
+		c.record(op{kind: opRoundedRect, r: r, i: [5]int{radius}, col: col})
+		return
+	}
 	r = c.clip.Intersect(c.MapRect(r))
 	if r.Empty() {
 		return
@@ -464,6 +503,10 @@ func coverageScale(col Color, cov uint32) Color {
 // with the given thickness in logical pixels, anti-aliased with
 // per-pixel signed-distance coverage at the device scale. Caps are round.
 func (c *Canvas) Line(x0, y0, x1, y1, width int, col Color) {
+	if c.rec != nil {
+		c.record(op{kind: opLine, i: [5]int{x0, y0, x1, y1, width}, col: col})
+		return
+	}
 	if width < 1 || c.clip.Empty() {
 		return
 	}
@@ -520,6 +563,10 @@ func (c *Canvas) Line(x0, y0, x1, y1, width int, col Color) {
 // and the draw blends through the PushAlpha stack like every
 // primitive, so a fading surface fades its shadow with it.
 func (c *Canvas) Shadow(r Rect, cornerRadius, blur int, col Color) {
+	if c.rec != nil {
+		c.record(op{kind: opShadow, r: r, i: [5]int{cornerRadius, blur}, col: col})
+		return
+	}
 	if blur < 1 || col.A() == 0 || c.clip.Empty() {
 		return
 	}
@@ -549,6 +596,10 @@ func abs(v int) int {
 // DrawImage blends img onto the canvas, scaled from its natural (logical)
 // size to the device rect its logical placement spans.
 func (c *Canvas) DrawImage(img image.Image, x, y int) {
+	if c.rec != nil {
+		c.record(op{kind: opImage, img: img, i: [5]int{x, y}})
+		return
+	}
 	b := img.Bounds()
 	full := c.MapRect(Rect{X: x, Y: y, W: b.Dx(), H: b.Dy()})
 	dst := c.clip.Intersect(full)
@@ -581,6 +632,10 @@ func (c *Canvas) DrawImage(img image.Image, x, y int) {
 // overflow cropped (CSS background-size: cover), the whole masked by
 // the rounded rect.
 func (c *Canvas) DrawImageCover(img image.Image, r Rect, radii Corners) {
+	if c.rec != nil {
+		c.record(op{kind: opImageCover, img: img, r: r, radii: radii})
+		return
+	}
 	b := img.Bounds()
 	if b.Empty() || r.Empty() {
 		return
