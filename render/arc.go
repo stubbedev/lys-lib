@@ -18,11 +18,7 @@ func (c *Canvas) Arc(cx, cy, radius, width, start, sweep float64, col Color) {
 	}
 	dev := float64(c.num) / float64(c.denom)
 	dcx, dcy, r, half := cx*dev, cy*dev, radius*dev, width*dev/2
-	outer := r + half + 1
-	box := c.clip.Intersect(Rect{
-		X: int(math.Floor(dcx - outer)), Y: int(math.Floor(dcy - outer)),
-		W: int(math.Ceil(2 * outer)), H: int(math.Ceil(2 * outer)),
-	})
+	box := c.clip.Intersect(c.arcSpan(cx, cy, radius, width))
 	full := sweep >= 2*math.Pi
 	// The cap centers: the stroke's middle at both ends.
 	sx, sy := dcx+r*math.Cos(start), dcy+r*math.Sin(start)
@@ -49,4 +45,16 @@ func angleWithin(a, start, sweep float64) bool {
 		rel += 2 * math.Pi
 	}
 	return rel <= sweep
+}
+
+// arcSpan is the device rect Arc visits: the stroked circle's box and
+// a pixel.
+func (c *Canvas) arcSpan(cx, cy, radius, width float64) Rect {
+	dev := float64(c.num) / float64(c.denom)
+	dcx, dcy := cx*dev, cy*dev
+	outer := radius*dev + width*dev/2 + 1
+	return Rect{
+		X: int(math.Floor(dcx - outer)), Y: int(math.Floor(dcy - outer)),
+		W: int(math.Ceil(2 * outer)), H: int(math.Ceil(2 * outer)),
+	}
 }

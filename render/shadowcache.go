@@ -109,14 +109,20 @@ func shadowRasterFor(w, h, radius, blur, num, denom int) *shadowRaster {
 	})
 }
 
+// shadowInset is how far a Shadow's raster reaches past its device
+// box: the device blur, clamped, and a pixel.
+func shadowInset(blur, num, denom int) int {
+	return max(1, min(divCeil(blur*num, denom), maxShadowBlur)) + 1
+}
+
 // buildShadowRaster computes the coverage field once: the signed
 // distance to the (radius-rounded, device-space) rect, mapped through
 // the cumulative Gaussian kernel. Pixels inside the silhouette are
 // full; coverage then falls off monotonically and reaches zero at the
 // kernel extent, which is also the box inset.
 func buildShadowRaster(w, h, radius, blur, num, denom int) *shadowRaster {
-	devBlur := max(1, min(divCeil(blur*num, denom), maxShadowBlur))
-	inset := devBlur + 1
+	inset := shadowInset(blur, num, denom)
+	devBlur := inset - 1
 	devRadius := max(0, min(divCeil(radius*num, denom), min(w, h)/2))
 	rect := Rect{X: inset, Y: inset, W: w, H: h}
 	ras := &shadowRaster{inset: inset}

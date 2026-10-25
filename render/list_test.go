@@ -146,6 +146,43 @@ func TestListPaintMatchesDirect(t *testing.T) {
 	}
 }
 
+// TestListBoundsHoldEveryPixel pins State.Bounds: replayed one call at
+// a time, no call changes a pixel outside its bounds.
+func TestListBoundsHoldEveryPixel(t *testing.T) {
+	for _, sc := range [][2]int{{1, 1}, {3, 2}} {
+		const lw, lh = 130, 132
+		w, h := lw*sc[0]/sc[1], lh*sc[0]/sc[1]
+		scene := newListScene(t)
+		rec := NewRecorder(w, h, sc[0], sc[1])
+		dst := NewScaled(make([]byte, Stride(w)*h), Stride(w), w, h, sc[0], sc[1])
+		for range 2 {
+			rec.ResetRecorder(w, h, sc[0], sc[1])
+			scene.paint(rec)
+			l := rec.Recording()
+			for i := range l.ops {
+				o := &l.ops[i]
+				target := dst
+				if o.state.Layer != nil && o.state.Layer.backing != nil {
+					target = rasterOf(o.state.Layer).cv
+				}
+				before := bytes.Clone(target.data)
+				(&List{ops: l.ops[i : i+1]}).Play(rasterPlayer{dst: dst})
+				if o.kind >= opLayer && o.kind != opComposite && o.kind != opProjective && o.kind != opDrawLayer {
+					continue
+				}
+				for y := range target.h {
+					for x := range target.w {
+						at := y*target.stride + x*4
+						if !bytes.Equal(before[at:at+4], target.data[at:at+4]) && !o.state.Bounds.Contains(x, y) {
+							t.Fatalf("scale %d/%d: op %d (kind %d) changed (%d, %d) outside its bounds %v", sc[0], sc[1], i, o.kind, x, y, o.state.Bounds)
+						}
+					}
+				}
+			}
+		}
+	}
+}
+
 // TestRecordedScratchLayersReuse pins that a released recorded scratch
 // layer serves the next ScratchLayer instead of a new one.
 func TestRecordedScratchLayersReuse(t *testing.T) {

@@ -698,14 +698,25 @@ func drawGlyph(cv *Canvas, clip Rect, t *Typeface, gid font.GID, scale, penX, pe
 	}
 	g, ok := cachedOutlineRaster(t, gid, scale, penX, penY)
 	if ok {
-		// The mask sits at the integer pen plus the raster's own
-		// origin offset (its bounds relative to that pen).
-		blitMask(cv, clip, g,
-			int(math.Floor(penX))+g.ox,
-			int(math.Floor(penY))+g.oy, col)
+		at := g.bounds(penX, penY)
+		blitMask(cv, clip, g, at.X, at.Y, col)
 		return
 	}
 	drawBitmapGlyph(cv, clip, t, gid, scale, penX, penY, col)
+}
+
+// glyphBounds is the device rect drawGlyph covers for gid at the pen.
+func glyphBounds(t *Typeface, gid font.GID, scale, penX, penY float64, col Color) Rect {
+	if r := colorRasterOf(t, gid, scale, penX, penY, col); r != nil {
+		return r.bounds(penX, penY)
+	}
+	if g, ok := cachedOutlineRaster(t, gid, scale, penX, penY); ok {
+		return g.bounds(penX, penY)
+	}
+	if _, _, at, ok := bitmapStrikeOf(t, gid, scale, penX, penY); ok {
+		return at
+	}
+	return Rect{}
 }
 
 // blitMask tints one 8bpp coverage raster with col and blends it at
@@ -733,20 +744,21 @@ type bitmapGlyph struct {
 	mono bool
 }
 
-// drawBitmapGlyph blits an embedded bitmap glyph - a CBDT/sbix color
-// emoji, or a black-and-white strike tinted with col - with its origin
-// box at the baseline pen. The scaled strike comes from the atlas (the
-// CatmullRom resample is the expensive half; see cachedScaledBitmap),
-// preserving the device-scale rasterization contract; PNG and
-// black-and-white formats decode, others skip.
-func drawBitmapGlyph(cv *Canvas, clip Rect, t *Typeface, gid font.GID, scale, penX, penY float64, col Color) {
+// bitmapStrikeOf is gid's embedded bitmap scaled to the device em
+// and the device rect it covers with its origin box at the baseline
+// pen, left edge at the pen. The scaled strike comes from the atlas
+// (the CatmullRom resample is the expensive half; see
+// cachedScaledBitmap), preserving the device-scale rasterization
+// contract; PNG and black-and-white formats decode, others report
+// false.
+func bitmapStrikeOf(t *Typeface, gid font.GID, scale, penX, penY float64) (*image.RGBA, bool, Rect, bool) {
 	bg, ok := t.bitmap(gid)
 	if !ok {
-		return
+		return nil, false, Rect{}, false
 	}
 	ppem := t.bitmapPpem()
 	if ppem <= 0 {
-		return
+		return nil, false, Rect{}, false
 	}
 	// Device pixels per bitmap pixel: the strike renders one em at
 	// ppem, the glyph's device em is scale*upem.
@@ -754,11 +766,21 @@ func drawBitmapGlyph(cv *Canvas, clip Rect, t *Typeface, gid font.GID, scale, pe
 	w := int(math.Ceil(float64(bg.img.Bounds().Dx()) * f))
 	h := int(math.Ceil(float64(bg.img.Bounds().Dy()) * f))
 	if w <= 0 || h <= 0 {
+		return nil, false, Rect{}, false
+	}
+	at := Rect{X: int(math.Floor(penX)), Y: int(math.Ceil(penY)) - h, W: w, H: h}
+	return cachedScaledBitmap(t, gid, bg, w, h), bg.mono, at, true
+}
+
+// drawBitmapGlyph blits an embedded bitmap glyph - a CBDT/sbix color
+// emoji, or a black-and-white strike tinted with col - at its
+// bitmapStrikeOf placement.
+func drawBitmapGlyph(cv *Canvas, clip Rect, t *Typeface, gid font.GID, scale, penX, penY float64, col Color) {
+	scaled, mono, at, ok := bitmapStrikeOf(t, gid, scale, penX, penY)
+	if !ok {
 		return
 	}
-	scaled := cachedScaledBitmap(t, gid, bg, w, h)
-	// Bitmaps sit on the baseline, left edge at the pen.
-	x0, y0 := int(math.Floor(penX)), int(math.Ceil(penY))-h
+	x0, y0, w, h := at.X, at.Y, at.W, at.H
 	for y := range h {
 		for x := range w {
 			c := scaled.RGBAAt(x, y)
@@ -770,7 +792,7 @@ func drawBitmapGlyph(cv *Canvas, clip Rect, t *Typeface, gid font.GID, scale, pe
 				continue
 			}
 			var src Color
-			if bg.mono {
+			if mono {
 				m := uint32(c.A)
 				src = Color((uint32(col.A())*m/255)<<24 |
 					(uint32(col.R())*m/255)<<16 |

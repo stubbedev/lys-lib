@@ -64,48 +64,58 @@ func (t *Typeface) colorOf(gid font.GID) colorKind {
 	return k
 }
 
-// drawColorGlyph paints gid from its color source; false when it has
-// none (or it failed to render), leaving the monochrome paths.
-func drawColorGlyph(cv *Canvas, clip Rect, t *Typeface, gid font.GID, scale, penX, penY float64, col Color) bool {
+// colorRasterOf is gid's rendered color glyph at the pen, cached; nil
+// when it has no color source (or it failed to render), leaving the
+// monochrome paths.
+func colorRasterOf(t *Typeface, gid font.GID, scale, penX, penY float64, col Color) *colorRaster {
 	kind := t.colorOf(gid)
 	if kind == colorNone {
-		return false
+		return nil
 	}
 	fx, fy := penX-math.Floor(penX), penY-math.Floor(penY)
 	key := colorKey{face: t, gid: gid, scale: scale, fx: subpixelBucket(fx), fy: subpixelBucket(fy), fg: col}
 	r, ok := colorGlyphs.get(key)
-	if !ok {
-		var img *image.RGBA
-		var ox, oy int
-		var good bool
-		if kind == colorCOLR {
-			img, ox, oy, good = renderCOLR(t, gid, scale, fx, fy, col)
-		} else {
-			img, ox, oy, good = renderSVGGlyph(t, gid, scale, fx, fy, col)
-		}
-		if !good {
-			r = nil
-		} else {
-			r = &colorRaster{img: img, ox: ox, oy: oy}
-		}
-		cost := 16
-		if r != nil {
-			cost = len(img.Pix)
-		}
-		colorGlyphs.put(key, r, cost)
+	if ok {
+		return r
 	}
+	var img *image.RGBA
+	var ox, oy int
+	var good bool
+	if kind == colorCOLR {
+		img, ox, oy, good = renderCOLR(t, gid, scale, fx, fy, col)
+	} else {
+		img, ox, oy, good = renderSVGGlyph(t, gid, scale, fx, fy, col)
+	}
+	cost := 16
+	if good {
+		r = &colorRaster{img: img, ox: ox, oy: oy}
+		cost = len(img.Pix)
+	}
+	colorGlyphs.put(key, r, cost)
+	return r
+}
+
+// bounds is the device rect r covers with its pen at (penX, penY).
+func (r *colorRaster) bounds(penX, penY float64) Rect {
+	b := r.img.Bounds()
+	return Rect{X: int(math.Floor(penX)) + r.ox, Y: int(math.Floor(penY)) + r.oy, W: b.Dx(), H: b.Dy()}
+}
+
+// drawColorGlyph paints gid from its color source; false when it has
+// none (or it failed to render), leaving the monochrome paths.
+func drawColorGlyph(cv *Canvas, clip Rect, t *Typeface, gid font.GID, scale, penX, penY float64, col Color) bool {
+	r := colorRasterOf(t, gid, scale, penX, penY, col)
 	if r == nil {
 		return false
 	}
-	x0, y0 := int(math.Floor(penX))+r.ox, int(math.Floor(penY))+r.oy
-	b := r.img.Bounds()
-	for y := range b.Dy() {
-		py := y0 + y
+	at := r.bounds(penX, penY)
+	for y := range at.H {
+		py := at.Y + y
 		if py < clip.Y || py >= clip.Y+clip.H {
 			continue
 		}
-		for x := range b.Dx() {
-			px := x0 + x
+		for x := range at.W {
+			px := at.X + x
 			if px < clip.X || px >= clip.X+clip.W {
 				continue
 			}

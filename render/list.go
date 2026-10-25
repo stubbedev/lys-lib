@@ -29,10 +29,12 @@ type List struct {
 
 // State is the canvas state a recorded call ran under. Layer is the
 // recorded layer whose canvas the call drew on, nil for the frame's
-// canvas.
+// canvas. Bounds is the device rect the call can touch, within Clip;
+// for a layer's lifecycle or an in-place layer call, its region.
 type State struct {
 	Layer         *Layer
 	Clip          Rect
+	Bounds        Rect
 	Alpha, Bright float64
 }
 
@@ -106,6 +108,8 @@ const (
 	opImageTiles
 	opPath
 	opGlyph
+	// The kinds from opLayer on manage or rework layers rather than
+	// draw, and are recorded whatever their bounds.
 	opLayer
 	opScratch
 	opSnapshot
@@ -178,9 +182,14 @@ func (c *Canvas) Recording() *List { return c.rec }
 // Len is the number of recorded calls.
 func (l *List) Len() int { return len(l.ops) }
 
-// record appends o under c's state; c must be recording.
+// record appends o under c's state; c must be recording. A drawing
+// call whose bounds miss the clip is dropped: it would paint nothing.
 func (c *Canvas) record(o op) {
 	o.state = State{Layer: c.owner, Clip: c.clip, Alpha: c.alpha, Bright: c.bright}
+	o.state.Bounds = c.clip.Intersect(c.bounds(&o))
+	if o.kind < opLayer && o.state.Bounds.Empty() {
+		return
+	}
 	c.rec.ops = append(c.rec.ops, o)
 }
 

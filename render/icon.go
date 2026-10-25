@@ -188,6 +188,29 @@ func (i *Icon) DrawRotated(cv *Canvas, x, y int, deg float64) {
 	i.DrawXformed(cv, x, y, Rotate(deg))
 }
 
+// xformSpan is the device rect DrawXformed visits for a non-identity
+// m: the icon's corners mapped forward about its center, padded a
+// device pixel, since nearest sampling reaches one past the exact
+// footprint at the edges and corners.
+func (i *Icon) xformSpan(x, y int, m Affine, num, denom int) Rect {
+	b := i.img.Bounds()
+	w, h := b.Dx(), b.Dy()
+	cx := float64(x) + float64(w)/2
+	cy := float64(y) + float64(h)/2
+	var x0, y0, x1, y1 float64
+	for _, c := range [][2]float64{{0, 0}, {float64(w), 0}, {0, float64(h)}, {float64(w), float64(h)}} {
+		px, py := m.Apply(c[0]-float64(w)/2, c[1]-float64(h)/2)
+		x0 = math.Min(x0, px)
+		y0 = math.Min(y0, py)
+		x1 = math.Max(x1, px)
+		y1 = math.Max(y1, py)
+	}
+	x0, y0, x1, y1 = x0-1, y0-1, x1+1, y1+1
+	fx := func(l float64) int { return divFloor(int(l*float64(num)), denom) }
+	l, t := fx(cx+x0), fx(cy+y0)
+	return Rect{X: l, Y: t, W: fx(cx+x1) + 2 - l, H: fx(cy+y1) + 2 - t}
+}
+
 // DrawXformed blends the icon through the affine m, applied about the
 // icon's center: destination pixels inverse-map into the icon with
 // nearest sampling; corners past the transformed bounds stay
@@ -209,23 +232,10 @@ func (i *Icon) DrawXformed(cv *Canvas, x, y int, m Affine) {
 	w, h := b.Dx(), b.Dy()
 	cx := float64(x) + float64(w)/2
 	cy := float64(y) + float64(h)/2
-	// The transformed footprint: the icon's corners mapped forward,
-	// padded a device pixel.
-	var x0, y0, x1, y1 float64
-	for _, c := range [][2]float64{{0, 0}, {float64(w), 0}, {0, float64(h)}, {float64(w), float64(h)}} {
-		px, py := m.Apply(c[0]-float64(w)/2, c[1]-float64(h)/2)
-		x0 = math.Min(x0, px)
-		y0 = math.Min(y0, py)
-		x1 = math.Max(x1, px)
-		y1 = math.Max(y1, py)
-	}
-	// A pixel of padding: nearest sampling reaches one device pixel
-	// past the exact footprint at the edges and corners.
-	x0, y0, x1, y1 = x0-1, y0-1, x1+1, y1+1
 	num, denom := cv.DeviceScale()
-	fx := func(l float64) int { return divFloor(int(l*float64(num)), denom) }
-	for py := fx(cy + y0); py <= fx(cy+y1)+1; py++ {
-		for px := fx(cx + x0); px <= fx(cx+x1)+1; px++ {
+	span := i.xformSpan(x, y, m, num, denom)
+	for py := span.Y; py < span.Y+span.H; py++ {
+		for px := span.X; px < span.X+span.W; px++ {
 			if !cv.clip.Contains(px, py) {
 				continue
 			}

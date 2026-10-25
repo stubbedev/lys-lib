@@ -52,6 +52,12 @@ type glyphRaster struct {
 	oy   int
 }
 
+// bounds is the device rect the raster covers with its pen at
+// (penX, penY): the integer pen plus the raster's origin offset.
+func (g *glyphRaster) bounds(penX, penY float64) Rect {
+	return Rect{X: int(math.Floor(penX)) + g.ox, Y: int(math.Floor(penY)) + g.oy, W: g.w, H: g.h}
+}
+
 var (
 	glyphs = newLRU[glyphKey, *glyphRaster](glyphCacheBudget)
 	// bitmapScales caches embedded bitmap strikes - the color-emoji

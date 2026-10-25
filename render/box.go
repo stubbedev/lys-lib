@@ -405,6 +405,21 @@ func gradientAt(stops []GradientStop, t float64) Color {
 	return stops[len(stops)-1].Color
 }
 
+// boxShadowRaster is BoxShadow's cached raster for the box r, the
+// box's device rect, the raster's core size, and the device rect the
+// shadow covers once the core is stretched to the box.
+func (c *Canvas) boxShadowRaster(r Rect, radii Corners, s BoxShadow) (Rect, *boxShadowRaster, int, int, Rect) {
+	dev := c.MapRect(r)
+	kw, kh := shadowCore(dev, radii, s, c.num, c.denom)
+	ras := boxShadows.get(boxShadowKey{
+		w: kw, h: kh, radii: radii,
+		x: s.X, y: s.Y, blur: s.Blur, spread: s.Spread, inset: s.Inset,
+		num: c.num, denom: c.denom,
+	}, func() *boxShadowRaster { return buildBoxShadow(kw, kh, radii, s, c.num, c.denom) })
+	full := Rect{X: dev.X + ras.x0, Y: dev.Y + ras.y0, W: ras.w + dev.W - kw, H: ras.h + dev.H - kh}
+	return dev, ras, kw, kh, full
+}
+
 // BoxShadow paints one CSS box-shadow layer for the box r with the
 // given corner radii. An outer shadow is the box offset and grown by
 // the spread, blurred, and clipped to outside the box itself (so a
@@ -421,18 +436,11 @@ func (c *Canvas) BoxShadow(r Rect, radii Corners, s BoxShadow) {
 	if s.Color.A() == 0 || c.clip.Empty() {
 		return
 	}
-	dev := c.MapRect(r)
-	kw, kh := shadowCore(dev, radii, s, c.num, c.denom)
-	ras := boxShadows.get(boxShadowKey{
-		w: kw, h: kh, radii: radii,
-		x: s.X, y: s.Y, blur: s.Blur, spread: s.Spread, inset: s.Inset,
-		num: c.num, denom: c.denom,
-	}, func() *boxShadowRaster { return buildBoxShadow(kw, kh, radii, s, c.num, c.denom) })
+	dev, ras, kw, kh, full := c.boxShadowRaster(r, radii, s)
 	// The raster is the core box's; a longer box repeats the core's
 	// middle row and column, where every edge is straight.
 	midX, midY := kw/2, kh/2
-	ox, oy := dev.X+ras.x0, dev.Y+ras.y0
-	area := c.clip.Intersect(Rect{X: ox, Y: oy, W: ras.w + dev.W - kw, H: ras.h + dev.H - kh})
+	area := c.clip.Intersect(full)
 	if area.Empty() {
 		return
 	}

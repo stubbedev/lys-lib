@@ -499,6 +499,17 @@ func coverageScale(col Color, cov uint32) Color {
 		(uint32(col.B())*cov)/255)
 }
 
+// lineSpan is the device rect Line visits: the segment's box grown
+// by the width and a pixel.
+func (c *Canvas) lineSpan(x0, y0, x1, y1, width int) Rect {
+	return c.MapRect(Rect{
+		X: min(x0, x1) - width - 1,
+		Y: min(y0, y1) - width - 1,
+		W: abs(x1-x0) + 2*width + 2,
+		H: abs(y1-y0) + 2*width + 2,
+	})
+}
+
 // Line blends col along the segment from logical (x0, y0) to (x1, y1)
 // with the given thickness in logical pixels, anti-aliased with
 // per-pixel signed-distance coverage at the device scale. Caps are round.
@@ -510,13 +521,7 @@ func (c *Canvas) Line(x0, y0, x1, y1, width int, col Color) {
 	if width < 1 || c.clip.Empty() {
 		return
 	}
-	bx := c.MapRect(Rect{
-		X: min(x0, x1) - width - 1,
-		Y: min(y0, y1) - width - 1,
-		W: abs(x1-x0) + 2*width + 2,
-		H: abs(y1-y0) + 2*width + 2,
-	})
-	bx = c.clip.Intersect(bx)
+	bx := c.clip.Intersect(c.lineSpan(x0, y0, x1, y1, width))
 	if bx.Empty() {
 		return
 	}
