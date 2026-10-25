@@ -67,8 +67,11 @@ type scratch struct {
 	scratchW, scratchH              int
 	filterW, filterH                int
 	freeLayers                      []*layerSurface
-	masks                           maskAtlas
-	images                          images
+	// layers are the live layer surfaces, pooled ones included, freed
+	// with the device.
+	layers map[*layerSurface]struct{}
+	masks  maskAtlas
+	images images
 	// frame is the frame Render plays into, kept so its slices keep
 	// their capacity from frame to frame.
 	frame  frame
@@ -189,6 +192,10 @@ func (d *Device) takeLayer(l *render.Layer, w, h int, scratch bool) (*layerSurfa
 	if !scratch {
 		ls.cleanup = runtime.AddCleanup(l, d.buryLayer, ls)
 	}
+	if d.layers == nil {
+		d.layers = map[*layerSurface]struct{}{}
+	}
+	d.layers[ls] = struct{}{}
 	l.SetBacking(ls)
 	return ls, nil
 }
@@ -203,6 +210,7 @@ func (d *Device) poolLayer(ls *layerSurface) {
 func (d *Device) dropLayer(ls *layerSurface) {
 	ls.cleanup.Stop()
 	d.cmds.DeviceWaitIdle(d.device)
+	delete(d.layers, ls)
 	ls.s.close()
 }
 
@@ -225,6 +233,7 @@ func (d *Device) freeDeadLayers() {
 	}
 	d.cmds.DeviceWaitIdle(d.device)
 	for _, ls := range dead {
+		delete(d.layers, ls)
 		ls.s.close()
 	}
 }
@@ -232,7 +241,8 @@ func (d *Device) freeDeadLayers() {
 func (d *Device) closeScratch() {
 	d.freeDeadLayers()
 	d.closeImages()
-	for _, ls := range d.freeLayers {
+	for ls := range d.layers {
+		ls.cleanup.Stop()
 		ls.s.close()
 	}
 	for _, s := range []*surface{d.page, d.blank, d.masks.page, d.filterTemp, d.filterTemp2} {

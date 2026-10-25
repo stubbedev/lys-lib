@@ -129,6 +129,9 @@ func (f *frame) layer(l *render.Layer) *surface {
 	if !ok {
 		panic(fmt.Sprintf("gpu: a recorded layer backed by %T, not a GPU surface", l.Backing()))
 	}
+	if s.s.d != f.d {
+		panic("gpu: a recorded layer backed by another device's surface")
+	}
 	return s.s
 }
 
@@ -685,13 +688,17 @@ func (f *frame) ScratchLayer(s render.State, l *render.Layer, region render.Rect
 
 // readyLayer backs l with a target-sized surface, its own when it
 // fits, else a pooled one (scratch) or a new one, and clears region;
-// a new surface clears whole, as a new raster layer starts.
+// a new surface clears whole, as a new raster layer starts. A surface
+// another device made is that device's to free.
 func (f *frame) readyLayer(l *render.Layer, region render.Rect, scratch bool) {
 	if f.err != nil {
 		return
 	}
 	w, h := f.target.s.w, f.target.s.h
 	ls, _ := l.Backing().(*layerSurface)
+	if ls != nil && ls.s.d != f.d {
+		ls = nil
+	}
 	if ls == nil || ls.s.w != w || ls.s.h != h {
 		if ls != nil {
 			f.d.dropLayer(ls)

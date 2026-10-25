@@ -506,3 +506,41 @@ func TestRenderBrightnessRounding(t *testing.T) {
 		}
 	})
 }
+
+// Closing a device frees its layers' surfaces, a kept layer's too, and
+// a layer it backed records on the next device into one of that
+// device's own.
+func TestLayerOutlivesItsDevice(t *testing.T) {
+	const w, h = 64, 48
+	red := render.RGBA(220, 40, 50, 255)
+	region := render.Rect{X: 4, Y: 4, W: 40, H: 30}
+	paint := func(cv *render.Canvas, kept *render.Layer) *render.Layer {
+		cv.Clear(cv.Rect(), render.RGBA(16, 18, 24, 255))
+		kept = cv.Layer(kept, region)
+		kept.Canvas().RoundedRectCorners(render.Rect{X: 8, Y: 8, W: 30, H: 20}, render.UniformCorners(6), red)
+		cv.DrawLayer(kept, region, render.BlendNormal)
+		return kept
+	}
+	first := openDevice(t)
+	tg := newTarget(t, first, w, h)
+	rec := render.NewRecorder(w, h, 1, 1)
+	kept := paint(rec, nil)
+	if err := first.Render(rec.Recording(), tg); err != nil {
+		t.Fatal(err)
+	}
+	ls := kept.Backing().(*layerSurface)
+	tg.Close()
+	first.Close()
+	if ls.s.memory != 0 {
+		t.Error("closing the device left a kept layer's surface")
+	}
+	var kepts [2]*render.Layer
+	kepts[1] = kept
+	parity(t, openDevice(t), w, h, 1, 1, 2, func(cv *render.Canvas, _ int) {
+		i := 0
+		if cv.Recording() != nil {
+			i = 1
+		}
+		kepts[i] = paint(cv, kepts[i])
+	})
+}
