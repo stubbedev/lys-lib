@@ -149,24 +149,6 @@ func coverAxis(src, crop, box int, frac float64, off int) (d0, d1, s0, s1 int, o
 	return (s0 - c) * box / crop, (s1 - c) * box / crop, s0, s1, true
 }
 
-// Resample scales srcRect of src into a fresh dstW x dstH RGBA with the
-// CatmullRom kernel. Cubic resampling is what keeps fractional and
-// non-integer down- and upscales from the blockiness of a
-// nearest-neighbor pass (stubbedev/lys-ui#14); the canvas's own image
-// drawing is nearest-neighbor and must never see unresampled pixels.
-func Resample(src image.Image, srcRect image.Rectangle, dstW, dstH int) *image.RGBA {
-	if dstW <= 0 || dstH <= 0 {
-		return image.NewRGBA(image.Rectangle{})
-	}
-	dst := image.NewRGBA(image.Rect(0, 0, dstW, dstH))
-	r := srcRect.Intersect(src.Bounds())
-	if r.Empty() {
-		return dst // a fully transparent raster of the requested size
-	}
-	xdraw.CatmullRom.Scale(dst, dst.Bounds(), src, r, xdraw.Src, nil)
-	return dst
-}
-
 // ResampleInto scales srcRect of src over all of dst bilinearly,
 // reusing dst's pixels: the per-frame path for video, where a cubic
 // kernel and a fresh raster per frame would cost more than the frame
