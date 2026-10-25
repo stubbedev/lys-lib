@@ -44,6 +44,8 @@ type Device struct {
 	pool     vk.CommandPool
 	memProps vk.PhysicalDeviceMemoryProperties
 	name     string
+	pipelines
+	scratch
 }
 
 // Open picks the first Vulkan device that exports dmabufs and has a
@@ -70,7 +72,10 @@ func Open() (*Device, error) {
 		err := d.pick(p)
 		if err == nil {
 			if err = d.open(); err == nil {
-				return d, nil
+				if err = d.createPipelines(); err == nil {
+					return d, nil
+				}
+				d.closeDevice()
 			}
 		}
 		reasons = append(reasons, err)
@@ -164,10 +169,18 @@ func (d *Device) Name() string { return d.name }
 // Close releases the device. Everything made from it must be closed
 // first.
 func (d *Device) Close() {
+	d.closeDevice()
+	d.cmds.DestroyInstance(d.instance, nil)
+}
+
+// closeDevice releases the logical device and what was made on it.
+func (d *Device) closeDevice() {
 	d.cmds.DeviceWaitIdle(d.device)
+	d.closeScratch()
+	d.destroyPipelines()
+	d.pipelines = pipelines{}
 	d.cmds.DestroyCommandPool(d.device, d.pool, nil)
 	d.cmds.DestroyDevice(d.device, nil)
-	d.cmds.DestroyInstance(d.instance, nil)
 }
 
 // memoryType is the first memory type in bits with every flag in want.
