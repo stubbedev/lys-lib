@@ -4,11 +4,14 @@ import (
 	"errors"
 	"image"
 	"image/color"
+	"os/exec"
 	"slices"
 	"syscall"
 	"testing"
+	"time"
 
 	"github.com/stubbedev/lys-lib/dmabuf"
+	"github.com/stubbedev/lys-lib/internal/va"
 	"github.com/stubbedev/lys-lib/third_party/vk"
 )
 
@@ -179,5 +182,72 @@ func TestNV12PicturesExport(t *testing.T) {
 			t.Errorf("modifier %#x: planes %+v do not hold 330x240 NV12", mod, b.Planes)
 		}
 		t.Logf("modifier %#x: planes %+v", mod, b.Planes)
+	}
+}
+
+// The VA-API backend's parameters code a clip that decodes close to the
+// source when the driver encodes from surfaces it made itself, filled
+// through vaPutImage with what the conversion wrote: everything the
+// backend does but the zero-copy import, which this sets apart.
+func TestVAEncodesFromItsOwnSurfaces(t *testing.T) {
+	d := exportingDevice(t)
+	codecs := d.vaCodecs()
+	if len(codecs) == 0 {
+		t.Skipf("%s's VA-API driver encodes nothing: %v", d.Name(), d.vaWhy(H264))
+	}
+	ffmpeg, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Skip("no ffmpeg to decode with")
+	}
+	for _, codec := range codecs {
+		t.Run(codec.String(), func(t *testing.T) {
+			cfg := EncoderConfig{Codec: codec, Width: 640, Height: 360, FrameRate: 30, KeyInterval: 15, QP: 20}
+			c := openClip(t, d, cfg, func(cfg EncoderConfig) (*Encoder, error) { return newEncoderOn(d, cfg, newVABackend) })
+			vb := c.enc.backend.(*vaBackend)
+			w, h := vb.coded[0], vb.coded[1]
+			own, err := vb.dpy.CreateSurfaces(va.RTFormatYUV420, w, h, encodeSlots)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var imported [encodeSlots]uint32
+			for i := range vb.slots {
+				imported[i], vb.slots[i].surface = vb.slots[i].surface, own[i]
+			}
+			t.Cleanup(func() {
+				for i := range vb.slots {
+					vb.slots[i].surface = imported[i]
+				}
+				vb.dpy.DestroySurfaces(own)
+			})
+			src := make([]*image.RGBA, 40)
+			idrs := 0
+			for i := range src {
+				src[i] = encodeFrame(cfg.Width, cfg.Height, i)
+				c.buf.fill(t, src[i])
+				slot, sinceIDR := i%encodeSlots, i%cfg.KeyInterval
+				if err := c.enc.convert(c.buf, image.Point{}, slot); err != nil {
+					t.Fatal(err)
+				}
+				if r := d.cmds.WaitForFences(d.device, 1, &c.enc.gfxDone, vk.True, ^uint64(0)); r != vk.Success {
+					t.Fatalf("wait for the conversion: %d", r)
+				}
+				if err := vb.dpy.WriteNV12(own[slot], w, h, readPicture(t, vb, slot)); err != nil {
+					t.Fatal(err)
+				}
+				if err := vb.encode(slot, i, sinceIDR, idrs); err != nil {
+					t.Fatalf("frame %d: %v", i, err)
+				}
+				if sinceIDR == 0 {
+					idrs++
+				}
+				data, err := vb.collect(slot)
+				if err != nil {
+					t.Fatalf("frame %d: %v", i, err)
+				}
+				c.pkts = append(c.pkts, Packet{Data: data, PTS: time.Duration(i) * time.Second / 30, Key: sinceIDR == 0})
+				c.frames++
+			}
+			checkDecodes(t, ffmpeg, c, src)
+		})
 	}
 }

@@ -50,6 +50,7 @@ var lib struct {
 	createImage       func(dpy uintptr, format *ImageFormat, width, height int32, image *Image) int32
 	getImage          func(dpy uintptr, surface uint32, x, y int32, width, height uint32, image uint32) int32
 	destroyImage      func(dpy uintptr, image uint32) int32
+	putImage          func(dpy uintptr, surface, image uint32, srcX, srcY int32, srcW, srcH uint32, dstX, dstY int32, dstW, dstH uint32) int32
 	exportSurface     func(dpy uintptr, surface, memType, flags uint32, desc unsafe.Pointer) int32
 }
 
@@ -97,6 +98,7 @@ func load() error {
 			{va, "vaCreateImage", &lib.createImage},
 			{va, "vaGetImage", &lib.getImage},
 			{va, "vaDestroyImage", &lib.destroyImage},
+			{va, "vaPutImage", &lib.putImage},
 			{va, "vaExportSurfaceHandle", &lib.exportSurface},
 		} {
 			sym, err := purego.Dlsym(f.handle, f.name)
@@ -261,31 +263,69 @@ func (d *Display) ExportSurface(id uint32) (DRMPRIMESurfaceDescriptor, error) {
 	return *desc, err
 }
 
-// ReadNV12 copies what an NV12 surface holds: its luma rows, then its
-// interleaved chroma rows, tight.
-func (d *Display) ReadNV12(id uint32, width, height int) ([]byte, error) {
+// nv12Image is a width x height NV12 image and its mapping for the
+// CPU; the caller unmaps img.Buf and destroys the image.
+func (d *Display) nv12Image(width, height int) (Image, []byte, error) {
 	format := ImageFormat{Fourcc: FourccNV12, ByteOrder: 1, BitsPerPixel: 12}
 	var img Image
 	if err := check("vaCreateImage", lib.createImage(d.dpy, &format, int32(width), int32(height), &img)); err != nil {
+		return Image{}, nil, err
+	}
+	p, err := d.MapBuffer(img.Buf)
+	if err != nil {
+		_ = lib.destroyImage(d.dpy, img.ImageID)
+		return Image{}, nil, err
+	}
+	return img, unsafe.Slice((*byte)(p), img.DataSize), nil
+}
+
+// nv12Rows are the offsets in an NV12 image of its luma rows, then its
+// chroma rows.
+func nv12Rows(img Image, height int) []int {
+	rows := make([]int, 0, height*3/2)
+	for y := range height {
+		rows = append(rows, int(img.Offsets[0])+y*int(img.Pitches[0]))
+	}
+	for y := range height / 2 {
+		rows = append(rows, int(img.Offsets[1])+y*int(img.Pitches[1]))
+	}
+	return rows
+}
+
+// ReadNV12 copies what an NV12 surface holds: its luma rows, then its
+// interleaved chroma rows, tight.
+func (d *Display) ReadNV12(id uint32, width, height int) ([]byte, error) {
+	img, data, err := d.nv12Image(width, height)
+	if err != nil {
 		return nil, err
 	}
 	defer lib.destroyImage(d.dpy, img.ImageID)
 	if err := check("vaGetImage", lib.getImage(d.dpy, id, 0, 0, uint32(width), uint32(height), img.ImageID)); err != nil {
+		_ = d.UnmapBuffer(img.Buf)
 		return nil, err
 	}
-	p, err := d.MapBuffer(img.Buf)
-	if err != nil {
-		return nil, err
-	}
-	data := unsafe.Slice((*byte)(p), img.DataSize)
 	out := make([]byte, 0, width*height*3/2)
-	for y := range height {
-		out = append(out, data[int(img.Offsets[0])+y*int(img.Pitches[0]):][:width]...)
-	}
-	for y := range height / 2 {
-		out = append(out, data[int(img.Offsets[1])+y*int(img.Pitches[1]):][:width]...)
+	for _, r := range nv12Rows(img, height) {
+		out = append(out, data[r:][:width]...)
 	}
 	return out, d.UnmapBuffer(img.Buf)
+}
+
+// WriteNV12 copies pix (luma rows, then interleaved chroma rows, tight)
+// into an NV12 surface.
+func (d *Display) WriteNV12(id uint32, width, height int, pix []byte) error {
+	img, data, err := d.nv12Image(width, height)
+	if err != nil {
+		return err
+	}
+	defer lib.destroyImage(d.dpy, img.ImageID)
+	for i, r := range nv12Rows(img, height) {
+		copy(data[r:][:width], pix[i*width:])
+	}
+	if err := d.UnmapBuffer(img.Buf); err != nil {
+		return err
+	}
+	return check("vaPutImage", lib.putImage(d.dpy, id, img.ImageID, 0, 0, uint32(width), uint32(height), 0, 0, uint32(width), uint32(height)))
 }
 
 // DestroySurfaces releases surfaces.

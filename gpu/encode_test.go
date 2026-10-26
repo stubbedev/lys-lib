@@ -342,12 +342,18 @@ func TestEncoderDecodes(t *testing.T) {
 // of them against what 4:2:0 alone keeps.
 func testDecodes(t *testing.T, ffmpeg string, c *clip) {
 	t.Helper()
-	size := image.Pt(c.cfg.Width, c.cfg.Height)
 	src := make([]*image.RGBA, 40)
 	for i := range src {
-		src[i] = encodeFrame(size.X, size.Y, i)
+		src[i] = encodeFrame(c.cfg.Width, c.cfg.Height, i)
 		c.frame(src[i])
 	}
+	checkDecodes(t, ffmpeg, c, src)
+}
+
+// checkDecodes checks what ffmpeg decodes of the frames c encoded from
+// src against what 4:2:0 alone keeps.
+func checkDecodes(t *testing.T, ffmpeg string, c *clip, src []*image.RGBA) {
+	t.Helper()
 	ceiling := subsampled(t, ffmpeg, src)
 	worst := math.Inf(1)
 	decoded := c.decode(ffmpeg)
