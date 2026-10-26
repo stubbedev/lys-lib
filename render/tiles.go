@@ -34,11 +34,12 @@ func TileGeometryOf(t Tile, clip Rect, radii Corners, num, denom int) (TileGeome
 	}
 	c := Canvas{num: num, denom: denom}
 	b, rc := c.devBox(clip, radii)
-	s := float64(num) / float64(denom)
-	px, py := float32((t.W+t.GapX)*s), float32((t.H+t.GapY)*s)
+	s := devScale(num, denom)
+	w, h := float32(t.W)*s, float32(t.H)*s
+	px, py := w+float32(float32(t.GapX)*s), h+float32(float32(t.GapY)*s)
 	return TileGeometry{
-		Box: to32(b.array()), Radii: to32(rc),
-		X0: float32(t.X * s), Y0: float32(t.Y * s), W: float32(t.W * s), H: float32(t.H * s),
+		Box: b.array(), Radii: rc,
+		X0: float32(t.X) * s, Y0: float32(t.Y) * s, W: w, H: h,
 		PeriodX: px, PeriodY: py, InvPeriodX: Reciprocal(px), InvPeriodY: Reciprocal(py),
 		RepeatX: t.RepeatX, RepeatY: t.RepeatY,
 	}, true
@@ -112,7 +113,7 @@ func (c *Canvas) PaintGradientTiles(g Gradient, t Tile, clip Rect, radii Corners
 		return
 	}
 	c.paintTiles(tg, func(u, v float32) Color {
-		return sampleStops(g.Stops, g.Extend, m.At(float64(u), float64(v)))
+		return sampleStops(g.Stops, g.Extend, m.At(u, v))
 	})
 }
 
@@ -120,15 +121,15 @@ func (c *Canvas) PaintGradientTiles(g Gradient, t Tile, clip Rect, radii Corners
 // a box at the origin, sampled at a pixel's offset into its tile;
 // false when it is degenerate.
 func (g Gradient) TileMap(t Tile, num, denom int) (GradientMap, bool) {
-	s := float64(num) / float64(denom)
-	return g.mapping(frect{0, 0, t.W * s, t.H * s}, s)
+	s := devScale(num, denom)
+	return g.mapping(frect{0, 0, float32(t.W) * s, float32(t.H) * s}, s)
 }
 
 // paintTiles runs sample over the device pixels of g's rounded clip
 // that a tile covers, with the pixel center's offset into its tile.
 func (c *Canvas) paintTiles(g TileGeometry, sample func(u, v float32) Color) {
 	b := g.Box
-	sp := c.span(frect{float64(b[0]), float64(b[1]), float64(b[2]), float64(b[3])})
+	sp := c.span(frect{b[0], b[1], b[2], b[3]})
 	for y := sp.Y; y < sp.Y+sp.H; y++ {
 		py := float32(y) + 0.5
 		for x := sp.X; x < sp.X+sp.W; x++ {

@@ -670,7 +670,7 @@ var (
 func shadowRowCoverage() func(x, y float64) float64 {
 	tail, half := shadowTail(shadowRowBlur)
 	return func(x, y float64) float64 {
-		return float64(tailCoverage(tail, half, sdRoundRect(x, y, shadowRowRect, float64(shadowRowRadius)))) / 255
+		return float64(tailCoverage(tail, half, sdRoundRect(float32(x), float32(y), shadowRowRect, float32(shadowRowRadius)))) / 255
 	}
 }
 
@@ -679,7 +679,7 @@ func shadowRowCoverage() func(x, y float64) float64 {
 func roundedCoverage(r Rect, radius int) func(x, y float64) float64 {
 	rad := math.Min(float64(radius), math.Min(float64(r.W), float64(r.H))/2)
 	return func(x, y float64) float64 {
-		return blendClamp01(0.5 - sdRoundRect(x, y, r, rad))
+		return blendClamp01(0.5 - float64(sdRoundRect(float32(x), float32(y), r, float32(rad))))
 	}
 }
 

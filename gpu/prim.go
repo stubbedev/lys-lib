@@ -78,10 +78,6 @@ func quadOf(r render.Rect) [4]float32 {
 	return [4]float32{float32(r.X), float32(r.Y), float32(r.X + r.W), float32(r.Y + r.H)}
 }
 
-func vec(v [4]float64) [4]float32 {
-	return [4]float32{float32(v[0]), float32(v[1]), float32(v[2]), float32(v[3])}
-}
-
 // mappedRows are m's inverse rows and forward last row as prim
 // vectors, the last component zero.
 func mappedRows(m *render.Mapped) (r0, r1, r2, fwd [4]float32) {

@@ -529,10 +529,10 @@ func RoundedRadius(full Rect, radius, num, denom int) float32 {
 
 // sdRoundRect is the signed distance from (px, py) to a rounded rect.
 // Negative inside, positive outside, in pixels.
-func sdRoundRect[F float](px, py F, r Rect, radius F) F {
-	x0, y0, x1, y1 := F(r.X), F(r.Y), F(r.X+r.W), F(r.Y+r.H)
+func sdRoundRect(px, py float32, r Rect, radius float32) float32 {
+	x0, y0, x1, y1 := float32(r.X), float32(r.Y), float32(r.X+r.W), float32(r.Y+r.H)
 	cx, cy := (x0+x1)*0.5, (y0+y1)*0.5
-	hw, hh := F((x1-x0)*0.5)-radius, F((y1-y0)*0.5)-radius //nolint:unconvert // each conversion rounds its product, so it cannot fuse into an FMA
+	hw, hh := float32((x1-x0)*0.5)-radius, float32((y1-y0)*0.5)-radius // each conversion rounds its product, so it cannot fuse into an FMA
 	qx, qy := abs(px-cx)-hw, abs(py-cy)-hh
 	return lengthF(max(qx, 0), max(qy, 0)) + min(max(qx, qy), 0) - radius
 }

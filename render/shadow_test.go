@@ -115,7 +115,7 @@ func TestShadowUnderPushAlpha(t *testing.T) {
 		// the pixel — before the composite, exactly like a faded
 		// RoundedRect edge; the destination is untouched.
 		tail, half := shadowTail(8)
-		cov := tailCoverage(tail, half, sdRoundRect(float64(p[0])+0.5, float64(p[1])+0.5, rect, 5))
+		cov := tailCoverage(tail, half, sdRoundRect(float32(p[0])+0.5, float32(p[1])+0.5, rect, 5))
 		want := refOverChannels(blendChannels(modulate(coverageScale(col, uint32(cov)), 128)), bg)
 		if !blendNear(gotPx, want, 1) {
 			t.Errorf("faded shadow at (%d,%d) = %#08x, want the alpha-scaled composite %#08x (+/-1)",

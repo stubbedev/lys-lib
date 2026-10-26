@@ -624,7 +624,7 @@ func RefractPlanOf(shape FilterShape, bezel, disp float64, num, denom int) (Refr
 	}
 	c := Canvas{num: num, denom: denom}
 	b, rc := c.devBox(shape.Box, shape.Radii)
-	return RefractPlan{Box: to32(b.array()), Radii: to32(rc), InvBezel: Reciprocal(float32(bezel)), Disp: float32(disp)}, true
+	return RefractPlan{Box: b.array(), Radii: rc, InvBezel: Reciprocal(float32(bezel)), Disp: float32(disp)}, true
 }
 
 // At is how far device pixel (x, y) samples off itself, in 1/256

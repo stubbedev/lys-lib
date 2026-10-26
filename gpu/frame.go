@@ -574,7 +574,7 @@ func (f *frame) PaintGrain(s render.State, r render.Rect, radii render.Corners, 
 	box, rc := render.DeviceBox(r, radii, f.num, f.denom)
 	o := render.MapRect(render.Rect{X: ox, Y: oy}, f.num, f.denom)
 	p := shaded(kindGrain, s, 0)
-	p.quad, p.box, p.radii = quadOf(s.Bounds), vec(box), vec(rc)
+	p.quad, p.box, p.radii = quadOf(s.Bounds), box, rc
 	p.cols = [4]uint32{render.GrainStrength(opacity), uint32(int32(o.X)), uint32(int32(o.Y))}
 	f.draw(f.on(s), nil, pipeOver, p)
 }
@@ -585,7 +585,7 @@ func (f *frame) RoundedBorderSides(s render.State, r render.Rect, radii render.C
 	}
 	outer, oradii, inner, iradii, w := render.BorderRing(r, radii, widths, f.num, f.denom)
 	p := shaded(kindBorder, s, 0)
-	p.quad, p.box, p.radii, p.inner, p.iradii, p.widths = quadOf(s.Bounds), vec(outer), vec(oradii), vec(inner), vec(iradii), render.SideReciprocals(w)
+	p.quad, p.box, p.radii, p.inner, p.iradii, p.widths = quadOf(s.Bounds), outer, oradii, inner, iradii, render.SideReciprocals(w)
 	p.cols = [4]uint32{uint32(cols[0]), uint32(cols[1]), uint32(cols[2]), uint32(cols[3])}
 	f.draw(f.on(s), nil, pipeOver, p)
 }
@@ -596,7 +596,7 @@ func (f *frame) RoundedRectCorners(s render.State, r render.Rect, radii render.C
 	}
 	box, rc := render.DeviceBox(r, radii, f.num, f.denom)
 	p := shaded(kindRRect, s, 0)
-	p.quad, p.box, p.radii, p.cols[0] = quadOf(s.Bounds), vec(box), vec(rc), uint32(col)
+	p.quad, p.box, p.radii, p.cols[0] = quadOf(s.Bounds), box, rc, uint32(col)
 	f.draw(f.on(s), nil, pipeOver, p)
 }
 
@@ -610,7 +610,7 @@ func (f *frame) PaintGradient(s render.State, r render.Rect, radii render.Corner
 	}
 	box, rc := render.DeviceBox(r, radii, f.num, f.denom)
 	p := shaded(kindGradient, s, 0)
-	p.quad, p.box, p.radii = quadOf(s.Bounds), vec(box), vec(rc)
+	p.quad, p.box, p.radii = quadOf(s.Bounds), box, rc
 	f.gradientStops(&p, m, g)
 	f.draw(f.on(s), nil, pipeOver, p)
 }

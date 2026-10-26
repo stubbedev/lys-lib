@@ -82,23 +82,27 @@ func (s BoxShadow) Extent() Insets {
 	}
 }
 
-// frect is a float rect in device pixels.
-type frect struct{ x0, y0, x1, y1 float64 }
+// frect is a float32 rect in device pixels.
+type frect struct{ x0, y0, x1, y1 float32 }
 
 // fcorners are device-pixel radii, clockwise from top-left.
-type fcorners [4]float64
+type fcorners [4]float32
+
+// devScale is the device scale num/denom as the float32 every
+// device-space length multiplies by.
+func devScale(num, denom int) float32 { return float32(num) / float32(denom) }
 
 // devBox maps a logical rect and radii to device space, scaling the
 // radii down uniformly when adjacent ones overlap (the CSS rule).
 func (c *Canvas) devBox(r Rect, radii Corners) (frect, fcorners) {
 	d := c.MapRect(r)
-	f := float64(c.num) / float64(c.denom)
-	b := frect{float64(d.X), float64(d.Y), float64(d.X + d.W), float64(d.Y + d.H)}
+	f := devScale(c.num, c.denom)
+	b := frect{float32(d.X), float32(d.Y), float32(d.X + d.W), float32(d.Y + d.H)}
 	rc := fcorners{
-		math.Max(0, float64(radii.TopLeft)*f),
-		math.Max(0, float64(radii.TopRight)*f),
-		math.Max(0, float64(radii.BottomRight)*f),
-		math.Max(0, float64(radii.BottomLeft)*f),
+		max(0, float32(radii.TopLeft)*f),
+		max(0, float32(radii.TopRight)*f),
+		max(0, float32(radii.BottomRight)*f),
+		max(0, float32(radii.BottomLeft)*f),
 	}
 	return b, clampRadii(b, rc)
 }
@@ -107,20 +111,20 @@ func (c *Canvas) devBox(r Rect, radii Corners) (frect, fcorners) {
 // rasterize it at device scale num/denom: its device rect as x0, y0,
 // x1, y1 and its radii clockwise from top-left, scaled down together
 // where adjacent ones overlap.
-func DeviceBox(r Rect, radii Corners, num, denom int) ([4]float64, [4]float64) {
+func DeviceBox(r Rect, radii Corners, num, denom int) (box, rc [4]float32) {
 	c := Canvas{num: num, denom: denom}
-	b, rc := c.devBox(r, radii)
-	return b.array(), rc
+	b, r32 := c.devBox(r, radii)
+	return b.array(), r32
 }
 
 // clampRadii applies CSS's overlap rule: when two radii on one side sum
 // past its length, every radius shrinks by the same factor.
 func clampRadii(b frect, rc fcorners) fcorners {
 	w, h := b.x1-b.x0, b.y1-b.y0
-	scale := 1.0
-	check := func(sum, side float64) {
+	scale := float32(1)
+	check := func(sum, side float32) {
 		if sum > side && sum > 0 {
-			scale = math.Min(scale, side/sum)
+			scale = min(scale, side/sum)
 		}
 	}
 	check(rc[0]+rc[1], w)
@@ -135,18 +139,13 @@ func clampRadii(b frect, rc fcorners) fcorners {
 	return rc
 }
 
-// float is the precision a distance field evaluates in: float32 where
-// a GPU shader repeats it step for step (the shapes a GPU draws
-// natively), float64 where only the CPU runs it.
-type float interface{ ~float32 | ~float64 }
-
 // sdBoxF is the signed distance from (px, py) to the rounded rect b
 // (x0, y0, x1, y1) with per-corner radii rc: negative inside, positive
 // outside, in device pixels. It works from the point's distances to its
 // nearest edges, exact in half pixels, so a pixel the same distance
 // from an edge gets the same value wherever the box sits and however
 // long it is. Each step rounds on its own, in the shader's order.
-func sdBoxF[F float](px, py F, b, rc [4]F) F {
+func sdBoxF(px, py float32, b, rc [4]float32) float32 {
 	left, top := px < (b[0]+b[2])*0.5, py < (b[1]+b[3])*0.5
 	ex, ey := b[2]-px, b[3]-py
 	if left {
@@ -155,7 +154,7 @@ func sdBoxF[F float](px, py F, b, rc [4]F) F {
 	if top {
 		ey = py - b[1]
 	}
-	var rad F
+	var rad float32
 	switch {
 	case left && top:
 		rad = rc[0]
@@ -172,18 +171,13 @@ func sdBoxF[F float](px, py F, b, rc [4]F) F {
 
 // lengthF is sqrt(x*x + y*y), each product rounded on its own and the
 // root correctly rounded.
-func lengthF[F float](x, y F) F {
-	return F(math.Sqrt(float64(F(x*x) + F(y*y)))) //nolint:unconvert // each conversion rounds its product, so neither fuses into an FMA
+func lengthF(x, y float32) float32 {
+	return float32(math.Sqrt(float64(float32(x*x) + float32(y*y)))) // each conversion rounds its product, so neither fuses into an FMA
 }
 
-// sdBox is sdBoxF in float64, for the fields only the CPU evaluates.
-func sdBox(px, py float64, b frect, rc fcorners) float64 {
+// sdBox is sdBoxF over an frect and its corners.
+func sdBox(px, py float32, b frect, rc fcorners) float32 {
 	return sdBoxF(px, py, b.array(), rc)
-}
-
-// to32 rounds a box or radii to float32.
-func to32(v [4]float64) [4]float32 {
-	return [4]float32{float32(v[0]), float32(v[1]), float32(v[2]), float32(v[3])}
 }
 
 // solidRun returns the pixel-center x range [xa, xb] of row center py
@@ -192,42 +186,39 @@ func to32(v [4]float64) [4]float32 {
 // most -0.5 and coverage exactly 1. ok is false for a row with no such
 // range. The painters fill the run without evaluating the distance
 // field, which is what a large rounded surface's interior costs.
-func solidRun(b frect, rc fcorners, py float64) (xa, xb float64, ok bool) {
+func solidRun(b frect, rc fcorners, py float32) (xa, xb float32, ok bool) {
 	if py-b.y0 < 0.5 || b.y1-py < 0.5 {
 		return 0, 0, false
 	}
 	xa, xb = b.x0+0.5, b.x1-0.5
 	if py < b.y0+rc[0] {
-		xa = math.Max(xa, b.x0+rc[0])
+		xa = max(xa, b.x0+rc[0])
 	}
 	if py < b.y0+rc[1] {
-		xb = math.Min(xb, b.x1-rc[1])
+		xb = min(xb, b.x1-rc[1])
 	}
 	if py > b.y1-rc[2] {
-		xb = math.Min(xb, b.x1-rc[2])
+		xb = min(xb, b.x1-rc[2])
 	}
 	if py > b.y1-rc[3] {
-		xa = math.Max(xa, b.x0+rc[3])
+		xa = max(xa, b.x0+rc[3])
 	}
 	return xa, xb, xa <= xb
 }
 
 // coverage maps a signed distance to anti-aliased pixel coverage.
-func coverage[F float](d F) F { return min(1, max(0, 0.5-d)) }
+func coverage(d float32) float32 { return min(1, max(0, 0.5-d)) }
 
 // span returns the device pixel span of b, clipped.
 func (c *Canvas) span(b frect) Rect {
-	r := Rect{
-		X: int(math.Floor(b.x0)), Y: int(math.Floor(b.y0)),
-		W: int(math.Ceil(b.x1)) - int(math.Floor(b.x0)),
-		H: int(math.Ceil(b.y1)) - int(math.Floor(b.y0)),
-	}
+	x0, y0 := int(math.Floor(float64(b.x0))), int(math.Floor(float64(b.y0)))
+	r := Rect{X: x0, Y: y0, W: int(math.Ceil(float64(b.x1))) - x0, H: int(math.Ceil(float64(b.y1))) - y0}
 	return c.clip.Intersect(r)
 }
 
-// blendCovF blends col at coverage cov in [0, 1], in either precision,
-// the coverage quantized as floor(cov*255 + 0.5), as the shader does.
-func blendCovF[F float](c *Canvas, x, y int, col Color, cov F) {
+// blendCovF blends col at coverage cov in [0, 1], the coverage
+// quantized as floor(cov*255 + 0.5), as the shader does.
+func blendCovF(c *Canvas, x, y int, col Color, cov float32) {
 	if cov <= 0 {
 		return
 	}
@@ -239,8 +230,8 @@ func blendCovF[F float](c *Canvas, x, y int, col Color, cov F) {
 }
 
 // cov255 quantizes coverage in [0, 1] to 0..255, rounding half up.
-func cov255[F float](cov F) uint32 {
-	return uint32(math.Floor(float64(F(cov*255) + 0.5))) //nolint:unconvert // the conversion rounds the product, so it cannot fuse into an FMA
+func cov255(cov float32) uint32 {
+	return uint32(math.Floor(float64(float32(cov*255) + 0.5))) // the conversion rounds the product, so it cannot fuse into an FMA
 }
 
 // RoundedRectCorners blends col over r with each corner rounded by its
@@ -255,22 +246,21 @@ func (c *Canvas) RoundedRectCorners(r Rect, radii Corners, col Color) {
 		return
 	}
 	b, rc := c.devBox(r, radii)
-	b32, rc32 := to32(b.array()), to32(rc)
+	b32, rc32 := b.array(), rc
 	sp := c.span(b)
 	for y := sp.Y; y < sp.Y+sp.H; y++ {
-		py := float64(y) + 0.5
-		py32 := float32(y) + 0.5
+		py := float32(y) + 0.5
 		xs, xe := sp.X+sp.W, sp.X+sp.W
 		if xa, xb, solid := solidRun(b, rc, py); solid {
-			xs = min(max(sp.X, int(math.Ceil(xa-0.5))), sp.X+sp.W)
-			xe = min(max(xs, int(math.Floor(xb-0.5))+1), sp.X+sp.W)
+			xs = min(max(sp.X, int(math.Ceil(float64(xa-0.5)))), sp.X+sp.W)
+			xe = min(max(xs, int(math.Floor(float64(xb-0.5)))+1), sp.X+sp.W)
 		}
 		for x := sp.X; x < xs; x++ {
-			blendCovF(c, x, y, col, coverage(sdBoxF(float32(x)+0.5, py32, b32, rc32)))
+			blendCovF(c, x, y, col, coverage(sdBoxF(float32(x)+0.5, py, b32, rc32)))
 		}
 		c.blendRun(xs, xe, y, col)
 		for x := xe; x < sp.X+sp.W; x++ {
-			blendCovF(c, x, y, col, coverage(sdBoxF(float32(x)+0.5, py32, b32, rc32)))
+			blendCovF(c, x, y, col, coverage(sdBoxF(float32(x)+0.5, py, b32, rc32)))
 		}
 	}
 }
@@ -297,7 +287,7 @@ func (c *Canvas) RoundedBorderSides(r Rect, radii Corners, widths Insets, cols [
 	g := c.borderRing(r, radii, widths)
 	b, rc, w, in, irc := g.outer, g.radii, g.widths, g.inner, g.iradii
 	innerEmpty := in.x1 <= in.x0 || in.y1 <= in.y0
-	b32, rc32, in32, irc32, inv := to32(b.array()), to32(rc), to32(in.array()), to32(irc), SideReciprocals(w)
+	b32, rc32, in32, irc32, inv := b.array(), rc, in.array(), irc, SideReciprocals(w)
 	// ring is a pixel's coverage and side, in float32 as the shader
 	// computes them.
 	ring := func(x, y int) (float32, int) {
@@ -315,8 +305,8 @@ func (c *Canvas) RoundedBorderSides(r Rect, radii Corners, widths Insets, cols [
 	// Across the top and bottom bands, clear of the corners' radii
 	// and of the side widths a pixel could be closer to, coverage and
 	// side vary only by row: one pixel stands for the run.
-	runX0 := min(max(sp.X, int(math.Ceil(b.x0+max(rc[0], rc[3], w[3])))+1), sp.X+sp.W)
-	runX1 := max(min(sp.X+sp.W, int(math.Floor(b.x1-max(rc[1], rc[2], w[1])))-1), runX0)
+	runX0 := min(max(sp.X, int(math.Ceil(float64(b.x0+max(rc[0], rc[3], w[3]))))+1), sp.X+sp.W)
+	runX1 := max(min(sp.X+sp.W, int(math.Floor(float64(b.x1-max(rc[1], rc[2], w[1]))))-1), runX0)
 	// Down the side columns, rows clear of the corners and of the
 	// bands, past every width a pixel there could be closer to, vary
 	// only by column: one row's cells stand for them all.
@@ -324,7 +314,7 @@ func (c *Canvas) RoundedBorderSides(r Rect, radii Corners, widths Insets, cols [
 	colY0, colY1 := b.y0+reachY, b.y1-reachY
 	var cols1, cols2 []ringCell
 	for y := sp.Y; y < sp.Y+sp.H; y++ {
-		py := float64(y) + 0.5
+		py := float32(y) + 0.5
 		if !innerEmpty && (py < in.y0 || py > in.y1) && runX1 > runX0 {
 			for x := sp.X; x < runX0; x++ {
 				c.ringPixel(x, y, ring, cols)
@@ -345,8 +335,8 @@ func (c *Canvas) RoundedBorderSides(r Rect, radii Corners, widths Insets, cols [
 		// skipped whole.
 		hs, he := sp.X+sp.W, sp.X+sp.W
 		if xa, xb, hole := solidRun(in, irc, py); hole && !innerEmpty {
-			hs = min(max(sp.X, int(math.Ceil(xa-0.5))), sp.X+sp.W)
-			he = min(max(hs, int(math.Floor(xb-0.5))+1), sp.X+sp.W)
+			hs = min(max(sp.X, int(math.Ceil(float64(xa-0.5)))), sp.X+sp.W)
+			he = min(max(hs, int(math.Floor(float64(xb-0.5)))+1), sp.X+sp.W)
 		}
 		if py > colY0 && py < colY1 {
 			if cols1 == nil {
@@ -377,25 +367,25 @@ func (c *Canvas) RoundedBorderSides(r Rect, radii Corners, widths Insets, cols [
 type ring struct {
 	outer, inner  frect
 	radii, iradii fcorners
-	widths        [4]float64
+	widths        [4]float32
 }
 
 // borderRing is the ring RoundedBorderSides strokes.
 func (c *Canvas) borderRing(r Rect, radii Corners, widths Insets) ring {
 	b, rc := c.devBox(r, radii)
-	f := float64(c.num) / float64(c.denom)
-	w := [4]float64{
-		float64(widths.Top) * f, float64(widths.Right) * f,
-		float64(widths.Bottom) * f, float64(widths.Left) * f,
+	f := devScale(c.num, c.denom)
+	w := [4]float32{
+		float32(widths.Top) * f, float32(widths.Right) * f,
+		float32(widths.Bottom) * f, float32(widths.Left) * f,
 	}
 	return ring{
 		outer: b, radii: rc, widths: w,
 		inner: frect{b.x0 + w[3], b.y0 + w[0], b.x1 - w[1], b.y1 - w[2]},
 		iradii: fcorners{
-			math.Max(0, rc[0]-math.Max(w[3], w[0])),
-			math.Max(0, rc[1]-math.Max(w[0], w[1])),
-			math.Max(0, rc[2]-math.Max(w[1], w[2])),
-			math.Max(0, rc[3]-math.Max(w[2], w[3])),
+			max(0, rc[0]-max(w[3], w[0])),
+			max(0, rc[1]-max(w[0], w[1])),
+			max(0, rc[2]-max(w[1], w[2])),
+			max(0, rc[3]-max(w[2], w[3])),
 		},
 	}
 }
@@ -403,14 +393,14 @@ func (c *Canvas) borderRing(r Rect, radii Corners, widths Insets) ring {
 // BorderRing is RoundedBorderSides' ring at device scale num/denom:
 // the outer box (x0, y0, x1, y1) and radii, the inner box and radii,
 // and the side widths, top, right, bottom, left.
-func BorderRing(r Rect, radii Corners, widths Insets, num, denom int) (outer, oradii, inner, iradii, w [4]float64) {
+func BorderRing(r Rect, radii Corners, widths Insets, num, denom int) (outer, oradii, inner, iradii, w [4]float32) {
 	c := Canvas{num: num, denom: denom}
 	g := c.borderRing(r, radii, widths)
 	return g.outer.array(), g.radii, g.inner.array(), g.iradii, g.widths
 }
 
 // array is b as x0, y0, x1, y1.
-func (b frect) array() [4]float64 { return [4]float64{b.x0, b.y0, b.x1, b.y1} }
+func (b frect) array() [4]float32 { return [4]float32{b.x0, b.y0, b.x1, b.y1} }
 
 // ringCell is a ring column's coverage and side.
 type ringCell struct {
@@ -464,11 +454,11 @@ func borderSide(px, py float32, b, inv [4]float32) int {
 // SideReciprocals are a border's reciprocal side widths (top, right,
 // bottom, left), 0 for a side of no width: what borderSide, on the CPU
 // and in the shader, scales each side's distance by.
-func SideReciprocals(w [4]float64) [4]float32 {
+func SideReciprocals(w [4]float32) [4]float32 {
 	var inv [4]float32
 	for i, v := range w {
 		if v > 0 {
-			inv[i] = Reciprocal(float32(v))
+			inv[i] = Reciprocal(v)
 		}
 	}
 	return inv
@@ -566,14 +556,14 @@ func (c *Canvas) BoxShadow(r Rect, radii Corners, s BoxShadow) {
 // middle row or column. Overlapping radii scale with the box (CSS), so
 // a box whose radii overlap keeps its own size.
 func shadowCore(dev Rect, radii Corners, s BoxShadow, num, denom int) (w, h int) {
-	f := float64(num) / float64(denom)
-	tl, tr := float64(radii.TopLeft)*f, float64(radii.TopRight)*f
-	br, bl := float64(radii.BottomRight)*f, float64(radii.BottomLeft)*f
-	if tl+tr > float64(dev.W) || bl+br > float64(dev.W) || tl+bl > float64(dev.H) || tr+br > float64(dev.H) {
+	f := devScale(num, denom)
+	tl, tr := float32(radii.TopLeft)*f, float32(radii.TopRight)*f
+	br, bl := float32(radii.BottomRight)*f, float32(radii.BottomLeft)*f
+	if tl+tr > float32(dev.W) || bl+br > float32(dev.W) || tl+bl > float32(dev.H) || tr+br > float32(dev.H) {
 		return dev.W, dev.H
 	}
-	reach := max(tl, tr, br, bl) + float64(max(abs(s.X), abs(s.Y))+abs(s.Spread))*f + 1.5*float64(s.Blur)*f
-	core := 2*(int(math.Ceil(reach))+2) + 1
+	reach := max(tl, tr, br, bl) + float32(float32(max(abs(s.X), abs(s.Y))+abs(s.Spread))*f) + float32(1.5*float32(s.Blur)*f)
+	core := 2*(int(math.Ceil(float64(reach)))+2) + 1
 	return min(dev.W, core), min(dev.H, core)
 }
 
@@ -625,24 +615,24 @@ var boxShadows rasterCache[boxShadowKey, *ShadowMask]
 // with sigma half the blur radius, evaluated per pixel from the
 // silhouette's signed distance.
 func buildBoxShadow(w, h int, radii Corners, s BoxShadow, num, denom int) *ShadowMask {
-	f := float64(num) / float64(denom)
-	box := frect{0, 0, float64(w), float64(h)}
+	f := devScale(num, denom)
+	box := frect{0, 0, float32(w), float32(h)}
 	rc := clampRadii(box, fcorners{
-		math.Max(0, float64(radii.TopLeft)*f),
-		math.Max(0, float64(radii.TopRight)*f),
-		math.Max(0, float64(radii.BottomRight)*f),
-		math.Max(0, float64(radii.BottomLeft)*f),
+		max(0, float32(radii.TopLeft)*f),
+		max(0, float32(radii.TopRight)*f),
+		max(0, float32(radii.BottomRight)*f),
+		max(0, float32(radii.BottomLeft)*f),
 	})
-	ox, oy := float64(s.X)*f, float64(s.Y)*f
-	spread := float64(s.Spread) * f
-	sigma := float64(s.Blur) * f / 2
-	shape := func(sign float64) (frect, fcorners) {
+	ox, oy := float32(s.X)*f, float32(s.Y)*f
+	spread := float32(s.Spread) * f
+	sigma := float32(s.Blur) * f / 2
+	shape := func(sign float32) (frect, fcorners) {
 		g := spread * sign
 		sb := frect{box.x0 + ox - g, box.y0 + oy - g, box.x1 + ox + g, box.y1 + oy + g}
 		var src fcorners
 		for i := range rc {
 			if rc[i] > 0 {
-				src[i] = math.Max(0, rc[i]+g)
+				src[i] = max(0, rc[i]+g)
 			}
 		}
 		if sb.x1 < sb.x0 {
@@ -657,11 +647,11 @@ func buildBoxShadow(w, h int, radii Corners, s BoxShadow, num, denom int) *Shado
 	}
 	// blurCov is the coverage of a blurred silhouette at signed distance
 	// d: a Gaussian-convolved edge, 50% on the edge itself.
-	blurCov := func(d float64) float64 {
+	blurCov := func(d float32) float32 {
 		if sigma <= 0.5 {
 			return coverage(d)
 		}
-		return 0.5 * math.Erfc(d/(sigma*math.Sqrt2))
+		return float32(0.5 * math.Erfc(float64(d)/(float64(sigma)*math.Sqrt2)))
 	}
 	reach := 3 * sigma
 	span := box
@@ -669,23 +659,23 @@ func buildBoxShadow(w, h int, radii Corners, s BoxShadow, num, denom int) *Shado
 		sb, _ := shape(1)
 		span = frect{sb.x0 - reach, sb.y0 - reach, sb.x1 + reach, sb.y1 + reach}
 	}
-	x0, y0 := int(math.Floor(span.x0)), int(math.Floor(span.y0))
+	x0, y0 := int(math.Floor(float64(span.x0))), int(math.Floor(float64(span.y0)))
 	ras := &ShadowMask{x0: x0, y0: y0}
-	ras.w, ras.h = int(math.Ceil(span.x1))-x0, int(math.Ceil(span.y1))-y0
+	ras.w, ras.h = int(math.Ceil(float64(span.x1)))-x0, int(math.Ceil(float64(span.y1)))-y0
 	ras.cov = make([]uint8, max(0, ras.w*ras.h))
-	put := func(x, y int, cov float64) {
+	put := func(x, y int, cov float32) {
 		if cov > 0 {
-			ras.cov[(y-y0)*ras.w+(x-x0)] = uint8(math.Round(math.Min(cov, 1) * 255))
+			ras.cov[(y-y0)*ras.w+(x-x0)] = uint8(cov255(min(cov, 1)))
 		}
 	}
 	if !s.Inset {
 		sb, src := shape(1)
 		for y := y0; y < y0+ras.h; y++ {
-			py := float64(y) + 0.5
+			py := float32(y) + 0.5
 			// The box's own solid run is fully covered: no shadow there.
 			xa, xb, solid := solidRun(box, rc, py)
 			for x := x0; x < x0+ras.w; x++ {
-				px := float64(x) + 0.5
+				px := float32(x) + 0.5
 				if solid && px >= xa && px <= xb {
 					continue
 				}
@@ -702,15 +692,15 @@ func buildBoxShadow(w, h int, radii Corners, s BoxShadow, num, denom int) *Shado
 	deep := frect{hole.x0 + reach, hole.y0 + reach, hole.x1 - reach, hole.y1 - reach}
 	var drc fcorners
 	for i := range hrc {
-		drc[i] = math.Max(0, hrc[i]-reach)
+		drc[i] = max(0, hrc[i]-reach)
 	}
 	deepOK := deep.x1 > deep.x0 && deep.y1 > deep.y0
 	for y := y0; y < y0+ras.h; y++ {
-		py := float64(y) + 0.5
+		py := float32(y) + 0.5
 		xa, xb, skip := solidRun(deep, drc, py)
 		skip = skip && deepOK
 		for x := x0; x < x0+ras.w; x++ {
-			px := float64(x) + 0.5
+			px := float32(x) + 0.5
 			if skip && px >= xa && px <= xb {
 				continue
 			}
@@ -758,36 +748,36 @@ func RoundedRectRegion(r Rect, radii Corners) []Rect {
 	if r.Empty() {
 		return nil
 	}
-	b := frect{float64(r.X), float64(r.Y), float64(r.X + r.W), float64(r.Y + r.H)}
+	b := frect{float32(r.X), float32(r.Y), float32(r.X + r.W), float32(r.Y + r.H)}
 	rc := clampRadii(b, fcorners{
-		math.Max(0, float64(radii.TopLeft)), math.Max(0, float64(radii.TopRight)),
-		math.Max(0, float64(radii.BottomRight)), math.Max(0, float64(radii.BottomLeft)),
+		max(0, float32(radii.TopLeft)), max(0, float32(radii.TopRight)),
+		max(0, float32(radii.BottomRight)), max(0, float32(radii.BottomLeft)),
 	})
 	// inset is how far a corner of radius rad pulls the edge in at the
 	// row whose center sits dy into the corner's square.
-	inset := func(rad, dy float64) float64 {
+	inset := func(rad, dy float32) float32 {
 		d := rad - dy
-		return rad - math.Sqrt(math.Max(0, rad*rad-d*d))
+		return rad - float32(math.Sqrt(float64(max(0, float32(rad*rad)-float32(d*d)))))
 	}
 	var out []Rect
 	for y := r.Y; y < r.Y+r.H; y++ {
-		cy := float64(y) + 0.5
-		left, right := 0.0, 0.0
+		cy := float32(y) + 0.5
+		var left, right float32
 		if dy := cy - b.y0; dy < rc[0] {
 			left = inset(rc[0], dy)
 		}
 		if dy := b.y1 - cy; dy < rc[3] {
-			left = math.Max(left, inset(rc[3], dy))
+			left = max(left, inset(rc[3], dy))
 		}
 		if dy := cy - b.y0; dy < rc[1] {
 			right = inset(rc[1], dy)
 		}
 		if dy := b.y1 - cy; dy < rc[2] {
-			right = math.Max(right, inset(rc[2], dy))
+			right = max(right, inset(rc[2], dy))
 		}
 		// A column is in when its center is: x + 0.5 >= x0 + left.
-		x0 := r.X + int(math.Ceil(left-0.5))
-		x1 := r.X + r.W - int(math.Ceil(right-0.5))
+		x0 := r.X + int(math.Ceil(float64(left-0.5)))
+		x1 := r.X + r.W - int(math.Ceil(float64(right-0.5)))
 		if x1 <= x0 {
 			continue
 		}
@@ -815,18 +805,18 @@ func (c *Canvas) PaintGrain(r Rect, radii Corners, opacity float64, ox, oy int) 
 		return
 	}
 	b, rc := c.devBox(r, radii)
-	b32, rc32 := to32(b.array()), to32(rc)
+	b32, rc32 := b.array(), rc
 	o := c.MapRect(Rect{X: ox, Y: oy})
 	strength := GrainStrength(opacity)
 	sp := c.span(b)
 	for y := sp.Y; y < sp.Y+sp.H; y++ {
-		py, py32 := float64(y)+0.5, float32(y)+0.5
+		py := float32(y) + 0.5
 		xa, xb, solid := solidRun(b, rc, py)
 		for x := sp.X; x < sp.X+sp.W; x++ {
-			px := float64(x) + 0.5
+			px := float32(x) + 0.5
 			cov := uint32(255)
 			if !solid || px < xa || px > xb {
-				cov = cov255(coverage(sdBoxF(float32(x)+0.5, py32, b32, rc32)))
+				cov = cov255(coverage(sdBoxF(px, py, b32, rc32)))
 			}
 			n := grainNoise(x-o.X, y-o.Y)
 			// Signed around the midpoint: above lightens, below darkens.

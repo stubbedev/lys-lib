@@ -11,7 +11,7 @@ import (
 // must match.
 func borderPerPixel(c *Canvas, r Rect, radii Corners, widths Insets, cols [4]Color) {
 	g := c.borderRing(r, radii, widths)
-	b, rc, in, irc, inv := to32(g.outer.array()), to32(g.radii), to32(g.inner.array()), to32(g.iradii), SideReciprocals(g.widths)
+	b, rc, in, irc, inv := g.outer.array(), g.radii, g.inner.array(), g.iradii, SideReciprocals(g.widths)
 	innerEmpty := g.inner.x1 <= g.inner.x0 || g.inner.y1 <= g.inner.y0
 	sp := c.span(g.outer)
 	for y := sp.Y; y < sp.Y+sp.H; y++ {

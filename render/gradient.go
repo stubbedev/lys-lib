@@ -102,11 +102,11 @@ func (c *Canvas) PaintGradient(r Rect, radii Corners, g Gradient) {
 		return
 	}
 	b, rc := c.devBox(r, radii)
-	m, ok := g.mapping(b, float64(c.num)/float64(c.denom))
+	m, ok := g.mapping(b, devScale(c.num, c.denom))
 	if !ok {
 		return
 	}
-	b32, rc32 := to32(b.array()), to32(rc)
+	b32, rc32 := b.array(), rc
 	sp := c.span(b)
 	for y := sp.Y; y < sp.Y+sp.H; y++ {
 		for x := sp.X; x < sp.X+sp.W; x++ {
@@ -115,7 +115,7 @@ func (c *Canvas) PaintGradient(r Rect, radii Corners, g Gradient) {
 			if cov <= 0 {
 				continue
 			}
-			blendCovF(c, x, y, sampleStops(g.Stops, g.Extend, m.At(float64(px), float64(py))), cov)
+			blendCovF(c, x, y, sampleStops(g.Stops, g.Extend, m.At(px, py)), cov)
 		}
 	}
 }
@@ -125,10 +125,10 @@ func (c *Canvas) PaintGradient(r Rect, radii Corners, g Gradient) {
 // the mapping; a GPU renderer evaluates the same one.
 type GradientMap struct {
 	Kind           GradientKind
-	CX, CY         float64 // the center (radial, conic, linear's box middle)
-	DX, DY, Length float64 // linear direction and line length
-	RX, RY         float64 // radial radii
-	From           float64 // conic start
+	CX, CY         float32 // the center (radial, conic, linear's box middle)
+	DX, DY, Length float32 // linear direction and line length
+	RX, RY         float32 // radial radii
+	From           float32 // conic start
 	// InvLength, InvRX and InvRY are the reciprocals At multiplies by:
 	// a GPU's division may round loosely, its multiplication may not,
 	// so both renderers divide by multiplying with the same float32.
@@ -147,27 +147,27 @@ var inv360 = Reciprocal(float32(360))
 func (g Gradient) DeviceMap(r Rect, radii Corners, num, denom int) (GradientMap, bool) {
 	c := Canvas{num: num, denom: denom}
 	b, _ := c.devBox(r, radii)
-	return g.mapping(b, float64(num)/float64(denom))
+	return g.mapping(b, devScale(num, denom))
 }
 
 // mapping resolves g's geometry over the device box b (scale is device
 // pixels per logical pixel); false when it is degenerate.
-func (g Gradient) mapping(b frect, scale float64) (GradientMap, bool) {
+func (g Gradient) mapping(b frect, scale float32) (GradientMap, bool) {
 	w, h := b.x1-b.x0, b.y1-b.y0
-	m := GradientMap{Kind: g.Kind, CX: b.x0 + g.CenterX*w, CY: b.y0 + g.CenterY*h, From: g.Angle}
+	m := GradientMap{Kind: g.Kind, CX: b.x0 + float32(float32(g.CenterX)*w), CY: b.y0 + float32(float32(g.CenterY)*h), From: float32(g.Angle)}
 	switch g.Kind {
 	case GradientRadial:
 		m.RX, m.RY = g.radii(b, m.CX, m.CY, scale)
-		m.InvRX, m.InvRY = Reciprocal(float32(m.RX)), Reciprocal(float32(m.RY))
+		m.InvRX, m.InvRY = Reciprocal(m.RX), Reciprocal(m.RY)
 		return m, m.RX > 0 && m.RY > 0
 	case GradientConic:
 		return m, true
 	}
 	rad := g.Angle * math.Pi / 180
-	m.DX, m.DY = math.Sin(rad), -math.Cos(rad)
-	m.Length = math.Abs(w*m.DX) + math.Abs(h*m.DY)
+	m.DX, m.DY = float32(math.Sin(rad)), float32(-math.Cos(rad))
+	m.Length = abs(float32(w*m.DX)) + abs(float32(h*m.DY))
 	m.CX, m.CY = (b.x0+b.x1)/2, (b.y0+b.y1)/2
-	m.InvLength = Reciprocal(float32(m.Length))
+	m.InvLength = Reciprocal(m.Length)
 	return m, m.Length != 0
 }
 
@@ -175,8 +175,8 @@ func (g Gradient) mapping(b frect, scale float64) (GradientMap, bool) {
 // the box r — what a stop's length position is measured along: a
 // linear gradient's corner-to-corner line, a radial one's ray (the
 // ending shape's horizontal radius); a conic gradient has none.
-func (g Gradient) LineLength(r Rect) float64 {
-	b := frect{float64(r.X), float64(r.Y), float64(r.X + r.W), float64(r.Y + r.H)}
+func (g Gradient) LineLength(r Rect) float32 {
+	b := frect{float32(r.X), float32(r.Y), float32(r.X + r.W), float32(r.Y + r.H)}
 	m, ok := g.mapping(b, 1)
 	switch {
 	case !ok, g.Kind == GradientConic:
@@ -192,9 +192,8 @@ func (g Gradient) LineLength(r Rect) float64 {
 // its own (no fused multiply-add), so the CPU and a GPU place hard stops
 // and repeat boundaries on the same pixels: their float32 add, multiply
 // and divide round alike, leaving only a GPU's looser sqrt and atan.
-func (m GradientMap) At(px, py float64) float32 {
-	x, y := float32(px), float32(py)
-	cx, cy := float32(m.CX), float32(m.CY)
+func (m GradientMap) At(x, y float32) float32 {
+	cx, cy := m.CX, m.CY
 	switch m.Kind {
 	case GradientRadial:
 		dx := (x - cx) * m.InvRX
@@ -202,21 +201,21 @@ func (m GradientMap) At(px, py float64) float32 {
 		return float32(math.Sqrt(float64(float32(dx*dx) + float32(dy*dy))))
 	case GradientConic:
 		a := atan2f(x-cx, -(y-cy)) * float32(180/math.Pi)
-		return modFloor(a-float32(m.From), 360, inv360) * inv360
+		return modFloor(a-m.From, 360, inv360) * inv360
 	}
-	d := float32((x-cx)*float32(m.DX)) + float32((y-cy)*float32(m.DY))
+	d := float32((x-cx)*m.DX) + float32((y-cy)*m.DY)
 	return d*m.InvLength + 0.5
 }
 
 // radii resolves a radial gradient's ending-shape radii in device
 // pixels for center (cx, cy) in box b, per CSS's size keywords.
-func (g Gradient) radii(b frect, cx, cy, scale float64) (rx, ry float64) {
-	sideX := [2]float64{math.Abs(cx - b.x0), math.Abs(b.x1 - cx)}
-	sideY := [2]float64{math.Abs(cy - b.y0), math.Abs(b.y1 - cy)}
-	var sx, sy float64
+func (g Gradient) radii(b frect, cx, cy, scale float32) (rx, ry float32) {
+	sideX := [2]float32{abs(cx - b.x0), abs(b.x1 - cx)}
+	sideY := [2]float32{abs(cy - b.y0), abs(b.y1 - cy)}
+	var sx, sy float32
 	switch g.Size {
 	case RadiusExplicit:
-		rx, ry = g.RadiusX*scale, g.RadiusY*scale
+		rx, ry = float32(g.RadiusX)*scale, float32(g.RadiusY)*scale
 		if g.Circle {
 			ry = rx
 		}
@@ -231,7 +230,7 @@ func (g Gradient) radii(b frect, cx, cy, scale float64) (rx, ry float64) {
 		r := min(sx, sy)
 		switch {
 		case corner:
-			r = math.Hypot(sx, sy)
+			r = lengthF(sx, sy)
 		case g.Size == FarthestSide:
 			r = max(sx, sy)
 		}

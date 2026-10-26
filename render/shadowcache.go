@@ -162,7 +162,7 @@ func buildShadowRaster(w, h, radius, blur, num, denom int) *shadowRaster {
 	tail, half := shadowTail(devBlur)
 	for y := range ras.h {
 		for x := range ras.w {
-			d := sdRoundRect(float64(x)+0.5, float64(y)+0.5, rect, float64(devRadius))
+			d := sdRoundRect(float32(x)+0.5, float32(y)+0.5, rect, float32(devRadius))
 			ras.cov[y*ras.w+x] = tailCoverage(tail, half, d)
 		}
 	}
@@ -177,7 +177,7 @@ func buildShadowRaster(w, h, radius, blur, num, denom int) *shadowRaster {
 // tail[round(d)], monotone in d, 1 at the edge, 0 past half. The
 // truncation discards roughly exp(-2) of one tail, invisible at uint8
 // resolution and what keeps every kernel bounded by the blur.
-func shadowTail(devBlur int) (tail []float64, half int) {
+func shadowTail(devBlur int) (tail []float32, half int) {
 	sigma := float64(devBlur) / 2
 	half = devBlur
 	weight := make([]float64, half+1)
@@ -188,27 +188,28 @@ func shadowTail(devBlur int) (tail []float64, half int) {
 	for i := 1; i <= half; i++ {
 		total += 2 * weight[i]
 	}
-	tail = make([]float64, half+2)
+	sum := make([]float64, half+2)
+	tail = make([]float32, half+2)
 	for j := half; j >= 0; j-- {
 		mass := weight[j] / total
 		if j > 0 {
 			mass *= 2 // the symmetric negative side folds in
 		}
-		tail[j] = tail[j+1] + mass
+		sum[j] = sum[j+1] + mass
+		tail[j] = float32(sum[j])
 	}
 	return tail, half
 }
 
 // tailCoverage quantizes the kernel tail at signed distance d: full
 // inside the silhouette, zero past the kernel extent.
-func tailCoverage(tail []float64, half int, d float64) uint8 {
+func tailCoverage(tail []float32, half int, d float32) uint8 {
 	if d <= 0 {
 		return 255
 	}
-	j := int(math.Round(d))
+	j := int(math.Round(float64(d)))
 	if j > half {
 		return 0
 	}
-	v := uint32(tail[j]*255 + 0.5)
-	return uint8(min(v, uint32(255)))
+	return uint8(min(cov255(tail[j]), 255))
 }

@@ -207,7 +207,7 @@ func TestRoundedRectRegion(t *testing.T) {
 			for _, q := range rects {
 				in = in || (x >= q.X && x < q.X+q.W && y >= q.Y && y < q.Y+q.H)
 			}
-			want := sdBox(float64(x)+0.5, float64(y)+0.5, b, rc) <= 0
+			want := sdBox(float32(x)+0.5, float32(y)+0.5, b, rc) <= 0
 			if in != want {
 				t.Fatalf("pixel (%d,%d) in region %v, shape contains it %v", x, y, in, want)
 			}
