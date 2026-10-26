@@ -14,15 +14,17 @@ const imageIdleFrames = 120
 // sets (maxSurfaces) the device's layers and targets share.
 const maxImages = maxSurfaces / 2
 
-// imageTexture is an uploaded *image.RGBA and the frame it last drew.
+// imageTexture is an uploaded *image.RGBA, the version its pixels were
+// uploaded at and the frame it last drew.
 type imageTexture struct {
-	s    *surface
-	used uint64
+	s       *surface
+	version uint64
+	used    uint64
 }
 
-// images are the device's uploaded still images (render.StillImage),
-// keyed by the pixels they hold, so a still image's sub-image drawn
-// anew each frame finds its texture.
+// images are the device's uploaded still and versioned images
+// (render.StillImage, render.VersionedImage), keyed by the pixels they
+// hold, so a sub-image drawn anew each frame finds its texture.
 type images struct {
 	byImage map[imageKey]*imageTexture
 	frames  uint64
@@ -39,9 +41,11 @@ type imageKey struct {
 	stride int
 }
 
-// imageTexture is the still image img on the GPU, uploading it on its
-// first draw.
-func (f *frame) imageTexture(img *image.RGBA) (*surface, bool) {
+// imageTexture is img's pixels at version on the GPU, uploading them on
+// their first draw and again when the version moves. A texture this
+// frame already drew at another version cannot change under that draw,
+// so the image then has none.
+func (f *frame) imageTexture(img *image.RGBA, version uint64) (*surface, bool) {
 	b := img.Rect
 	if b.Empty() || len(img.Pix) == 0 {
 		return nil, false
@@ -49,6 +53,13 @@ func (f *frame) imageTexture(img *image.RGBA) (*surface, bool) {
 	ims := &f.d.images
 	key := imageKey{pix: &img.Pix[img.PixOffset(b.Min.X, b.Min.Y)], rect: b, stride: img.Stride}
 	if t, ok := ims.byImage[key]; ok {
+		if t.version != version {
+			if t.used == ims.frames {
+				return nil, false
+			}
+			t.version = version
+			f.stageImage(t.s, img)
+		}
 		t.used = ims.frames
 		return t.s, true
 	}
@@ -69,7 +80,14 @@ func (f *frame) imageTexture(img *image.RGBA) (*surface, bool) {
 	if ims.byImage == nil {
 		ims.byImage = map[imageKey]*imageTexture{}
 	}
-	ims.byImage[key] = &imageTexture{s: s, used: ims.frames}
+	ims.byImage[key] = &imageTexture{s: s, version: version, used: ims.frames}
+	f.stageImage(s, img)
+	return s, true
+}
+
+// stageImage uploads img's pixels into its texture s.
+func (f *frame) stageImage(s *surface, img *image.RGBA) {
+	b := img.Rect
 	f.uploads = append(f.uploads, upload{dst: s, region: image.Rect(0, 0, b.Dx(), b.Dy()), offset: len(f.staging), rowLength: b.Dx()})
 	for y := b.Min.Y; y < b.Max.Y; y++ {
 		row := img.Pix[img.PixOffset(b.Min.X, y):img.PixOffset(b.Max.X, y)]
@@ -77,7 +95,6 @@ func (f *frame) imageTexture(img *image.RGBA) (*surface, bool) {
 			f.staging = append(f.staging, row[x+2], row[x+1], row[x], row[x+3])
 		}
 	}
-	return s, true
 }
 
 // evictLRU frees the least recently drawn quarter of the textures no

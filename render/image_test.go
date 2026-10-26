@@ -353,3 +353,51 @@ func TestDrawImageDeviceClips(t *testing.T) {
 		t.Error("did not draw inside the clip")
 	}
 }
+
+// Still copies any image into the pixels the CPU draws it from (each
+// At, premultiplied to 8 bits) and keeps a still image as it is.
+func TestStillHoldsThePixelsDrawnFrom(t *testing.T) {
+	r := image.Rect(3, 5, 19, 14)
+	nrgba, ycc, gray := image.NewNRGBA(r), image.NewYCbCr(r, image.YCbCrSubsampleRatio420), image.NewGray(r)
+	for i := range nrgba.Pix {
+		nrgba.Pix[i] = uint8(37*i + 11)
+	}
+	for i := range ycc.Y {
+		ycc.Y[i] = uint8(53*i + 7)
+	}
+	for i := range ycc.Cb {
+		ycc.Cb[i], ycc.Cr[i] = uint8(71*i+3), uint8(29*i+200)
+	}
+	for i := range gray.Pix {
+		gray.Pix[i] = uint8(19 * i)
+	}
+	pal := image.NewPaletted(r, color.Palette{color.NRGBA{R: 200, G: 10, B: 90, A: 128}, color.Gray{Y: 77}})
+	for i := range pal.Pix {
+		pal.Pix[i] = uint8(i % 2)
+	}
+	rgba := image.NewRGBA(r)
+	for i := range rgba.Pix {
+		rgba.Pix[i] = uint8(13 * i)
+	}
+	for _, img := range []image.Image{nrgba, ycc, gray, pal, rgba} {
+		s := Still(img)
+		if s.Rect != r {
+			t.Fatalf("%T: bounds %v, want %v", img, s.Rect, r)
+		}
+		for y := r.Min.Y; y < r.Max.Y; y++ {
+			for x := r.Min.X; x < r.Max.X; x++ {
+				cr, cg, cb, ca := img.At(x, y).RGBA()
+				want := color.RGBA{R: uint8(cr >> 8), G: uint8(cg >> 8), B: uint8(cb >> 8), A: uint8(ca >> 8)}
+				if got := s.RGBAAt(x, y); got != want {
+					t.Fatalf("%T at (%d, %d): %v, want %v", img, x, y, got, want)
+				}
+			}
+		}
+	}
+	if s := Still(rgba); &s.Pix[0] == &rgba.Pix[0] {
+		t.Error("Still shares an *image.RGBA's pixels")
+	}
+	if s := (StillImage{rgba}); Still(s) != s {
+		t.Error("Still changed a still image")
+	}
+}

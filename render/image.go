@@ -2,6 +2,7 @@ package render
 
 import (
 	"image"
+	"image/draw"
 	"math"
 
 	xdraw "golang.org/x/image/draw"
@@ -245,10 +246,9 @@ func (c *Canvas) DrawImageRect(img image.Image, r Rect) {
 
 // StillImage is an *image.RGBA its owner never changes once wrapped: a
 // decoded picture, a cached raster, an icon. A GPU renderer uploads it
-// once and keeps the texture while it is drawn; any other image it
-// draws from its visible pixels each time, so changing an image's
-// pixels between draws (a video frame resampled into the same raster)
-// is always seen. Its sub-images are still too.
+// once and keeps the texture while it is drawn; a VersionedImage it
+// uploads again when its version moves, and any other image it draws
+// from its visible pixels each time. Its sub-images are still too.
 type StillImage struct{ *image.RGBA }
 
 // SubImage is the still image's part within r.
@@ -260,13 +260,45 @@ func (s StillImage) SubImage(r image.Rectangle) image.Image {
 	return StillImage{sub}
 }
 
+// Still is img's pixels as they are now as a still image: img itself
+// when it is one, otherwise a copy, so changes to img never reach it.
+func Still(img image.Image) StillImage {
+	if s, ok := img.(StillImage); ok {
+		return s
+	}
+	b := img.Bounds()
+	dst := image.NewRGBA(b)
+	draw.Draw(dst, b, img, b.Min, draw.Src)
+	return StillImage{dst}
+}
+
+// VersionedImage is an *image.RGBA whose owner changes its pixels and
+// bumps Version with every change: a video frame resampled into the
+// same raster. A GPU renderer keeps its texture and uploads the pixels
+// again only when the version moves. Its sub-images carry the version.
+type VersionedImage struct {
+	*image.RGBA
+	Version uint64
+}
+
+// SubImage is the image's part within r, at the same version.
+func (v VersionedImage) SubImage(r image.Rectangle) image.Image {
+	sub, ok := v.RGBA.SubImage(r).(*image.RGBA)
+	if !ok {
+		panic("render: an *image.RGBA's SubImage is not an *image.RGBA")
+	}
+	return VersionedImage{sub, v.Version}
+}
+
 // rgbaOf is img's pixels as an *image.RGBA when it holds them so: the
-// image itself, or a still image's; nil otherwise.
+// image itself, or a still or versioned image's; nil otherwise.
 func rgbaOf(img image.Image) *image.RGBA {
 	switch v := img.(type) {
 	case *image.RGBA:
 		return v
 	case StillImage:
+		return v.RGBA
+	case VersionedImage:
 		return v.RGBA
 	}
 	return nil

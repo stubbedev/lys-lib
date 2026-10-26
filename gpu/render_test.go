@@ -286,6 +286,25 @@ func TestRenderStillImageKeepsItsTexture(t *testing.T) {
 	}
 }
 
+// A versioned image keeps one texture and shows its new pixels each
+// time its version moves, held over frames where it stays.
+func TestRenderVersionedImageUpdatesItsTexture(t *testing.T) {
+	d := openDevice(t)
+	img := image.NewRGBA(image.Rect(0, 0, 8, 8))
+	parity(t, d, 40, 24, 1, 1, 4, func(cv *render.Canvas, frame int) {
+		v := render.VersionedImage{RGBA: img, Version: uint64(frame / 2)}
+		for i := range img.Pix {
+			img.Pix[i] = uint8(30*int(v.Version) + 11*i)
+		}
+		cv.Clear(cv.Rect(), render.RGBA(0, 0, 0, 255))
+		cv.DrawImageDevice(v, 2, 2)
+		cv.DrawImageRect(v, render.Rect{X: 14, Y: 2, W: 20, H: 18})
+	})
+	if n := len(d.images.byImage); n != 1 {
+		t.Errorf("%d textures for one versioned image, want 1", n)
+	}
+}
+
 // Gradients draw natively: linear, radial and conic geometry, the
 // extend modes, hard stops, rounded clips and opacity, as the CPU
 // paints them.

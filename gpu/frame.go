@@ -451,17 +451,28 @@ func (f *frame) DrawImage(s render.State, img image.Image, x, y int) {
 	f.scaledImage(s, img, render.MapRect(render.Rect{X: x, Y: y, W: b.Dx(), H: b.Dy()}, f.num, f.denom), func(cv *render.Canvas) { cv.DrawImage(img, x, y) })
 }
 
+// texture is img's texture when the GPU keeps one for it: a still or
+// versioned image's.
+func (f *frame) texture(img image.Image) (*surface, bool) {
+	if f.err != nil {
+		return nil, false
+	}
+	switch v := img.(type) {
+	case render.StillImage:
+		return f.imageTexture(v.RGBA, 0)
+	case render.VersionedImage:
+		return f.imageTexture(v.RGBA, v.Version)
+	}
+	return nil, false
+}
+
 // scaledImage draws img nearest-sampled into the device rect full, as
 // render's DrawImage and DrawImageRect map it: a pixel's texel is its
 // offset into full scaled by the image's size over full's, in integers.
-// An image other than a render.StillImage draws as a sprite through
+// An image the GPU keeps no texture for draws as a sprite through
 // raster, from its visible pixels.
 func (f *frame) scaledImage(s render.State, img image.Image, full render.Rect, raster func(cv *render.Canvas)) {
-	still, ok := img.(render.StillImage)
-	var tex *surface
-	if ok && f.err == nil {
-		tex, ok = f.imageTexture(still.RGBA)
-	}
+	tex, ok := f.texture(img)
 	if !ok {
 		f.sprite(s, "scaled image", raster)
 		return
@@ -476,11 +487,7 @@ func (f *frame) DrawImageCover(s render.State, img image.Image, r render.Rect, r
 	if img.Bounds().Empty() || r.Empty() {
 		return
 	}
-	still, ok := img.(render.StillImage)
-	var tex *surface
-	if ok && f.err == nil {
-		tex, ok = f.imageTexture(still.RGBA)
-	}
+	tex, ok := f.texture(img)
 	if !ok {
 		f.sprite(s, "DrawImageCover", func(cv *render.Canvas) { cv.DrawImageCover(img, r, radii) })
 		return
@@ -493,11 +500,7 @@ func (f *frame) DrawImageCover(s render.State, img image.Image, r render.Rect, r
 }
 
 func (f *frame) DrawImageDevice(s render.State, img image.Image, x, y int) {
-	still, ok := img.(render.StillImage)
-	var tex *surface
-	if ok && f.err == nil {
-		tex, ok = f.imageTexture(still.RGBA)
-	}
+	tex, ok := f.texture(img)
 	if !ok {
 		f.sprite(s, "DrawImageDevice", func(cv *render.Canvas) { cv.DrawImageDevice(img, x, y) })
 		return
@@ -520,7 +523,7 @@ func (f *frame) DrawIcon(s render.State, ic *render.Icon, x, y int, m render.Aff
 	img := ic.Image()
 	tex, ok := (*surface)(nil), invertible && f.err == nil
 	if ok {
-		tex, ok = f.imageTexture(img)
+		tex, ok = f.imageTexture(img, 0)
 	}
 	if !ok {
 		f.sprite(s, "DrawIcon", func(cv *render.Canvas) { ic.DrawXformed(cv, x, y, m) })
