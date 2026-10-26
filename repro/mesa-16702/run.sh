@@ -28,6 +28,9 @@ status=0
             --args "$out/gpu.test" -test.count=1 -test.v -test.run 'TestRenderTiles|TestRenderBlendModes'
 ) > "$out/gdb.txt" 2> "$out/gallivm.txt" || status=$?
 
+if [[ -f "$root/gpu/fault-window.bin" ]]; then
+    mv "$root/gpu/fault-window.bin" "$out/"
+fi
 signal=$(grep -oE 'received signal SIG[A-Z]+' "$out/gdb.txt" | head -1 | awk '{print $3}' || true)
 if [[ -n "$signal" ]]; then
     echo "result: $signal" | tee -a "$out/system.txt"
