@@ -21,6 +21,9 @@ type fakeServer struct {
 	c   *conn
 	act []byte
 	abi activationABI
+	// clientProps and nodeProps are the properties the client named
+	// itself and its node with.
+	clientProps, nodeProps []dictItem
 }
 
 // serveFake listens where the client connects and returns the server
@@ -87,7 +90,10 @@ func (s *fakeServer) event(id uint32, op uint8, body pod, fds ...int) uint32 {
 func (s *fakeServer) handshake(version string) {
 	s.t.Helper()
 	s.expect(coreID, coreMethodHello)
-	s.expect(clientID, clientMethodUpdateProperties)
+	props := structFields(s.expect(clientID, clientMethodUpdateProperties).body)
+	if s.clientProps = props.dict(); props.err != nil {
+		s.t.Fatalf("client update_properties: %v", props.err)
+	}
 	seq := s.syncSeq()
 	s.info(version)
 	s.done(seq)
@@ -126,6 +132,9 @@ func (s *fakeServer) createNode() {
 	if factory, iface, version := f.string(), f.string(), f.int(); f.err != nil || factory != clientNodeFactory || iface != clientNodeIface || uint32(version) != s.abi.clientNode {
 		s.t.Fatalf("create_object %q %q %d: %v", factory, iface, version, f.err)
 	}
+	if s.nodeProps = f.dict(); f.err != nil {
+		s.t.Fatalf("create_object properties: %v", f.err)
+	}
 	s.expect(firstObjectID, nodeMethodUpdate)
 	s.expect(firstObjectID, nodeMethodPortUpdate)
 }
@@ -144,7 +153,7 @@ func (s *fakeServer) exportNode() {
 // version.
 func (s *fakeServer) transport(version uint32) {
 	s.t.Helper()
-	fd, mem, err := memfd(int(pageSize))
+	fd, mem, err := memfd(testNode, int(pageSize))
 	if err != nil {
 		s.t.Fatal(err)
 	}
@@ -179,7 +188,7 @@ func startAgainst(t *testing.T, script func(*fakeServer)) (*fakeServer, started)
 	t.Helper()
 	result := make(chan started, 1)
 	s := serveFake(t, func() {
-		p, err := Start(Config{Width: 64, Height: 32, Stride: 256, Format: VideoBGRx, FPS: 30, Source: solid{1}})
+		p, err := Start(Config{Application: testApplication, Name: testNode, Width: 64, Height: 32, Stride: 256, Format: VideoBGRx, FPS: 30, Source: solid{1}})
 		result <- started{p, err}
 	})
 	script(s)
@@ -345,5 +354,36 @@ func TestAServerBefore12GetsTheVersion0Activation(t *testing.T) {
 	})
 	if want := "pipewire: transport: activation version 0 from a server whose version promises 1"; bad.p != nil || bad.err == nil || !strings.Contains(bad.err.Error(), want) {
 		t.Errorf("a 1.6.9 server with a version 0 activation: %v", bad.err)
+	}
+}
+
+// dictValue is the value of key in props, and whether it is there.
+func dictValue(props []dictItem, key string) (string, bool) {
+	for _, p := range props {
+		if p.key == key {
+			return p.value, true
+		}
+	}
+	return "", false
+}
+
+// The client introduces itself under the configured application name,
+// and its node carries the configured stream name.
+func TestStartNamesTheClientAndNodeFromItsConfig(t *testing.T) {
+	s, r := startAgainst(t, func(s *fakeServer) {
+		s.handshake("1.6.9")
+		s.createNode()
+		s.exportNode()
+	})
+	if r.err != nil {
+		t.Fatal(r.err)
+	}
+	if v, ok := dictValue(s.clientProps, "application.name"); v != testApplication {
+		t.Errorf("application.name %q (present %v), want %q", v, ok, testApplication)
+	}
+	for _, key := range []string{"node.name", "media.name"} {
+		if v, ok := dictValue(s.nodeProps, key); v != testNode {
+			t.Errorf("%s %q (present %v), want %q", key, v, ok, testNode)
+		}
 	}
 }

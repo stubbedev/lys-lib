@@ -25,6 +25,8 @@ type libei struct {
 	eventType      func(ev uintptr) int32
 	eventSeat      func(ev uintptr) uintptr
 	eventDevice    func(ev uintptr) uintptr
+	seatName       func(seat uintptr) string
+	deviceName     func(dev uintptr) string
 	eventUnref     func(ev uintptr) uintptr
 	unref          func(ei uintptr) uintptr
 	now            func(ei uintptr) uint64
@@ -70,6 +72,8 @@ func loadLibei(t *testing.T) *libei {
 			{&l.eventType, "ei_event_get_type"},
 			{&l.eventSeat, "ei_event_get_seat"},
 			{&l.eventDevice, "ei_event_get_device"},
+			{&l.seatName, "ei_seat_get_name"},
+			{&l.deviceName, "ei_device_get_name"},
 			{&l.eventUnref, "ei_event_unref"},
 			{&l.unref, "ei_unref"},
 			{&l.now, "ei_now"},
@@ -144,35 +148,50 @@ func (r *recorder) ScrollStop(x, y bool)        { r.add(fmt.Sprint("stop ", x, "
 func (r *recorder) Key(c uint32, p bool)        { r.add(fmt.Sprint("key ", c, " ", p)) }
 func (r *recorder) Keysym(sym uint32, p bool)   { r.add(fmt.Sprint("keysym ", sym, " ", p)) }
 
+// testSeat is the seat the tests' servers advertise.
+const testSeat = "lys-lib-test"
+
+// session is what a libei sender saw of the server.
+type session struct {
+	connected bool
+	// seats and devices are the names of the seats added and the
+	// devices resumed, in order.
+	seats, devices []string
+}
+
 // drive connects a libei sender to fd and emulates input on every
 // device the server resumes, until resumed devices reach want or the
 // timeout passes.
-func drive(t *testing.T, l *libei, fd int, caps []uintptr, want int, timeout time.Duration) (connected bool, resumed int) {
+func drive(t *testing.T, l *libei, fd int, caps []uintptr, want int, timeout time.Duration) session {
 	t.Helper()
+	var got session
 	ei := l.newSender(nil)
 	defer l.unref(ei)
-	l.configureName(ei, "lys-shell-test")
+	l.configureName(ei, "lys-lib-test")
 	if rc := l.setupFd(ei, int32(fd)); rc != 0 {
 		t.Fatalf("ei_setup_backend_fd = %d", rc)
 	}
 	efd := int(l.getFd(ei))
 	deadline := time.Now().Add(timeout)
-	for time.Now().Before(deadline) && resumed < want {
+	for time.Now().Before(deadline) && len(got.devices) < want {
 		pfd := []pollFd{{fd: int32(efd), events: 1}}
 		pollWait(pfd, 100)
 		l.dispatch(ei)
 		for ev := l.getEvent(ei); ev != 0; ev = l.getEvent(ei) {
 			switch l.eventType(ev) {
 			case evConnect:
-				connected = true
+				got.connected = true
 			case evDisconnect:
 				t.Error("the server disconnected")
 			case evSeatAdded:
-				args := append([]uintptr{l.eventSeat(ev)}, caps...)
+				seat := l.eventSeat(ev)
+				got.seats = append(got.seats, l.seatName(seat))
+				args := append([]uintptr{seat}, caps...)
 				purego.SyscallN(l.bindCaps, append(args, 0)...)
 			case evDeviceResumed:
-				resumed++
-				emulate(l, ei, l.eventDevice(ev))
+				dev := l.eventDevice(ev)
+				got.devices = append(got.devices, l.deviceName(dev))
+				emulate(l, ei, dev)
 			}
 			l.eventUnref(ev)
 		}
@@ -182,7 +201,7 @@ func drive(t *testing.T, l *libei, fd int, caps []uintptr, want int, timeout tim
 		l.dispatch(ei)
 		time.Sleep(20 * time.Millisecond)
 	}
-	return connected, resumed
+	return got
 }
 
 func emulate(l *libei, ei, dev uintptr) {
@@ -217,7 +236,7 @@ func pollWait(fds []pollFd, ms int) {
 func TestLibeiSenderEmulatesThroughTheServer(t *testing.T) {
 	l := loadLibei(t)
 	rec := &recorder{}
-	client, err := Pair(rec)
+	client, err := Pair(rec, testSeat)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,20 +245,26 @@ func TestLibeiSenderEmulatesThroughTheServer(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = client.Close()
-	connected, resumed := drive(t, l, fd, []uintptr{eiCapPointer, eiCapKeyboard, eiCapButton, eiCapScroll, eiCapText}, 2, 5*time.Second)
-	if !connected || resumed != 2 {
-		t.Fatalf("connected %v, %d devices resumed; want a keyboard and a pointer", connected, resumed)
+	got := drive(t, l, fd, []uintptr{eiCapPointer, eiCapKeyboard, eiCapButton, eiCapScroll, eiCapText}, 2, 5*time.Second)
+	if !got.connected || len(got.devices) != 2 {
+		t.Fatalf("connected %v, devices %q resumed; want a keyboard and a pointer", got.connected, got.devices)
+	}
+	if want := []string{testSeat}; !slices.Equal(got.seats, want) {
+		t.Errorf("seats %q, want %q", got.seats, want)
+	}
+	if want := []string{testSeat + "-keyboard", testSeat + "-pointer"}; !slices.Equal(got.devices, want) {
+		t.Errorf("devices %q, want %q", got.devices, want)
 	}
 	deadline := time.Now().Add(2 * time.Second)
 	want := []string{"motion 1.5 -2", "button 272 true", "scroll 0 3", "stop false true", "discrete 0 240", "key 30 true", "key 30 false", "keysym 65 true"}
 	for time.Now().Before(deadline) && len(rec.list()) < len(want) {
 		time.Sleep(10 * time.Millisecond)
 	}
-	got := rec.list()
-	slices.Sort(got)
+	handled := rec.list()
+	slices.Sort(handled)
 	sorted := slices.Clone(want)
 	slices.Sort(sorted)
-	if !slices.Equal(got, sorted) {
+	if !slices.Equal(handled, sorted) {
 		t.Errorf("handled %q, want %q", rec.list(), want)
 	}
 }
@@ -247,15 +272,15 @@ func TestLibeiSenderEmulatesThroughTheServer(t *testing.T) {
 func TestLibeiPointerOnlyBindGetsNoKeyboard(t *testing.T) {
 	l := loadLibei(t)
 	rec := &recorder{}
-	client, err := Pair(rec)
+	client, err := Pair(rec, testSeat)
 	if err != nil {
 		t.Fatal(err)
 	}
 	fd, _ := syscall.Dup(int(client.Fd()))
 	_ = client.Close()
-	_, resumed := drive(t, l, fd, []uintptr{eiCapPointer, eiCapButton, eiCapScroll}, 2, 500*time.Millisecond)
-	if resumed != 1 {
-		t.Fatalf("%d devices resumed, want the pointer alone", resumed)
+	got := drive(t, l, fd, []uintptr{eiCapPointer, eiCapButton, eiCapScroll}, 2, 500*time.Millisecond)
+	if want := []string{testSeat + "-pointer"}; !slices.Equal(got.devices, want) {
+		t.Fatalf("devices %q resumed, want %q alone", got.devices, want)
 	}
 	for _, e := range rec.list() {
 		if e[:3] == "key" {

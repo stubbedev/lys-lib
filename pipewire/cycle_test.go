@@ -45,7 +45,7 @@ func newCycleRig(t testing.TB, src Source) *cycleRig {
 	act.flags.Store(activationFlagAsync)
 	act.status.Store(activationFinished)
 	p := &Producer{
-		cfg:    Config{Width: 64, Height: 32, Stride: 256, Format: VideoBGRx, FPS: 30, Transform: 3, Source: src},
+		cfg:    Config{Application: testApplication, Name: testNode, Width: 64, Height: 32, Stride: 256, Format: VideoBGRx, FPS: 30, Transform: 3, Source: src},
 		damage: make([]Rect, 0, maxDamageRegions),
 	}
 	n := &node{h: p, abi: abiV1, direction: directionOutput, activation: act, position: &act.position, prepared: true}
@@ -267,7 +267,7 @@ func TestStartAndPauseMoveTheActivation(t *testing.T) {
 // is refused to the server.
 func TestALinksIOSlotsFollowTheCycleParity(t *testing.T) {
 	a, b := connPair(t)
-	fd, mem, err := memfd(int(pageSize))
+	fd, mem, err := memfd(testNode, int(pageSize))
 	if err != nil {
 		t.Fatal(err)
 	}

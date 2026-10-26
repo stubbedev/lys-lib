@@ -15,7 +15,7 @@ import (
 
 const headerSize = 16
 
-// order is the native byte order of every Linux platform lys-shell runs on.
+// order is the native byte order of every Linux platform lys-lib runs on.
 var order = binary.LittleEndian
 
 // message is one decoded message.

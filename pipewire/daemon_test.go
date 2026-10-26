@@ -26,7 +26,7 @@ func (s solid) Fill(dst []byte) ([]Rect, bool) {
 
 func TestProducerExportsANode(t *testing.T) {
 	pwtest.Start(t)
-	p, err := Start(Config{Width: 64, Height: 32, Stride: 256, Format: VideoBGRx, FPS: 30, Source: solid{0x7f}})
+	p, err := Start(Config{Application: testApplication, Name: testNode, Width: 64, Height: 32, Stride: 256, Format: VideoBGRx, FPS: 30, Source: solid{0x7f}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -158,7 +158,7 @@ func link(t *testing.T) {
 	}
 	var out []byte
 	for range 100 {
-		out, err = exec.Command(bin, "lys-shell-screencast:output_0", "test-consumer:input_0").CombinedOutput()
+		out, err = exec.Command(bin, testNode+":output_0", "test-consumer:input_0").CombinedOutput()
 		if err == nil {
 			return
 		}
@@ -180,7 +180,7 @@ func (damaged) Fill(dst []byte) ([]Rect, bool) {
 
 func TestProducerFeedsALinkedConsumer(t *testing.T) {
 	pwtest.Start(t)
-	p, err := Start(Config{Width: 64, Height: 32, Stride: 256, Format: VideoBGRx, FPS: 30, Transform: 3, Source: damaged{}})
+	p, err := Start(Config{Application: testApplication, Name: testNode, Width: 64, Height: 32, Stride: 256, Format: VideoBGRx, FPS: 30, Transform: 3, Source: damaged{}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -271,7 +271,7 @@ func (g *growing) Fill(dst []byte) ([]Rect, bool) {
 func TestProducerRenegotiatesAResizedSource(t *testing.T) {
 	pwtest.Start(t)
 	src := &growing{width: 64, height: 32, stride: 256, fill: 0x11}
-	p, err := Start(Config{Width: 64, Height: 32, Stride: 256, Format: VideoBGRx, FPS: 30, Source: src})
+	p, err := Start(Config{Application: testApplication, Name: testNode, Width: 64, Height: 32, Stride: 256, Format: VideoBGRx, FPS: 30, Source: src})
 	if err != nil {
 		t.Fatal(err)
 	}

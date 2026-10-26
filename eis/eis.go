@@ -1,9 +1,9 @@
 // Package eis is an EIS server: the receiving end of libei, which
-// remote-desktop clients prefer over the portal's Notify* D-Bus calls
-// (lys-shell-portal remotedesktop/eis.rs, which used reis). ConnectToEIS
-// hands the app one end of a socket pair; Serve speaks the ei protocol
-// on the other, advertises a seat with a pointer and a keyboard, and
-// replays what the client emulates onto a Handler.
+// remote-desktop clients prefer over the portal's Notify* D-Bus calls.
+// A portal's ConnectToEIS hands the app one end of a socket pair; Serve
+// speaks the ei protocol on the other, advertises a named seat with a
+// pointer and a keyboard, and replays what the client emulates onto a
+// Handler.
 package eis
 
 import (
@@ -72,9 +72,12 @@ const deviceTypeVirtual = 1
 // count up from 1.
 const serverIDBase = 0xff00_0000_0000_0000
 
-// Pair makes a socket pair, serves h on one end and returns the other
-// for the client.
-func Pair(h Handler) (*os.File, error) {
+// Pair makes a socket pair, serves h on one end as seat and returns
+// the other for the client.
+func Pair(h Handler, seat string) (*os.File, error) {
+	if err := checkSeat(seat); err != nil {
+		return nil, err
+	}
 	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM|syscall.SOCK_CLOEXEC, 0)
 	if err != nil {
 		return nil, fmt.Errorf("eis: socketpair: %w", err)
@@ -94,15 +97,17 @@ func Pair(h Handler) (*os.File, error) {
 	}
 	go func() {
 		defer func() { _ = unix.Close() }()
-		_ = Serve(unix, h)
+		_ = Serve(unix, h, seat)
 	}()
 	return os.NewFile(uintptr(fds[1]), "eis-client"), nil
 }
 
 // server is one connection's state.
 type server struct {
-	conn       *net.UnixConn
-	h          Handler
+	conn *net.UnixConn
+	h    Handler
+	// seatName names the seat, and its devices after it.
+	seatName   string
 	objects    map[uint64]string
 	negotiated map[string]uint32
 	nextID     uint64
@@ -112,11 +117,15 @@ type server struct {
 	bound      bool
 }
 
-// Serve runs the protocol on conn until the client disconnects. A
-// clean disconnect is nil.
-func Serve(conn *net.UnixConn, h Handler) error {
+// Serve runs the protocol on conn until the client disconnects,
+// advertising a seat called seat whose devices are seat-keyboard and
+// seat-pointer. A clean disconnect is nil.
+func Serve(conn *net.UnixConn, h Handler, seat string) error {
+	if err := checkSeat(seat); err != nil {
+		return err
+	}
 	s := &server{
-		conn: conn, h: h, objects: map[uint64]string{0: ifHandshake},
+		conn: conn, h: h, seatName: seat, objects: map[uint64]string{0: ifHandshake},
 		negotiated: map[string]uint32{}, nextID: serverIDBase,
 	}
 	// The server opens with its handshake version.
@@ -151,6 +160,15 @@ func Serve(conn *net.UnixConn, h Handler) error {
 		}
 		buf = append(buf[:0], rest...)
 	}
+}
+
+// checkSeat refuses an empty seat name: the client shows it, and the
+// devices are named after it.
+func checkSeat(seat string) error {
+	if seat == "" {
+		return errors.New("eis: the seat name is empty: the client lists the seat and its devices by it")
+	}
+	return nil
 }
 
 func closeFds(oob []byte) {
@@ -304,7 +322,7 @@ func (s *server) addSeat() error {
 	if err := s.send(newMessage(s.connection, 1).u64(s.seat).u32(v)); err != nil {
 		return err
 	}
-	if err := s.send(newMessage(s.seat, 1).str("lys-shell")); err != nil {
+	if err := s.send(newMessage(s.seat, 1).str(s.seatName)); err != nil {
 		return err
 	}
 	for _, c := range capInterface {
@@ -333,12 +351,12 @@ func (s *server) bind(caps uint64) error {
 		if caps&capText != 0 {
 			ifaces = append(ifaces, ifText)
 		}
-		if err := s.addDevice("lys-shell-keyboard", ifaces); err != nil {
+		if err := s.addDevice(s.seatName+"-keyboard", ifaces); err != nil {
 			return err
 		}
 	}
 	if caps&(capPointer|capButton|capScroll) != 0 {
-		return s.addDevice("lys-shell-pointer", []string{ifPointer, ifButton, ifScroll})
+		return s.addDevice(s.seatName+"-pointer", []string{ifPointer, ifButton, ifScroll})
 	}
 	return nil
 }

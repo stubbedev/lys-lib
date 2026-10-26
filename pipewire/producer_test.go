@@ -9,6 +9,31 @@ import (
 	"github.com/stubbedev/lys-lib/pipewire/pwtest"
 )
 
+// The names the tests' clients and streams go by.
+const (
+	testApplication = "lys-lib-test"
+	testNode        = "lys-lib-test-screencast"
+)
+
+// A config without either name is refused before anything connects,
+// with the missing field named; neither falls back to a default.
+func TestStartRefusesAConfigMissingAName(t *testing.T) {
+	t.Setenv("PIPEWIRE_RUNTIME_DIR", t.TempDir())
+	t.Setenv("PIPEWIRE_REMOTE", "no-server-here")
+	for _, c := range []struct {
+		cfg  Config
+		want string
+	}{
+		{Config{Name: testNode, Width: 64, Height: 32, Stride: 256, Format: VideoBGRx, Source: solid{1}}, "pipewire: Config.Application is empty: the client needs the application name it is listed under"},
+		{Config{Application: testApplication, Width: 64, Height: 32, Stride: 256, Format: VideoBGRx, Source: solid{1}}, "pipewire: Config.Name is empty: the stream needs the node name its consumer links to"},
+	} {
+		p, err := Start(c.cfg)
+		if p != nil || err == nil || err.Error() != c.want {
+			t.Errorf("Start(%+v) = %v, %v; want %q", c.cfg, p, err, c.want)
+		}
+	}
+}
+
 // settlesTo waits until the process runs want goroutines, failing with
 // the stacks of the ones left over.
 func settlesTo(t *testing.T, want int) {
@@ -38,7 +63,7 @@ func streaming(t *testing.T) (*Producer, int) {
 	}
 	t.Cleanup(loop.stop)
 	before := runtime.NumGoroutine()
-	p, err := Start(Config{Width: 64, Height: 32, Stride: 256, Format: VideoBGRx, FPS: 30, Source: solid{0x7f}})
+	p, err := Start(Config{Application: testApplication, Name: testNode, Width: 64, Height: 32, Stride: 256, Format: VideoBGRx, FPS: 30, Source: solid{0x7f}})
 	if err != nil {
 		t.Fatal(err)
 	}

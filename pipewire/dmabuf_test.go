@@ -65,7 +65,7 @@ func (g *gpuSource) Modifier() uint64 { return 0 }
 func (g *gpuSource) DmabufVideoFormat() VideoFormat { return VideoBGRx }
 
 func (g *gpuSource) AllocDmabuf() (Dmabuf, error) {
-	fd, _, err := memfd(256 * 32)
+	fd, _, err := memfd(testNode, 256*32)
 	if err != nil {
 		return nil, err
 	}
@@ -83,7 +83,7 @@ func (g *gpuSource) FillDmabuf(Dmabuf) ([]Rect, bool) {
 func streamTo(t *testing.T, src Source, modifier *uint64) (consumed, *Producer) {
 	t.Helper()
 	pwtest.Start(t)
-	p, err := Start(Config{Width: 64, Height: 32, Stride: 256, Format: VideoBGRx, FPS: 30, Source: src})
+	p, err := Start(Config{Application: testApplication, Name: testNode, Width: 64, Height: 32, Stride: 256, Format: VideoBGRx, FPS: 30, Source: src})
 	if err != nil {
 		t.Fatal(err)
 	}

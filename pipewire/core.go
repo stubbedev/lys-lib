@@ -152,8 +152,9 @@ type core struct {
 	abi      activationABI
 }
 
-// connectCore dials the server, says hello and checks its version.
-func connectCore(timeout time.Duration, onStop func(error)) (*core, error) {
+// connectCore dials the server, says hello as application and checks
+// its version.
+func connectCore(timeout time.Duration, application string, onStop func(error)) (*core, error) {
 	c, err := dial()
 	if err != nil {
 		return nil, err
@@ -165,16 +166,16 @@ func connectCore(timeout time.Duration, onStop func(error)) (*core, error) {
 		onStop:  onStop,
 	}
 	go k.read()
-	if err := k.hello(timeout); err != nil {
+	if err := k.hello(timeout, application); err != nil {
 		k.close()
 		return nil, err
 	}
 	return k, nil
 }
 
-// hello introduces the client and waits until the server's info has
-// been checked.
-func (k *core) hello(timeout time.Duration) error {
+// hello introduces the client as application and waits until the
+// server's info has been checked.
+func (k *core) hello(timeout time.Duration, application string) error {
 	if _, err := k.c.send(coreID, coreMethodHello, podStruct(podInt(coreVersion)).bytes(), nil); err != nil {
 		return err
 	}
@@ -183,7 +184,7 @@ func (k *core) hello(timeout time.Duration) error {
 		return fmt.Errorf("pipewire: name the client: %w", err)
 	}
 	props := podStruct(podDict([]dictItem{
-		{"application.name", "lys-shell"},
+		{"application.name", application},
 		{"application.process.binary", filepath.Base(exe)},
 		{"application.process.id", strconv.Itoa(os.Getpid())},
 	}))

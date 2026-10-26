@@ -1,5 +1,5 @@
-// Package pipewire is the PipeWire video producer lys-shell's ScreenCast
-// portal streams through: a node exported over PipeWire's native
+// Package pipewire is the PipeWire video producer a ScreenCast portal
+// streams through: a node exported over PipeWire's native
 // protocol (a client-node, as libpipewire's pw_stream exports one), fed
 // one captured frame per cycle the graph drives, stamped with the
 // header, transform and damage metas. The protocol, the shared memory
@@ -60,9 +60,13 @@ type Dmabuf interface {
 	Release()
 }
 
-// Config is one producer's fixed stream geometry.
+// Config is one producer's identity and fixed stream geometry.
 type Config struct {
-	// Name is the node name the consumer sees.
+	// Application is the client's application.name, the program the
+	// server and its tools list the stream under. Required.
+	Application string
+	// Name is the node name the consumer sees and links to, and the
+	// name of the stream's shared-memory buffers. Required.
 	Name                  string
 	Width, Height, Stride uint32
 	Format                VideoFormat
@@ -112,11 +116,11 @@ const connectTimeout = 5 * time.Second
 // Start exports the stream's node and returns once the server has
 // registered it, so a consumer can link to NodeID.
 func Start(cfg Config) (*Producer, error) {
+	if err := cfg.validate(); err != nil {
+		return nil, err
+	}
 	if cfg.FPS == 0 {
 		cfg.FPS = 1
-	}
-	if cfg.Name == "" {
-		cfg.Name = "lys-shell-screencast"
 	}
 	p := &Producer{
 		cfg: cfg, done: make(chan struct{}), closing: make(chan struct{}), start: time.Now(),
@@ -126,7 +130,7 @@ func Start(cfg Config) (*Producer, error) {
 	p.last = p.start.Add(-p.minInterval)
 	p.dmabuf, _ = cfg.Source.(DmabufSource)
 	p.resizable, _ = cfg.Source.(Resizable)
-	k, err := connectCore(connectTimeout, p.stopped)
+	k, err := connectCore(connectTimeout, cfg.Application, p.stopped)
 	if err != nil {
 		return nil, err
 	}
@@ -151,6 +155,17 @@ func Start(cfg Config) (*Producer, error) {
 		return nil, fmt.Errorf("pipewire: export the stream node: %w", err)
 	}
 	return p, nil
+}
+
+// validate refuses a config missing a name the stream is known by.
+func (c Config) validate() error {
+	if c.Application == "" {
+		return errors.New("pipewire: Config.Application is empty: the client needs the application name it is listed under")
+	}
+	if c.Name == "" {
+		return errors.New("pipewire: Config.Name is empty: the stream needs the node name its consumer links to")
+	}
+	return nil
 }
 
 // NodeID is the node the consumer connects to.
@@ -287,7 +302,7 @@ func (p *Producer) allocData(b *buffer) error {
 		return nil
 	}
 	size := p.cfg.Stride * p.cfg.Height
-	fd, mem, err := memfd(int(size))
+	fd, mem, err := memfd(p.cfg.Name, int(size))
 	if err != nil {
 		return err
 	}
@@ -439,9 +454,10 @@ func writeDamage(slots []cMetaRegion, rects []Rect) {
 	slots[i] = cMetaRegion{}
 }
 
-// memfd is a size-byte sealed-size shared memory file, mapped.
-func memfd(size int) (int, []byte, error) {
-	fd, err := unix.MemfdCreate("lys-shell-screencast", unix.MFD_CLOEXEC|unix.MFD_ALLOW_SEALING)
+// memfd is a size-byte sealed-size shared memory file called name,
+// mapped.
+func memfd(name string, size int) (int, []byte, error) {
+	fd, err := unix.MemfdCreate(name, unix.MFD_CLOEXEC|unix.MFD_ALLOW_SEALING)
 	if err != nil {
 		return -1, nil, fmt.Errorf("memfd: %w", err)
 	}
