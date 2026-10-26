@@ -212,7 +212,7 @@ bool tileAt(Prim p, vec2 px, out vec2 uv) {
 // least 1, the guards before it notwithstanding: a division by zero
 // is only an undefined value in SPIR-V, yet llvmpipe's AVX-512 code
 // (Mesa 26.2, LLVM 21, on Zen 4) traps on one in lanes the guard has
-// already sent elsewhere.
+// already sent elsewhere (mesa#16702).
 
 // The blend modes' fixed-point units, render's blendK and blendQ.
 const int blendK = 65025;

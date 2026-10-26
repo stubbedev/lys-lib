@@ -105,8 +105,8 @@ func (d *Device) exportable(vf vk.Format, mod uint64, usage vk.ImageUsageFlags) 
 
 // errPlanesOverlap reports a driver that lays an exported image's
 // memory planes over each other (lavapipe's NV12 in Mesa 26.2, which
-// gives every memory plane the first one's layout): no consumer could
-// read that dmabuf.
+// gives every memory plane the first one's layout, mesa#16701): no
+// consumer could read that dmabuf.
 var errPlanesOverlap = errors.New("gpu: the driver lays an image's planes over each other")
 
 // exported is an image whose memory is a dmabuf, and that dmabuf.
