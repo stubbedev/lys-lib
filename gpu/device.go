@@ -58,8 +58,9 @@ type Device struct {
 	// exports is whether the device renders into dmabufs.
 	exports bool
 	// video is the video encode queue, nil on a device that encodes
-	// none.
-	video *videoQueue
+	// none; videoWhy says why for each codec it does not encode.
+	video    *videoQueue
+	videoWhy map[Codec]error
 	// targets and buffers are the live ones, closed with the device.
 	targets map[*Target]struct{}
 	buffers map[*Buffer]struct{}
@@ -192,7 +193,7 @@ func (d *Device) pick(p vk.PhysicalDevice, exporting bool, node *drmNode) error 
 	for i, f := range fams {
 		if f.QueueFlags&vk.QueueFlags(vk.QueueGraphicsBit|vk.QueueComputeBit) == vk.QueueFlags(vk.QueueGraphicsBit|vk.QueueComputeBit) {
 			d.phys, d.family, d.name, d.exports, d.maxDim = p, uint32(i), name, exporting, int(props.Limits.MaxImageDimension2D)
-			d.video = d.probeVideo(p, props.ApiVersion, have)
+			d.video, d.videoWhy = d.probeVideo(p, props.ApiVersion, have)
 			return nil
 		}
 	}

@@ -1,7 +1,11 @@
 package gpu
 
 import (
+	"errors"
+	"fmt"
 	"runtime"
+	"slices"
+	"strings"
 	"unsafe"
 
 	"github.com/stubbedev/lys-ui/third_party/vk"
@@ -47,52 +51,80 @@ type videoQueue struct {
 }
 
 // probeVideo finds p's video encode queue family and the codecs it
-// encodes that p has the extension for: nil when there is none, or p
-// lacks Vulkan 1.3's synchronization2, which video coding records with.
-func (d *Device) probeVideo(p vk.PhysicalDevice, apiVersion uint32, have map[string]bool) *videoQueue {
-	if apiVersion < vkVersion(1, 3) {
-		return nil
+// encodes: nil when there is none. why says, for each codec p does not
+// encode, why not: below Vulkan 1.3 or without its synchronization2,
+// which video coding records with, a missing extension, no queue
+// family that encodes video, or none that codes the codec.
+func (d *Device) probeVideo(p vk.PhysicalDevice, apiVersion uint32, have map[string]bool) (*videoQueue, map[Codec]error) {
+	why := map[Codec]error{}
+	none := func(err error) (*videoQueue, map[Codec]error) {
+		for _, c := range codecs {
+			why[c.codec] = err
+		}
+		return nil, why
 	}
+	if apiVersion < vkVersion(1, 3) {
+		return none(fmt.Errorf("the device's Vulkan %d.%d is below the 1.3 video coding needs", apiVersion>>22, apiVersion>>12&0x3ff))
+	}
+	var missing []string
 	for _, ext := range videoExtensions {
 		if !have[ext] {
-			return nil
+			missing = append(missing, ext)
 		}
+	}
+	if len(missing) > 0 {
+		return none(fmt.Errorf("no %s", strings.Join(missing, ", ")))
 	}
 	f13 := vk.PhysicalDeviceVulkan13Features{SType: vk.StructureTypePhysicalDeviceVulkan13Features}
 	f2 := vk.PhysicalDeviceFeatures2{SType: vk.StructureTypePhysicalDeviceFeatures2, PNext: (*uintptr)(unsafe.Pointer(&f13))}
 	d.cmds.GetPhysicalDeviceFeatures2(p, &f2)
 	runtime.KeepAlive(&f13)
 	if f13.Synchronization2 == 0 {
-		return nil
+		return none(errors.New("no synchronization2 feature"))
 	}
 	var n uint32
 	d.cmds.GetPhysicalDeviceQueueFamilyProperties2(p, &n, nil)
-	if n == 0 {
-		return nil
-	}
 	vprops := make([]vk.QueueFamilyVideoPropertiesKHR, n)
 	props := make([]vk.QueueFamilyProperties2, n)
 	for i := range props {
 		vprops[i].SType = vk.StructureTypeQueueFamilyVideoPropertiesKhr
 		props[i] = vk.QueueFamilyProperties2{SType: vk.StructureTypeQueueFamilyProperties2, PNext: (*uintptr)(unsafe.Pointer(&vprops[i]))}
 	}
-	d.cmds.GetPhysicalDeviceQueueFamilyProperties2(p, &n, &props[0])
+	if n > 0 {
+		d.cmds.GetPhysicalDeviceQueueFamilyProperties2(p, &n, &props[0])
+	}
 	runtime.KeepAlive(vprops)
+	var families []string
+	var found *videoQueue
 	for i, fp := range props[:n] {
 		if fp.QueueFamilyProperties.QueueFlags&vk.QueueFlags(vk.QueueVideoEncodeBitKhr) == 0 {
 			continue
 		}
-		var found []Codec
+		ops := vprops[i].VideoCodecOperations
+		families = append(families, fmt.Sprintf("%d (operations %#x)", i, ops))
+		var cs []Codec
 		for _, c := range codecs {
-			if have[c.extension] && vprops[i].VideoCodecOperations&vk.VideoCodecOperationFlagsKHR(c.operation) != 0 {
-				found = append(found, c.codec)
+			if have[c.extension] && ops&vk.VideoCodecOperationFlagsKHR(c.operation) != 0 {
+				cs = append(cs, c.codec)
 			}
 		}
-		if len(found) > 0 {
-			return &videoQueue{family: uint32(i), codecs: found}
+		if found == nil && len(cs) > 0 {
+			found = &videoQueue{family: uint32(i), codecs: cs}
 		}
 	}
-	return nil
+	if len(families) == 0 {
+		return none(errors.New("no queue family encodes video"))
+	}
+	for _, c := range codecs {
+		switch {
+		case found != nil && slices.Contains(found.codecs, c.codec):
+		case !have[c.extension]:
+			why[c.codec] = fmt.Errorf("no %s", c.extension)
+		default:
+			why[c.codec] = fmt.Errorf("no encode queue family has operation %#x; families %s", c.operation, strings.Join(families, ", "))
+		}
+	}
+	return found, why
 }
 
 // extensions are the device extensions encoding on v needs.

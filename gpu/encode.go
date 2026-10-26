@@ -312,7 +312,7 @@ func (d *Device) NewEncoder(cfg EncoderConfig) (*Encoder, error) {
 		return nil, err
 	}
 	if d.video == nil || !slices.Contains(d.video.codecs, cfg.Codec) {
-		return nil, fmt.Errorf("%w: %s encodes no %s", ErrNoVideoEncoder, d.name, cfg.Codec)
+		return nil, fmt.Errorf("%w: %s encodes no %s: %w", ErrNoVideoEncoder, d.name, cfg.Codec, d.videoWhy[cfg.Codec])
 	}
 	e := &Encoder{d: d, cfg: cfg, codec: newVideoCodec(cfg.Codec)}
 	steps := []func() error{e.pickProfile, e.createSession, e.createParameters, e.createImages, e.createBuffers, e.createPipeline, e.createCommands}

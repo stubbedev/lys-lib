@@ -99,10 +99,10 @@ func encodingDevice(t *testing.T, c Codec) (*Device, string) {
 	d := exportingDevice(t)
 	if !slices.Contains(d.Codecs(), c) {
 		_, err := d.NewEncoder(EncoderConfig{Codec: c, Width: 64, Height: 64, FrameRate: 30, KeyInterval: 30, QP: 20})
-		if !errors.Is(err, ErrNoVideoEncoder) {
-			t.Fatalf("NewEncoder on %s, which encodes no %s: %v, want ErrNoVideoEncoder", d.Name(), c, err)
+		if !errors.Is(err, ErrNoVideoEncoder) || !strings.Contains(err.Error(), ": ") {
+			t.Fatalf("NewEncoder on %s, which encodes no %s: %v, want ErrNoVideoEncoder with the reason", d.Name(), c, err)
 		}
-		t.Skipf("%s encodes no %s", d.Name(), c)
+		t.Skip(err)
 	}
 	ffmpeg, err := exec.LookPath("ffmpeg")
 	if err != nil {
