@@ -3,7 +3,9 @@
 # the crashing test pair under gdb with llvmpipe's IR and JIT disassembly
 # dumped, repeats it with GALLIUM_OVERRIDE_CPU_CAPS=avx as a control, and
 # uploads everything. On AVX-512 hosts it first checks whether ymm16-31
-# keep their values across preemption (hi16.c).
+# keep their values across preemption (hi16.c), and runs once more with
+# llvmpipe compiling for the other vendor's CPU (cpuname.c: znver4 code on
+# Intel, sapphirerapids code on AMD), to tell the code from the CPU.
 name: mesa-16702
 
 on:
@@ -36,11 +38,17 @@ jobs:
           ./hi16 50000000 2>&1 | tee out/hi16.txt || true
       - name: Native CPU caps
         run: repro/mesa-16702/run.sh out/native
+      - name: Same features, code tuned for the other vendor's AVX-512 CPU
+        run: |
+          if ! grep -qw avx512f /proc/cpuinfo; then mkdir -p out/swap; echo "result: skipped (no AVX-512)" > out/swap/system.txt; exit 0; fi
+          if grep -q AuthenticAMD /proc/cpuinfo; then cpu=sapphirerapids; else cpu=znver4; fi
+          nix shell --inputs-from . nixpkgs#gcc -c gcc -O2 -shared -fPIC -Wl,--version-script=repro/mesa-16702/cpuname.map -o "$PWD/cpuname.so" repro/mesa-16702/cpuname.c
+          repro/mesa-16702/run.sh out/swap LD_PRELOAD="$PWD/cpuname.so" LYS_FAKE_CPU=$cpu
       - name: Control, GALLIUM_OVERRIDE_CPU_CAPS=avx
         run: repro/mesa-16702/run.sh out/avx GALLIUM_OVERRIDE_CPU_CAPS=avx
       - name: Summary
         run: |
-          { tail -1 out/hi16.txt; for d in out/native out/avx; do echo "== $d"; cat "$d/system.txt"; done; } | tee -a "$GITHUB_STEP_SUMMARY"
+          { tail -1 out/hi16.txt; for d in out/native out/swap out/avx; do echo "== $d"; cat "$d/system.txt"; done; } | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: attempt-${{ matrix.attempt }}
