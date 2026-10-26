@@ -11,9 +11,9 @@ import (
 )
 
 // vulkanBackend encodes on the device's Vulkan video queue: the
-// conversion writes one shared plane buffer, copies it into the slot's
-// source picture, and the video queue encodes that into the slot's
-// share of the bitstream buffer.
+// conversion's planes are copied into the slot's source picture, and
+// the video queue encodes that into the slot's share of the bitstream
+// buffer.
 type vulkanBackend struct {
 	d         *Device
 	cfg       EncoderConfig
@@ -32,7 +32,6 @@ type vulkanBackend struct {
 	rc         *rateControl
 	rcSet      bool
 
-	planeBuf  *deviceBuffer
 	bitstream *buffer
 	slotSize  int
 	queries   vk.QueryPool
@@ -69,13 +68,6 @@ func (vb *vulkanBackend) codedSize() [2]int { return vb.coded }
 
 func (vb *vulkanBackend) parameterSets() [][]byte { return vb.paramSets }
 
-// planeBytes is the size of the coded picture's two planes, tight.
-func (vb *vulkanBackend) planeBytes() int { return vb.coded[0] * vb.coded[1] * 3 / 2 }
-
-func (vb *vulkanBackend) planes(int) (vk.Buffer, int, int, int) {
-	return vb.planeBuf.buf, vb.planeBytes(), vb.coded[0], vb.coded[0] * vb.coded[1]
-}
-
 // createCommands makes the video queue's command buffers, and each
 // slot's semaphore and fence.
 func (vb *vulkanBackend) createCommands() error {
@@ -101,28 +93,12 @@ func (vb *vulkanBackend) createCommands() error {
 	return nil
 }
 
-func (vb *vulkanBackend) beforeConvert(vk.CommandBuffer, int) {}
-
 // afterConvert copies the planes into slot's source picture and
 // signals its semaphore for the video queue.
-func (vb *vulkanBackend) afterConvert(cb vk.CommandBuffer, slot int) *vk.SemaphoreSubmitInfo {
+func (vb *vulkanBackend) afterConvert(cb vk.CommandBuffer, slot int, planes vk.Buffer) *vk.SemaphoreSubmitInfo {
 	d, s := vb.d, &vb.slots[slot]
-	planes := vk.MemoryBarrier2{
-		SType:        vk.StructureTypeMemoryBarrier2,
-		SrcStageMask: vk.PipelineStageFlags2(vk.PipelineStage2ComputeShaderBit), SrcAccessMask: vk.AccessFlags2(vk.Access2ShaderStorageWriteBit),
-		DstStageMask: vk.PipelineStageFlags2(vk.PipelineStage2CopyBit), DstAccessMask: vk.AccessFlags2(vk.Access2TransferReadBit),
-	}
-	all := vk.ImageSubresourceRange{AspectMask: vk.ImageAspectFlags(vk.ImageAspectColorBit), LevelCount: 1, LayerCount: 1}
-	toDst := imageBarrier(s.src.image, all, vk.ImageLayoutUndefined, vk.ImageLayoutTransferDstOptimal)
-	toDst.DstStageMask, toDst.DstAccessMask = vk.PipelineStageFlags2(vk.PipelineStage2CopyBit), vk.AccessFlags2(vk.Access2TransferWriteBit)
-	barrier2(d, cb, &planes, toDst)
-	cw, ch := uint32(vb.coded[0]), uint32(vb.coded[1])
-	regions := [2]vk.BufferImageCopy{
-		{BufferRowLength: cw, BufferImageHeight: ch, ImageSubresource: vk.ImageSubresourceLayers{AspectMask: vk.ImageAspectFlags(vk.ImageAspectPlane0Bit), LayerCount: 1}, ImageExtent: vk.Extent3D{Width: cw, Height: ch, Depth: 1}},
-		{BufferOffset: vk.DeviceSize(cw * ch), BufferRowLength: cw / 2, BufferImageHeight: ch / 2, ImageSubresource: vk.ImageSubresourceLayers{AspectMask: vk.ImageAspectFlags(vk.ImageAspectPlane1Bit), LayerCount: 1}, ImageExtent: vk.Extent3D{Width: cw / 2, Height: ch / 2, Depth: 1}},
-	}
-	d.cmds.CmdCopyBufferToImage(cb, vb.planeBuf.buf, s.src.image, vk.ImageLayoutTransferDstOptimal, 2, &regions[0])
-	toSrc := imageBarrier(s.src.image, all, vk.ImageLayoutTransferDstOptimal, vk.ImageLayoutVideoEncodeSrcKhr)
+	copyPlanes(d, cb, planes, s.src.image, vb.coded, vk.QueueFamilyIgnored)
+	toSrc := imageBarrier(s.src.image, nv12Range, vk.ImageLayoutTransferDstOptimal, vk.ImageLayoutVideoEncodeSrcKhr)
 	toSrc.SrcStageMask, toSrc.SrcAccessMask = vk.PipelineStageFlags2(vk.PipelineStage2CopyBit), vk.AccessFlags2(vk.Access2TransferWriteBit)
 	barrier2(d, cb, nil, toSrc)
 	return &s.ready
@@ -175,9 +151,6 @@ func (vb *vulkanBackend) close() {
 	}
 	if vb.bitstream != nil {
 		vb.bitstream.close()
-	}
-	if vb.planeBuf != nil {
-		vb.planeBuf.close()
 	}
 	if vb.sessionPar != 0 {
 		d.cmds.DestroyVideoSessionParametersKHR(d.device, vb.sessionPar, nil)
@@ -526,15 +499,10 @@ func (vi *videoImage) close(d *Device) {
 	}
 }
 
-// createBuffers makes the conversion's plane buffer, the bitstream
-// buffer each slot writes its share of, and the feedback queries.
+// createBuffers makes the bitstream buffer each slot writes its share
+// of, and the feedback queries.
 func (vb *vulkanBackend) createBuffers() error {
 	d := vb.d
-	planes, err := d.newDeviceBuffer(vb.planeBytes(), vk.BufferUsageStorageBufferBit|vk.BufferUsageTransferSrcBit)
-	if err != nil {
-		return fmt.Errorf("gpu: encoder planes: %w", err)
-	}
-	vb.planeBuf = planes
 	c := vb.caps.video
 	vb.slotSize = alignUp(alignUp(bitstreamBytes(vb.coded), int(max(c.MinBitstreamBufferSizeAlignment, 1))), int(max(c.MinBitstreamBufferOffsetAlignment, 1)))
 	bs, err := d.newReadBuffer(vb.slotSize*encodeSlots, vk.BufferUsageVideoEncodeDstBitKhr, unsafe.Pointer(&vb.profile.list))

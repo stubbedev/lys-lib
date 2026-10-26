@@ -13,6 +13,9 @@ const (
 	FormatXRGB8888 uint32 = 0x34325258
 	// FormatARGB8888 is DRM_FORMAT_ARGB8888 ('AR24').
 	FormatARGB8888 uint32 = 0x34325241
+	// FormatNV12 is DRM_FORMAT_NV12 ('NV12'): 4:2:0 luma, then
+	// interleaved chroma, in two planes.
+	FormatNV12 uint32 = 0x3231564e
 	// ModifierLinear is DRM_FORMAT_MOD_LINEAR.
 	ModifierLinear uint64 = 0
 	// ModifierInvalid is DRM_FORMAT_MOD_INVALID: an implicit,

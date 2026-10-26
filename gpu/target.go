@@ -44,11 +44,24 @@ func (d *Device) NewOffscreen(width, height int) (*Target, error) {
 // vkFormatOf maps a DRM fourcc to the Vulkan format with the same byte
 // order in memory.
 func vkFormatOf(fourcc uint32) (vk.Format, error) {
+	if fourcc == dmabuf.FormatNV12 {
+		return 0, fmt.Errorf("gpu: DRM format %#08x is the encoder's alone", fourcc)
+	}
+	vf, _, err := exportFormatOf(fourcc)
+	return vf, err
+}
+
+// exportFormatOf is the Vulkan format of an image exported in fourcc,
+// and how many memory planes it has: the surfaces' formats and the
+// encoder's NV12.
+func exportFormatOf(fourcc uint32) (vk.Format, int, error) {
 	switch fourcc {
 	case dmabuf.FormatARGB8888, dmabuf.FormatXRGB8888:
-		return vk.FormatB8g8r8a8Unorm, nil
+		return vk.FormatB8g8r8a8Unorm, 1, nil
+	case dmabuf.FormatNV12:
+		return nv12, 2, nil
 	}
-	return 0, fmt.Errorf("gpu: no Vulkan format for DRM format %#08x", fourcc)
+	return 0, 0, fmt.Errorf("gpu: no Vulkan format for DRM format %#08x", fourcc)
 }
 
 // NewTarget allocates a width x height image in format (a DRM fourcc:

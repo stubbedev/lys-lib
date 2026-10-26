@@ -4,7 +4,6 @@ package vk
 // extension aliases): external memory, dedicated allocation and the
 // format property queries.
 const (
-	StructureTypeExternalMemoryBufferCreateInfo        StructureType = 1000072000
 	StructureTypeExternalMemoryImageCreateInfo         StructureType = 1000072001
 	StructureTypeExportMemoryAllocateInfo              StructureType = 1000072002
 	StructureTypeMemoryDedicatedAllocateInfo           StructureType = 1000127001

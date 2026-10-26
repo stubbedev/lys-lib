@@ -3,10 +3,14 @@ package gpu
 import (
 	"errors"
 	"fmt"
+	"io"
 	"slices"
 	"strings"
 	"unsafe"
 
+	"golang.org/x/sys/unix"
+
+	"github.com/stubbedev/lys-lib/dmabuf"
 	"github.com/stubbedev/lys-lib/internal/nal"
 	"github.com/stubbedev/lys-lib/internal/va"
 	"github.com/stubbedev/lys-lib/third_party/vk"
@@ -187,9 +191,10 @@ type vaCodec interface {
 	params(sinceIDR, idrs int, cur, prev, coded uint32) []vaParam
 }
 
-// vaBackend encodes on the device's VA-API driver: each slot's
-// conversion writes an exported linear NV12 buffer the driver imports
-// as a surface, and the driver encodes that into the slot's coded
+// vaBackend encodes on the device's VA-API driver: the conversion's
+// planes are copied into the slot's exported NV12 picture, laid out as
+// the driver lays out its own surfaces where the device can, which the
+// driver imports as a surface and encodes into the slot's coded
 // buffer.
 type vaBackend struct {
 	d       *Device
@@ -201,29 +206,18 @@ type vaBackend struct {
 	config  uint32
 	context uint32
 	recon   []uint32
-	// pitch and uvOffset lay the planes out in each slot's buffer.
-	pitch, uvOffset int
-	planeSize       int
-	bitrate         uint32
-	slots           [encodeSlots]vaSlot
+	bitrate uint32
+	slots   [encodeSlots]vaSlot
 }
 
-// vaSlot is a frame in flight on the driver: the buffer its
-// conversion writes, the surface the driver reads it as, and the coded
-// buffer it encodes into.
+// vaSlot is a frame in flight on the driver: the picture its
+// conversion is copied into, the surface the driver reads it as, and
+// the coded buffer it encodes into.
 type vaSlot struct {
-	planes  *exportedBuffer
+	picture exported
 	surface uint32
 	coded   uint32
 }
-
-// vaPitch and vaRows align the planes in a slot's buffer: the rows to
-// 128 bytes and the chroma plane to 32 rows, what drivers import
-// linear NV12 at.
-const (
-	vaPitch = 128
-	vaRows  = 32
-)
 
 // newVABackend makes the driver's encode configuration, context and
 // surfaces for cfg, and each slot's exported buffer.
@@ -264,8 +258,7 @@ func vaCodedSize(cfg EncoderConfig, unit, minW, minH int) [2]int {
 }
 
 // layout lays out the stream within the sizes the configuration takes:
-// the coded size, the rate, the codec's parameters and the planes in
-// each slot's buffer.
+// the coded size, the rate and the codec's parameters.
 func (vb *vaBackend) layout() error {
 	minW, minH, maxW, maxH, err := vb.dpy.SurfaceSizes(vb.config)
 	if err != nil {
@@ -292,9 +285,6 @@ func (vb *vaBackend) layout() error {
 	if maxW > 0 && maxH > 0 && (vb.coded[0] > maxW || vb.coded[1] > maxH) {
 		return fmt.Errorf("gpu: %s encodes up to %dx%d, not %dx%d", vb.dpy.Vendor(), maxW, maxH, vb.coded[0], vb.coded[1])
 	}
-	vb.pitch = alignUp(vb.coded[0], vaPitch)
-	vb.uvOffset = vb.pitch * alignUp(vb.coded[1], vaRows)
-	vb.planeSize = vb.uvOffset + vb.pitch*vb.coded[1]/2
 	return nil
 }
 
@@ -309,27 +299,47 @@ func (vb *vaBackend) createContext() error {
 	return err
 }
 
-// createSlots makes each slot's buffer, imports it as a surface and
+// pictureModifiers are the layouts to make the slots' pictures in,
+// best first: the one the driver gives its own surfaces (an encoder
+// may read only that one right: iHD's low-power encoder misreads
+// linear pictures it reads back fine), then linear.
+func (vb *vaBackend) pictureModifiers() ([]uint64, error) {
+	desc, err := vb.dpy.ExportSurface(vb.recon[0])
+	if err != nil {
+		return nil, err
+	}
+	for _, o := range desc.Objects[:desc.NumObjects] {
+		_ = unix.Close(int(o.Fd))
+	}
+	if own := desc.Objects[0].DrmFormatModifier; own != dmabuf.ModifierLinear {
+		return []uint64{own, dmabuf.ModifierLinear}, nil
+	}
+	return []uint64{dmabuf.ModifierLinear}, nil
+}
+
+// createSlots makes each slot's picture, imports it as a surface and
 // makes its coded buffer.
 func (vb *vaBackend) createSlots() error {
+	mods, err := vb.pictureModifiers()
+	if err != nil {
+		return err
+	}
 	for i := range vb.slots {
 		s := &vb.slots[i]
-		b, err := vb.d.newExportedBuffer(vb.planeSize, vk.BufferUsageStorageBufferBit|vk.BufferUsageTransferSrcBit)
-		if err != nil {
-			return fmt.Errorf("gpu: encoder planes: %w", err)
+		var errs []error
+		for _, mod := range mods {
+			s.picture, err = vb.d.export(vb.coded[0], vb.coded[1], dmabuf.FormatNV12, []uint64{mod}, encodeUse)
+			if err == nil {
+				break
+			}
+			errs = append(errs, err)
 		}
-		s.planes = b
-		desc := va.DRMPRIMESurfaceDescriptor{
-			Fourcc: va.FourccNV12, Width: uint32(vb.coded[0]), Height: uint32(vb.coded[1]),
-			NumObjects: 1, Objects: [4]va.DRMPRIMESurfaceDescriptorObjects{{Fd: int32(b.fd), Size: uint32(b.size)}},
-			NumLayers: 1, Layers: [4]va.DRMPRIMESurfaceDescriptorLayers{{
-				DrmFormat: va.FourccNV12, NumPlanes: 2,
-				Offset: [4]uint32{0, uint32(vb.uvOffset)}, Pitch: [4]uint32{uint32(vb.pitch), uint32(vb.pitch)},
-			}},
+		if s.picture.image == 0 {
+			return fmt.Errorf("gpu: encoder picture: %w", errors.Join(errs...))
 		}
-		if s.surface, err = vb.dpy.ImportSurface(&desc); err != nil {
+		if s.surface, err = vb.importPicture(s.picture.buf); err != nil {
 			s.surface = va.InvalidID
-			return fmt.Errorf("gpu: import the encoder planes (%dx%d, pitch %d): %w", vb.coded[0], vb.coded[1], vb.pitch, err)
+			return err
 		}
 		if s.coded, err = vb.dpy.CreateBuffer(vb.context, va.EncCodedBufferType, bitstreamBytes(vb.coded), nil); err != nil {
 			s.coded = va.InvalidID
@@ -339,37 +349,45 @@ func (vb *vaBackend) createSlots() error {
 	return nil
 }
 
+// importPicture wraps a slot's exported picture as a surface.
+func (vb *vaBackend) importPicture(b dmabuf.Buffer) (uint32, error) {
+	size, err := unix.Seek(b.Planes[0].FD, 0, io.SeekEnd)
+	if err != nil {
+		return va.InvalidID, fmt.Errorf("gpu: the encoder picture's dmabuf size: %w", err)
+	}
+	layer := va.DRMPRIMESurfaceDescriptorLayers{DrmFormat: va.FourccNV12, NumPlanes: uint32(len(b.Planes))}
+	for i, p := range b.Planes {
+		layer.Offset[i], layer.Pitch[i] = p.Offset, p.Stride
+	}
+	desc := va.DRMPRIMESurfaceDescriptor{
+		Fourcc: va.FourccNV12, Width: uint32(b.Width), Height: uint32(b.Height),
+		NumObjects: 1, Objects: [4]va.DRMPRIMESurfaceDescriptorObjects{{Fd: int32(b.Planes[0].FD), Size: uint32(size), DrmFormatModifier: b.Modifier}},
+		NumLayers: 1, Layers: [4]va.DRMPRIMESurfaceDescriptorLayers{layer},
+	}
+	id, err := vb.dpy.ImportSurface(&desc)
+	if err != nil {
+		return va.InvalidID, fmt.Errorf("gpu: import the encoder picture (%dx%d, modifier %#x, planes %+v): %w", b.Width, b.Height, b.Modifier, b.Planes, err)
+	}
+	return id, nil
+}
+
 func (vb *vaBackend) codedSize() [2]int { return vb.coded }
 
 func (vb *vaBackend) parameterSets() [][]byte { return vb.codec.parameterSets() }
 
-func (vb *vaBackend) planes(slot int) (vk.Buffer, int, int, int) {
-	return vb.slots[slot].planes.buf, vb.planeSize, vb.pitch, vb.uvOffset
-}
-
-// beforeConvert takes slot's buffer back from the driver.
-func (vb *vaBackend) beforeConvert(cb vk.CommandBuffer, slot int) {
-	b := vb.ownership(slot)
-	b.SrcQueueFamilyIndex, b.DstQueueFamilyIndex = vk.QueueFamilyForeignExt, vb.d.family
-	b.DstStageMask, b.DstAccessMask = vk.PipelineStageFlags2(vk.PipelineStage2ComputeShaderBit), vk.AccessFlags2(vk.Access2ShaderStorageWriteBit)
-	bufferBarrier2(vb.d, cb, b)
-}
-
-// afterConvert hands slot's buffer to the driver, which reads it once
-// the host has waited for the conversion.
+// afterConvert copies the planes into slot's picture and hands it to
+// the driver, which reads it once the host has waited for the
+// conversion.
 //
 //nolint:unparam // the interface's semaphore is the Vulkan backend's; the host waits for VA
-func (vb *vaBackend) afterConvert(cb vk.CommandBuffer, slot int) *vk.SemaphoreSubmitInfo {
-	b := vb.ownership(slot)
-	b.SrcQueueFamilyIndex, b.DstQueueFamilyIndex = vb.d.family, vk.QueueFamilyForeignExt
-	b.SrcStageMask, b.SrcAccessMask = vk.PipelineStageFlags2(vk.PipelineStage2ComputeShaderBit), vk.AccessFlags2(vk.Access2ShaderStorageWriteBit)
-	bufferBarrier2(vb.d, cb, b)
+func (vb *vaBackend) afterConvert(cb vk.CommandBuffer, slot int, planes vk.Buffer) *vk.SemaphoreSubmitInfo {
+	d, pic := vb.d, vb.slots[slot].picture.image
+	copyPlanes(d, cb, planes, pic, vb.coded, vk.QueueFamilyForeignExt)
+	release := imageBarrier(pic, nv12Range, vk.ImageLayoutTransferDstOptimal, vk.ImageLayoutGeneral)
+	release.SrcQueueFamilyIndex, release.DstQueueFamilyIndex = d.family, vk.QueueFamilyForeignExt
+	release.SrcStageMask, release.SrcAccessMask = vk.PipelineStageFlags2(vk.PipelineStage2CopyBit), vk.AccessFlags2(vk.Access2TransferWriteBit)
+	barrier2(d, cb, nil, release)
 	return nil
-}
-
-// ownership is a barrier over slot's whole buffer.
-func (vb *vaBackend) ownership(slot int) vk.BufferMemoryBarrier2 {
-	return vk.BufferMemoryBarrier2{SType: vk.StructureTypeBufferMemoryBarrier2, Buffer: vb.slots[slot].planes.buf, Size: vk.DeviceSize(vk.WholeSize)}
 }
 
 // encode hands slot's surface to the driver with the frame's
@@ -478,9 +496,7 @@ func (vb *vaBackend) close() {
 		if s.surface != va.InvalidID {
 			vb.dpy.DestroySurfaces([]uint32{s.surface})
 		}
-		if s.planes != nil {
-			s.planes.close()
-		}
+		s.picture.close(vb.d)
 	}
 	if vb.dpy == nil {
 		return

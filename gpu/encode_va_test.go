@@ -1,11 +1,14 @@
 package gpu
 
 import (
+	"errors"
 	"image"
 	"image/color"
+	"slices"
 	"syscall"
 	"testing"
 
+	"github.com/stubbedev/lys-lib/dmabuf"
 	"github.com/stubbedev/lys-lib/third_party/vk"
 )
 
@@ -17,27 +20,31 @@ func nv12Of(c color.RGBA) (y, u, v byte) {
 	return round(16 + 219*l), round(128 + 224*(b-l)/1.8556), round(128 + 224*(r-l)/1.5748)
 }
 
-// readExported copies slot's buffer back through Vulkan, taking it
-// from the driver first, and returns its planes tight.
-func readExported(t *testing.T, vb *vaBackend, slot int) []byte {
+// readPicture copies slot's picture back through Vulkan, taking it
+// from the driver first and handing it back after, and returns its
+// planes tight.
+func readPicture(t *testing.T, vb *vaBackend, slot int) []byte {
 	t.Helper()
-	d := vb.d
-	staging, err := d.newReadBuffer(vb.planeSize, vk.BufferUsageTransferDstBit, nil)
+	d, pic, w, h := vb.d, vb.slots[slot].picture.image, vb.coded[0], vb.coded[1]
+	staging, err := d.newReadBuffer(nv12Bytes(vb.coded), vk.BufferUsageTransferDstBit, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer staging.close()
 	err = d.submit(func(cb vk.CommandBuffer) {
-		b := vb.ownership(slot)
-		b.SrcQueueFamilyIndex, b.DstQueueFamilyIndex = vk.QueueFamilyForeignExt, d.family
-		b.DstStageMask, b.DstAccessMask = vk.PipelineStageFlags2(vk.PipelineStage2CopyBit), vk.AccessFlags2(vk.Access2TransferReadBit)
-		bufferBarrier2(d, cb, b)
-		region := vk.BufferCopy{Size: vk.DeviceSize(vb.planeSize)}
-		d.cmds.CmdCopyBuffer(cb, vb.slots[slot].planes.buf, staging.buf, 1, &region)
-		b = vb.ownership(slot)
-		b.SrcQueueFamilyIndex, b.DstQueueFamilyIndex = d.family, vk.QueueFamilyForeignExt
-		b.SrcStageMask, b.SrcAccessMask = vk.PipelineStageFlags2(vk.PipelineStage2CopyBit), vk.AccessFlags2(vk.Access2TransferReadBit)
-		bufferBarrier2(d, cb, b)
+		take := imageBarrier(pic, nv12Range, vk.ImageLayoutGeneral, vk.ImageLayoutTransferSrcOptimal)
+		take.SrcQueueFamilyIndex, take.DstQueueFamilyIndex = vk.QueueFamilyForeignExt, d.family
+		take.DstStageMask, take.DstAccessMask = vk.PipelineStageFlags2(vk.PipelineStage2CopyBit), vk.AccessFlags2(vk.Access2TransferReadBit)
+		barrier2(d, cb, nil, take)
+		regions := [2]vk.BufferImageCopy{
+			{ImageSubresource: vk.ImageSubresourceLayers{AspectMask: vk.ImageAspectFlags(vk.ImageAspectPlane0Bit), LayerCount: 1}, ImageExtent: vk.Extent3D{Width: uint32(w), Height: uint32(h), Depth: 1}},
+			{BufferOffset: vk.DeviceSize(w * h), ImageSubresource: vk.ImageSubresourceLayers{AspectMask: vk.ImageAspectFlags(vk.ImageAspectPlane1Bit), LayerCount: 1}, ImageExtent: vk.Extent3D{Width: uint32(w / 2), Height: uint32(h / 2), Depth: 1}},
+		}
+		d.cmds.CmdCopyImageToBuffer(cb, pic, vk.ImageLayoutTransferSrcOptimal, staging.buf, 2, &regions[0])
+		give := imageBarrier(pic, nv12Range, vk.ImageLayoutTransferSrcOptimal, vk.ImageLayoutGeneral)
+		give.SrcQueueFamilyIndex, give.DstQueueFamilyIndex = d.family, vk.QueueFamilyForeignExt
+		give.SrcStageMask, give.SrcAccessMask = vk.PipelineStageFlags2(vk.PipelineStage2CopyBit), vk.AccessFlags2(vk.Access2TransferReadBit)
+		barrier2(d, cb, nil, give)
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -45,15 +52,7 @@ func readExported(t *testing.T, vb *vaBackend, slot int) []byte {
 	if err := staging.invalidate(); err != nil {
 		t.Fatal(err)
 	}
-	w, h := vb.coded[0], vb.coded[1]
-	out := make([]byte, 0, w*h*3/2)
-	for y := range h {
-		out = append(out, staging.mapped[y*vb.pitch:][:w]...)
-	}
-	for y := range h / 2 {
-		out = append(out, staging.mapped[vb.uvOffset+y*vb.pitch:][:w]...)
-	}
-	return out
+	return slices.Clone(staging.mapped[:nv12Bytes(vb.coded)])
 }
 
 // planesDiffer reports whether an NV12 picture strays from y, u and v
@@ -73,7 +72,7 @@ func planesDiffer(pix []byte, w, h int, y, u, v byte) (int, bool) {
 }
 
 // The surface the VA-API driver encodes from holds what the conversion
-// wrote: the slot's buffer, read back through Vulkan and through the
+// wrote: the slot's picture, read back through Vulkan and through the
 // driver (vaGetImage), holds the frame's colour in NV12, and a
 // patterned frame reads back from the driver byte for byte as Vulkan
 // wrote it, which a solid one cannot show of a tiling. It logs how
@@ -97,8 +96,9 @@ func TestVASurfaceHoldsTheConversion(t *testing.T) {
 					_ = syscall.Close(int(o.Fd))
 				}
 				l := desc.Layers[0]
-				t.Logf("the driver's %dx%d surface: modifier %#x, size %d, fourcc %#x, pitches %v, offsets %v; ours: linear, pitch %d, chroma at %d",
-					desc.Width, desc.Height, desc.Objects[0].DrmFormatModifier, desc.Objects[0].Size, l.DrmFormat, l.Pitch[:l.NumPlanes], l.Offset[:l.NumPlanes], vb.pitch, vb.uvOffset)
+				ours := vb.slots[0].picture.buf
+				t.Logf("the driver's %dx%d surface: modifier %#x, size %d, fourcc %#x, pitches %v, offsets %v; ours: modifier %#x, planes %+v",
+					desc.Width, desc.Height, desc.Objects[0].DrmFormatModifier, desc.Objects[0].Size, l.DrmFormat, l.Pitch[:l.NumPlanes], l.Offset[:l.NumPlanes], ours.Modifier, ours.Planes)
 			}
 			col := color.RGBA{200, 50, 100, 255}
 			c.buf.fill(t, solid(cfg.Width, cfg.Height, col))
@@ -110,7 +110,7 @@ func TestVASurfaceHoldsTheConversion(t *testing.T) {
 			}
 			y, u, v := nv12Of(col)
 			w, h := vb.coded[0], vb.coded[1]
-			if i, bad := planesDiffer(readExported(t, vb, 0), w, h, y, u, v); bad {
+			if i, bad := planesDiffer(readPicture(t, vb, 0), w, h, y, u, v); bad {
 				t.Fatalf("the buffer read back through Vulkan strays at byte %d of %dx%d NV12 from Y %d U %d V %d: the conversion is wrong", i, w, h, y, u, v)
 			}
 			pix, err := vb.dpy.ReadNV12(vb.slots[0].surface, w, h)
@@ -127,7 +127,7 @@ func TestVASurfaceHoldsTheConversion(t *testing.T) {
 			if r := d.cmds.WaitForFences(d.device, 1, &c.enc.gfxDone, vk.True, ^uint64(0)); r != vk.Success {
 				t.Fatalf("wait for the conversion: %d", r)
 			}
-			written := readExported(t, vb, 0)
+			written := readPicture(t, vb, 0)
 			if pix, err = vb.dpy.ReadNV12(vb.slots[0].surface, w, h); err != nil {
 				t.Fatal(err)
 			}
@@ -145,5 +145,39 @@ func TestVASurfaceHoldsTheConversion(t *testing.T) {
 					wrong, len(written), w, h, first%w, first/w%h, first/(w*h))
 			}
 		})
+	}
+}
+
+// An NV12 picture exports in every layout the device offers it for the
+// encoder in as two planes of one dmabuf, luma rows at least the width
+// apart, then chroma past them, or not at all where the driver lays
+// the planes over each other.
+func TestNV12PicturesExport(t *testing.T) {
+	d := exportingDevice(t)
+	mods, err := d.modifiers(dmabuf.FormatNV12, encodeUse)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mods) == 0 {
+		t.Skipf("%s exports no NV12 pictures", d.Name())
+	}
+	for _, mod := range mods {
+		e, err := d.export(330, 240, dmabuf.FormatNV12, []uint64{mod}, encodeUse)
+		if errors.Is(err, errPlanesOverlap) {
+			t.Logf("modifier %#x: %v", mod, err)
+			continue
+		}
+		if err != nil {
+			t.Fatalf("modifier %#x: %v", mod, err)
+		}
+		b := e.buf
+		e.close(d)
+		if len(b.Planes) != 2 || b.Modifier != mod {
+			t.Fatalf("modifier %#x: a %#x picture of %d planes", mod, b.Modifier, len(b.Planes))
+		}
+		if b.Planes[0].Stride < 330 || b.Planes[1].Stride < 330 || b.Planes[1].Offset < b.Planes[0].Stride*240 {
+			t.Errorf("modifier %#x: planes %+v do not hold 330x240 NV12", mod, b.Planes)
+		}
+		t.Logf("modifier %#x: planes %+v", mod, b.Planes)
 	}
 }

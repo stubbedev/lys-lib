@@ -36,17 +36,24 @@ var (
 		usage:    vk.ImageUsageFlags(vk.ImageUsageTransferDstBit | vk.ImageUsageTransferSrcBit | vk.ImageUsageSampledBit),
 		verb:     "exports",
 	}
+	// encodeUse is an NV12 picture another API's encoder reads: written
+	// by a transfer, never otherwise used here.
+	encodeUse = exportUse{
+		features: vk.FormatFeatureFlags(vk.FormatFeatureTransferDstBit),
+		usage:    vk.ImageUsageFlags(vk.ImageUsageTransferDstBit),
+		verb:     "encodes from",
+	}
 )
 
-// modifiers are the single-plane DRM modifiers the device offers
-// format in for use and exports as a dmabuf. Modifiers with an
-// auxiliary plane (Intel CCS, AMD DCC) are left out: an exported image
-// is one plane.
+// modifiers are the DRM modifiers the device offers format in for use
+// and exports as a dmabuf, with the format's own planes. Modifiers with
+// an auxiliary plane (Intel CCS, AMD DCC) are left out: an exported
+// image carries only its format's planes.
 func (d *Device) modifiers(format uint32, use exportUse) ([]uint64, error) {
 	if !d.exports {
 		return nil, ErrNoDmabuf
 	}
-	vf, err := vkFormatOf(format)
+	vf, planes, err := exportFormatOf(format)
 	if err != nil {
 		return nil, err
 	}
@@ -61,7 +68,7 @@ func (d *Device) modifiers(format uint32, use exportUse) ([]uint64, error) {
 	runtime.KeepAlive(&list)
 	var out []uint64
 	for _, m := range all[:list.DrmFormatModifierCount] {
-		if m.DrmFormatModifierPlaneCount != 1 || m.DrmFormatModifierTilingFeatures&use.features != use.features {
+		if int(m.DrmFormatModifierPlaneCount) != planes || m.DrmFormatModifierTilingFeatures&use.features != use.features {
 			continue
 		}
 		if _, ok := d.exportable(vf, m.DrmFormatModifier, use.usage); ok {
@@ -96,6 +103,12 @@ func (d *Device) exportable(vf vk.Format, mod uint64, usage vk.ImageUsageFlags) 
 	return props.ImageFormatProperties.MaxExtent, r == vk.Success && exportable
 }
 
+// errPlanesOverlap reports a driver that lays an exported image's
+// memory planes over each other (lavapipe's NV12 in Mesa 26.2, which
+// gives every memory plane the first one's layout): no consumer could
+// read that dmabuf.
+var errPlanesOverlap = errors.New("gpu: the driver lays an image's planes over each other")
+
 // exported is an image whose memory is a dmabuf, and that dmabuf.
 type exported struct {
 	image  vk.Image
@@ -116,7 +129,7 @@ func (d *Device) export(width, height int, format uint32, offered []uint64, use 
 	if len(offered) == 0 {
 		return exported{}, errors.New("gpu: no modifier to allocate an image in")
 	}
-	vf, err := vkFormatOf(format)
+	vf, planes, err := exportFormatOf(format)
 	if err != nil {
 		return exported{}, err
 	}
@@ -135,7 +148,7 @@ func (d *Device) export(width, height int, format uint32, offered []uint64, use 
 		return exported{}, fmt.Errorf("gpu: none of the modifiers %#x is one %s %s DRM format %#08x in at %dx%d (%#x)", offered, d.name, use.verb, format, width, height, supported)
 	}
 	var e exported
-	if err := e.create(d, width, height, vf, mods, use.usage); err != nil {
+	if err := e.create(d, width, height, vf, planes, mods, use.usage); err != nil {
 		e.close(d)
 		return exported{}, err
 	}
@@ -144,8 +157,8 @@ func (d *Device) export(width, height int, format uint32, offered []uint64, use 
 }
 
 // create makes the image in one of mods, its exportable memory and the
-// dmabuf describing it.
-func (e *exported) create(d *Device, width, height int, vf vk.Format, mods []uint64, usage vk.ImageUsageFlags) error {
+// dmabuf describing its planes, each plane with an fd of its own.
+func (e *exported) create(d *Device, width, height int, vf vk.Format, planes int, mods []uint64, usage vk.ImageUsageFlags) error {
 	modList := vk.ImageDrmFormatModifierListCreateInfoEXT{
 		SType: vk.StructureTypeImageDrmFormatModifierListCreateInfoExt, DrmFormatModifierCount: uint32(len(mods)), PDrmFormatModifiers: &mods[0],
 	}
@@ -194,12 +207,25 @@ func (e *exported) create(d *Device, width, height int, vf vk.Format, mods []uin
 		_ = syscall.Close(int(fd))
 		return fmt.Errorf("gpu: vkGetImageDrmFormatModifierPropertiesEXT: %d", r)
 	}
-	sub := vk.ImageSubresource{AspectMask: vk.ImageAspectFlags(vk.ImageAspectMemoryPlane0BitExt)}
-	var lay vk.SubresourceLayout
-	d.cmds.GetImageSubresourceLayout(d.device, e.image, &sub, &lay)
-	e.buf = dmabuf.Buffer{
-		Width: width, Height: height, Modifier: mod.DrmFormatModifier,
-		Planes: []dmabuf.Plane{{FD: int(fd), Offset: uint32(lay.Offset), Stride: uint32(lay.RowPitch)}},
+	e.buf = dmabuf.Buffer{Width: width, Height: height, Modifier: mod.DrmFormatModifier}
+	var end vk.DeviceSize
+	for i := range planes {
+		sub := vk.ImageSubresource{AspectMask: vk.ImageAspectFlags(vk.ImageAspectMemoryPlane0BitExt << i)}
+		var lay vk.SubresourceLayout
+		d.cmds.GetImageSubresourceLayout(d.device, e.image, &sub, &lay)
+		if lay.Offset < end {
+			return fmt.Errorf("%w: %s lays memory plane %d of a modifier %#x image at %d, inside the plane before (to %d)", errPlanesOverlap, d.name, i, mod.DrmFormatModifier, lay.Offset, end)
+		}
+		end = lay.Offset + lay.Size
+		planeFD := int(fd)
+		if i > 0 {
+			dup, err := syscall.Dup(int(fd))
+			if err != nil {
+				return fmt.Errorf("gpu: dup the dmabuf for plane %d: %w", i, err)
+			}
+			planeFD = dup
+		}
+		e.buf.Planes = append(e.buf.Planes, dmabuf.Plane{FD: planeFD, Offset: uint32(lay.Offset), Stride: uint32(lay.RowPitch)})
 	}
 	return nil
 }
@@ -238,6 +264,9 @@ type Buffer struct {
 // allocates format in for a Buffer: what to intersect with the ones a
 // consumer imports before NewBuffer.
 func (d *Device) ExportModifiers(format uint32) ([]uint64, error) {
+	if _, err := vkFormatOf(format); err != nil {
+		return nil, err
+	}
 	return d.modifiers(format, shareUse)
 }
 
@@ -247,6 +276,9 @@ func (d *Device) ExportModifiers(format uint32) ([]uint64, error) {
 // in (ExportModifiers). None in common, as with only the implicit
 // dmabuf.ModifierInvalid on offer, is an error naming both lists.
 func (d *Device) NewBuffer(width, height int, format uint32, offered []uint64) (*Buffer, error) {
+	if _, err := vkFormatOf(format); err != nil {
+		return nil, err
+	}
 	e, err := d.export(width, height, format, offered, shareUse)
 	if err != nil {
 		return nil, err

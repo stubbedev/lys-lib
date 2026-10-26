@@ -158,6 +158,8 @@ type Encoder struct {
 	cfg     EncoderConfig
 	coded   [2]int
 	backend encodeBackend
+	// planes is where the conversion writes the coded picture's NV12.
+	planes *deviceBuffer
 
 	setLayout vk.DescriptorSetLayout
 	layout    vk.PipelineLayout
@@ -187,15 +189,11 @@ type Encoder struct {
 type encodeBackend interface {
 	// codedSize is the coded picture's size.
 	codedSize() [2]int
-	// planes is where slot's conversion writes NV12: the buffer, its
-	// size, the rows' pitch and the chroma plane's offset, in bytes.
-	planes(slot int) (buf vk.Buffer, size, pitch, uvOffset int)
-	// beforeConvert and afterConvert record what precedes slot's
-	// conversion on the graphics queue, before the planes' writes, and
-	// what follows it; afterConvert returns the semaphore the
-	// conversion signals for the backend, or nil.
-	beforeConvert(cb vk.CommandBuffer, slot int)
-	afterConvert(cb vk.CommandBuffer, slot int) *vk.SemaphoreSubmitInfo
+	// afterConvert records what follows slot's conversion on the
+	// graphics queue, which wrote the coded picture's planes tight into
+	// planes: their copy into the backend's picture. It returns the
+	// semaphore the conversion signals for the backend, or nil.
+	afterConvert(cb vk.CommandBuffer, slot int, planes vk.Buffer) *vk.SemaphoreSubmitInfo
 	// encode queues slot's converted frame, the encoder's frame-th,
 	// sinceIDR frames after its IDR, the idrs-th IDR's.
 	encode(slot, frame, sinceIDR, idrs int) error
@@ -231,7 +229,7 @@ func newEncoderOn[B encodeBackend](d *Device, cfg EncoderConfig, newBackend func
 		return nil, err
 	}
 	e := &Encoder{d: d, cfg: cfg, backend: backend, coded: backend.codedSize()}
-	for _, step := range []func() error{e.createPipeline, e.createCommands} {
+	for _, step := range []func() error{e.createPlanes, e.createPipeline, e.createCommands} {
 		if err := step(); err != nil {
 			e.Close()
 			return nil, err
@@ -293,13 +291,11 @@ func (e *Encoder) ParameterSets() [][]byte {
 
 // nv12Constants is nv12.comp's push constant block: the frame and
 // coded sizes, the overlay's rectangle (empty for none), the source
-// region's origin, the transform, and the planes' row pitch and chroma
-// offset in words.
+// region's origin and the transform.
 type nv12Constants struct {
 	frameW, frameH, codedW, codedH int32
 	overlay                        [4]int32
 	originX, originY, transform    int32
-	pitch, uvOffset                int32
 }
 
 // createPipeline makes the NV12 conversion's compute pipeline and the
@@ -353,8 +349,51 @@ func (e *Encoder) createPipeline() error {
 	if r := d.cmds.AllocateDescriptorSets(d.device, &ai, &e.set); r != vk.Success {
 		return fmt.Errorf("gpu: vkAllocateDescriptorSets (NV12): %d", r)
 	}
+	bi := vk.DescriptorBufferInfo{Buffer: e.planes.buf, Range: vk.DeviceSize(nv12Bytes(e.coded))}
+	w := vk.WriteDescriptorSet{SType: vk.StructureTypeWriteDescriptorSet, DstSet: e.set, DstBinding: 1, DescriptorCount: 1, DescriptorType: vk.DescriptorTypeStorageBuffer, PBufferInfo: &bi}
+	d.cmds.UpdateDescriptorSets(d.device, 1, &w, 0, nil)
 	return nil
 }
+
+// createPlanes makes the buffer the conversion writes the planes into.
+func (e *Encoder) createPlanes() error {
+	planes, err := e.d.newDeviceBuffer(nv12Bytes(e.coded), vk.BufferUsageStorageBufferBit|vk.BufferUsageTransferSrcBit)
+	if err != nil {
+		return fmt.Errorf("gpu: encoder planes: %w", err)
+	}
+	e.planes = planes
+	return nil
+}
+
+// nv12Bytes is the size of a coded picture's two planes, tight.
+func nv12Bytes(coded [2]int) int { return coded[0] * coded[1] * 3 / 2 }
+
+// copyPlanes records the copy of the tight planes the conversion wrote
+// into dst, an NV12 picture whose contents it discards, taking dst
+// from queue family from first (QueueFamilyIgnored for none). It
+// leaves dst in TransferDstOptimal.
+func copyPlanes(d *Device, cb vk.CommandBuffer, planes vk.Buffer, dst vk.Image, coded [2]int, from uint32) {
+	written := vk.MemoryBarrier2{
+		SType:        vk.StructureTypeMemoryBarrier2,
+		SrcStageMask: vk.PipelineStageFlags2(vk.PipelineStage2ComputeShaderBit), SrcAccessMask: vk.AccessFlags2(vk.Access2ShaderStorageWriteBit),
+		DstStageMask: vk.PipelineStageFlags2(vk.PipelineStage2CopyBit), DstAccessMask: vk.AccessFlags2(vk.Access2TransferReadBit),
+	}
+	toDst := imageBarrier(dst, nv12Range, vk.ImageLayoutUndefined, vk.ImageLayoutTransferDstOptimal)
+	toDst.DstStageMask, toDst.DstAccessMask = vk.PipelineStageFlags2(vk.PipelineStage2CopyBit), vk.AccessFlags2(vk.Access2TransferWriteBit)
+	if from != vk.QueueFamilyIgnored {
+		toDst.SrcQueueFamilyIndex, toDst.DstQueueFamilyIndex = from, d.family
+	}
+	barrier2(d, cb, &written, toDst)
+	cw, ch := uint32(coded[0]), uint32(coded[1])
+	regions := [2]vk.BufferImageCopy{
+		{BufferRowLength: cw, BufferImageHeight: ch, ImageSubresource: vk.ImageSubresourceLayers{AspectMask: vk.ImageAspectFlags(vk.ImageAspectPlane0Bit), LayerCount: 1}, ImageExtent: vk.Extent3D{Width: cw, Height: ch, Depth: 1}},
+		{BufferOffset: vk.DeviceSize(cw * ch), BufferRowLength: cw / 2, BufferImageHeight: ch / 2, ImageSubresource: vk.ImageSubresourceLayers{AspectMask: vk.ImageAspectFlags(vk.ImageAspectPlane1Bit), LayerCount: 1}, ImageExtent: vk.Extent3D{Width: cw / 2, Height: ch / 2, Depth: 1}},
+	}
+	d.cmds.CmdCopyBufferToImage(cb, planes, dst, vk.ImageLayoutTransferDstOptimal, 2, &regions[0])
+}
+
+// nv12Range is a whole NV12 picture of one layer.
+var nv12Range = vk.ImageSubresourceRange{AspectMask: vk.ImageAspectFlags(vk.ImageAspectColorBit), LevelCount: 1, LayerCount: 1}
 
 // createCommands makes the conversion's command buffer and the fence
 // the host waits for it on.
@@ -551,14 +590,11 @@ func (e *Encoder) convert(src *Buffer, origin image.Point, slot int) error {
 		r := e.overlayDst
 		over = [4]int32{int32(r.Min.X), int32(r.Min.Y), int32(r.Max.X), int32(r.Max.Y)}
 	}
-	planes, size, pitch, uvOffset := e.backend.planes(slot)
-	bi := vk.DescriptorBufferInfo{Buffer: planes, Range: vk.DeviceSize(size)}
-	w := [3]vk.WriteDescriptorSet{
+	w := [2]vk.WriteDescriptorSet{
 		{SType: vk.StructureTypeWriteDescriptorSet, DstSet: e.set, DstBinding: 0, DescriptorCount: 1, DescriptorType: vk.DescriptorTypeCombinedImageSampler, PImageInfo: &ii[0]},
-		{SType: vk.StructureTypeWriteDescriptorSet, DstSet: e.set, DstBinding: 1, DescriptorCount: 1, DescriptorType: vk.DescriptorTypeStorageBuffer, PBufferInfo: &bi},
 		{SType: vk.StructureTypeWriteDescriptorSet, DstSet: e.set, DstBinding: 2, DescriptorCount: 1, DescriptorType: vk.DescriptorTypeCombinedImageSampler, PImageInfo: &ii[1]},
 	}
-	d.cmds.UpdateDescriptorSets(d.device, 3, &w[0], 0, nil)
+	d.cmds.UpdateDescriptorSets(d.device, 2, &w[0], 0, nil)
 	cb := e.gfxCB
 	if err := begin(d, cb); err != nil {
 		return err
@@ -567,13 +603,11 @@ func (e *Encoder) convert(src *Buffer, origin image.Point, slot int) error {
 	foreign.SrcQueueFamilyIndex, foreign.DstQueueFamilyIndex = vk.QueueFamilyForeignExt, d.family
 	foreign.DstStageMask, foreign.DstAccessMask = vk.PipelineStageFlags2(vk.PipelineStage2ComputeShaderBit), vk.AccessFlags2(vk.Access2ShaderSampledReadBit)
 	barrier2(d, cb, nil, foreign)
-	e.backend.beforeConvert(cb, slot)
 	d.cmds.CmdBindPipeline(cb, vk.PipelineBindPointCompute, e.pipeline)
 	d.cmds.CmdBindDescriptorSets(cb, vk.PipelineBindPointCompute, e.layout, 0, 1, &e.set, 0, nil)
 	pc := nv12Constants{
 		frameW: int32(e.cfg.Width), frameH: int32(e.cfg.Height), codedW: int32(e.coded[0]), codedH: int32(e.coded[1]), overlay: over,
 		originX: int32(origin.X), originY: int32(origin.Y), transform: int32(e.cfg.Transform),
-		pitch: int32(pitch / 4), uvOffset: int32(uvOffset / 4),
 	}
 	d.cmds.CmdPushConstants(cb, e.layout, vk.ShaderStageFlags(vk.ShaderStageComputeBit), 0, uint32(unsafe.Sizeof(pc)), unsafe.Pointer(&pc))
 	d.cmds.CmdDispatch(cb, uint32((e.coded[0]/4+7)/8), uint32((e.coded[1]/2+7)/8), 1)
@@ -581,7 +615,7 @@ func (e *Encoder) convert(src *Buffer, origin image.Point, slot int) error {
 	release.SrcQueueFamilyIndex, release.DstQueueFamilyIndex = d.family, vk.QueueFamilyForeignExt
 	release.SrcStageMask, release.SrcAccessMask = vk.PipelineStageFlags2(vk.PipelineStage2ComputeShaderBit), vk.AccessFlags2(vk.Access2ShaderSampledReadBit)
 	barrier2(d, cb, nil, release)
-	signal := e.backend.afterConvert(cb, slot)
+	signal := e.backend.afterConvert(cb, slot, e.planes.buf)
 	if r := d.cmds.EndCommandBuffer(cb); r != vk.Success {
 		return fmt.Errorf("gpu: vkEndCommandBuffer (NV12): %d", r)
 	}
@@ -608,6 +642,9 @@ func (e *Encoder) Close() {
 	}
 	if e.overlayStaging != nil {
 		e.overlayStaging.close()
+	}
+	if e.planes != nil {
+		e.planes.close()
 	}
 	if e.linear != 0 {
 		d.cmds.DestroySampler(d.device, e.linear, nil)
