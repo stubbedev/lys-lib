@@ -25,8 +25,11 @@ where the system provides the API: libvulkan.
 | `vinput` | Virtual pointer and keyboard input (with `keymapfd`) |
 | `wlr` | Wayland protocol bindings beyond the core and xdg-shell |
 | `media/mux`, `media/opus` | MP4 and Matroska muxing, and the Opus encoder |
+| `pipewire` | The ScreenCast video producer: a node over PipeWire's native protocol, no libpipewire |
+| `eis` | An EIS server: the receiving end of libei, replaying what a remote-desktop client emulates |
+| `clib` | dlopen over a candidate list and C string copies, for bindings made with purego |
 | `debug` | The compile-time trace facility (build tag `lysdebug`, categories in `LYS_DEBUG`) |
-| `golden`, `gputest`, `wltest` | Test support: golden images, the GPU test driver, Wayland test clients |
+| `golden`, `gputest`, `wltest`, `pipewire/pwtest`, `sockdir` | Test support: golden images, the GPU test driver, Wayland test clients, a private PipeWire daemon with libpipewire consumers, and directories short enough for Unix sockets |
 
 ## Development
 
@@ -36,6 +39,7 @@ on lavapipe, `just headless` the capture and virtual input tests
 against a private headless sway, and `just gpu-host` every GPU path on
 the host's own GPU.
 
-The packages moved here from lys-ui with their history; issue numbers
-in that history are lys-ui's.
+The packages moved here from lys-ui and lys-shell with their history;
+issue numbers in that history name their repository
+(`stubbedev/lys-ui#N`, `stubbedev/lys-shell#N`).
 

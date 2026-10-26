@@ -23,7 +23,15 @@
         # Headless test compositor: sway on WLR_BACKENDS=headless gives
         # the capture and virtual input tests a private Wayland session
         # without touching the developer's real desktop. Linux only.
-        ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [ pkgs.sway ]
+        ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+          pkgs.sway
+          # pwtest's private PipeWire daemon, pw-link, and libpipewire,
+          # the reference consumer the producer in pipewire is checked
+          # against.
+          pkgs.pipewire
+          # libei, the C client the EIS server tests drive.
+          pkgs.libei
+        ]
         ++ [
           # The test compositor's private session bus.
           pkgs.dbus
@@ -63,8 +71,14 @@
       } // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
         # The GPU renderer (package gpu) loads libvulkan at runtime, and
         # its VA-API encoder libva; both find the host's drivers
-        # (/run/opengl-driver on NixOS).
-        LD_LIBRARY_PATH = "${pkgs.vulkan-loader}/lib:${lib.getLib pkgs.libva}/lib";
+        # (/run/opengl-driver on NixOS). The pipewire and eis tests load
+        # libpipewire and libei, the reference clients they are held to.
+        LD_LIBRARY_PATH = lib.makeLibraryPath [
+          pkgs.vulkan-loader
+          pkgs.libva
+          pkgs.pipewire
+          pkgs.libei
+        ];
         # Mesa's lavapipe, a CPU Vulkan driver: the GPU tests force it
         # (VK_DRIVER_FILES) to run without a GPU, as CI does.
         LYS_TEST_LAVAPIPE = "${pkgs.mesa}/share/vulkan/icd.d/lvp_icd.x86_64.json";

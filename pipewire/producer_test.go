@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stubbedev/lys-shell/internal/pipewire/pwtest"
+	"github.com/stubbedev/lys-lib/pipewire/pwtest"
 )
 
 // settlesTo waits until the process runs want goroutines, failing with

@@ -11,7 +11,7 @@ import (
 
 	"github.com/ebitengine/purego"
 
-	"github.com/stubbedev/lys-shell/internal/pipewire/pwtest"
+	"github.com/stubbedev/lys-lib/pipewire/pwtest"
 )
 
 // solid fills every frame with one byte.

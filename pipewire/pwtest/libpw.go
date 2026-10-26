@@ -9,7 +9,7 @@ import (
 
 	"github.com/ebitengine/purego"
 
-	"github.com/stubbedev/lys-shell/internal/clib"
+	"github.com/stubbedev/lys-lib/clib"
 )
 
 // Lib is libpipewire bound through purego: the reference

@@ -4,8 +4,9 @@
 #
 # Everything runs in the flake's dev shell (nix/shell.nix, pinned by
 # flake.lock): the Go toolchain, golangci-lint, just, sway, Mesa's
-# lavapipe and the Vulkan validation layer. No display server and no
-# GPU are needed.
+# lavapipe and the Vulkan validation layer, and the PipeWire daemon and
+# libei the pipewire and eis tests run against. No display server and
+# no GPU are needed.
 name: ci
 
 on:

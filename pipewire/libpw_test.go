@@ -3,7 +3,7 @@ package pipewire
 import (
 	"unsafe"
 
-	"github.com/stubbedev/lys-shell/internal/pipewire/pwtest"
+	"github.com/stubbedev/lys-lib/pipewire/pwtest"
 )
 
 // libpw is pwtest.Lib under the names the reference consumer in

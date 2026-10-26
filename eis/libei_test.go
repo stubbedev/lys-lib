@@ -11,7 +11,7 @@ import (
 
 	"github.com/ebitengine/purego"
 
-	"github.com/stubbedev/lys-shell/internal/clib"
+	"github.com/stubbedev/lys-lib/clib"
 )
 
 // libei is the reference C client, the oracle the server is held to.

@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stubbedev/lys-shell/internal/sockdir"
+	"github.com/stubbedev/lys-lib/sockdir"
 )
 
 // daemonConf is a private PipeWire daemon: the native protocol, the
