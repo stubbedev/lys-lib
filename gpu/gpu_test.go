@@ -170,12 +170,15 @@ func TestOpenNode(t *testing.T) {
 	if _, err := OpenNode(0); err == nil {
 		t.Error("device number 0 opened a device")
 	}
-	opened := 0
+	opened, present := 0, 0
 	var reasons []error
 	for _, kind := range []struct {
 		name  string
 		nodes []string
 	}{{"render", render}, {"primary", primary}} {
+		if len(kind.nodes) > 0 {
+			present++
+		}
 		for _, n := range kind.nodes {
 			var st unix.Stat_t
 			if err := unix.Stat(n, &st); err != nil {
@@ -195,11 +198,11 @@ func TestOpenNode(t *testing.T) {
 			break
 		}
 	}
-	switch opened {
-	case 0:
+	switch {
+	case opened == 0:
 		t.Skipf("no DRM node opens a Vulkan device: %v", errors.Join(reasons...))
-	case 1:
-		t.Errorf("only one of a GPU's render and primary nodes opens it: %v", errors.Join(reasons...))
+	case opened < present:
+		t.Errorf("only %d of the %d kinds of DRM node present opens a GPU: %v", opened, present, errors.Join(reasons...))
 	}
 }
 

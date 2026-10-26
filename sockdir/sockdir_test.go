@@ -27,6 +27,7 @@ func TestADirHoldsASocketWhateverTheTestIsCalledAndGoesAwayAfterwards(t *testing
 }
 
 func TestTheTempDirOfALongTestCannotHoldASocket(t *testing.T) {
+	t.Setenv("TMPDIR", t.TempDir())
 	t.Run(strings.Repeat("a test name far longer than any socket path may be ", 4), func(t *testing.T) {
 		if ln, err := net.Listen("unix", filepath.Join(t.TempDir(), "widget.sock")); err == nil {
 			_ = ln.Close()
