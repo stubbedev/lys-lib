@@ -5,9 +5,11 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 
 	"golang.org/x/sys/unix"
@@ -302,4 +304,46 @@ func TestExportsIsProven(t *testing.T) {
 	if !strings.Contains(string(out), "--- PASS: TestExportsIsProven") {
 		t.Fatalf("the run without /dev/udmabuf did not pass:\n%s", out)
 	}
+}
+
+// Devices open and close on several goroutines at once, as a shell's
+// renderer, its screencasts and its recorder do, while collections run
+// throughout: the structures a Vulkan call reads stay alive through
+// the call though C sees them only as integers (it crashed in
+// vkCreateInstance before).
+func TestDevicesOpenConcurrently(t *testing.T) {
+	if _, err := gputest.SetupTest(t); err != nil {
+		t.Fatal(err)
+	}
+	if d, err := Open(); err != nil {
+		t.Skipf("no Vulkan device: %v", err)
+	} else {
+		d.Close()
+	}
+	stop := make(chan struct{})
+	go func() {
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+				runtime.GC()
+			}
+		}
+	}()
+	defer close(stop)
+	var wg sync.WaitGroup
+	for g := range 4 {
+		wg.Go(func() {
+			for range 12 {
+				d, err := Open()
+				if err != nil {
+					t.Errorf("goroutine %d: %v", g, err)
+					return
+				}
+				d.Close()
+			}
+		})
+	}
+	wg.Wait()
 }

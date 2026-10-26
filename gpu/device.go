@@ -133,19 +133,17 @@ func open(node *drmNode) (*Device, error) {
 }
 
 func (d *Device) createInstance() error {
-	app := cstr("lys-ui")
-	ai := vk.ApplicationInfo{SType: vk.StructureTypeApplicationInfo, PApplicationName: uintptr(unsafe.Pointer(&app[0])), ApiVersion: vkVersion(1, 3)}
+	var pin runtime.Pinner
+	defer pin.Unpin()
+	ai := vk.ApplicationInfo{SType: vk.StructureTypeApplicationInfo, PApplicationName: cstr(&pin, "lys-ui"), ApiVersion: vkVersion(1, 3)}
 	ici := vk.InstanceCreateInfo{SType: vk.StructureTypeInstanceCreateInfo, PApplicationInfo: &ai}
-	r := d.cmds.CreateInstance(&ici, nil, &d.instance)
-	runtime.KeepAlive(app)
-	if r != vk.Success {
+	if r := d.cmds.CreateInstance(&ici, nil, &d.instance); r != vk.Success {
 		return fmt.Errorf("%w: vkCreateInstance: %d", ErrNoDevice, r)
 	}
 	if err := d.cmds.LoadInstance(d.instance); err != nil {
 		d.cmds.DestroyInstance(d.instance, nil)
 		return fmt.Errorf("%w: %w", ErrNoDevice, err)
 	}
-	vk.SetDeviceProcAddr(d.instance)
 	return nil
 }
 
@@ -220,12 +218,10 @@ func (d *Device) open() error {
 		dci.PNext = (*uintptr)(unsafe.Pointer(&f13))
 	}
 	dci.QueueCreateInfoCount, dci.PQueueCreateInfos = uint32(len(qcis)), &qcis[0]
-	ptrs, keep := cstrs(exts)
-	if len(ptrs) > 0 {
-		dci.EnabledExtensionCount, dci.PpEnabledExtensionNames = uint32(len(ptrs)), uintptr(unsafe.Pointer(&ptrs[0]))
-	}
+	var pin runtime.Pinner
+	defer pin.Unpin()
+	dci.EnabledExtensionCount, dci.PpEnabledExtensionNames = uint32(len(exts)), cstrs(&pin, exts)
 	r := d.cmds.CreateDevice(d.phys, &dci, nil, &d.device)
-	runtime.KeepAlive(keep)
 	runtime.KeepAlive(qcis)
 	runtime.KeepAlive(&f13)
 	if r != vk.Success {
@@ -375,16 +371,28 @@ func (d *Device) submit(record func(cb vk.CommandBuffer)) error {
 
 func vkVersion(major, minor uint32) uint32 { return major<<22 | minor<<12 }
 
-func cstr(s string) []byte { return append([]byte(s), 0) }
+// cstr is s as a C string at an address C may keep for as long as
+// pin holds it: C sees it as an integer, which neither keeps memory
+// alive nor follows it when the goroutine's stack moves, so it is
+// pinned to the heap. The caller unpins after the call.
+func cstr(pin *runtime.Pinner, s string) uintptr {
+	b := append([]byte(s), 0)
+	pin.Pin(&b[0])
+	return uintptr(unsafe.Pointer(&b[0]))
+}
 
-func cstrs(names []string) ([]uintptr, [][]byte) {
-	keep := make([][]byte, len(names))
+// cstrs is names as a C array of C strings, pinned as cstr's string
+// is; 0 for none.
+func cstrs(pin *runtime.Pinner, names []string) uintptr {
+	if len(names) == 0 {
+		return 0
+	}
 	ptrs := make([]uintptr, len(names))
 	for i, n := range names {
-		keep[i] = cstr(n)
-		ptrs[i] = uintptr(unsafe.Pointer(&keep[i][0]))
+		ptrs[i] = cstr(pin, n)
 	}
-	return ptrs, keep
+	pin.Pin(&ptrs[0])
+	return uintptr(unsafe.Pointer(&ptrs[0]))
 }
 
 func cname(b []byte) string {

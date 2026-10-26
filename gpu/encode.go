@@ -609,14 +609,14 @@ func (e *Encoder) createPipeline() error {
 		return err
 	}
 	e.module = m
-	name := cstr("main")
+	var pin runtime.Pinner
+	defer pin.Unpin()
 	cpi := vk.ComputePipelineCreateInfo{
 		SType:  vk.StructureTypeComputePipelineCreateInfo,
-		Stage:  vk.PipelineShaderStageCreateInfo{SType: vk.StructureTypePipelineShaderStageCreateInfo, Stage: vk.ShaderStageComputeBit, Module: m, PName: uintptr(unsafe.Pointer(&name[0]))},
+		Stage:  vk.PipelineShaderStageCreateInfo{SType: vk.StructureTypePipelineShaderStageCreateInfo, Stage: vk.ShaderStageComputeBit, Module: m, PName: cstr(&pin, "main")},
 		Layout: e.layout,
 	}
 	r := d.cmds.CreateComputePipelines(d.device, 0, 1, &cpi, nil, &e.pipeline)
-	runtime.KeepAlive(name)
 	if r != vk.Success {
 		return fmt.Errorf("gpu: vkCreateComputePipelines (NV12): %d", r)
 	}

@@ -176,10 +176,12 @@ func (d *Device) createPrimPipelines() error {
 	if d.primModules[1], err = d.shaderModule(primFrag); err != nil {
 		return err
 	}
-	main := cstr("main")
+	var pin runtime.Pinner
+	defer pin.Unpin()
+	main := cstr(&pin, "main")
 	stages := [2]vk.PipelineShaderStageCreateInfo{
-		{SType: vk.StructureTypePipelineShaderStageCreateInfo, Stage: vk.ShaderStageVertexBit, Module: d.primModules[0], PName: uintptr(unsafe.Pointer(&main[0]))},
-		{SType: vk.StructureTypePipelineShaderStageCreateInfo, Stage: vk.ShaderStageFragmentBit, Module: d.primModules[1], PName: uintptr(unsafe.Pointer(&main[0]))},
+		{SType: vk.StructureTypePipelineShaderStageCreateInfo, Stage: vk.ShaderStageVertexBit, Module: d.primModules[0], PName: main},
+		{SType: vk.StructureTypePipelineShaderStageCreateInfo, Stage: vk.ShaderStageFragmentBit, Module: d.primModules[1], PName: main},
 	}
 	vin := vk.PipelineVertexInputStateCreateInfo{SType: vk.StructureTypePipelineVertexInputStateCreateInfo}
 	asm := vk.PipelineInputAssemblyStateCreateInfo{SType: vk.StructureTypePipelineInputAssemblyStateCreateInfo, Topology: vk.PrimitiveTopologyTriangleStrip}
@@ -212,9 +214,7 @@ func (d *Device) createPrimPipelines() error {
 	if err := make(over, &d.over); err != nil {
 		return err
 	}
-	err = make(vk.PipelineColorBlendAttachmentState{ColorWriteMask: rgba}, &d.replace)
-	runtime.KeepAlive(main)
-	return err
+	return make(vk.PipelineColorBlendAttachmentState{ColorWriteMask: rgba}, &d.replace)
 }
 
 // pipe names a primitive pipeline: how a prim's color meets the

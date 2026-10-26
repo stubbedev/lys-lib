@@ -109,3 +109,20 @@ func (c *Commands) GetQueryPoolResults(device Device, queryPool QueryPool, first
 	}
 	return Result(result)
 }
+
+// deviceProcAddr looks name up through vkGetDeviceProcAddr as this
+// instance loaded it. A process-wide pointer, kept from whichever
+// instance came first, outlives that instance: another instance's
+// devices then loaded their functions through a destroyed one.
+func (c *Commands) deviceProcAddr(device Device, name string) unsafe.Pointer {
+	if c.getDeviceProcAddr == nil {
+		return nil
+	}
+	cname := make([]byte, len(name)+1)
+	copy(cname, name)
+	var result unsafe.Pointer
+	namePtr := unsafe.Pointer(&cname[0])
+	args := [2]unsafe.Pointer{unsafe.Pointer(&device), unsafe.Pointer(&namePtr)}
+	_, _ = ffi.CallFunction(&cifGetDeviceProcAddr, c.getDeviceProcAddr, unsafe.Pointer(&result), args[:])
+	return result
+}

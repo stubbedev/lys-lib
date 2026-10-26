@@ -30,8 +30,8 @@
 // # Intel Driver Compatibility
 //
 // Intel drivers (Iris Xe, 12th Gen+) have known quirks:
-//   - vkGetInstanceProcAddr(NULL, "vkGetDeviceProcAddr") returns NULL
-//   - Use SetDeviceProcAddr(instance) after vkCreateInstance
+//   - vkGetInstanceProcAddr(NULL, "vkGetDeviceProcAddr") returns NULL;
+//     LoadInstance takes it from the instance, per instance
 //   - vkCreateGraphicsPipelines may return VK_SUCCESS with VK_NULL_HANDLE pipeline
 //
 // See: https://github.com/gogpu/wgpu/issues/24
@@ -49,7 +49,6 @@ import (
 var (
 	vulkanLib              unsafe.Pointer
 	vkGetInstanceProcAddr  unsafe.Pointer
-	vkGetDeviceProcAddr    unsafe.Pointer
 	cifGetInstanceProcAddr ffi.CallInterface
 	cifGetDeviceProcAddr   ffi.CallInterface
 
@@ -156,49 +155,12 @@ func GetInstanceProcAddr(instance Instance, name string) unsafe.Pointer {
 	return result
 }
 
-// SetDeviceProcAddr sets the vkGetDeviceProcAddr function pointer.
-// Must be called with a valid instance after vkCreateInstance.
-// Some drivers (e.g., Intel) don't support loading vkGetDeviceProcAddr with instance=0.
-func SetDeviceProcAddr(instance Instance) {
-	if vkGetDeviceProcAddr == nil {
-		vkGetDeviceProcAddr = GetInstanceProcAddr(instance, "vkGetDeviceProcAddr")
-	}
-}
-
-// GetDeviceProcAddr returns function pointer for Vulkan device function.
-func GetDeviceProcAddr(device Device, name string) unsafe.Pointer {
-	if vkGetDeviceProcAddr == nil {
-		// Try lazy load from global (may not work on all drivers)
-		vkGetDeviceProcAddr = GetInstanceProcAddr(0, "vkGetDeviceProcAddr")
-		if vkGetDeviceProcAddr == nil {
-			return nil
-		}
-	}
-
-	// Convert name to null-terminated C string
-	cname := make([]byte, len(name)+1)
-	copy(cname, name)
-
-	var result unsafe.Pointer
-	// goffi expects args[] to contain pointers to WHERE values are stored.
-	// For pointer arguments, we need pointer-to-pointer.
-	namePtr := unsafe.Pointer(&cname[0])
-	args := [2]unsafe.Pointer{
-		unsafe.Pointer(&device),
-		unsafe.Pointer(&namePtr), // pointer TO the pointer
-	}
-
-	_, _ = ffi.CallFunction(&cifGetDeviceProcAddr, vkGetDeviceProcAddr, unsafe.Pointer(&result), args[:])
-	return result
-}
-
 // Close releases the Vulkan library.
 func Close() error {
 	if vulkanLib != nil {
 		err := ffi.FreeLibrary(vulkanLib)
 		vulkanLib = nil
 		vkGetInstanceProcAddr = nil
-		vkGetDeviceProcAddr = nil
 		return err
 	}
 	return nil

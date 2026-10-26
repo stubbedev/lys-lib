@@ -144,3 +144,17 @@ structure types, synchronization2's structure types, the two-plane
 never loaded; the dmabuf export checks ask it whether a modifier
 exports. Its structure types, and the external image format ones,
 join the core values in `const_lysui.go`.
+
+### Calls keep their arguments alive; vkGetDeviceProcAddr is per instance
+
+`internal/ffi`: `CallFunction` hands C its arguments as integers, which
+keep nothing alive; it now keeps the argument array, and through it
+every structure an argument points at, reachable until the call
+returns. A collection during a long call (`vkCreateInstance`) freed what
+the driver was reading, and another goroutine's allocation overwrote
+it: devices opened on several goroutines at once crashed.
+
+`loader.go`, `commands.go`: `vkGetDeviceProcAddr` was one process-wide
+pointer, fetched through whichever instance came first and kept after
+that instance was destroyed. `LoadDevice` now looks device functions up
+through its own instance's, which `LoadInstance` already loaded.

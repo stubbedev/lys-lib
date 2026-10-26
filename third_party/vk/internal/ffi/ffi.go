@@ -13,6 +13,7 @@ package ffi
 
 import (
 	"fmt"
+	"runtime"
 	"unsafe"
 
 	"github.com/ebitengine/purego"
@@ -73,7 +74,12 @@ func PrepareCallInterface(cif *CallInterface, _ CallingConvention, ret *TypeDesc
 
 // CallFunction calls fn with the arguments avalue points at, each read
 // as its prepared type, and stores the result where rvalue points
-// (nil for a void function). The errno result is always zero.
+// (nil for a void function). The errno result is always zero. The C
+// side gets the arguments as integers, which keep nothing alive, so
+// avalue, and through it every structure an argument points at, stays
+// reachable until the call returns: otherwise a collection during a
+// long call (vkCreateInstance) frees what the driver is reading, and
+// another goroutine's allocation overwrites it.
 func CallFunction(cif *CallInterface, fn unsafe.Pointer, rvalue unsafe.Pointer, avalue []unsafe.Pointer) (uintptr, error) {
 	if len(avalue) != len(cif.args) {
 		return 0, fmt.Errorf("ffi: %d arguments for a signature of %d", len(avalue), len(cif.args))
@@ -96,6 +102,7 @@ func CallFunction(cif *CallInterface, fn unsafe.Pointer, rvalue unsafe.Pointer, 
 		}
 	}
 	r, _, _ := purego.SyscallN(uintptr(fn), args[:len(cif.args)]...)
+	runtime.KeepAlive(avalue)
 	switch cif.ret {
 	case VoidType:
 	case UInt32Type:

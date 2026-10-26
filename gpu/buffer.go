@@ -2,6 +2,7 @@ package gpu
 
 import (
 	"fmt"
+	"runtime"
 	"unsafe"
 
 	"github.com/stubbedev/lys-ui/third_party/vk"
@@ -66,12 +67,17 @@ func (d *Device) newMappedBuffer(size int, usage vk.BufferUsageFlagBits, next un
 		b.close()
 		return nil, fmt.Errorf("gpu: vkBindBufferMemory: %d", r)
 	}
-	var ptr unsafe.Pointer
-	if r := d.cmds.MapMemory(d.device, b.memory, 0, vk.DeviceSize(size), 0, uintptr(unsafe.Pointer(&ptr))); r != vk.Success {
+	// C writes the mapping's address through an integer, so where it
+	// writes is pinned: a stack slot could move before it does.
+	var pin runtime.Pinner
+	defer pin.Unpin()
+	ptr := new(unsafe.Pointer)
+	pin.Pin(ptr)
+	if r := d.cmds.MapMemory(d.device, b.memory, 0, vk.DeviceSize(size), 0, uintptr(unsafe.Pointer(ptr))); r != vk.Success {
 		b.close()
 		return nil, fmt.Errorf("gpu: vkMapMemory %d bytes: %d", size, r)
 	}
-	b.mapped = unsafe.Slice((*byte)(ptr), size)
+	b.mapped = unsafe.Slice((*byte)(*ptr), size)
 	return b, nil
 }
 
