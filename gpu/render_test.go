@@ -613,3 +613,34 @@ func TestRenderTiles(t *testing.T) {
 		}
 	}
 }
+
+// Every blend mode composites a layer over the backdrop on the GPU, as
+// the CPU does, byte for byte: translucent and antialiased layer pixels
+// over a varied, partly translucent backdrop, at an opacity, with no
+// readback (#316).
+func TestRenderBlendModes(t *testing.T) {
+	d := openDevice(t)
+	stops := []render.GradientStop{{Pos: 0, Color: render.RGBA(240, 30, 60, 255)}, {Pos: 0.5, Color: render.RGBA(30, 200, 90, 140)}, {Pos: 1, Color: render.RGBA(40, 70, 250, 220)}}
+	back := []render.GradientStop{{Pos: 0, Color: render.RGBA(250, 240, 20, 255)}, {Pos: 1, Color: render.RGBA(20, 30, 120, 90)}}
+	for _, sc := range [][2]int{{1, 1}, {3, 2}} {
+		w, h := 64*sc[0]/sc[1], 40*sc[0]/sc[1]
+		for m := render.BlendMultiply; m <= render.BlendLuminosity; m++ {
+			parity(t, d, w, h, sc[0], sc[1], 1, func(cv *render.Canvas, _ int) {
+				cv.Clear(cv.Rect(), 0)
+				cv.PaintGradient(render.Rect{W: 64, H: 40}, render.Corners{}, render.Linear(90, back...))
+				region := cv.MapRect(render.Rect{X: 4, Y: 4, W: 56, H: 32})
+				l := cv.ScratchLayer(region)
+				lc := l.Canvas()
+				lc.PaintGradient(render.Rect{X: 4, Y: 4, W: 56, H: 16}, render.UniformCorners(6), render.Linear(0, stops...))
+				lc.RoundedRect(render.Rect{X: 10, Y: 18, W: 30, H: 16}, 8, render.RGBA(120, 220, 250, 200))
+				prev := cv.PushAlpha(0.8)
+				cv.DrawLayer(l, region, m)
+				cv.PopAlpha(prev)
+				l.Release()
+			})
+			if d.frame.stats.readbacks != 0 || len(d.frame.stats.sprites) != 0 {
+				t.Errorf("%s at %d/%d: %d readbacks, sprites %v", m, sc[0], sc[1], d.frame.stats.readbacks, d.frame.stats.sprites)
+			}
+		}
+	}
+}

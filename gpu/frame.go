@@ -826,16 +826,41 @@ func (f *frame) composite(s render.State, l *render.Layer, src render.Rect, m re
 
 func (f *frame) DrawLayer(s render.State, l *render.Layer, src render.Rect, mode render.BlendMode) {
 	if mode != render.BlendNormal {
-		dst := f.on(s)
-		f.cpu(s.Bounds, []*surface{dst, f.layer(l)}, func(cvs []*render.Canvas) {
-			cvs[0].ApplyState(s)
-			cvs[0].DrawLayer(render.LayerOf(cvs[1]), src, mode)
-		})
+		f.blendLayer(s, l, src, mode)
 		return
 	}
 	p := shaded(kindTexture, s, flagNoBright)
 	p.quad = quadOf(s.Bounds)
 	f.draw(f.on(s), f.layer(l), pipeOver, p)
+}
+
+// blendLayer draws l's src rect over the backdrop under mode in place,
+// as render's DrawLayer blends: the backdrop region copied aside, then
+// every pixel through the shader's blendPixel. A region past the
+// filter surfaces' reach blends on the CPU.
+func (f *frame) blendLayer(s render.State, l *render.Layer, src render.Rect, mode render.BlendMode) {
+	dst, ls := f.on(s), f.layer(l)
+	r := s.Bounds.Intersect(src).Intersect(render.Rect{W: ls.w, H: ls.h})
+	a := alphaScale(s.Alpha)
+	if r.Empty() || a == 0 || f.err != nil {
+		return
+	}
+	if !f.filterRoom(r.X+r.W, r.Y+r.H) {
+		f.cpu(s.Bounds, []*surface{dst, ls}, func(cvs []*render.Canvas) {
+			cvs[0].ApplyState(s)
+			cvs[0].DrawLayer(render.LayerOf(cvs[1]), src, mode)
+		})
+		return
+	}
+	var p prim
+	p.cols[0], p.cols[2] = uint32(mode), a
+	if mode == render.BlendSoftLight {
+		p.cols[1] = uint32(len(f.words))
+		for _, v := range render.SoftLightTable {
+			f.words = append(f.words, uint32(v))
+		}
+	}
+	f.inPlace(dst, r, ls, kindBlend, p)
 }
 
 func (f *frame) CrossFade(l, other *render.Layer, region render.Rect, t float64) {

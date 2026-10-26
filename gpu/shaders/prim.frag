@@ -29,6 +29,7 @@ const uint kindShadow = 22u;
 const uint kindGrain = 23u;
 const uint kindImageTiles = 24u;
 const uint kindGradientTiles = 25u;
+const uint kindBlend = 26u;
 
 // The info.w flags, gpu/prim.go's.
 const uint flagRaw = 1u;
@@ -204,6 +205,161 @@ bool tileAt(Prim p, vec2 px, out vec2 uv) {
     }
     uv = vec2(u, v);
     return u >= 0.0 && u < p.inner.z && v >= 0.0 && v < p.inner.w;
+}
+
+// The blend modes' fixed-point units, render's blendK and blendQ.
+const int blendK = 65025;
+const int blendQ = 4080;
+
+// roundDiv is render's: x / d rounded half away from zero, d > 0.
+int roundDiv(int x, int d) {
+    return x >= 0 ? (x + d / 2) / d : -((d / 2 - x) / d);
+}
+
+int hardLight(int s, int b) {
+    if (2 * s <= 255) {
+        return b * 2 * s;
+    }
+    int s2 = 2 * s - 255;
+    return (b + s2) * 255 - b * s2;
+}
+
+// blendSeparable is render's: a separable mode's B(Cb, Cs) for one
+// channel, straight s and b, premultiplied sp and bp under alphas sa
+// and ba, in blendK units. Soft-light's table sits in the words at
+// p.cols.y.
+int blendSeparable(Prim p, uint m, int s, int b, int sp, int sa, int bp, int ba) {
+    switch (m) {
+    case 1u:
+        return s * b;
+    case 2u:
+        return (s + b) * 255 - s * b;
+    case 3u:
+        return hardLight(b, s);
+    case 4u:
+        return min(s, b) * 255;
+    case 5u:
+        return max(s, b) * 255;
+    case 6u: {
+        if (bp == 0 || ba == 0) {
+            return 0;
+        }
+        if (sp >= sa) {
+            return blendK;
+        }
+        int d = ba * (sa - sp);
+        return 255 * min(255, (bp * sa * 255 + d / 2) / d);
+    }
+    case 7u: {
+        if (ba == 0) {
+            return 0;
+        }
+        if (bp >= ba) {
+            return blendK;
+        }
+        if (sp == 0) {
+            return 0;
+        }
+        int d = ba * sp;
+        return 255 * (255 - min(255, ((ba - bp) * sa * 255 + d / 2) / d));
+    }
+    case 8u:
+        return hardLight(s, b);
+    case 9u:
+        if (2 * s <= 255) {
+            return b * 255 - roundDiv((255 - 2 * s) * b * (255 - b), 255);
+        }
+        return b * 255 + roundDiv((2 * s - 255) * (int(words[p.cols.y + uint(b)]) - b * 255), 255);
+    case 10u:
+        return abs(b - s) * 255;
+    case 11u:
+        return (s + b) * 255 - 2 * s * b;
+    }
+    return s * 255;
+}
+
+int lumQ(ivec3 c) {
+    return (30 * c.x + 59 * c.y + 11 * c.z + 50) / 100;
+}
+
+// setLumQ is render's: c shifted to luminance l, then clipped toward
+// it.
+ivec3 setLumQ(ivec3 c, int l) {
+    c += l - lumQ(c);
+    l = lumQ(c);
+    int lo = min(c.x, min(c.y, c.z));
+    int hi = max(c.x, max(c.y, c.z));
+    if (lo < 0 && l != lo) {
+        c = l + (c - l) * l / (l - lo);
+    }
+    if (hi > blendQ && hi != l) {
+        c = l + (c - l) * (blendQ - l) / (hi - l);
+    }
+    return c;
+}
+
+int satQ(ivec3 c) {
+    return max(c.x, max(c.y, c.z)) - min(c.x, min(c.y, c.z));
+}
+
+// setSatQ is render's: small at 0, large at s, mid in proportion, ties
+// kept in channel order.
+ivec3 setSatQ(ivec3 c, int s) {
+    int o0 = 0, o1 = 1, o2 = 2, t;
+    if (c[o0] > c[o1]) { t = o0; o0 = o1; o1 = t; }
+    if (c[o1] > c[o2]) { t = o1; o1 = o2; o2 = t; }
+    if (c[o0] > c[o1]) { t = o0; o0 = o1; o1 = t; }
+    ivec3 out_ = ivec3(0);
+    int span = c[o2] - c[o0];
+    if (span > 0) {
+        out_[o1] = (c[o1] - c[o0]) * s / span;
+        out_[o2] = s;
+    }
+    return out_;
+}
+
+ivec3 blendNonSeparable(uint m, ivec3 s, ivec3 b) {
+    switch (m) {
+    case 12u:
+        return setLumQ(setSatQ(s, satQ(b)), lumQ(b));
+    case 13u:
+        return setLumQ(setSatQ(b, satQ(s)), lumQ(b));
+    case 14u:
+        return setLumQ(s, lumQ(b));
+    }
+    return setLumQ(b, lumQ(s));
+}
+
+// straightIn is render's: c's straight channels scaled to unit.
+ivec3 straightIn(uvec4 c, int unit) {
+    int a = int(c.x);
+    if (a == 0) {
+        return ivec3(0);
+    }
+    return min(ivec3(unit), (ivec3(c.yzw) * unit + a / 2) / a);
+}
+
+// blendPixel is render's: src over dst under mode m, the spec's
+// premultiplied composite in integers.
+uvec4 blendPixel(Prim p, uint m, uvec4 src, uvec4 dst) {
+    int sa = int(src.x), da = int(dst.x);
+    if (sa == 0) {
+        return dst;
+    }
+    ivec3 sp = ivec3(src.yzw), dp = ivec3(dst.yzw);
+    ivec3 bl;
+    if (m < 12u) {
+        ivec3 s = straightIn(src, 255), b = straightIn(dst, 255);
+        for (int i = 0; i < 3; i++) {
+            bl[i] = (blendSeparable(p, m, s[i], b[i], sp[i], sa, dp[i], da) + 127) / 255;
+        }
+    } else {
+        ivec3 q = blendNonSeparable(m, straightIn(src, blendQ), straightIn(dst, blendQ));
+        bl = clamp((q + 8) / 16, ivec3(0), ivec3(255));
+    }
+    int ao = (sa * 255 + da * (255 - sa) + 127) / 255;
+    ivec3 x = sp * (255 - da) + dp * (255 - sa) + (sa * da * bl + 127) / 255;
+    return uvec4(uint(ao), uvec3(min((x + 127) / 255, ivec3(ao))));
 }
 
 // atanf and atan2f are render's: Cephes' float atan, step for step,
@@ -672,6 +828,22 @@ void main() {
             discard;
         }
         c = covered(sampleStops(p, gradientAt(p, uv)), cov);
+        break;
+    }
+    case kindBlend: {
+        // render.Canvas.DrawLayer under a blend mode: the layer's pixel
+        // at its opacity over the backdrop copy's, through blendPixel.
+        ivec2 at = ivec2(floor(px));
+        uvec4 dst = texel(at);
+        uvec4 src = texel2(at);
+        c = dst;
+        if (src == uvec4(0u)) {
+            break;
+        }
+        if (p.cols.z != 255u) {
+            src = (src * p.cols.z + 127u) / 255u;
+        }
+        c = blendPixel(p, p.cols.x, src, dst);
         break;
     }
     case kindSilhouette: {

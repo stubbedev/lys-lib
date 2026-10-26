@@ -48,6 +48,7 @@ const (
 	kindGrain
 	kindImageTiles
 	kindGradientTiles
+	kindBlend
 )
 
 // The primitive flags, prim.frag's.
