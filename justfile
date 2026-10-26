@@ -80,7 +80,8 @@ gpu:
 # AMD and Intel machines, which CI's lavapipe cannot stand in for:
 # lavapipe has no video encoder and no compositor-side dmabuf import.
 gpu-host:
-    #!/bin/sh
+    #!/usr/bin/env bash
+    set -uo pipefail
     if ! out=$(LYS_TEST_GPU=host go test -count=1 -run '^TestDeviceCloseClosesTargets$' ./gpu 2>&1); then
         printf '%s\n' "$out" | grep -E 'GPU device|vkCreate|Vulkan' | head -n 3
         echo "gpu-host: Vulkan opens no device that exports dmabufs here (VK_DRIVER_FILES=${VK_DRIVER_FILES:-unset})."
