@@ -38,7 +38,9 @@ var (
 )
 
 // modifiers are the single-plane DRM modifiers the device offers
-// format in for use.
+// format in for use and exports as a dmabuf. Modifiers with an
+// auxiliary plane (Intel CCS, AMD DCC) are left out: an exported image
+// is one plane.
 func (d *Device) modifiers(format uint32, use exportUse) ([]uint64, error) {
 	if !d.exports {
 		return nil, ErrNoDmabuf
@@ -58,11 +60,39 @@ func (d *Device) modifiers(format uint32, use exportUse) ([]uint64, error) {
 	runtime.KeepAlive(&list)
 	var out []uint64
 	for _, m := range all[:list.DrmFormatModifierCount] {
-		if m.DrmFormatModifierPlaneCount == 1 && m.DrmFormatModifierTilingFeatures&use.features == use.features {
+		if m.DrmFormatModifierPlaneCount != 1 || m.DrmFormatModifierTilingFeatures&use.features != use.features {
+			continue
+		}
+		if _, ok := d.exportable(vf, m.DrmFormatModifier, use.usage); ok {
 			out = append(out, m.DrmFormatModifier)
 		}
 	}
 	return out, nil
+}
+
+// exportable reports whether an image of vf in modifier mod, made for
+// usage, exports its memory as a dmabuf, and the largest such image:
+// what a modifier's format features alone do not promise.
+func (d *Device) exportable(vf vk.Format, mod uint64, usage vk.ImageUsageFlags) (vk.Extent3D, bool) {
+	modInfo := vk.PhysicalDeviceImageDrmFormatModifierInfoEXT{
+		SType: vk.StructureTypePhysicalDeviceImageDrmFormatModifierInfoExt, DrmFormatModifier: mod, SharingMode: vk.SharingModeExclusive,
+	}
+	ext := vk.PhysicalDeviceExternalImageFormatInfo{
+		SType: vk.StructureTypePhysicalDeviceExternalImageFormatInfo, PNext: (*uintptr)(unsafe.Pointer(&modInfo)),
+		HandleType: vk.ExternalMemoryHandleTypeDmaBufBitExt,
+	}
+	info := vk.PhysicalDeviceImageFormatInfo2{
+		SType: vk.StructureTypePhysicalDeviceImageFormatInfo2, PNext: (*uintptr)(unsafe.Pointer(&ext)),
+		Format: vf, Type: vk.ImageType2d, Tiling: vk.ImageTilingDrmFormatModifierExt, Usage: usage,
+	}
+	extProps := vk.ExternalImageFormatProperties{SType: vk.StructureTypeExternalImageFormatProperties}
+	props := vk.ImageFormatProperties2{SType: vk.StructureTypeImageFormatProperties2, PNext: (*uintptr)(unsafe.Pointer(&extProps))}
+	r := d.cmds.GetPhysicalDeviceImageFormatProperties2(d.phys, &info, &props)
+	runtime.KeepAlive(&modInfo)
+	runtime.KeepAlive(&ext)
+	runtime.KeepAlive(&extProps)
+	exportable := extProps.ExternalMemoryProperties.ExternalMemoryFeatures&vk.ExternalMemoryFeatureFlags(vk.ExternalMemoryFeatureExportableBit) != 0
+	return props.ImageFormatProperties.MaxExtent, r == vk.Success && exportable
 }
 
 // exported is an image whose memory is a dmabuf, and that dmabuf.
@@ -93,9 +123,15 @@ func (d *Device) export(width, height int, format uint32, offered []uint64, use 
 	if err != nil {
 		return exported{}, err
 	}
-	mods := slices.DeleteFunc(slices.Clone(offered), func(m uint64) bool { return !slices.Contains(supported, m) })
+	mods := slices.DeleteFunc(slices.Clone(offered), func(m uint64) bool {
+		if !slices.Contains(supported, m) {
+			return true
+		}
+		limit, _ := d.exportable(vf, m, use.usage)
+		return width > int(limit.Width) || height > int(limit.Height)
+	})
 	if len(mods) == 0 {
-		return exported{}, fmt.Errorf("gpu: none of the modifiers %#x is one %s %s DRM format %#08x in (%#x)", offered, d.name, use.verb, format, supported)
+		return exported{}, fmt.Errorf("gpu: none of the modifiers %#x is one %s %s DRM format %#08x in at %dx%d (%#x)", offered, d.name, use.verb, format, width, height, supported)
 	}
 	var e exported
 	if err := e.create(d, width, height, vf, mods, use.usage); err != nil {

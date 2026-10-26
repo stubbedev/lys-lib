@@ -3,8 +3,10 @@ package gpu
 import (
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -103,6 +105,9 @@ func TestNewTargetRejectsBadRequests(t *testing.T) {
 	if _, err := d.NewTarget(10, 10, dmabuf.FormatARGB8888, nil); err == nil {
 		t.Error("a target with no modifier was made")
 	}
+	if _, err := d.NewTarget(d.maxDim+1, 10, dmabuf.FormatARGB8888, mods); err == nil || !strings.Contains(err.Error(), strconv.Itoa(d.maxDim+1)) {
+		t.Errorf("a target wider than any modifier exports: %v, want an error naming its size", err)
+	}
 }
 
 // Closing the device closes its targets, and a target closed after
@@ -150,35 +155,50 @@ func TestTargetModifiersMeetTheDevices(t *testing.T) {
 	}
 }
 
-// OpenNode opens the device behind a render node and refuses one no
-// device is; a host without render nodes (lavapipe alone) skips (#330).
+// OpenNode opens the device behind a render node and behind its
+// primary node, which a compositor's linux-dmabuf main device may name
+// instead, and refuses one no device is; a host without DRM nodes
+// (lavapipe alone) skips (#330).
 func TestOpenNode(t *testing.T) {
 	if _, err := gputest.SetupTest(t); err != nil {
 		t.Fatal(err)
 	}
-	nodes, _ := filepath.Glob("/dev/dri/renderD*")
+	render, _ := filepath.Glob("/dev/dri/renderD*")
+	primary, _ := filepath.Glob("/dev/dri/card*")
 	if _, err := OpenNode(0); err == nil {
 		t.Error("device number 0 opened a device")
 	}
+	opened := 0
 	var reasons []error
-	for _, n := range nodes {
-		var st unix.Stat_t
-		if err := unix.Stat(n, &st); err != nil {
-			t.Fatal(err)
+	for _, kind := range []struct {
+		name  string
+		nodes []string
+	}{{"render", render}, {"primary", primary}} {
+		for _, n := range kind.nodes {
+			var st unix.Stat_t
+			if err := unix.Stat(n, &st); err != nil {
+				t.Fatal(err)
+			}
+			d, err := OpenNode(st.Rdev)
+			if err != nil {
+				reasons = append(reasons, err)
+				continue
+			}
+			if !d.Exports() {
+				t.Errorf("%s opened %s, which does not export dmabufs", n, d.Name())
+			}
+			t.Logf("%s node %s: %s", kind.name, n, d.Name())
+			d.Close()
+			opened++
+			break
 		}
-		d, err := OpenNode(st.Rdev)
-		if err != nil {
-			reasons = append(reasons, err)
-			continue
-		}
-		defer d.Close()
-		if !d.Exports() {
-			t.Errorf("%s opened %s, which does not export dmabufs", n, d.Name())
-		}
-		t.Logf("%s: %s", n, d.Name())
-		return
 	}
-	t.Skipf("no render node opens a Vulkan device: %v", errors.Join(reasons...))
+	switch opened {
+	case 0:
+		t.Skipf("no DRM node opens a Vulkan device: %v", errors.Join(reasons...))
+	case 1:
+		t.Errorf("only one of a GPU's render and primary nodes opens it: %v", errors.Join(reasons...))
+	}
 }
 
 // A Buffer is allocated for transfer and sampling only, so it is
@@ -243,5 +263,43 @@ func TestReadBuffersAreCached(t *testing.T) {
 	d.readback = grown
 	if d.readback.flags&cached != cached {
 		t.Errorf("the grown readback buffer sits in memory %#x, want cached", d.readback.flags)
+	}
+}
+
+// exportProofEnv marks the child run of TestExportsIsProven.
+const exportProofEnv = "LYS_UI_TEST_EXPORT_PROOF"
+
+// A driver that offers dmabuf export but cannot do it opens as a
+// device that does not export, so callers draw offscreen or on the CPU
+// instead of failing every frame: lavapipe offers export with
+// /dev/udmabuf hidden, then fails every export allocation. The test
+// reruns itself on lavapipe in a user namespace without /dev/udmabuf.
+func TestExportsIsProven(t *testing.T) {
+	if os.Getenv(exportProofEnv) != "" {
+		d := openDevice(t)
+		if d.Exports() {
+			t.Errorf("%s exports with /dev/udmabuf hidden", d.Name())
+		}
+		return
+	}
+	lavapipe := os.Getenv("LYS_UI_TEST_LAVAPIPE")
+	unshare, err := exec.LookPath("unshare")
+	if lavapipe == "" || err != nil {
+		t.Skip("needs the dev shell's lavapipe and unshare")
+	}
+	if _, err := os.Stat("/dev/udmabuf"); err != nil {
+		t.Skip("no /dev/udmabuf to hide")
+	}
+	cmd := exec.Command(unshare, "-rm", "sh", "-c", `mount --bind /dev/null /dev/udmabuf && exec "$0" -test.run '^TestExportsIsProven$' -test.v`, os.Args[0])
+	cmd.Env = append(os.Environ(), exportProofEnv+"=1", "LYS_UI_TEST_GPU=lavapipe")
+	out, err := cmd.CombinedOutput()
+	if err != nil && strings.Contains(string(out), "unshare:") {
+		t.Skipf("no user namespace: %s", strings.TrimSpace(string(out)))
+	}
+	if err != nil {
+		t.Fatalf("the run without /dev/udmabuf: %v\n%s", err, out)
+	}
+	if !strings.Contains(string(out), "--- PASS: TestExportsIsProven") {
+		t.Fatalf("the run without /dev/udmabuf did not pass:\n%s", out)
 	}
 }

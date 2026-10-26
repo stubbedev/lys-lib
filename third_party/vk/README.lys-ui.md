@@ -137,3 +137,10 @@ offset.
 `const_lysui.go`: the queue family properties and 1.3 feature
 structure types, synchronization2's structure types, the two-plane
 4:2:0 format and its plane aspects, all left out of `const_gen.go`.
+
+### vkGetPhysicalDeviceImageFormatProperties2 loads
+
+`commands.go`, `LoadInstance`: it had a field and a wrapper but was
+never loaded; the dmabuf export checks ask it whether a modifier
+exports. Its structure types, and the external image format ones,
+join the core values in `const_lysui.go`.

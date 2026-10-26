@@ -1,12 +1,17 @@
 package vk
 
 // Core 1.1 structure types vk-gen leaves out (it emits only the
-// extension aliases): external memory and dedicated allocation.
+// extension aliases): external memory, dedicated allocation and the
+// format property queries.
 const (
-	StructureTypeExternalMemoryImageCreateInfo StructureType = 1000072001
-	StructureTypeExportMemoryAllocateInfo      StructureType = 1000072002
-	StructureTypeMemoryDedicatedAllocateInfo   StructureType = 1000127001
-	StructureTypeFormatProperties2             StructureType = 1000059002
+	StructureTypeExternalMemoryImageCreateInfo         StructureType = 1000072001
+	StructureTypeExportMemoryAllocateInfo              StructureType = 1000072002
+	StructureTypeMemoryDedicatedAllocateInfo           StructureType = 1000127001
+	StructureTypeFormatProperties2                     StructureType = 1000059002
+	StructureTypeImageFormatProperties2                StructureType = 1000059003
+	StructureTypePhysicalDeviceImageFormatInfo2        StructureType = 1000059004
+	StructureTypePhysicalDeviceExternalImageFormatInfo StructureType = 1000071000
+	StructureTypeExternalImageFormatProperties         StructureType = 1000071001
 )
 
 // Core 1.1 format features vk-gen leaves out (VK_KHR_maintenance1 made

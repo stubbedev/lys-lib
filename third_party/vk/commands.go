@@ -112,6 +112,7 @@ func (c *Commands) LoadInstance(instance Instance) error {
 	c.getPhysicalDeviceProperties2 = GetInstanceProcAddr(instance, "vkGetPhysicalDeviceProperties2")
 	c.getPhysicalDeviceFormatProperties2 = GetInstanceProcAddr(instance, "vkGetPhysicalDeviceFormatProperties2")
 	c.getPhysicalDeviceQueueFamilyProperties2 = GetInstanceProcAddr(instance, "vkGetPhysicalDeviceQueueFamilyProperties2")
+	c.getPhysicalDeviceImageFormatProperties2 = GetInstanceProcAddr(instance, "vkGetPhysicalDeviceImageFormatProperties2")
 
 	// VK_KHR_video_queue and VK_KHR_video_encode_queue: what a device
 	// encodes, in which formats and at which quality levels.

@@ -21,6 +21,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/stubbedev/lys-ui/dmabuf"
 	"github.com/stubbedev/lys-ui/third_party/vk"
 )
 
@@ -72,9 +73,10 @@ type Device struct {
 // exports dmabufs, else the first with a graphics queue.
 func Open() (*Device, error) { return open(nil) }
 
-// OpenNode opens the Vulkan device behind the DRM render node dev, its
-// device number (st_rdev, as of /dev/dri/renderD128): the device a
-// dmabuf consumer negotiated, which must export dmabufs.
+// OpenNode opens the Vulkan device behind the DRM node dev, its device
+// number (st_rdev, as of /dev/dri/renderD128 or /dev/dri/card0): the
+// device a dmabuf consumer negotiated, which must export dmabufs.
+// linux-dmabuf's main device may name either node of a GPU.
 func OpenNode(dev uint64) (*Device, error) {
 	return open(&drmNode{major: int64(unix.Major(dev)), minor: int64(unix.Minor(dev))})
 }
@@ -112,7 +114,10 @@ func open(node *drmNode) (*Device, error) {
 			err := d.pick(p, exporting, node)
 			if err == nil {
 				if err = d.open(); err == nil {
-					if err = d.createPipelines(); err == nil {
+					if err = d.createPipelines(); err == nil && exporting {
+						err = d.proveExport()
+					}
+					if err == nil {
 						return d, nil
 					}
 					d.closeDevice()
@@ -175,8 +180,10 @@ func (d *Device) pick(p vk.PhysicalDevice, exporting bool, node *drmNode) error 
 		props2 := vk.PhysicalDeviceProperties2{SType: vk.StructureTypePhysicalDeviceProperties2, PNext: (*uintptr)(unsafe.Pointer(&drm))}
 		d.cmds.GetPhysicalDeviceProperties2(p, &props2)
 		runtime.KeepAlive(&drm)
-		if drm.HasRender == 0 || drm.RenderMajor != node.major || drm.RenderMinor != node.minor {
-			return fmt.Errorf("%s is not render node %d:%d", name, node.major, node.minor)
+		render := drm.HasRender != 0 && drm.RenderMajor == node.major && drm.RenderMinor == node.minor
+		primary := drm.HasPrimary != 0 && drm.PrimaryMajor == node.major && drm.PrimaryMinor == node.minor
+		if !render && !primary {
+			return fmt.Errorf("%s is not DRM node %d:%d", name, node.major, node.minor)
 		}
 	}
 	d.cmds.GetPhysicalDeviceQueueFamilyProperties(p, &n, nil)
@@ -238,6 +245,25 @@ func (d *Device) open() error {
 		d.cmds.DestroyDevice(d.device, nil)
 		return fmt.Errorf("%s: vkCreateCommandPool: %d", d.name, r)
 	}
+	return nil
+}
+
+// proveExport exports one small image: a driver can offer the export
+// extensions and modifiers and still fail every export (lavapipe
+// without /dev/udmabuf), which only an export shows.
+func (d *Device) proveExport() error {
+	mods, err := d.modifiers(dmabuf.FormatARGB8888, shareUse)
+	if err != nil {
+		return err
+	}
+	if len(mods) == 0 {
+		return fmt.Errorf("%s exports ARGB8888 in no modifier", d.name)
+	}
+	e, err := d.export(1, 1, dmabuf.FormatARGB8888, mods, shareUse)
+	if err != nil {
+		return fmt.Errorf("%s cannot export a dmabuf: %w", d.name, err)
+	}
+	e.close(d)
 	return nil
 }
 
