@@ -3,7 +3,12 @@ package gpu
 import (
 	"errors"
 	"os"
+	"path/filepath"
+	"slices"
+	"strings"
 	"testing"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/stubbedev/lys-ui/dmabuf"
 	"github.com/stubbedev/lys-ui/internal/gputest"
@@ -112,4 +117,65 @@ func TestDeviceCloseClosesTargets(t *testing.T) {
 		t.Fatal("the device closed and left its target open")
 	}
 	tg.Close()
+}
+
+// A target takes the consumer's modifiers the device renders in, linear
+// among them, and refuses a list with none it can, as an implicit-only
+// one, naming both lists; XRGB8888 allocates as ARGB8888 does (#330).
+func TestTargetModifiersMeetTheDevices(t *testing.T) {
+	d := exportingDevice(t)
+	mods, err := d.Modifiers(dmabuf.FormatXRGB8888)
+	if err != nil || len(mods) == 0 {
+		t.Fatalf("modifiers %v, %v", mods, err)
+	}
+	const unknown = 0x0abc000000000001
+	tg, err := d.NewTarget(16, 8, dmabuf.FormatXRGB8888, []uint64{unknown, mods[0]})
+	if err != nil {
+		t.Fatalf("a list holding one supported modifier: %v", err)
+	}
+	if b := tg.Dmabuf(); b.Modifier != mods[0] || b.Format != dmabuf.FormatXRGB8888 || len(b.Planes) != 1 {
+		t.Errorf("allocated %#x in %#08x with %d planes, want %#x in XRGB8888", b.Modifier, b.Format, len(b.Planes), mods[0])
+	}
+	tg.Close()
+	if slices.Contains(mods, dmabuf.ModifierLinear) {
+		tg, err := d.NewTarget(16, 8, dmabuf.FormatARGB8888, []uint64{dmabuf.ModifierLinear})
+		if err != nil || tg.Dmabuf().Modifier != dmabuf.ModifierLinear {
+			t.Fatalf("linear on offer: %v", err)
+		}
+		tg.Close()
+	}
+	if _, err := d.NewTarget(16, 8, dmabuf.FormatARGB8888, []uint64{dmabuf.ModifierInvalid}); err == nil || !strings.Contains(err.Error(), "none of the modifiers") {
+		t.Errorf("an implicit-only list: %v, want an error naming the lists", err)
+	}
+}
+
+// OpenNode opens the device behind a render node and refuses one no
+// device is; a host without render nodes (lavapipe alone) skips (#330).
+func TestOpenNode(t *testing.T) {
+	if _, err := gputest.SetupTest(t); err != nil {
+		t.Fatal(err)
+	}
+	nodes, _ := filepath.Glob("/dev/dri/renderD*")
+	if _, err := OpenNode(0); err == nil {
+		t.Error("device number 0 opened a device")
+	}
+	var reasons []error
+	for _, n := range nodes {
+		var st unix.Stat_t
+		if err := unix.Stat(n, &st); err != nil {
+			t.Fatal(err)
+		}
+		d, err := OpenNode(st.Rdev)
+		if err != nil {
+			reasons = append(reasons, err)
+			continue
+		}
+		defer d.Close()
+		if !d.Exports() {
+			t.Errorf("%s opened %s, which does not export dmabufs", n, d.Name())
+		}
+		t.Logf("%s: %s", n, d.Name())
+		return
+	}
+	t.Skipf("no render node opens a Vulkan device: %v", errors.Join(reasons...))
 }

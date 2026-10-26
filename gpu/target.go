@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"image"
 	"runtime"
+	"slices"
 	"syscall"
 	"unsafe"
 
@@ -54,9 +55,12 @@ func vkFormatOf(fourcc uint32) (vk.Format, error) {
 	return 0, fmt.Errorf("gpu: no Vulkan format for DRM format %#08x", fourcc)
 }
 
-// NewTarget allocates a width x height image in format (a DRM fourcc,
-// dmabuf.FormatARGB8888) whose layout the driver picks among
-// modifiers, the ones the consumer imports.
+// NewTarget allocates a width x height image in format (a DRM fourcc:
+// dmabuf.FormatARGB8888, or FormatXRGB8888 with the same bytes) whose
+// layout the driver picks among modifiers, the ones the consumer
+// imports, that the device renders format in (Modifiers): linear when
+// both take it. None in common, as with only the implicit
+// dmabuf.ModifierInvalid on offer, is an error naming both lists.
 func (d *Device) NewTarget(width, height int, format uint32, modifiers []uint64) (*Target, error) {
 	if width <= 0 || height <= 0 {
 		return nil, fmt.Errorf("gpu: target size %dx%d is not positive", width, height)
@@ -74,6 +78,15 @@ func (d *Device) NewTarget(width, height int, format uint32, modifiers []uint64)
 	if vf != surfaceFormat {
 		return nil, fmt.Errorf("gpu: DRM format %#08x renders as Vulkan format %d, surfaces are %d", format, vf, surfaceFormat)
 	}
+	supported, err := d.Modifiers(format)
+	if err != nil {
+		return nil, err
+	}
+	usable := slices.DeleteFunc(slices.Clone(modifiers), func(m uint64) bool { return !slices.Contains(supported, m) })
+	if len(usable) == 0 {
+		return nil, fmt.Errorf("gpu: none of the modifiers %#x is one %s renders DRM format %#08x in (%#x)", modifiers, d.name, format, supported)
+	}
+	modifiers = usable
 	t := &Target{s: surface{d: d, w: width, h: height, layout: vk.ImageLayoutUndefined}}
 	if err := t.create(width, height, modifiers); err != nil {
 		t.Close()

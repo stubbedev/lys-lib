@@ -19,6 +19,8 @@ import (
 	"slices"
 	"unsafe"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/stubbedev/lys-ui/third_party/vk"
 )
 
@@ -64,7 +66,22 @@ type Device struct {
 
 // Open picks the first Vulkan device with a graphics queue that
 // exports dmabufs, else the first with a graphics queue.
-func Open() (*Device, error) {
+func Open() (*Device, error) { return open(nil) }
+
+// OpenNode opens the Vulkan device behind the DRM render node dev, its
+// device number (st_rdev, as of /dev/dri/renderD128): the device a
+// dmabuf consumer negotiated, which must export dmabufs.
+func OpenNode(dev uint64) (*Device, error) {
+	return open(&drmNode{major: int64(unix.Major(dev)), minor: int64(unix.Minor(dev))})
+}
+
+// drmNode is a DRM render node's major and minor device number.
+type drmNode struct{ major, minor int64 }
+
+// open picks the first device node names (any, nil) with a graphics
+// queue that exports dmabufs, else, with no node named, the first with
+// a graphics queue.
+func open(node *drmNode) (*Device, error) {
 	if err := vk.Init(); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrNoVulkan, err)
 	}
@@ -82,9 +99,13 @@ func Open() (*Device, error) {
 		d.cmds.EnumeratePhysicalDevices(d.instance, &n, &phys[0])
 	}
 	var reasons []error
-	for _, exporting := range []bool{true, false} {
+	modes := []bool{true, false}
+	if node != nil {
+		modes = modes[:1]
+	}
+	for _, exporting := range modes {
 		for _, p := range phys {
-			err := d.pick(p, exporting)
+			err := d.pick(p, exporting, node)
 			if err == nil {
 				if err = d.open(); err == nil {
 					if err = d.createPipelines(); err == nil {
@@ -119,9 +140,9 @@ func (d *Device) createInstance() error {
 	return nil
 }
 
-// pick takes p when it has a graphics queue and, exporting, the
-// dmabuf export extensions.
-func (d *Device) pick(p vk.PhysicalDevice, exporting bool) error {
+// pick takes p when it has a graphics queue, exporting the dmabuf
+// export extensions, and when node is named it is that render node.
+func (d *Device) pick(p vk.PhysicalDevice, exporting bool, node *drmNode) error {
 	var props vk.PhysicalDeviceProperties
 	d.cmds.GetPhysicalDeviceProperties(p, &props)
 	name := cname(props.DeviceName[:])
@@ -140,6 +161,18 @@ func (d *Device) pick(p vk.PhysicalDevice, exporting bool) error {
 			if !have[want] {
 				return fmt.Errorf("%s lacks %s", name, want)
 			}
+		}
+	}
+	if node != nil {
+		if !have["VK_EXT_physical_device_drm"] {
+			return fmt.Errorf("%s cannot name its DRM node (no VK_EXT_physical_device_drm)", name)
+		}
+		drm := vk.PhysicalDeviceDrmPropertiesEXT{SType: vk.StructureTypePhysicalDeviceDrmPropertiesExt}
+		props2 := vk.PhysicalDeviceProperties2{SType: vk.StructureTypePhysicalDeviceProperties2, PNext: (*uintptr)(unsafe.Pointer(&drm))}
+		d.cmds.GetPhysicalDeviceProperties2(p, &props2)
+		runtime.KeepAlive(&drm)
+		if drm.HasRender == 0 || drm.RenderMajor != node.major || drm.RenderMinor != node.minor {
+			return fmt.Errorf("%s is not render node %d:%d", name, node.major, node.minor)
 		}
 	}
 	d.cmds.GetPhysicalDeviceQueueFamilyProperties(p, &n, nil)
