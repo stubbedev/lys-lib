@@ -5,26 +5,27 @@ import (
 	"math/bits"
 	"unsafe"
 
+	"github.com/stubbedev/lys-lib/internal/nal"
 	"github.com/stubbedev/lys-lib/third_party/vk"
 )
 
 // h265Levels are H.265's levels (Table A.8) in order, as the StdVideo
-// level enumerants number them: the largest picture (luma samples) and
-// the highest luma sample rate each allows.
-var h265Levels = []struct{ picture, rate int }{
-	{36864, 552960},
-	{122880, 3686400},
-	{245760, 7372800},
-	{552960, 16588800},
-	{983040, 33177600},
-	{2228224, 66846720},
-	{2228224, 133693440},
-	{8912896, 267386880},
-	{8912896, 534773760},
-	{8912896, 1069547520},
-	{35651584, 1069547520},
-	{35651584, 2139095040},
-	{35651584, 4278190080},
+// level enumerants number them: general_level_idc, the largest picture
+// (luma samples) and the highest luma sample rate each allows.
+var h265Levels = []struct{ idc, picture, rate int }{
+	{30, 36864, 552960},
+	{60, 122880, 3686400},
+	{63, 245760, 7372800},
+	{90, 552960, 16588800},
+	{93, 983040, 33177600},
+	{120, 2228224, 66846720},
+	{123, 2228224, 133693440},
+	{150, 8912896, 267386880},
+	{153, 8912896, 534773760},
+	{156, 8912896, 1069547520},
+	{180, 35651584, 1069547520},
+	{183, 35651584, 2139095040},
+	{186, 35651584, 4278190080},
 }
 
 // h265MinLevel is level 4.1, the lowest the encoder signals, as with
@@ -60,29 +61,46 @@ type h265Params struct {
 	pps vk.StdVideoH265PictureParameterSet
 }
 
-// h265Blocks are the coding tree and transform block sizes, as log2,
-// the encoder codes with: the largest the device offers of each, the
-// transforms no larger than 32 or the tree.
+// h265Blocks are the block sizes, as log2, the encoder codes with:
+// the smallest coding block, the coding tree block, the smallest and
+// largest transform blocks, and the transform tree's depth.
 type h265Blocks struct {
-	ctb, minTB, maxTB int
+	minCB, ctb, minTB, maxTB, depth int
 }
 
+// newH265Blocks are the blocks for a Vulkan device's sizes: 8x8 coding
+// blocks, the largest coding tree and transform blocks it offers, the
+// transforms no larger than 32 or the tree, and the deepest transform
+// tree they allow.
 func newH265Blocks(ctbs vk.VideoEncodeH265CtbSizeFlagsKHR, tbs vk.VideoEncodeH265TransformBlockSizeFlagsKHR) (h265Blocks, error) {
 	if ctbs == 0 || tbs == 0 {
 		return h265Blocks{}, fmt.Errorf("%w: the device offers no H.265 coding tree (%#x) or transform (%#x) size", ErrNoVideoEncoder, ctbs, tbs)
 	}
-	b := h265Blocks{ctb: 3 + bits.Len32(uint32(ctbs)), minTB: 2 + bits.TrailingZeros32(uint32(tbs))}
+	b := h265Blocks{minCB: 3, ctb: 3 + bits.Len32(uint32(ctbs)), minTB: 2 + bits.TrailingZeros32(uint32(tbs))}
 	b.maxTB = min(1+bits.Len32(uint32(tbs)), b.ctb, 5)
+	b.depth = b.ctb - b.minTB
 	return b, nil
 }
 
-// newH265Params lays out the parameter sets for a picture of size
-// width x height coded as coded, cropped back to the even size around
-// it: Main profile, BT.709 limited range, one temporal layer, one
-// reference picture, a single short-term reference set (the picture
-// before) every P frame names, and sample adaptive offset where the
-// device has it.
-func newH265Params(level vk.StdVideoH265LevelIdc, width, height int, coded [2]int, keyInterval int, blocks h265Blocks, syntax vk.VideoEncodeH265StdFlagsKHR) *h265Params {
+// h265Header is the stream's parameter sets for cfg coded at coded at
+// level (a StdVideo level enumerant): Main profile, BT.709 limited
+// range, one temporal layer, one reference picture named by a single
+// short-term reference set (the picture before), cropped back to the
+// even size around the frame, in blocks, with the tools as given and
+// initQP the pictures' initial quantiser. Both backends build from it.
+func h265Header(cfg EncoderConfig, coded [2]int, level vk.StdVideoH265LevelIdc, blocks h265Blocks, amp, sao, temporalMVP, cuQPDelta bool, initQP int) nal.HEVC {
+	return nal.HEVC{
+		LevelIdc: uint8(h265Levels[level].idc), Width: coded[0], Height: coded[1],
+		ConfRight: (coded[0] - evenUp(cfg.Width)) / 2, ConfBottom: (coded[1] - evenUp(cfg.Height)) / 2,
+		Log2MaxPocLsb: min(max(4, bits.Len(uint(cfg.KeyInterval))+1), 16),
+		Log2MinCb:     blocks.minCB, Log2Ctb: blocks.ctb, Log2MinTb: blocks.minTB, Log2MaxTb: blocks.maxTB, TransformDepth: blocks.depth,
+		AMP: amp, SAO: sao, TemporalMVP: temporalMVP, InitQP: initQP, CuQPDelta: cuQPDelta,
+	}
+}
+
+// newH265Params lays h out as StdVideo parameter sets, at level (its
+// StdVideo enumerant).
+func newH265Params(h nal.HEVC, level vk.StdVideoH265LevelIdc) *h265Params {
 	p := &h265Params{}
 	p.ptl = vk.StdVideoH265ProfileTierLevel{
 		Flags:             vk.StdVideoH265PtlProgressiveSource | vk.StdVideoH265PtlFrameOnlyConstraint,
@@ -103,34 +121,41 @@ func newH265Params(level vk.StdVideoH265LevelIdc, width, height int, coded [2]in
 		MatrixCoeffs:            1,
 	}
 	p.rps = vk.StdVideoH265ShortTermRefPicSet{NumNegativePics: 1, UsedByCurrPicS0Flag: 1}
-	confRight, confBottom := (coded[0]-evenUp(width))/2, (coded[1]-evenUp(height))/2
 	flags := vk.StdVideoH265SpsTemporalIDNesting | vk.StdVideoH265SpsSubLayerOrderingInfoPresent | vk.StdVideoH265SpsVuiParametersPresent
-	if confRight != 0 || confBottom != 0 {
+	if h.ConfRight != 0 || h.ConfBottom != 0 {
 		flags |= vk.StdVideoH265SpsConformanceWindow
 	}
-	if syntax&vk.VideoEncodeH265StdFlagsKHR(vk.VideoEncodeH265StdSampleAdaptiveOffsetEnabledFlagSetBitKhr) != 0 {
+	if h.AMP {
+		flags |= vk.StdVideoH265SpsAmpEnabled
+	}
+	if h.SAO {
 		flags |= vk.StdVideoH265SpsSampleAdaptiveOffset
 	}
 	p.sps = vk.StdVideoH265SequenceParameterSet{
 		Flags:                                flags,
 		ChromaFormatIdc:                      vk.StdVideoH265ChromaFormatIdc420,
-		PicWidthInLumaSamples:                uint32(coded[0]),
-		PicHeightInLumaSamples:               uint32(coded[1]),
-		Log2MaxPicOrderCntLsbMinus4:          uint8(min(max(4, bits.Len(uint(keyInterval))+1), 16) - 4),
-		Log2DiffMaxMinLumaCodingBlockSize:    uint8(blocks.ctb - 3),
-		Log2MinLumaTransformBlockSizeMinus2:  uint8(blocks.minTB - 2),
-		Log2DiffMaxMinLumaTransformBlockSize: uint8(blocks.maxTB - blocks.minTB),
-		MaxTransformHierarchyDepthInter:      uint8(blocks.ctb - blocks.minTB),
-		MaxTransformHierarchyDepthIntra:      uint8(blocks.ctb - blocks.minTB),
+		PicWidthInLumaSamples:                uint32(h.Width),
+		PicHeightInLumaSamples:               uint32(h.Height),
+		Log2MaxPicOrderCntLsbMinus4:          uint8(h.Log2MaxPocLsb - 4),
+		Log2MinLumaCodingBlockSizeMinus3:     uint8(h.Log2MinCb - 3),
+		Log2DiffMaxMinLumaCodingBlockSize:    uint8(h.Log2Ctb - h.Log2MinCb),
+		Log2MinLumaTransformBlockSizeMinus2:  uint8(h.Log2MinTb - 2),
+		Log2DiffMaxMinLumaTransformBlockSize: uint8(h.Log2MaxTb - h.Log2MinTb),
+		MaxTransformHierarchyDepthInter:      uint8(h.TransformDepth),
+		MaxTransformHierarchyDepthIntra:      uint8(h.TransformDepth),
 		NumShortTermRefPicSets:               1,
-		ConfWinRightOffset:                   uint32(confRight),
-		ConfWinBottomOffset:                  uint32(confBottom),
+		ConfWinRightOffset:                   uint32(h.ConfRight),
+		ConfWinBottomOffset:                  uint32(h.ConfBottom),
 		PProfileTierLevel:                    &p.ptl,
 		PDecPicBufMgr:                        &p.dpb,
 		PShortTermRefPicSet:                  &p.rps,
 		PSequenceParameterSetVui:             &p.vui,
 	}
-	p.pps = vk.StdVideoH265PictureParameterSet{Flags: vk.StdVideoH265PpsLoopFilterAcrossSlices}
+	ppsFlags := vk.StdVideoH265PpsLoopFilterAcrossSlices
+	if h.CuQPDelta {
+		ppsFlags |= vk.StdVideoH265PpsCuQpDeltaEnabled
+	}
+	p.pps = vk.StdVideoH265PictureParameterSet{Flags: ppsFlags, InitQpMinus26: int8(h.InitQP - 26)}
 	return p
 }
 
@@ -192,6 +217,7 @@ func (p *h265Picture) fill(sinceIDR, prev, qp int, rps *vk.StdVideoH265ShortTerm
 type h265Codec struct {
 	profileInfo vk.VideoEncodeH265ProfileInfoKHR
 	capsInfo    vk.VideoEncodeH265CapabilitiesKHR
+	header      nal.HEVC
 	params      *h265Params
 	add         vk.VideoEncodeH265SessionParametersAddInfoKHR
 	create      vk.VideoEncodeH265SessionParametersCreateInfoKHR
@@ -229,7 +255,9 @@ func (c *h265Codec) parameters(cfg EncoderConfig, coded [2]int) (create, get uns
 	if err != nil {
 		return nil, nil, 0, err
 	}
-	c.params = newH265Params(level, cfg.Width, cfg.Height, coded, cfg.KeyInterval, blocks, c.capsInfo.StdSyntaxFlags)
+	sao := c.capsInfo.StdSyntaxFlags&vk.VideoEncodeH265StdFlagsKHR(vk.VideoEncodeH265StdSampleAdaptiveOffsetEnabledFlagSetBitKhr) != 0
+	c.header = h265Header(cfg, coded, level, blocks, true, sao, false, false, 26)
+	c.params = newH265Params(c.header, level)
 	c.add = vk.VideoEncodeH265SessionParametersAddInfoKHR{
 		SType:       vk.StructureTypeVideoEncodeH265SessionParametersAddInfoKhr,
 		StdVPSCount: 1, PStdVPSs: &c.params.vps,

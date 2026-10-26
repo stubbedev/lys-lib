@@ -128,6 +128,12 @@ type clip struct {
 
 func newClip(t *testing.T, d *Device, cfg EncoderConfig) *clip {
 	t.Helper()
+	return openClip(t, d, cfg, d.NewEncoder)
+}
+
+// openClip is a clip on the encoder open makes.
+func openClip(t *testing.T, d *Device, cfg EncoderConfig, open func(EncoderConfig) (*Encoder, error)) *clip {
+	t.Helper()
 	mods, err := d.ExportModifiers(dmabuf.FormatXRGB8888)
 	if err != nil {
 		t.Fatal(err)
@@ -137,7 +143,7 @@ func newClip(t *testing.T, d *Device, cfg EncoderConfig) *clip {
 		t.Fatal(err)
 	}
 	t.Cleanup(buf.Close)
-	enc, err := d.NewEncoder(cfg)
+	enc, err := open(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -243,6 +249,25 @@ func subsampled(t *testing.T, ffmpeg string, src []*image.RGBA) []float64 {
 	return out
 }
 
+// backend is a way the device encodes a codec.
+type backend struct {
+	name string
+	open func(EncoderConfig) (*Encoder, error)
+}
+
+// backends are the ways d encodes c: its Vulkan video queue, its
+// VA-API driver, or both.
+func backends(d *Device, c Codec) []backend {
+	var out []backend
+	if d.video != nil && slices.Contains(d.video.codecs, c) {
+		out = append(out, backend{"Vulkan", func(cfg EncoderConfig) (*Encoder, error) { return newEncoderOn(d, cfg, newVulkanBackend) }})
+	}
+	if slices.Contains(d.vaCodecs(), c) {
+		out = append(out, backend{"VA-API", func(cfg EncoderConfig) (*Encoder, error) { return newEncoderOn(d, cfg, newVABackend) }})
+	}
+	return out
+}
+
 // A clip encoded from GPU buffers decodes in ffmpeg to every frame at
 // its size, its keyframes where the key interval puts them, close to
 // the source: at even and odd sizes, the odd one coded a pixel larger
@@ -250,33 +275,43 @@ func subsampled(t *testing.T, ffmpeg string, src []*image.RGBA) []float64 {
 // (160x64 on NVIDIA), padded up to it. Each frame comes within 6 dB
 // of what 4:2:0 alone keeps of it, or of 40 dB where 4:2:0 keeps more
 // (QP 20 costs about that much on smooth content); a wrong matrix, crop
-// or reference falls far below.
+// or reference falls far below. Every backend the device encodes the
+// codec on does.
 func TestEncoderDecodes(t *testing.T) {
 	for _, codec := range []Codec{H264, H265} {
 		t.Run(codec.String(), func(t *testing.T) {
 			d, ffmpeg := encodingDevice(t, codec)
-			for _, size := range []image.Point{{640, 360}, {333, 241}, {64, 48}} {
-				t.Run(strconv.Itoa(size.X)+"x"+strconv.Itoa(size.Y), func(t *testing.T) {
-					c := newClip(t, d, EncoderConfig{Codec: codec, Width: size.X, Height: size.Y, FrameRate: 30, KeyInterval: 15, QP: 20})
-					src := make([]*image.RGBA, 40)
-					for i := range src {
-						src[i] = encodeFrame(size.X, size.Y, i)
-						c.frame(src[i])
-					}
-					ceiling := subsampled(t, ffmpeg, src)
-					worst := math.Inf(1)
-					for i, f := range c.decode(ffmpeg) {
-						got := psnr(src[i], f)
-						worst = min(worst, got)
-						if want := min(ceiling[i], 40) - 6; got < want {
-							t.Errorf("frame %d decodes at %.1f dB PSNR, want %.1f at QP 20 (4:2:0 alone keeps %.1f)", i, got, want, ceiling[i])
-						}
-					}
-					t.Logf("worst frame %.1f dB", worst)
-				})
+			for _, b := range backends(d, codec) {
+				for _, size := range []image.Point{{640, 360}, {333, 241}, {64, 48}} {
+					t.Run(b.name+"/"+strconv.Itoa(size.X)+"x"+strconv.Itoa(size.Y), func(t *testing.T) {
+						testDecodes(t, ffmpeg, openClip(t, d, EncoderConfig{Codec: codec, Width: size.X, Height: size.Y, FrameRate: 30, KeyInterval: 15, QP: 20}, b.open))
+					})
+				}
 			}
 		})
 	}
+}
+
+// testDecodes encodes 40 frames into c and checks what ffmpeg decodes
+// of them against what 4:2:0 alone keeps.
+func testDecodes(t *testing.T, ffmpeg string, c *clip) {
+	t.Helper()
+	size := image.Pt(c.cfg.Width, c.cfg.Height)
+	src := make([]*image.RGBA, 40)
+	for i := range src {
+		src[i] = encodeFrame(size.X, size.Y, i)
+		c.frame(src[i])
+	}
+	ceiling := subsampled(t, ffmpeg, src)
+	worst := math.Inf(1)
+	for i, f := range c.decode(ffmpeg) {
+		got := psnr(src[i], f)
+		worst = min(worst, got)
+		if want := min(ceiling[i], 40) - 6; got < want {
+			t.Errorf("frame %d decodes at %.1f dB PSNR, want %.1f at QP 20 (4:2:0 alone keeps %.1f)", i, got, want, ceiling[i])
+		}
+	}
+	t.Logf("worst frame %.1f dB", worst)
 }
 
 // solid is a w x h picture of one color.
@@ -541,23 +576,64 @@ func TestEncoderSourceAndTransform(t *testing.T) {
 // say for the same stream, field for field where slices depend on
 // them: the driver is the reference the writer is held to.
 func TestEncoderHeadersMatchTheDrivers(t *testing.T) {
-	d, _ := encodingDevice(t, H264)
-	for _, size := range []image.Point{{640, 360}, {333, 241}} {
-		c := newClip(t, d, EncoderConfig{Codec: H264, Width: size.X, Height: size.Y, FrameRate: 60, KeyInterval: 120, QP: 20})
-		h := c.enc.codec.(*h264Codec).header
-		driver := naltest.Trace(t, "h264", nal.AnnexB(c.enc.ParameterSets()...))
-		ours := naltest.Trace(t, "h264", nal.AnnexB(h.SPS(), h.PPS()))
-		for _, f := range []string{
+	for _, c := range []struct {
+		codec  Codec
+		header func(*vulkanBackend) [][]byte
+		fields []string
+	}{
+		{H264, func(vb *vulkanBackend) [][]byte {
+			h := vb.codec.(*h264Codec).header
+			return [][]byte{h.SPS(), h.PPS()}
+		}, []string{
 			"profile_idc", "level_idc", "chroma_format_idc", "log2_max_frame_num_minus4", "pic_order_cnt_type", "max_num_ref_frames",
 			"pic_width_in_mbs_minus1", "pic_height_in_map_units_minus1", "frame_mbs_only_flag", "direct_8x8_inference_flag",
 			"frame_cropping_flag", "frame_crop_right_offset", "frame_crop_bottom_offset",
 			"video_full_range_flag", "colour_primaries", "transfer_characteristics", "matrix_coefficients",
 			"entropy_coding_mode_flag", "transform_8x8_mode_flag", "num_ref_idx_l0_default_active_minus1", "weighted_pred_flag",
 			"deblocking_filter_control_present_flag", "pic_init_qp_minus26",
-		} {
-			if driver[f] != ours[f] {
-				t.Errorf("%v: %s is %d in the driver's parameter sets, %d in ours", size, f, driver[f], ours[f])
+		}},
+		{H265, func(vb *vulkanBackend) [][]byte {
+			h := vb.codec.(*h265Codec).header
+			return [][]byte{h.VPS(), h.SPS(), h.PPS()}
+		}, []string{
+			"general_profile_idc", "general_level_idc", "chroma_format_idc", "pic_width_in_luma_samples", "pic_height_in_luma_samples",
+			"conformance_window_flag", "conf_win_right_offset", "conf_win_bottom_offset", "log2_max_pic_order_cnt_lsb_minus4",
+			"sps_max_dec_pic_buffering_minus1[0]", "log2_min_luma_coding_block_size_minus3", "log2_diff_max_min_luma_coding_block_size",
+			"log2_min_luma_transform_block_size_minus2", "log2_diff_max_min_luma_transform_block_size",
+			"max_transform_hierarchy_depth_inter", "max_transform_hierarchy_depth_intra", "amp_enabled_flag",
+			"sample_adaptive_offset_enabled_flag", "sps_temporal_mvp_enabled_flag", "num_short_term_ref_pic_sets",
+			"video_full_range_flag", "colour_primaries", "transfer_characteristics", "matrix_coefficients",
+			"num_ref_idx_l0_default_active_minus1", "init_qp_minus26", "cu_qp_delta_enabled_flag", "sign_data_hiding_enabled_flag",
+			"transform_skip_enabled_flag", "pps_loop_filter_across_slices_enabled_flag",
+		}},
+	} {
+		t.Run(c.codec.String(), func(t *testing.T) {
+			d, _ := encodingDevice(t, c.codec)
+			if d.video == nil || !slices.Contains(d.video.codecs, c.codec) {
+				t.Skipf("%s encodes no %s on its Vulkan video queue", d.Name(), c.codec)
 			}
+			format := ffmpegFormats[c.codec]
+			for _, size := range []image.Point{{640, 360}, {333, 241}} {
+				enc := newClip(t, d, EncoderConfig{Codec: c.codec, Width: size.X, Height: size.Y, FrameRate: 60, KeyInterval: 120, QP: 20}).enc
+				driver := naltest.Trace(t, format, nal.AnnexB(enc.ParameterSets()...))
+				ours := naltest.Trace(t, format, nal.AnnexB(c.header(enc.backend.(*vulkanBackend))...))
+				for _, f := range c.fields {
+					if driver[f] != ours[f] {
+						t.Errorf("%v: %s is %d in the driver's parameter sets, %d in ours", size, f, driver[f], ours[f])
+					}
+				}
+			}
+		})
+	}
+}
+
+// Every codec the VA-API driver does not encode says why.
+func TestVAEncodersSayWhy(t *testing.T) {
+	d := exportingDevice(t)
+	for _, c := range []Codec{H264, H265} {
+		if !slices.Contains(d.vaCodecs(), c) && d.vaWhy(c) == nil {
+			t.Errorf("%s's VA-API driver encodes no %s and says nothing of why", d.Name(), c)
 		}
+		t.Logf("%s: %v", c, d.vaWhy(c))
 	}
 }

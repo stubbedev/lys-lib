@@ -8,7 +8,8 @@
 // the buffer holds the output's pixels flipped, then turned
 // counter-clockwise, and the frame turns them back. Inside the overlay
 // rectangle (frame coordinates) the overlay, scaled to fill it, stands
-// in for the source.
+// in for the source. The planes' rows are pitch words apart, the chroma
+// plane uvOffset words in.
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
@@ -22,6 +23,8 @@ layout(push_constant) uniform Size {
     ivec4 overlay;
     ivec2 origin;
     int transform;
+    int pitch;
+    int uvOffset;
 } size;
 
 const vec3 kLuma = vec3(0.2126, 0.7152, 0.0722);
@@ -69,13 +72,12 @@ void main() {
     for (int i = 0; i < 8; i++) {
         c[i] = pixel(o + ivec2(i & 3, i >> 2));
     }
-    int rowWords = size.coded.x / 4;
     for (int row = 0; row < 2; row++) {
         uint w = 0u;
         for (int col = 0; col < 4; col++) {
             w |= byteOf(luma(c[row * 4 + col])) << (8 * col);
         }
-        words[(o.y + row) * rowWords + g.x] = w;
+        words[(o.y + row) * size.pitch + g.x] = w;
     }
     uint uv = 0u;
     for (int side = 0; side < 2; side++) {
@@ -84,5 +86,5 @@ void main() {
         uv |= byteOf(128.0 + 224.0 * (a.b - y) / 1.8556) << (16 * side);
         uv |= byteOf(128.0 + 224.0 * (a.r - y) / 1.5748) << (16 * side + 8);
     }
-    words[size.coded.y * rowWords + (o.y / 2) * rowWords + g.x] = uv;
+    words[size.uvOffset + (o.y / 2) * size.pitch + g.x] = uv;
 }

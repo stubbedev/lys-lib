@@ -13,6 +13,12 @@ func TestLayouts(t *testing.T) {
 		name      string
 		got, want uintptr
 	}{
+		{"EncMiscParameterFrameRate", unsafe.Sizeof(EncMiscParameterFrameRate{}), 24},
+		{"EncMiscParameterFrameRate.FramerateFlags", unsafe.Offsetof((EncMiscParameterFrameRate{}).FramerateFlags), 4},
+		{"EncMiscParameterFrameRate.VaReserved", unsafe.Offsetof((EncMiscParameterFrameRate{}).VaReserved), 8},
+		{"EncMiscParameterHRD", unsafe.Sizeof(EncMiscParameterHRD{}), 24},
+		{"EncMiscParameterHRD.BufferSize", unsafe.Offsetof((EncMiscParameterHRD{}).BufferSize), 4},
+		{"EncMiscParameterHRD.VaReserved", unsafe.Offsetof((EncMiscParameterHRD{}).VaReserved), 8},
 		{"ConfigAttrib", unsafe.Sizeof(ConfigAttrib{}), 8},
 		{"ConfigAttrib.Type", unsafe.Offsetof((ConfigAttrib{}).Type), 0},
 		{"ConfigAttrib.Value", unsafe.Offsetof((ConfigAttrib{}).Value), 4},

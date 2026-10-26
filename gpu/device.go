@@ -57,10 +57,18 @@ type Device struct {
 	maxDim int
 	// exports is whether the device renders into dmabufs.
 	exports bool
+	// renderNode is the device's DRM render node, "" when the driver
+	// does not name it (VK_EXT_physical_device_drm).
+	renderNode string
+	// sync2 is whether the device has Vulkan 1.3's synchronization2,
+	// enabled for the encoders.
+	sync2 bool
 	// video is the video encode queue, nil on a device that encodes
 	// none; videoWhy says why for each codec it does not encode.
 	video    *videoQueue
 	videoWhy map[Codec]error
+	// va is what the VA-API driver encodes, probed on first use.
+	va *vaEncoders
 	// targets and buffers are the live ones, closed with the device.
 	targets map[*Target]struct{}
 	buffers map[*Buffer]struct{}
@@ -171,14 +179,17 @@ func (d *Device) pick(p vk.PhysicalDevice, exporting bool, node *drmNode) error 
 			}
 		}
 	}
+	var drm vk.PhysicalDeviceDrmPropertiesEXT
+	if have["VK_EXT_physical_device_drm"] {
+		drm.SType = vk.StructureTypePhysicalDeviceDrmPropertiesExt
+		props2 := vk.PhysicalDeviceProperties2{SType: vk.StructureTypePhysicalDeviceProperties2, PNext: (*uintptr)(unsafe.Pointer(&drm))}
+		d.cmds.GetPhysicalDeviceProperties2(p, &props2)
+		runtime.KeepAlive(&drm)
+	}
 	if node != nil {
 		if !have["VK_EXT_physical_device_drm"] {
 			return fmt.Errorf("%s cannot name its DRM node (no VK_EXT_physical_device_drm)", name)
 		}
-		drm := vk.PhysicalDeviceDrmPropertiesEXT{SType: vk.StructureTypePhysicalDeviceDrmPropertiesExt}
-		props2 := vk.PhysicalDeviceProperties2{SType: vk.StructureTypePhysicalDeviceProperties2, PNext: (*uintptr)(unsafe.Pointer(&drm))}
-		d.cmds.GetPhysicalDeviceProperties2(p, &props2)
-		runtime.KeepAlive(&drm)
 		render := drm.HasRender != 0 && drm.RenderMajor == node.major && drm.RenderMinor == node.minor
 		primary := drm.HasPrimary != 0 && drm.PrimaryMajor == node.major && drm.PrimaryMinor == node.minor
 		if !render && !primary {
@@ -193,15 +204,21 @@ func (d *Device) pick(p vk.PhysicalDevice, exporting bool, node *drmNode) error 
 	for i, f := range fams {
 		if f.QueueFlags&vk.QueueFlags(vk.QueueGraphicsBit|vk.QueueComputeBit) == vk.QueueFlags(vk.QueueGraphicsBit|vk.QueueComputeBit) {
 			d.phys, d.family, d.name, d.exports, d.maxDim = p, uint32(i), name, exporting, int(props.Limits.MaxImageDimension2D)
-			d.video, d.videoWhy = d.probeVideo(p, props.ApiVersion, have)
+			d.renderNode = ""
+			if drm.HasRender != 0 {
+				d.renderNode = fmt.Sprintf("/dev/dri/renderD%d", drm.RenderMinor)
+			}
+			d.sync2 = d.probeSync2(p, props.ApiVersion)
+			d.video, d.videoWhy = d.probeVideo(p, d.sync2, have)
 			return nil
 		}
 	}
 	return fmt.Errorf("%s has no graphics and compute queue", name)
 }
 
-// open creates the logical device: its graphics queue, and the video
-// encode queue with synchronization2 where the device encodes.
+// open creates the logical device: its graphics queue, the video
+// encode queue where the device encodes, and synchronization2 where it
+// has it (the encoders record with it).
 func (d *Device) open() error {
 	prio := float32(1)
 	qcis := []vk.DeviceQueueCreateInfo{{SType: vk.StructureTypeDeviceQueueCreateInfo, QueueFamilyIndex: d.family, QueueCount: 1, PQueuePriorities: &prio}}
@@ -211,12 +228,14 @@ func (d *Device) open() error {
 		exts = append(exts, exportExtensions...)
 	}
 	f13 := vk.PhysicalDeviceVulkan13Features{SType: vk.StructureTypePhysicalDeviceVulkan13Features, Synchronization2: vk.True}
+	if d.sync2 {
+		dci.PNext = (*uintptr)(unsafe.Pointer(&f13))
+	}
 	if d.video != nil {
 		if d.video.family != d.family {
 			qcis = append(qcis, vk.DeviceQueueCreateInfo{SType: vk.StructureTypeDeviceQueueCreateInfo, QueueFamilyIndex: d.video.family, QueueCount: 1, PQueuePriorities: &prio})
 		}
 		exts = append(exts, d.video.extensions()...)
-		dci.PNext = (*uintptr)(unsafe.Pointer(&f13))
 	}
 	dci.QueueCreateInfoCount, dci.PQueueCreateInfos = uint32(len(qcis)), &qcis[0]
 	var pin runtime.Pinner

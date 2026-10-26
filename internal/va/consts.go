@@ -13,6 +13,14 @@ const (
 	ConfigAttribRateControl               int32  = 5
 	ConfigAttribEncPackedHeaders          int32  = 10
 	ConfigAttribEncMaxRefFrames           int32  = 13
+	ConfigAttribMaxPictureWidth           int32  = 18
+	ConfigAttribMaxPictureHeight          int32  = 19
+	ConfigAttribPredictionDirection       int32  = 39
+	ConfigAttribEncHEVCFeatures           int32  = 50
+	ConfigAttribEncHEVCBlockSizes         int32  = 51
+	PredictionDirectionBiNotEmpty         uint32 = 4
+	FeatureNotSupported                   uint32 = 0
+	FeatureRequired                       uint32 = 2
 	AttribNotSupported                    uint32 = 2147483648
 	RTFormatYUV420                        uint32 = 1
 	RCCBR                                 uint32 = 2
@@ -29,7 +37,9 @@ const (
 	EncPackedHeaderParameterBufferType    int32  = 25
 	EncPackedHeaderDataBufferType         int32  = 26
 	EncMiscParameterBufferType            int32  = 27
+	EncMiscParameterTypeFrameRate         int32  = 0
 	EncMiscParameterTypeRateControl       int32  = 1
+	EncMiscParameterTypeHRD               int32  = 5
 	SurfaceAttribMemoryType               int32  = 6
 	SurfaceAttribExternalBufferDescriptor int32  = 7
 	SurfaceAttribMemTypeDRMPrime2         uint32 = 1073741824
@@ -52,6 +62,9 @@ type Bits struct{ shift, width uint8 }
 
 // Put is v in the field, to OR into the union's value.
 func (b Bits) Put(v uint32) uint32 { return (v & (1<<b.width - 1)) << b.shift }
+
+// Get is the field's value in the union's value u.
+func (b Bits) Get(u uint32) uint32 { return u >> b.shift & (1<<b.width - 1) }
 
 // The union bitfields encoding sets, as libva 2.24's headers place
 // them.
@@ -139,6 +152,16 @@ var (
 	HEVCSliceSliceDeblockingFilterDisabledFlag      = Bits{10, 2}
 	HEVCSliceSliceLoopFilterAcrossSlicesEnabledFlag = Bits{12, 1}
 	HEVCSliceCollocatedFromL0Flag                   = Bits{13, 1}
+	HEVCFeatureAmp                                  = Bits{4, 2}
+	HEVCFeatureSao                                  = Bits{6, 2}
+	HEVCFeatureTemporalMvp                          = Bits{10, 2}
+	HEVCFeatureCuQpDelta                            = Bits{22, 2}
+	HEVCBlockLog2MaxCodingTreeBlockSizeMinus3       = Bits{0, 2}
+	HEVCBlockLog2MinLumaCodingBlockSizeMinus3       = Bits{4, 2}
+	HEVCBlockLog2MaxLumaTransformBlockSizeMinus2    = Bits{6, 2}
+	HEVCBlockLog2MinLumaTransformBlockSizeMinus2    = Bits{8, 2}
+	HEVCBlockMaxMaxTransformHierarchyDepthInter     = Bits{10, 2}
+	HEVCBlockMaxMaxTransformHierarchyDepthIntra     = Bits{14, 2}
 	RCFlagsReset                                    = Bits{0, 1}
 	RCFlagsDisableFrameSkip                         = Bits{1, 1}
 	RCFlagsDisableBitStuffing                       = Bits{2, 1}

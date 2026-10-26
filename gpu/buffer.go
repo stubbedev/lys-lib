@@ -3,6 +3,7 @@ package gpu
 import (
 	"fmt"
 	"runtime"
+	"syscall"
 	"unsafe"
 
 	"github.com/stubbedev/lys-lib/third_party/vk"
@@ -156,6 +157,79 @@ func (d *Device) newDeviceBuffer(size int, usage vk.BufferUsageFlagBits) (*devic
 
 func (b *deviceBuffer) close() {
 	d := b.d
+	if b.buf != 0 {
+		d.cmds.DestroyBuffer(d.device, b.buf, nil)
+		b.buf = 0
+	}
+	if b.memory != 0 {
+		d.cmds.FreeMemory(d.device, b.memory, nil)
+		b.memory = 0
+	}
+}
+
+// exportedBuffer is device-local memory exported as a dmabuf, for
+// another API on the device (VA-API) to read; the fd is the buffer's,
+// closed with it.
+type exportedBuffer struct {
+	d      *Device
+	buf    vk.Buffer
+	memory vk.DeviceMemory
+	// size is the memory's size, at least the buffer's.
+	size int
+	fd   int
+}
+
+// newExportedBuffer allocates size device-local bytes for usage in
+// memory exported as a dmabuf.
+func (d *Device) newExportedBuffer(size int, usage vk.BufferUsageFlagBits) (*exportedBuffer, error) {
+	b := &exportedBuffer{d: d, fd: -1}
+	ext := vk.ExternalMemoryBufferCreateInfo{
+		SType: vk.StructureTypeExternalMemoryBufferCreateInfo, HandleTypes: vk.ExternalMemoryHandleTypeFlags(vk.ExternalMemoryHandleTypeDmaBufBitExt),
+	}
+	bci := vk.BufferCreateInfo{
+		SType: vk.StructureTypeBufferCreateInfo, PNext: (*uintptr)(unsafe.Pointer(&ext)),
+		Size: vk.DeviceSize(size), Usage: vk.BufferUsageFlags(usage), SharingMode: vk.SharingModeExclusive,
+	}
+	r := d.cmds.CreateBuffer(d.device, &bci, nil, &b.buf)
+	runtime.KeepAlive(&ext)
+	if r != vk.Success {
+		return nil, fmt.Errorf("gpu: vkCreateBuffer %d exportable bytes: %d", size, r)
+	}
+	var req vk.MemoryRequirements
+	d.cmds.GetBufferMemoryRequirements(d.device, b.buf, &req)
+	ded := vk.MemoryDedicatedAllocateInfo{SType: vk.StructureTypeMemoryDedicatedAllocateInfo, Buffer: b.buf}
+	exp := vk.ExportMemoryAllocateInfo{
+		SType: vk.StructureTypeExportMemoryAllocateInfo, PNext: (*uintptr)(unsafe.Pointer(&ded)),
+		HandleTypes: vk.ExternalMemoryHandleTypeFlags(vk.ExternalMemoryHandleTypeDmaBufBitExt),
+	}
+	mem, err := d.allocate(req, vk.MemoryPropertyDeviceLocalBit, unsafe.Pointer(&exp))
+	runtime.KeepAlive(&ded)
+	runtime.KeepAlive(&exp)
+	if err != nil {
+		b.close()
+		return nil, err
+	}
+	b.memory, b.size = mem, int(req.Size)
+	if r := d.cmds.BindBufferMemory(d.device, b.buf, b.memory, 0); r != vk.Success {
+		b.close()
+		return nil, fmt.Errorf("gpu: vkBindBufferMemory (exportable): %d", r)
+	}
+	gfi := vk.MemoryGetFdInfoKHR{SType: vk.StructureTypeMemoryGetFdInfoKhr, Memory: b.memory, HandleType: vk.ExternalMemoryHandleTypeDmaBufBitExt}
+	var fd int32
+	if r := d.cmds.GetMemoryFdKHR(d.device, &gfi, &fd); r != vk.Success {
+		b.close()
+		return nil, fmt.Errorf("gpu: vkGetMemoryFdKHR (buffer): %d", r)
+	}
+	b.fd = int(fd)
+	return b, nil
+}
+
+func (b *exportedBuffer) close() {
+	d := b.d
+	if b.fd >= 0 {
+		_ = syscall.Close(b.fd)
+		b.fd = -1
+	}
 	if b.buf != 0 {
 		d.cmds.DestroyBuffer(d.device, b.buf, nil)
 		b.buf = 0

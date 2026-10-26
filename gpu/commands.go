@@ -76,6 +76,12 @@ func barrier2(d *Device, cb vk.CommandBuffer, mem *vk.MemoryBarrier2, images ...
 	d.cmds.CmdPipelineBarrier2(cb, &di)
 }
 
+// bufferBarrier2 records b with synchronization2.
+func bufferBarrier2(d *Device, cb vk.CommandBuffer, b vk.BufferMemoryBarrier2) {
+	di := vk.DependencyInfo{SType: vk.StructureTypeDependencyInfo, BufferMemoryBarrierCount: 1, PBufferMemoryBarriers: &b}
+	d.cmds.CmdPipelineBarrier2(cb, &di)
+}
+
 // submit2 submits cb to queue after wait and before signal (each nil
 // for none), signalling done when it finishes.
 func submit2(d *Device, queue vk.Queue, cb vk.CommandBuffer, wait, signal *vk.SemaphoreSubmitInfo, done vk.Fence) error {

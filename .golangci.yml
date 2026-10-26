@@ -55,9 +55,10 @@ linters:
           - errcheck
           - gosec
           - unparam
-      # package gpu is the Vulkan FFI boundary: every create-info chain
-      # and out-parameter crosses it as an unsafe pointer by design.
-      - path: ^gpu/
+      # packages gpu and internal/va are the Vulkan and VA-API FFI
+      # boundaries: every create-info chain, parameter buffer and
+      # out-parameter crosses them as an unsafe pointer by design.
+      - path: ^(gpu|internal/va)/
         linters:
           - gosec
         text: G103

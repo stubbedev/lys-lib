@@ -50,12 +50,25 @@ type videoQueue struct {
 	codecs []Codec
 }
 
+// probeSync2 reports whether p has Vulkan 1.3's synchronization2,
+// which video coding and the encoders' conversion record with.
+func (d *Device) probeSync2(p vk.PhysicalDevice, apiVersion uint32) bool {
+	if apiVersion < vkVersion(1, 3) {
+		return false
+	}
+	f13 := vk.PhysicalDeviceVulkan13Features{SType: vk.StructureTypePhysicalDeviceVulkan13Features}
+	f2 := vk.PhysicalDeviceFeatures2{SType: vk.StructureTypePhysicalDeviceFeatures2, PNext: (*uintptr)(unsafe.Pointer(&f13))}
+	d.cmds.GetPhysicalDeviceFeatures2(p, &f2)
+	runtime.KeepAlive(&f13)
+	return f13.Synchronization2 != 0
+}
+
 // probeVideo finds p's video encode queue family and the codecs it
 // encodes: nil when there is none. why says, for each codec p does not
-// encode, why not: below Vulkan 1.3 or without its synchronization2,
-// which video coding records with, a missing extension, no queue
-// family that encodes video, or none that codes the codec.
-func (d *Device) probeVideo(p vk.PhysicalDevice, apiVersion uint32, have map[string]bool) (*videoQueue, map[Codec]error) {
+// encode, why not: no synchronization2, which video coding records
+// with, a missing extension, no queue family that encodes video, or
+// none that codes the codec.
+func (d *Device) probeVideo(p vk.PhysicalDevice, sync2 bool, have map[string]bool) (*videoQueue, map[Codec]error) {
 	why := map[Codec]error{}
 	none := func(err error) (*videoQueue, map[Codec]error) {
 		for _, c := range codecs {
@@ -63,8 +76,8 @@ func (d *Device) probeVideo(p vk.PhysicalDevice, apiVersion uint32, have map[str
 		}
 		return nil, why
 	}
-	if apiVersion < vkVersion(1, 3) {
-		return none(fmt.Errorf("the device's Vulkan %d.%d is below the 1.3 video coding needs", apiVersion>>22, apiVersion>>12&0x3ff))
+	if !sync2 {
+		return none(errors.New("no Vulkan 1.3 synchronization2"))
 	}
 	var missing []string
 	for _, ext := range videoExtensions {
@@ -74,13 +87,6 @@ func (d *Device) probeVideo(p vk.PhysicalDevice, apiVersion uint32, have map[str
 	}
 	if len(missing) > 0 {
 		return none(fmt.Errorf("no %s", strings.Join(missing, ", ")))
-	}
-	f13 := vk.PhysicalDeviceVulkan13Features{SType: vk.StructureTypePhysicalDeviceVulkan13Features}
-	f2 := vk.PhysicalDeviceFeatures2{SType: vk.StructureTypePhysicalDeviceFeatures2, PNext: (*uintptr)(unsafe.Pointer(&f13))}
-	d.cmds.GetPhysicalDeviceFeatures2(p, &f2)
-	runtime.KeepAlive(&f13)
-	if f13.Synchronization2 == 0 {
-		return none(errors.New("no synchronization2 feature"))
 	}
 	var n uint32
 	d.cmds.GetPhysicalDeviceQueueFamilyProperties2(p, &n, nil)

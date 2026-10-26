@@ -96,6 +96,20 @@ type EncMiscParameterRateControl struct {
 	VaReserved       [4]uint32
 }
 
+// EncMiscParameterFrameRate is VAEncMiscParameterFrameRate.
+type EncMiscParameterFrameRate struct {
+	Framerate      uint32
+	FramerateFlags uint32
+	VaReserved     [4]uint32
+}
+
+// EncMiscParameterHRD is VAEncMiscParameterHRD.
+type EncMiscParameterHRD struct {
+	InitialBufferFullness uint32
+	BufferSize            uint32
+	VaReserved            [4]uint32
+}
+
 // PictureH264 is VAPictureH264.
 type PictureH264 struct {
 	PictureID           uint32

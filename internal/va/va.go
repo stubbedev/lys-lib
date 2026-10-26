@@ -205,7 +205,7 @@ func (d *Display) ImportSurface(desc *DRMPRIMESurfaceDescriptor) (uint32, error)
 	pin.Pin(desc)
 	attribs := [2]SurfaceAttrib{
 		{Type: SurfaceAttribMemoryType, Flags: SurfaceAttribSettable, Value: GenericValue{Type: GenericValueTypeInteger, Value: uint64(SurfaceAttribMemTypeDRMPrime2)}},
-		{Type: SurfaceAttribExternalBufferDescriptor, Flags: SurfaceAttribSettable, Value: GenericValue{Type: GenericValueTypePointer, Value: uint64(uintptr(unsafe.Pointer(desc)))}}, //nolint:gosec // libva reads the pinned descriptor through the generic value
+		{Type: SurfaceAttribExternalBufferDescriptor, Flags: SurfaceAttribSettable, Value: GenericValue{Type: GenericValueTypePointer, Value: uint64(uintptr(unsafe.Pointer(desc)))}},
 	}
 	var id uint32
 	err := check("vaCreateSurfaces (PRIME 2)", lib.createSurfaces(d.dpy, RTFormatYUV420, desc.Width, desc.Height, &id, 1, &attribs[0], 2))
@@ -235,6 +235,15 @@ func (d *Display) CreateBuffer(context uint32, typ int32, size int, data unsafe.
 	return id, check("vaCreateBuffer", lib.createBuffer(d.dpy, context, typ, uint32(size), 1, data, &id))
 }
 
+// CreateMiscBuffer makes a miscellaneous encode parameter buffer for
+// context: typ's header, then the size bytes of param.
+func (d *Display) CreateMiscBuffer(context uint32, typ int32, param unsafe.Pointer, size int) (uint32, error) {
+	data := make([]byte, 4+size)
+	*(*int32)(unsafe.Pointer(&data[0])) = typ
+	copy(data[4:], unsafe.Slice((*byte)(param), size))
+	return d.CreateBuffer(context, EncMiscParameterBufferType, len(data), unsafe.Pointer(&data[0]))
+}
+
 // DestroyBuffer releases a buffer.
 func (d *Display) DestroyBuffer(id uint32) { _ = lib.destroyBuffer(d.dpy, id) }
 
@@ -247,6 +256,26 @@ func (d *Display) MapBuffer(id uint32) (unsafe.Pointer, error) {
 // UnmapBuffer unmaps a mapped buffer.
 func (d *Display) UnmapBuffer(id uint32) error {
 	return check("vaUnmapBuffer", lib.unmapBuffer(d.dpy, id))
+}
+
+// ReadCoded copies out what a coded buffer holds once its picture is
+// done: its segments joined, an error when the picture overflowed it.
+func (d *Display) ReadCoded(id uint32) ([]byte, error) {
+	p, err := d.MapBuffer(id)
+	if err != nil {
+		return nil, err
+	}
+	var out []byte
+	for seg := (*CodedBufferSegment)(p); seg != nil; seg = (*CodedBufferSegment)(seg.Next) {
+		if seg.Status&CodedBufStatusSliceOverflowMask != 0 {
+			_ = d.UnmapBuffer(id)
+			return nil, fmt.Errorf("va: the picture overflowed its %d-byte coded buffer segment", seg.Size)
+		}
+		if seg.Size > 0 {
+			out = append(out, unsafe.Slice((*byte)(seg.Buf), seg.Size)...)
+		}
+	}
+	return out, d.UnmapBuffer(id)
 }
 
 // Encode renders bufs into a picture of target in context: the
