@@ -60,3 +60,18 @@ the -1 from ymm7 at that point and is correct; a dataflow over llc's
 reproduction of them finds the constant on every path. The captured code
 around the fault (`fault-window.bin`) is a different compile, with more
 divisions, that never went through the IR or asm dump.
+
+## Run 40406582460: every module captured
+
+`irdump.c` (LD_PRELOAD, wrapping `LLVMRunPasses`) wrote every module llvmpipe
+handed to LLVM, before optimization. The crashing Zen 4 run produced the same
+four `fs_variant_partial` modules as every passing run, with no fifth compile.
+Compiled offline with Mesa's pass pipeline and
+`llc -O2 -mcpu=znver4 -mattr=<llvmpipe's list> -code-model=large`, none of
+them contains the faulting `vmovdqa32 %ymm20,%ymm28{%k1}` sequence, and none
+matches the `GALLIVM_DEBUG=asm` disassembly of the same run either. That
+disassembly in turn matches llc on the IR text `GALLIVM_DEBUG=ir` prints, and
+reads the -1 from ymm7 at the same spot. So llvmpipe's JIT does not produce,
+from this IR, the code an offline llc does, and the faulting code is neither.
+What differs between the two (target options, the module as the JIT sees it,
+or code being replaced after the disassembly) is the open question.
