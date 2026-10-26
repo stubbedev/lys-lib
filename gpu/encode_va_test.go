@@ -23,31 +23,19 @@ func nv12Of(c color.RGBA) (y, u, v byte) {
 	return round(16 + 219*l), round(128 + 224*(b-l)/1.8556), round(128 + 224*(r-l)/1.5748)
 }
 
-// readPicture copies slot's picture back through Vulkan, taking it
-// from the driver first and handing it back after, and returns its
-// planes tight.
-func readPicture(t *testing.T, vb *vaBackend, slot int) []byte {
+// readPlanes copies back the planes the encoder's last conversion
+// wrote, tight.
+func readPlanes(t *testing.T, e *Encoder) []byte {
 	t.Helper()
-	d, pic, w, h := vb.d, vb.slots[slot].picture.image, vb.coded[0], vb.coded[1]
-	staging, err := d.newReadBuffer(nv12Bytes(vb.coded), vk.BufferUsageTransferDstBit, nil)
+	d, size := e.d, nv12Bytes(e.coded)
+	staging, err := d.newReadBuffer(size, vk.BufferUsageTransferDstBit, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer staging.close()
 	err = d.submit(func(cb vk.CommandBuffer) {
-		take := imageBarrier(pic, nv12Range, vk.ImageLayoutGeneral, vk.ImageLayoutTransferSrcOptimal)
-		take.SrcQueueFamilyIndex, take.DstQueueFamilyIndex = vk.QueueFamilyForeignExt, d.family
-		take.DstStageMask, take.DstAccessMask = vk.PipelineStageFlags2(vk.PipelineStage2CopyBit), vk.AccessFlags2(vk.Access2TransferReadBit)
-		barrier2(d, cb, nil, take)
-		regions := [2]vk.BufferImageCopy{
-			{ImageSubresource: vk.ImageSubresourceLayers{AspectMask: vk.ImageAspectFlags(vk.ImageAspectPlane0Bit), LayerCount: 1}, ImageExtent: vk.Extent3D{Width: uint32(w), Height: uint32(h), Depth: 1}},
-			{BufferOffset: vk.DeviceSize(w * h), ImageSubresource: vk.ImageSubresourceLayers{AspectMask: vk.ImageAspectFlags(vk.ImageAspectPlane1Bit), LayerCount: 1}, ImageExtent: vk.Extent3D{Width: uint32(w / 2), Height: uint32(h / 2), Depth: 1}},
-		}
-		d.cmds.CmdCopyImageToBuffer(cb, pic, vk.ImageLayoutTransferSrcOptimal, staging.buf, 2, &regions[0])
-		give := imageBarrier(pic, nv12Range, vk.ImageLayoutTransferSrcOptimal, vk.ImageLayoutGeneral)
-		give.SrcQueueFamilyIndex, give.DstQueueFamilyIndex = d.family, vk.QueueFamilyForeignExt
-		give.SrcStageMask, give.SrcAccessMask = vk.PipelineStageFlags2(vk.PipelineStage2CopyBit), vk.AccessFlags2(vk.Access2TransferReadBit)
-		barrier2(d, cb, nil, give)
+		region := vk.BufferCopy{Size: vk.DeviceSize(size)}
+		d.cmds.CmdCopyBuffer(cb, e.planes.buf, staging.buf, 1, &region)
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -55,7 +43,7 @@ func readPicture(t *testing.T, vb *vaBackend, slot int) []byte {
 	if err := staging.invalidate(); err != nil {
 		t.Fatal(err)
 	}
-	return slices.Clone(staging.mapped[:nv12Bytes(vb.coded)])
+	return slices.Clone(staging.mapped[:size])
 }
 
 // planesDiffer reports whether an NV12 picture strays from y, u and v
@@ -75,7 +63,7 @@ func planesDiffer(pix []byte, w, h int, y, u, v byte) (int, bool) {
 }
 
 // The surface the VA-API driver encodes from holds what the conversion
-// wrote: the slot's picture, read back through Vulkan and through the
+// wrote: the planes, read back through Vulkan and through the
 // driver (vaGetImage), holds the frame's colour in NV12, and a
 // patterned frame reads back from the driver byte for byte as Vulkan
 // wrote it, which a solid one cannot show of a tiling. It logs how
@@ -113,7 +101,7 @@ func TestVASurfaceHoldsTheConversion(t *testing.T) {
 			}
 			y, u, v := nv12Of(col)
 			w, h := vb.coded[0], vb.coded[1]
-			if i, bad := planesDiffer(readPicture(t, vb, 0), w, h, y, u, v); bad {
+			if i, bad := planesDiffer(readPlanes(t, c.enc), w, h, y, u, v); bad {
 				t.Fatalf("the buffer read back through Vulkan strays at byte %d of %dx%d NV12 from Y %d U %d V %d: the conversion is wrong", i, w, h, y, u, v)
 			}
 			pix, err := vb.dpy.ReadNV12(vb.slots[0].surface, w, h)
@@ -130,7 +118,7 @@ func TestVASurfaceHoldsTheConversion(t *testing.T) {
 			if r := d.cmds.WaitForFences(d.device, 1, &c.enc.gfxDone, vk.True, ^uint64(0)); r != vk.Success {
 				t.Fatalf("wait for the conversion: %d", r)
 			}
-			written := readPicture(t, vb, 0)
+			written := readPlanes(t, c.enc)
 			if pix, err = vb.dpy.ReadNV12(vb.slots[0].surface, w, h); err != nil {
 				t.Fatal(err)
 			}
@@ -231,7 +219,7 @@ func TestVAEncodesFromItsOwnSurfaces(t *testing.T) {
 				if r := d.cmds.WaitForFences(d.device, 1, &c.enc.gfxDone, vk.True, ^uint64(0)); r != vk.Success {
 					t.Fatalf("wait for the conversion: %d", r)
 				}
-				if err := vb.dpy.WriteNV12(own[slot], w, h, readPicture(t, vb, slot)); err != nil {
+				if err := vb.dpy.WriteNV12(own[slot], w, h, readPlanes(t, c.enc)); err != nil {
 					t.Fatal(err)
 				}
 				if err := vb.encode(slot, i, sinceIDR, idrs); err != nil {

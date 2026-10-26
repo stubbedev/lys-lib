@@ -267,6 +267,19 @@ func keepFrames(t *testing.T, src []*image.RGBA, decoded [][]byte, frames ...int
 	}
 }
 
+// closerFrames names the earlier source frames a decoded frame i is
+// closer to than to its own (got dB): an encoder that reads a stale
+// picture.
+func closerFrames(src []*image.RGBA, decoded []byte, i int, got float64) string {
+	var out strings.Builder
+	for back := 1; back <= 2 && back <= i; back++ {
+		if p := psnr(src[i-back], decoded); p > got {
+			fmt.Fprintf(&out, "; frame %d's source is closer, %.1f dB", i-back, p)
+		}
+	}
+	return out.String()
+}
+
 // subsampled is each frame's PSNR through 4:2:0 alone (ffmpeg's BT.709
 // limited-range round trip), the most an encoder of NV12 keeps.
 func subsampled(t *testing.T, ffmpeg string, src []*image.RGBA) []float64 {
@@ -362,7 +375,7 @@ func checkDecodes(t *testing.T, ffmpeg string, c *clip, src []*image.RGBA) {
 		got := psnr(src[i], f)
 		worst = min(worst, got)
 		if want := min(ceiling[i], 40) - 6; got < want {
-			t.Errorf("frame %d decodes at %.1f dB PSNR, want %.1f at QP 20 (4:2:0 alone keeps %.1f)", i, got, want, ceiling[i])
+			t.Errorf("frame %d decodes at %.1f dB PSNR, want %.1f at QP 20 (4:2:0 alone keeps %.1f)%s", i, got, want, ceiling[i], closerFrames(src, f, i, got))
 		}
 	}
 	t.Logf("worst frame %.1f dB", worst)
