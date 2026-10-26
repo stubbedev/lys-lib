@@ -1,0 +1,40 @@
+# Reproduces mesa#16702 on GitHub's ubuntu-latest runners, some of which
+# are AVX-512 Zen 4 (EPYC 9V74/9V45). Each attempt records its CPU, runs
+# the crashing test pair under gdb with llvmpipe's IR and JIT disassembly
+# dumped, repeats it with GALLIUM_OVERRIDE_CPU_CAPS=avx as a control, and
+# uploads everything.
+name: mesa-16702
+
+on:
+  push:
+    branches: [repro/mesa-16702]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  repro:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        attempt: [1, 2, 3, 4, 5, 6, 7, 8]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
+        with:
+          github_access_token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Native CPU caps
+        run: repro/mesa-16702/run.sh out/native
+      - name: Control, GALLIUM_OVERRIDE_CPU_CAPS=avx
+        run: repro/mesa-16702/run.sh out/avx GALLIUM_OVERRIDE_CPU_CAPS=avx
+      - name: Summary
+        run: |
+          for d in out/native out/avx; do echo "== $d"; cat "$d/system.txt"; done | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: attempt-${{ matrix.attempt }}
+          path: out/
