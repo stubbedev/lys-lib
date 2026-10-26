@@ -36,6 +36,17 @@ absolute name is the socket's path and `XDG_RUNTIME_DIR` is needed only
 for a relative one (lys-lib#10). `wl/connect_test.go` is the upstream
 pull request's test.
 
+### A nil object argument goes out as id 0
+
+Upstream: https://github.com/neurlang/wayland/pull/45
+
+`wl/request.go`, `SendRequest`: its scan for new ids called `Id()` on
+every proxy argument, so a typed-nil one (`wl_data_device.set_selection`
+with no source, `xdg_toplevel.set_parent` with no parent) panicked with
+the send lock held and deadlocked every later request. `PutProxy`
+already writes a nil proxy as 0; the scan now skips it (lys-lib#13).
+`wl/nil_argument_test.go` is the upstream pull request's test.
+
 ### Byte order comes from encoding/binary
 
 `wl/event.go`, `wl/request.go`: the wire's native byte order is
