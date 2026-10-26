@@ -326,15 +326,8 @@ type (
 	StdVideoH265AspectRatioIdc             int32
 	StdVideoH265SliceType                  int32
 	StdVideoH265PictureType                int32
-	StdVideoH265VideoParameterSet          [256]byte
-	StdVideoH265SequenceParameterSet       [512]byte
-	StdVideoH265PictureParameterSet        [256]byte
 	StdVideoDecodeH265PictureInfo          [64]byte
 	StdVideoDecodeH265ReferenceInfo        [32]byte
-	StdVideoEncodeH265PictureInfo          [64]byte
-	StdVideoEncodeH265ReferenceInfo        [32]byte
-	StdVideoEncodeH265SliceSegmentHeader   [128]byte
-	StdVideoEncodeH265ReferenceListsInfo   [64]byte
 	StdVideoAV1Profile                     int32
 	StdVideoAV1Level                       int32
 	StdVideoAV1SequenceHeader              [256]byte

@@ -13,6 +13,7 @@ type Codec int
 // The codecs.
 const (
 	H264 Codec = iota
+	H265
 )
 
 // codecs are every codec, each with its name, the device extension
@@ -24,6 +25,7 @@ var codecs = []struct {
 	operation vk.VideoCodecOperationFlagBitsKHR
 }{
 	{H264, "H.264", "VK_KHR_video_encode_h264", vk.VideoCodecOperationEncodeH264BitKhr},
+	{H265, "H.265", "VK_KHR_video_encode_h265", vk.VideoCodecOperationEncodeH265BitKhr},
 }
 
 func (c Codec) String() string { return codecs[c].name }

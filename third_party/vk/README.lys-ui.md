@@ -122,15 +122,15 @@ fields and wrappers and were never loaded.
 `commands_lysui.go`: a wrapper vk-gen skipped (its eight arguments
 had no signature template), for the encoder's feedback queries.
 
-### H.264 StdVideo structures
+### H.264 and H.265 StdVideo structures
 
-`stdvideo_lysui.go`: vk-gen carries the codec headers' structures as
-opaque byte arrays of guessed sizes. The H.264 sequence and picture
-parameter sets and the encode picture, reference, slice header and
-reference list structures are laid out as
-`vulkan_video_codec_h264std*.h` lays them out, their arrays dropped
-from `types_gen.go`; `TestStdVideoH264Layouts` pins every size and
-offset.
+`stdvideo_lysui.go`, `stdvideo_h265_lysui.go`: vk-gen carries the codec
+headers' structures as opaque byte arrays of guessed sizes. The H.264
+parameter sets and encode structures, and every structure of
+`vulkan_video_codec_h265std.h` and `vulkan_video_codec_h265std_encode.h`,
+are laid out as the headers lay them out, their arrays dropped from
+`types_gen.go`; `TestStdVideoH264Layouts` and `TestStdVideoH265Layouts`
+pin every size and field offset against a C compiler's.
 
 ### Core 1.1 and 1.3 values the encoder names
 

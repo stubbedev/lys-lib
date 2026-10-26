@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/stubbedev/lys-ui/dmabuf"
+	"github.com/stubbedev/lys-ui/media/mux"
 	"github.com/stubbedev/lys-ui/third_party/vk"
 )
 
@@ -111,7 +112,7 @@ func encodingDevice(t *testing.T, c Codec) (*Device, string) {
 }
 
 // ffmpegFormats name each codec's elementary stream for ffmpeg.
-var ffmpegFormats = map[Codec]string{H264: "h264"}
+var ffmpegFormats = map[Codec]string{H264: "h264", H265: "hevc"}
 
 // clip is an encoder, the buffer it encodes from and what it wrote.
 type clip struct {
@@ -249,7 +250,7 @@ func subsampled(t *testing.T, ffmpeg string, src []*image.RGBA) []float64 {
 // (QP 20 costs about that much on smooth content); a wrong matrix, crop
 // or reference falls far below.
 func TestEncoderDecodes(t *testing.T) {
-	for _, codec := range []Codec{H264} {
+	for _, codec := range []Codec{H264, H265} {
 		t.Run(codec.String(), func(t *testing.T) {
 			d, ffmpeg := encodingDevice(t, codec)
 			for _, size := range []image.Point{{640, 360}, {333, 241}, {64, 48}} {
@@ -393,5 +394,68 @@ func TestBufferReadsBack(t *testing.T) {
 	buf.Close()
 	if _, err := buf.ReadPixels(); err == nil {
 		t.Error("a closed buffer read back")
+	}
+}
+
+// What the encoder writes muxes as the recorder muxes it: its
+// parameter sets describe the track and its packets are the samples,
+// in MP4 and in Matroska, and ffprobe reads every frame back.
+func TestEncoderMuxes(t *testing.T) {
+	for _, codec := range []Codec{H264, H265} {
+		t.Run(codec.String(), func(t *testing.T) {
+			d, ffmpeg := encodingDevice(t, codec)
+			ffprobe := filepath.Join(filepath.Dir(ffmpeg), "ffprobe")
+			const frames = 20
+			c := newClip(t, d, EncoderConfig{Codec: codec, Width: 320, Height: 180, FrameRate: 30, KeyInterval: 10, QP: 24})
+			for i := range frames {
+				c.frame(encodeFrame(320, 180, i))
+			}
+			out, err := c.enc.Flush()
+			if err != nil {
+				t.Fatal(err)
+			}
+			c.pkts = append(c.pkts, out...)
+			ps := c.enc.ParameterSets()
+			track := mux.Track(mux.H264{SPS: ps[0], PPS: ps[1]})
+			if codec == H265 {
+				track = mux.H265{VPS: ps[0], SPS: ps[1], PPS: ps[2]}
+			}
+			for _, kind := range []string{"mp4", "mkv"} {
+				var file bytes.Buffer
+				var m interface {
+					WriteSample(mux.Sample) error
+					Close() error
+				}
+				if kind == "mp4" {
+					m, err = mux.NewMP4(&file, track)
+				} else {
+					m, err = mux.NewMKV(&file, track)
+				}
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, p := range c.pkts {
+					if err := m.WriteSample(mux.Sample{PTS: p.PTS, Data: p.Data}); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if err := m.Close(); err != nil {
+					t.Fatal(err)
+				}
+				path := filepath.Join(t.TempDir(), "clip."+kind)
+				if err := os.WriteFile(path, file.Bytes(), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				probe, err := exec.Command(ffprobe, "-v", "error", "-count_frames", "-select_streams", "v:0",
+					"-show_entries", "stream=codec_name,width,height,nb_read_frames", "-of", "csv=p=0", path).Output()
+				if err != nil {
+					t.Fatalf("ffprobe %s: %v", kind, err)
+				}
+				want := map[Codec]string{H264: "h264", H265: "hevc"}[codec] + ",320,180," + strconv.Itoa(frames)
+				if got := strings.TrimSpace(string(probe)); got != want {
+					t.Errorf("%s probes as %q, want %q", kind, got, want)
+				}
+			}
+		})
 	}
 }

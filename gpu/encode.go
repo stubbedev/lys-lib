@@ -119,7 +119,12 @@ type codecLimits struct {
 	pRefs int
 }
 
-func newVideoCodec(Codec) videoCodec { return &h264Codec{} }
+func newVideoCodec(c Codec) videoCodec {
+	if c == H265 {
+		return &h265Codec{}
+	}
+	return &h264Codec{}
+}
 
 // videoProfile is the profile chain every video object is made with,
 // kept on the heap for the pointers into it.
