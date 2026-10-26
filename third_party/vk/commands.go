@@ -111,6 +111,13 @@ func (c *Commands) LoadInstance(instance Instance) error {
 	c.getPhysicalDeviceFeatures2 = GetInstanceProcAddr(instance, "vkGetPhysicalDeviceFeatures2")
 	c.getPhysicalDeviceProperties2 = GetInstanceProcAddr(instance, "vkGetPhysicalDeviceProperties2")
 	c.getPhysicalDeviceFormatProperties2 = GetInstanceProcAddr(instance, "vkGetPhysicalDeviceFormatProperties2")
+	c.getPhysicalDeviceQueueFamilyProperties2 = GetInstanceProcAddr(instance, "vkGetPhysicalDeviceQueueFamilyProperties2")
+
+	// VK_KHR_video_queue and VK_KHR_video_encode_queue: what a device
+	// encodes, in which formats and at which quality levels.
+	c.getPhysicalDeviceVideoCapabilitiesKHR = GetInstanceProcAddr(instance, "vkGetPhysicalDeviceVideoCapabilitiesKHR")
+	c.getPhysicalDeviceVideoFormatPropertiesKHR = GetInstanceProcAddr(instance, "vkGetPhysicalDeviceVideoFormatPropertiesKHR")
+	c.getPhysicalDeviceVideoEncodeQualityLevelPropertiesKHR = GetInstanceProcAddr(instance, "vkGetPhysicalDeviceVideoEncodeQualityLevelPropertiesKHR")
 
 	// VK_EXT_debug_utils (instance extension — MUST use GetInstanceProcAddr).
 	// Loading via GetDeviceProcAddr bypasses the validation layer's handle
@@ -272,6 +279,23 @@ func (c *Commands) LoadDevice(device Device) error {
 	c.getSemaphoreCounterValue = GetDeviceProcAddr(device, "vkGetSemaphoreCounterValue")
 	c.waitSemaphores = GetDeviceProcAddr(device, "vkWaitSemaphores")
 	c.signalSemaphore = GetDeviceProcAddr(device, "vkSignalSemaphore")
+
+	// Vulkan 1.3 (VK_KHR_synchronization2), which video coding needs.
+	c.cmdPipelineBarrier2 = GetDeviceProcAddr(device, "vkCmdPipelineBarrier2")
+	c.queueSubmit2 = GetDeviceProcAddr(device, "vkQueueSubmit2")
+
+	// VK_KHR_video_queue and VK_KHR_video_encode_queue.
+	c.createVideoSessionKHR = GetDeviceProcAddr(device, "vkCreateVideoSessionKHR")
+	c.destroyVideoSessionKHR = GetDeviceProcAddr(device, "vkDestroyVideoSessionKHR")
+	c.getVideoSessionMemoryRequirementsKHR = GetDeviceProcAddr(device, "vkGetVideoSessionMemoryRequirementsKHR")
+	c.bindVideoSessionMemoryKHR = GetDeviceProcAddr(device, "vkBindVideoSessionMemoryKHR")
+	c.createVideoSessionParametersKHR = GetDeviceProcAddr(device, "vkCreateVideoSessionParametersKHR")
+	c.destroyVideoSessionParametersKHR = GetDeviceProcAddr(device, "vkDestroyVideoSessionParametersKHR")
+	c.getEncodedVideoSessionParametersKHR = GetDeviceProcAddr(device, "vkGetEncodedVideoSessionParametersKHR")
+	c.cmdBeginVideoCodingKHR = GetDeviceProcAddr(device, "vkCmdBeginVideoCodingKHR")
+	c.cmdEndVideoCodingKHR = GetDeviceProcAddr(device, "vkCmdEndVideoCodingKHR")
+	c.cmdControlVideoCodingKHR = GetDeviceProcAddr(device, "vkCmdControlVideoCodingKHR")
+	c.cmdEncodeVideoKHR = GetDeviceProcAddr(device, "vkCmdEncodeVideoKHR")
 
 	// Swapchain functions (WSI)
 	c.createSwapchainKHR = GetDeviceProcAddr(device, "vkCreateSwapchainKHR")

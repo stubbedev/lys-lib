@@ -17,6 +17,7 @@ var (
 	sigVoidCmdClearColorImage ffi.CallInterface
 	sigResultHandleU32I32Ptr  ffi.CallInterface
 	sigVoidCmdPushConstants   ffi.CallInterface
+	sigGetQueryPoolResults    ffi.CallInterface
 )
 
 func lysuiSigs() error {
@@ -34,8 +35,12 @@ func lysuiSigs() error {
 			[]*ffi.TypeDescriptor{u64, u32, i32, ptr}); lysuiSigsErr != nil {
 			return
 		}
-		lysuiSigsErr = ffi.PrepareCallInterface(&sigVoidCmdPushConstants, ffi.DefaultCall, ffi.VoidTypeDescriptor,
-			[]*ffi.TypeDescriptor{u64, u64, u32, u32, u32, ptr})
+		if lysuiSigsErr = ffi.PrepareCallInterface(&sigVoidCmdPushConstants, ffi.DefaultCall, ffi.VoidTypeDescriptor,
+			[]*ffi.TypeDescriptor{u64, u64, u32, u32, u32, ptr}); lysuiSigsErr != nil {
+			return
+		}
+		lysuiSigsErr = ffi.PrepareCallInterface(&sigGetQueryPoolResults, ffi.DefaultCall, ffi.SInt32TypeDescriptor,
+			[]*ffi.TypeDescriptor{u64, u64, u32, u32, u64, ptr, u64, u32})
 	})
 	return lysuiSigsErr
 }
@@ -85,4 +90,22 @@ func (c *Commands) CmdPushConstants(commandBuffer CommandBuffer, layout Pipeline
 	stages := uint32(stageFlags)
 	args := [6]unsafe.Pointer{unsafe.Pointer(&commandBuffer), unsafe.Pointer(&layout), unsafe.Pointer(&stages), unsafe.Pointer(&offset), unsafe.Pointer(&size), unsafe.Pointer(&pValues)}
 	_, _ = ffi.CallFunction(&sigVoidCmdPushConstants, c.cmdPushConstants, nil, args[:])
+}
+
+// GetQueryPoolResults wraps vkGetQueryPoolResults: a video encode's
+// feedback (where its bitstream starts and how long it is).
+func (c *Commands) GetQueryPoolResults(device Device, queryPool QueryPool, firstQuery, queryCount uint32, dataSize uintptr, pData unsafe.Pointer, stride DeviceSize, flags QueryResultFlags) Result {
+	if c.getQueryPoolResults == nil {
+		return ErrorExtensionNotPresent
+	}
+	if err := lysuiSigs(); err != nil {
+		return ErrorInitializationFailed
+	}
+	var result int32
+	size, fl := uint64(dataSize), uint32(flags)
+	args := [8]unsafe.Pointer{unsafe.Pointer(&device), unsafe.Pointer(&queryPool), unsafe.Pointer(&firstQuery), unsafe.Pointer(&queryCount), unsafe.Pointer(&size), unsafe.Pointer(&pData), unsafe.Pointer(&stride), unsafe.Pointer(&fl)}
+	if _, err := ffi.CallFunction(&sigGetQueryPoolResults, c.getQueryPoolResults, unsafe.Pointer(&result), args[:]); err != nil {
+		return ErrorInitializationFailed
+	}
+	return Result(result)
 }

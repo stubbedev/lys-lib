@@ -96,3 +96,44 @@ types, so the core names were missing. Upstream found the cause: vk-gen read
 enum values from the extensions section only and ignored `extnumber`,
 so about 60 other constants here carry wrong values too (lys-ui uses
 none of them).
+
+### 64-bit flag types
+
+`types_gen.go`: vk-gen typed thirteen `VkFlags64` types as 32-bit
+`Flags` (among them `PipelineStageFlags2`, `AccessFlags2` and
+`FormatFeatureFlags2`, so every synchronization2 barrier was laid out
+short) and four 32-bit `VkFlags` types as `Flags64` (the H.264 encode
+capability, std-syntax and rate-control flags, and the H.264 decode
+picture layout). Each now has its header's width;
+`TestVideoStructSizes` pins the sizes of the structures the GPU
+encoder passes against a C compiler's.
+
+### Video coding and synchronization2 functions load
+
+`commands.go`: `LoadInstance` loads
+`vkGetPhysicalDeviceQueueFamilyProperties2` and the video capability,
+format and quality-level queries; `LoadDevice` loads
+`vkCmdPipelineBarrier2`, `vkQueueSubmit2` and the
+VK_KHR_video_queue and VK_KHR_video_encode_queue commands. All had
+fields and wrappers and were never loaded.
+
+### vkGetQueryPoolResults
+
+`commands_lysui.go`: a wrapper vk-gen skipped (its eight arguments
+had no signature template), for the encoder's feedback queries.
+
+### H.264 StdVideo structures
+
+`stdvideo_lysui.go`: vk-gen carries the codec headers' structures as
+opaque byte arrays of guessed sizes. The H.264 sequence and picture
+parameter sets and the encode picture, reference, slice header and
+reference list structures are laid out as
+`vulkan_video_codec_h264std*.h` lays them out, their arrays dropped
+from `types_gen.go`; `TestStdVideoH264Layouts` pins every size and
+offset.
+
+### Core 1.1 and 1.3 values the encoder names
+
+`const_lysui.go`: the queue family properties and 1.3 feature
+structure types, synchronization2's structure types, the two-plane
+4:2:0 format and its plane aspects, all left out of `const_gen.go`.
