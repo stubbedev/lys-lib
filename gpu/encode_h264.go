@@ -155,17 +155,18 @@ func (p *h264Picture) fill(sinceIDR int, idrID uint16, prev, qp int) {
 		p.lists.RefPicList0[i] = vk.StdVideoH264NoReferencePicture
 		p.lists.RefPicList1[i] = vk.StdVideoH264NoReferencePicture
 	}
+	p.ref = vk.StdVideoEncodeH264ReferenceInfo{}
 	if !idr {
 		p.lists.RefPicList0[0] = intconv.Must[uint8](prev)
+		p.ref = vk.StdVideoEncodeH264ReferenceInfo{
+			PrimaryPicType: vk.StdVideoH264PictureTypeP, FrameNum: intconv.Must[uint32](sinceIDR - 1), PicOrderCnt: intconv.Must[int32](2 * (sinceIDR - 1)),
+		}
 	}
 	p.info = vk.StdVideoEncodeH264PictureInfo{
 		Flags: flags, IdrPicID: idrID, PrimaryPicType: picType,
 		FrameNum: intconv.Must[uint32](sinceIDR), PicOrderCnt: intconv.Must[int32](2 * sinceIDR), PRefLists: &p.lists,
 	}
 	p.slice = vk.StdVideoEncodeH264SliceHeader{SliceType: sliceType}
-	p.ref = vk.StdVideoEncodeH264ReferenceInfo{
-		PrimaryPicType: vk.StdVideoH264PictureTypeP, FrameNum: intconv.Must[uint32](sinceIDR - 1), PicOrderCnt: intconv.Must[int32](2 * (sinceIDR - 1)),
-	}
 	if sinceIDR == 1 {
 		p.ref.PrimaryPicType = vk.StdVideoH264PictureTypeIdr
 	}

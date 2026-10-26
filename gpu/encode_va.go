@@ -602,10 +602,6 @@ func (c *h264VA) params(sinceIDR int, idrs uint16, cur, prev, coded uint32) (seq
 	h := &c.header
 	idr := sinceIDR == 0
 	none := va.PictureH264{PictureID: va.InvalidID, Flags: va.PictureH264Invalid}
-	ref := va.PictureH264{
-		PictureID: prev, FrameIdx: intconv.Must[uint32](sinceIDR - 1), Flags: va.PictureH264ShortTermReference,
-		TopFieldOrderCnt: intconv.Must[int32](2 * (sinceIDR - 1)), BottomFieldOrderCnt: intconv.Must[int32](2 * (sinceIDR - 1)),
-	}
 	var picFields uint32
 	if idr {
 		picFields |= va.H264PicIdrPicFlag.Put(1)
@@ -633,6 +629,10 @@ func (c *h264VA) params(sinceIDR int, idrs uint16, cur, prev, coded uint32) (seq
 	if idr {
 		c.slice.SliceType = 2
 	} else {
+		ref := va.PictureH264{
+			PictureID: prev, FrameIdx: intconv.Must[uint32](sinceIDR - 1), Flags: va.PictureH264ShortTermReference,
+			TopFieldOrderCnt: intconv.Must[int32](2 * (sinceIDR - 1)), BottomFieldOrderCnt: intconv.Must[int32](2 * (sinceIDR - 1)),
+		}
 		c.pic.ReferenceFrames[0], c.slice.RefPicList0[0] = ref, ref
 	}
 	return vaParam{va.EncSequenceParameterBufferType, unsafe.Pointer(&c.seq), int(unsafe.Sizeof(c.seq))},
