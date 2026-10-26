@@ -1,0 +1,1341 @@
+package render
+
+import (
+	"bytes"
+	"errors"
+	"fmt"
+	"image"
+	"image/color"
+	"image/png"
+	"math"
+	"strings"
+	"unicode/utf8"
+
+	"github.com/go-text/typesetting/di"
+	"github.com/go-text/typesetting/font"
+	ot "github.com/go-text/typesetting/font/opentype"
+	"github.com/go-text/typesetting/segmenter"
+	"github.com/go-text/typesetting/shaping"
+	"golang.org/x/image/math/fixed"
+
+	"github.com/stubbedev/lys-ui/internal/text"
+)
+
+// Font shapes and paints text: a single Typeface, or a Chain that
+// falls back across faces for runes the primary face lacks. Widgets
+// take a Font, so either works at every text call site.
+type Font interface {
+	// Metrics reports the face's font-relative metrics as ratios of
+	// its font size: the CSS ch, ex, cap, ic and lh unit bases. Widgets
+	// feed these to the style engine's unit environment.
+	Metrics() FaceMetrics
+	// Shape lays text out at the given pixel size, resolving the base
+	// paragraph direction from the text's first strong character.
+	Shape(s string, px float64) *ShapedText
+	// ShapeDir is Shape under an explicit base direction; see
+	// text.Direction.
+	ShapeDir(s string, px float64, d text.Direction) *ShapedText
+	// ShapeRune shapes one rune at the pixel size - the per-rune probe
+	// wrap measurement and advance math use. Rune-keyed in the caches,
+	// so a probe never builds a one-rune string per call.
+	ShapeRune(r rune, px float64) *ShapedText
+	// ShapeRunes is Shape over a rune slice - the rune-holding widgets'
+	// path, keyed on the runes so a frame's shaping never converts them
+	// to a string per call.
+	ShapeRunes(rs []rune, px float64) *ShapedText
+	// ShapeDirRunes is ShapeDir over a rune slice; see ShapeRunes.
+	ShapeDirRunes(rs []rune, px float64, d text.Direction) *ShapedText
+	// Draw paints a shaped line with its baseline at logical
+	// (x, baselineY).
+	Draw(cv *Canvas, s *ShapedText, x, baselineY int, col Color)
+	// DrawAligned draws text inside box with the given alignment; start
+	// and end mirror for a right-to-left paragraph.
+	DrawAligned(cv *Canvas, s string, box Rect, px float64, col Color, h Alignment) *ShapedText
+	// DrawAlignedDir is DrawAligned under an explicit base direction.
+	DrawAlignedDir(cv *Canvas, s string, box Rect, px float64, col Color, h Alignment, d text.Direction) *ShapedText
+}
+
+var (
+	_ Font = (*Typeface)(nil)
+	_ Font = (*Chain)(nil)
+)
+
+// Typeface is a loaded font plus the machinery to shape and rasterize it.
+// One instance per font family; it is not safe for concurrent use.
+type Typeface struct {
+	face   *font.Face
+	upem   float64
+	shaper shaping.HarfbuzzShaper
+
+	// features shape with OpenType features on (the tnum twin a
+	// stylesheet's font-feature-settings asks for); nil shapes plain.
+	features []shaping.FontFeature
+	// tabular memoizes this face's tnum twin, so the variant keys its
+	// own shaping cache entries instead of missing every style pass.
+	tabular *Typeface
+	// slant shears the outlines, x by slant times y in font units: a
+	// synthetic oblique's tan(14°), 0 for an upright face; oblique
+	// memoizes the slanted twin.
+	slant   float64
+	oblique *Typeface
+
+	// strikePpem is the pixels-per-em of the largest embedded bitmap
+	// strike (0 when the face has none), and bitmaps caches decoded
+	// bitmap glyphs. Both fill lazily; color emoji faces hit them on
+	// every draw.
+	strikePpem float64
+	strikeRead bool
+	bitmaps    map[font.GID]bitmapGlyph
+
+	// familyName memoizes the face's family name once familyRead is
+	// set: Describe decodes the name table on every call, and the style
+	// pass asks for the family each time it resolves a weight or style.
+	familyName string
+	familyRead bool
+
+	// base is the default instance a variable-font instance was made
+	// from (nil on a default face), vars its settings, and inst the
+	// instance bookkeeping they share (variation.go).
+	base *Typeface
+	vars []Variation
+	inst *instances
+
+	// colors memoizes each glyph's color source (colorglyph.go).
+	colors map[font.GID]colorKind
+
+	// letter is the letter spacing (px) shaping adds after every
+	// cluster; spaced memoizes the Spaced variants.
+	letter float64
+	spaced map[float64]*Typeface
+	// word is the word spacing (px) shaping adds after every word
+	// separator; worded memoizes the WordSpaced variants.
+	word   float64
+	worded map[float64]*Typeface
+	// featured memoizes the WithFeatureSpec twins, keyed by the
+	// canonical feature list the variant came from.
+	featured map[string]*Typeface
+
+	// metrics memoizes Metrics; metricsRead marks it computed.
+	metrics     FaceMetrics
+	metricsRead bool
+}
+
+// FaceMetrics is a face's font-relative metrics expressed as ratios
+// of its font size: the advance of "0" (ch), the x-height (ex), the
+// cap height (cap), the ideographic advance (ic), and the natural
+// line height (lh). A zero field means the face does not report it
+// and the CSS fallback ratio applies.
+type FaceMetrics struct {
+	Ch, Ex, Cap, Ic, LineHeight float64
+}
+
+// Metrics returns the face's metrics, memoized after the first call.
+func (t *Typeface) Metrics() FaceMetrics {
+	if t.metricsRead {
+		return t.metrics
+	}
+	t.metricsRead = true
+	if gid, ok := t.face.NominalGlyph('0'); ok {
+		t.metrics.Ch = float64(t.face.HorizontalAdvance(gid)) / t.upem
+	}
+	if v := t.face.LineMetric(font.XHeight); v > 0 {
+		t.metrics.Ex = float64(v) / t.upem
+	}
+	if v := t.face.LineMetric(font.CapHeight); v > 0 {
+		t.metrics.Cap = float64(v) / t.upem
+	}
+	if gid, ok := t.face.NominalGlyph('\u6c34'); ok {
+		t.metrics.Ic = float64(t.face.HorizontalAdvance(gid)) / t.upem
+	}
+	if ext, ok := t.face.FontHExtents(); ok {
+		t.metrics.LineHeight = float64(ext.Ascender-ext.Descender+ext.LineGap) / t.upem
+	}
+	return t.metrics
+}
+
+// Spaced returns the face shaping with px of letter spacing after
+// every cluster (CSS letter-spacing): the advances themselves carry it,
+// so measuring, caret placement, and painting agree. Memoized; zero
+// returns the face itself.
+func (t *Typeface) Spaced(px float64) *Typeface {
+	if px == t.letter {
+		return t
+	}
+	if v, ok := t.spaced[px]; ok {
+		return v
+	}
+	c := *t
+	c.letter, c.tabular, c.spaced, c.worded, c.featured = px, nil, nil, nil, nil
+	if t.spaced == nil {
+		t.spaced = map[float64]*Typeface{}
+	}
+	t.spaced[px] = &c
+	return &c
+}
+
+// Tabular returns the face shaping with the tnum OpenType feature on:
+// digits on a uniform advance grid, what a clock or a numeric column
+// wants. Memoized; the twin shares nothing the lazy caches fill, so
+// the two entries never contend.
+func (t *Typeface) Tabular() *Typeface {
+	if t.tabular == nil {
+		c := *t
+		c.features = []shaping.FontFeature{{Tag: ot.MustNewTag("tnum"), Value: 1}}
+		c.shaper = shaping.HarfbuzzShaper{}
+		c.tabular, c.oblique = nil, nil
+		c.strikePpem, c.strikeRead, c.bitmaps = 0, false, nil
+		t.tabular = &c
+	}
+	return t.tabular
+}
+
+// syntheticSlant is a synthetic oblique's shear, tan(14°): CSS's
+// default oblique angle, what a browser slants an italic request to
+// when the family has no italic face.
+var syntheticSlant = math.Tan(14 * math.Pi / 180)
+
+// Oblique returns the face slanted as a synthetic italic, for a family
+// that has no italic face of its own: the same glyphs and advances, the
+// outlines sheared. Memoized, a distinct face to every cache.
+func (t *Typeface) Oblique() *Typeface {
+	if t.slant != 0 {
+		return t
+	}
+	if t.oblique == nil {
+		c := *t
+		c.slant = syntheticSlant
+		c.shaper = shaping.HarfbuzzShaper{}
+		c.tabular, c.oblique = nil, nil
+		c.strikePpem, c.strikeRead, c.bitmaps = 0, false, nil
+		t.oblique = &c
+	}
+	return t.oblique
+}
+
+// Slanted reports whether the face is a synthetic oblique.
+func (t *Typeface) Slanted() bool { return t.slant != 0 }
+
+// LoadFont parses font data (TTF or OTF).
+func LoadFont(data []byte) (*Typeface, error) {
+	face, err := font.ParseTTF(bytes.NewReader(data))
+	if err != nil {
+		return nil, fmt.Errorf("render: parse font: %w", err)
+	}
+	return &Typeface{face: face, upem: float64(face.Upem())}, nil
+}
+
+// NewTypeface wraps an already-resolved face, as returned by a font
+// matcher.
+func NewTypeface(face *font.Face) (*Typeface, error) {
+	if face == nil {
+		return nil, errors.New("render: nil face")
+	}
+	return &Typeface{face: face, upem: float64(face.Upem())}, nil
+}
+
+// Family returns the resolved face's family name.
+func (t *Typeface) Family() string {
+	if !t.familyRead {
+		t.familyName, t.familyRead = t.face.Describe().Family, true
+	}
+	return t.familyName
+}
+
+// Describe returns the face's font description: family, style, weight,
+// and stretch. Callers compare it to pin which variant a request
+// resolved to.
+func (t *Typeface) Describe() font.Description {
+	return t.face.Describe()
+}
+
+// IsMonospace reports whether the face's glyphs are fixed-width (its
+// post table's flag), what a monospace filter asks.
+func (t *Typeface) IsMonospace() bool { return t.face.IsMonospace() }
+
+// Covers reports whether the face has a glyph for r. Fallback chains
+// consult it per rune to decide where a glyph comes from.
+func (t *Typeface) Covers(r rune) bool {
+	_, ok := t.face.NominalGlyph(r)
+	return ok
+}
+
+// ShapedText is one line of text shaped at a fixed pixel size: a
+// sequence of runs, each shaped with its own face and embedding
+// direction, sharing one baseline, laid out in visual left-to-right
+// order (the directional runs internal/text resolves). Glyph positions
+// are relative to the line origin. A single face and direction produce
+// a single run; fallback chains produce one run per face change.
+//
+// ShapedText is immutable once built - the process-wide shaping cache
+// shares one instance between every caller that shapes the same
+// (font, size, string) - so readers may hold and consult it freely but
+// never write it.
+type ShapedText struct {
+	runs []shapedRun
+	text string
+	px   float64
+	// rtl is the paragraph's resolved base direction (text.RTL of the
+	// text under the direction it was shaped with), so rune-holding
+	// readers take it off the shape instead of converting per frame.
+	rtl bool
+	// carets is the per-rune-boundary x table carets() serves, built
+	// once at shape time so repeated paint passes never rebuild it.
+	carets []float64
+}
+
+// RTL reports whether the line lays out right to left: the resolved
+// base direction it was shaped under.
+func (s *ShapedText) RTL() bool { return s.rtl }
+
+// shapedRun is one face's shaped slice of the line: the runes of
+// Text on [start, end), positioned after the preceding runs'
+// advances. rtl marks a right-to-left embedding: its glyphs come back
+// in visual order and its caret slots map one up.
+type shapedRun struct {
+	face       *Typeface
+	out        shaping.Output
+	start, end int // rune offsets of the run within Text
+	rtl        bool
+}
+
+// Shape lays text out at the given pixel size, resolving the base
+// direction from the text's first strong character. Results are served
+// from the process-wide shaping cache: the second Shape of the same
+// (face, size, string) is a map hit returning the identical ShapedText,
+// so per-frame re-shapes - Entry's selection band, text, and caret, or
+// a per-event click mapping - cost a lookup.
+func (t *Typeface) Shape(s string, px float64) *ShapedText {
+	return t.ShapeDir(s, px, text.DirectionAuto)
+}
+
+// ShapeDir lays text out under base direction d; see Shape and
+// text.Direction.
+func (t *Typeface) ShapeDir(s string, px float64, d text.Direction) *ShapedText {
+	return cachedShape(t, px, s, d, func() *ShapedText { return t.shapeUncached(s, px, d) })
+}
+
+// ShapeRune shapes one rune; see Font.ShapeRune. Identical result to
+// Shape(string(r)) - the fill goes through the same uncached path -
+// but the cache keys on the rune, so per-rune probes (wrap measurement
+// walks one rune at a time) stay allocation-free in the steady state.
+func (t *Typeface) ShapeRune(r rune, px float64) *ShapedText {
+	return cachedShapeRune(t, px, r, func() *ShapedText {
+		return t.shapeUncached(string(r), px, text.DirectionAuto)
+	})
+}
+
+// ShapeRunes shapes a rune slice; see Font.ShapeRunes.
+func (t *Typeface) ShapeRunes(rs []rune, px float64) *ShapedText {
+	return t.ShapeDirRunes(rs, px, text.DirectionAuto)
+}
+
+// ShapeDirRunes shapes a rune slice under d; see Font.ShapeDirRunes.
+func (t *Typeface) ShapeDirRunes(rs []rune, px float64, d text.Direction) *ShapedText {
+	return cachedShapeRunes(t, px, rs, d, func() *ShapedText {
+		return t.shapeUncached(string(rs), px, d)
+	})
+}
+
+// shapeUncached does the actual shaping work, bypassing the cache.
+func (t *Typeface) shapeUncached(s string, px float64, d text.Direction) *ShapedText {
+	if s == "" {
+		return newShapedText(s, px, text.RTL(s, d), []shapedRun{t.shapeRun(s, px, 0, false, t.letter, t.word)})
+	}
+	var runs []shapedRun
+	bidiPieces(s, d, func(piece string, start int, rtl bool) {
+		runs = append(runs, t.shapeRun(piece, px, start, rtl, t.letter, t.word))
+	})
+	return newShapedText(s, px, text.RTL(s, d), runs)
+}
+
+// bidiPieces walks s's directional runs - internal/text.BidiRuns, the
+// one resolution every text path shares - in visual order, yielding
+// each as a piece with its rune start and direction for the shaper to
+// consume. Runs never split a grapheme cluster, so piece boundaries
+// are caret boundaries too.
+func bidiPieces(s string, d text.Direction, yield func(piece string, start int, rtl bool)) {
+	runs := text.BidiRuns(s, d)
+	rs := []rune(s)
+	for _, r := range runs {
+		yield(string(rs[r.Start:r.End]), r.Start, r.RTL)
+	}
+}
+
+// newShapedText builds an immutable ShapedText, caret table included.
+func newShapedText(text string, px float64, rtl bool, runs []shapedRun) *ShapedText {
+	s := &ShapedText{text: text, px: px, rtl: rtl, runs: runs}
+	s.carets = s.buildCarets()
+	return s
+}
+
+// shapeRun shapes text as one run positioned at rune indexes
+// [start, end) of the line, shaped right to left when rtl, with letter
+// px of spacing added after every cluster and word px after every
+// word separator.
+func (t *Typeface) shapeRun(text string, px float64, start int, rtl bool, letter, word float64) shapedRun {
+	runes := []rune(text)
+	dir := di.DirectionLTR
+	if rtl {
+		dir = di.DirectionRTL
+	}
+	run := t.shaper.Shape(shaping.Input{
+		Text:         runes,
+		RunStart:     0,
+		RunEnd:       len(runes),
+		Direction:    dir,
+		Face:         t.face,
+		Size:         f266(px),
+		FontFeatures: t.features,
+	})
+	scaleToSize(&run, px)
+	if letter != 0 {
+		addLetterSpacing(&run, f266(letter))
+	}
+	if word != 0 {
+		addWordSpacing(&run, runes, f266(word))
+	}
+	return shapedRun{face: t, out: run, start: start, end: start + len(runes), rtl: rtl}
+}
+
+// scaleToSize brings a run go-text shaped to the exact size px. The
+// shaper scales the font to the size rounded up to a whole pixel
+// (shaping.go: XScale = Size.Ceil() << scaleShift), so an 11.67px run
+// came back with 12px advances and line bounds: text a twelfth wider
+// and lines taller than the outlines drawn at 11.67px. Its scaling is
+// linear in the size (no hinting), so the run at px is the run at the
+// ceiling scaled by px / ceiling.
+func scaleToSize(run *shaping.Output, px float64) {
+	ceil := math.Ceil(px)
+	if ceil == px || ceil <= 0 {
+		return
+	}
+	f := px / ceil
+	sc := func(v fixed.Int26_6) fixed.Int26_6 { return fixed.Int26_6(math.Round(float64(v) * f)) }
+	for i := range run.Glyphs {
+		g := &run.Glyphs[i]
+		g.Advance = sc(g.Advance)
+		g.XOffset, g.YOffset = sc(g.XOffset), sc(g.YOffset)
+		g.Width, g.Height = sc(g.Width), sc(g.Height)
+		g.XBearing, g.YBearing = sc(g.XBearing), sc(g.YBearing)
+	}
+	run.LineBounds = shaping.Bounds{
+		Ascent:  sc(run.LineBounds.Ascent),
+		Descent: sc(run.LineBounds.Descent),
+		Gap:     sc(run.LineBounds.Gap),
+	}
+	run.RecalculateAll()
+}
+
+// addLetterSpacing widens the last glyph of every cluster by sp, and
+// the run's advance with it.
+func addLetterSpacing(run *shaping.Output, sp fixed.Int26_6) {
+	gs := run.Glyphs
+	for i := range gs {
+		if i == len(gs)-1 || gs[i+1].TextIndex() != gs[i].TextIndex() {
+			gs[i].Advance += sp
+			run.Advance += sp
+		}
+	}
+}
+
+// Runs returns how many faces the line was shaped across. A single
+// typeface always returns 1.
+func (s *ShapedText) Runs() int { return len(s.runs) }
+
+// NotDefCount returns how many shaped glyphs are the .notdef box
+// (glyph 0), i.e. runes no face in the chain could render. Fallback
+// chains aim for zero on scripts the system covers.
+func (s *ShapedText) NotDefCount() int {
+	n := 0
+	for i := range s.runs {
+		for j := range s.runs[i].out.Glyphs {
+			if s.runs[i].out.Glyphs[j].GlyphID == 0 {
+				n++
+			}
+		}
+	}
+	return n
+}
+
+// Advance returns the line width in pixels: the sum over the runs.
+func (s *ShapedText) Advance() float64 {
+	var adv float64
+	for i := range s.runs {
+		adv += f64(s.runs[i].out.Advance)
+	}
+	return adv
+}
+
+// Ascent returns the line's ascent above the baseline in pixels: the
+// maximum over the runs, so a taller fallback face grows the line.
+func (s *ShapedText) Ascent() float64 {
+	asc := 0.0
+	for i := range s.runs {
+		asc = math.Max(asc, f64(s.runs[i].out.LineBounds.Ascent))
+	}
+	return asc
+}
+
+// Descent returns the line's descent below the baseline in pixels
+// (positive): the maximum over the runs.
+func (s *ShapedText) Descent() float64 {
+	desc := 0.0
+	for i := range s.runs {
+		desc = math.Max(desc, -f64(s.runs[i].out.LineBounds.Descent))
+	}
+	return desc
+}
+
+// LineHeight returns the rounded line height: the smallest integer box
+// height that fits the line's ascent and descent. Measure and drawing
+// guards must both use this so a label's natural height is never smaller
+// than the height its own painter requires.
+func (s *ShapedText) LineHeight() int {
+	return int(math.Ceil(s.Ascent() + s.Descent()))
+}
+
+// buildCarets computes the caret x position for every rune boundary
+// 0..n of the line. The x values follow the line visually, not
+// logically: boundaries inside a shaping cluster (a base rune plus its
+// combining marks) snap to the cluster start, so a caret can never
+// land inside a grapheme, and an RTL run maps its cluster edges one
+// slot up (the caret before rune c sits at the run's right edge) while
+// run junctions keep the position the two runs share, the way Pango
+// places them. Runs continue each other's x, like the runs of a rich
+// label on one shared baseline. Built once at shape time - the table
+// is shared with every reader of the cached ShapedText, which never
+// writes it.
+func (s *ShapedText) buildCarets() []float64 {
+	n := utf8.RuneCountInString(s.text)
+	xs := make([]float64, n+1)
+	for i := range xs {
+		xs[i] = -1
+	}
+	if n == 0 {
+		xs[0] = 0
+		return xs
+	}
+	set := func(slot int, v float64) {
+		if slot >= 0 && slot <= n && xs[slot] < 0 {
+			xs[slot] = v
+		}
+	}
+	x := 0.0 // origin of the current run
+	for i := range s.runs {
+		r := &s.runs[i]
+		gx := 0.0 // pen within the run
+		prev := -1
+		for j := range r.out.Glyphs {
+			g := &r.out.Glyphs[j]
+			ti := r.start + g.TextIndex()
+			if ti != prev {
+				set(ti+r.rtlSlot(), x+gx)
+			}
+			prev = ti
+			gx += f64(g.Advance)
+		}
+		if r.rtl {
+			set(r.start, x+f64(r.out.Advance)) // before the first rune: the run's right edge
+		} else {
+			set(r.end, x+f64(r.out.Advance))
+		}
+		x += f64(r.out.Advance)
+	}
+	last := 0.0
+	for i := range xs {
+		if xs[i] < 0 {
+			xs[i] = last
+		} else {
+			last = xs[i]
+		}
+	}
+	return xs
+}
+
+// CaretPositions returns the caret x for every rune boundary 0..n at
+// once - the table CaretX indexes, shared with every other reader of
+// this line: read it, never modify it. Callers composing several runs
+// into one line (rich labels) offset each run's table by its line x.
+func (s *ShapedText) CaretPositions() []float64 {
+	return s.carets
+}
+
+// CaretX returns the x offset of the caret placed before rune index
+// caret, clamped to [0, rune count]. The x follows the line visually:
+// before an RTL run's first rune it sits at that run's right edge.
+func (s *ShapedText) CaretX(caret int) float64 {
+	xs := s.carets
+	if caret < 0 {
+		caret = 0
+	}
+	if caret > len(xs)-1 {
+		caret = len(xs) - 1
+	}
+	return xs[caret]
+}
+
+// CaretAt returns the rune boundary nearest x: the inverse of CaretX for
+// hit-testing clicks in a text field, direction-agnostic because the
+// table already follows the line visually.
+func (s *ShapedText) CaretAt(x float64) int {
+	xs := s.carets
+	best := 0
+	bestD := math.Abs(x - xs[0])
+	for i := 1; i < len(xs); i++ {
+		if d := math.Abs(x - xs[i]); d < bestD {
+			best, bestD = i, d
+		}
+	}
+	return best
+}
+
+// rtlSlot maps a run's glyph cluster onto its caret slot: an RTL run's
+// edges shift one up, because the caret before rune c sits at that
+// run's right edge.
+func (r *shapedRun) rtlSlot() int {
+	if r.rtl {
+		return 1
+	}
+	return 0
+}
+
+// AppendCaretBands appends the x spans covering the selected rune range
+// [start, end) to buf and returns it: one span per visual run the range
+// touches, left to right, so a selection across mixed-direction text
+// highlights disjoint spans instead of spanning the middle. Spans are
+// line-relative; callers offset them. The buffer is the caller's, kept
+// across frames, so the render path stays allocation-free in the
+// steady state.
+func (s *ShapedText) AppendCaretBands(buf [][2]float64, start, end int) [][2]float64 {
+	start = min(max(start, 0), len(s.carets)-1)
+	end = min(max(end, start), len(s.carets)-1)
+	if start >= end {
+		return buf
+	}
+	x := 0.0 // origin of the current run
+	for i := range s.runs {
+		r := &s.runs[i]
+		adv := f64(r.out.Advance)
+		lo, hi := max(start, r.start), min(end, r.end)
+		if lo < hi {
+			var x0, x1 float64
+			if r.rtl {
+				// The caret table's junction convention collapses an RTL
+				// run's outer edges onto one x; the band reads the run's
+				// own geometry instead — visually from the left edge of
+				// the last selected rune to the right edge of the first.
+				x0 = s.carets[hi]
+				x1 = x + adv
+				if lo > r.start {
+					x1 = s.carets[lo]
+				}
+			} else {
+				x0, x1 = s.carets[lo], s.carets[hi]
+			}
+			if x1 < x0 {
+				x0, x1 = x1, x0
+			}
+			if x1 > x0 {
+				buf = append(buf, [2]float64{x0, x1})
+			}
+		}
+		x += adv
+	}
+	return buf
+}
+
+// Text returns the string the run was shaped from.
+func (s *ShapedText) Text() string { return s.text }
+
+// Draw paints the line with its baseline at logical (x, baselineY),
+// clipped to the canvas like every other primitive. Each run draws
+// with its own face; every run was shaped at the logical pixel size
+// and rasterizes at the canvas's device scale, so text stays crisp at
+// any factor no matter which face supplied the glyph.
+func (s *ShapedText) Draw(cv *Canvas, x, baselineY int, col Color) {
+	clip := cv.clip
+	if clip.Empty() {
+		return
+	}
+	dev := float64(cv.num) / float64(cv.denom)
+	dotX := float64(x) * dev
+	base := float64(baselineY) * dev
+	for i := range s.runs {
+		r := &s.runs[i]
+		scale := s.px * dev / r.face.upem
+		penX := dotX
+		// The shaped positions are logical pixels and the outlines
+		// carry their own side bearing: the pen walks the advances at
+		// the device scale and each glyph draws at its origin, its
+		// offset y-up (a mark below the base sits below the baseline).
+		for j := range r.out.Glyphs {
+			g := &r.out.Glyphs[j]
+			drawGlyph(cv, clip, r.face, g.GlyphID, scale,
+				penX+f64(g.XOffset)*dev,
+				base-f64(g.YOffset)*dev, col)
+			penX += f64(g.Advance) * dev
+		}
+		dotX += f64(r.out.Advance) * dev
+	}
+}
+
+// Draw paints a shaped line; see ShapedText.Draw.
+func (t *Typeface) Draw(cv *Canvas, s *ShapedText, x, baselineY int, col Color) {
+	s.Draw(cv, x, baselineY, col)
+}
+
+// drawGlyph paints one glyph with its baseline pen at (penX, penY)
+// into the clip: its COLR or OT-SVG color rendering when it has one,
+// else the cached 8bpp coverage raster when the face has an outline,
+// else the cached scaled bitmap strike (CBDT/sbix emoji).
+func drawGlyph(cv *Canvas, clip Rect, t *Typeface, gid font.GID, scale, penX, penY float64, col Color) {
+	if cv.rec != nil {
+		cv.record(op{kind: opGlyph, face: t, gid: gid, f: [6]float64{scale, penX, penY}, col: col})
+		return
+	}
+	if drawColorGlyph(cv, clip, t, gid, scale, penX, penY, col) {
+		return
+	}
+	g, ok := cachedOutlineRaster(t, gid, scale, penX, penY)
+	if ok {
+		at := g.bounds(penX, penY)
+		blitMask(cv, clip, g, at.X, at.Y, col)
+		return
+	}
+	drawBitmapGlyph(cv, clip, t, gid, scale, penX, penY, col)
+}
+
+// DrawGlyph paints one glyph of face with its baseline pen at the
+// device point (penX, penY) at scale (device pixels per font unit), as
+// shaped text paints each: a Player's Glyph.
+func (c *Canvas) DrawGlyph(face *Typeface, gid font.GID, scale, penX, penY float64, col Color) {
+	drawGlyph(c, c.clip, face, gid, scale, penX, penY, col)
+}
+
+// glyphBounds is the device rect drawGlyph covers for gid at the pen.
+func glyphBounds(t *Typeface, gid font.GID, scale, penX, penY float64, col Color) Rect {
+	if r := colorRasterOf(t, gid, scale, penX, penY, col); r != nil {
+		return r.bounds(penX, penY)
+	}
+	if g, ok := cachedOutlineRaster(t, gid, scale, penX, penY); ok {
+		return g.bounds(penX, penY)
+	}
+	if _, _, at, ok := bitmapStrikeOf(t, gid, scale, penX, penY); ok {
+		return at
+	}
+	return Rect{}
+}
+
+// blitMask tints one 8bpp coverage raster with col and blends it at
+// device (ox, oy), the atlas's blit half. Coverage ramps the
+// premultiplied channels exactly as the per-draw rasterizer always
+// did, and every write goes through cv.blend, so the PushAlpha stack
+// and source-over discipline hold by construction.
+func blitMask(cv *Canvas, clip Rect, g *GlyphMask, ox, oy int, col Color) {
+	x0, y0 := max(ox, clip.X), max(oy, clip.Y)
+	x1, y1 := min(ox+g.w, clip.X+clip.W), min(oy+g.h, clip.Y+clip.H)
+	if x1 <= x0 {
+		return
+	}
+	for y := y0; y < y1; y++ {
+		row := (y - oy) * g.w
+		cv.blendMask(x0, y, g.mask[row+x0-ox:row+x1-ox], col)
+	}
+}
+
+// bitmapGlyph is a decoded embedded bitmap. mono marks a
+// black-and-white strike: a mask that tints with the text color.
+// Color bitmaps (emoji) paint their own pixels.
+type bitmapGlyph struct {
+	img  image.Image
+	mono bool
+}
+
+// bitmapStrikeOf is gid's embedded bitmap scaled to the device em
+// and the device rect it covers with its origin box at the baseline
+// pen, left edge at the pen. The scaled strike comes from the atlas
+// (the CatmullRom resample is the expensive half; see
+// cachedScaledBitmap), preserving the device-scale rasterization
+// contract; PNG and black-and-white formats decode, others report
+// false.
+func bitmapStrikeOf(t *Typeface, gid font.GID, scale, penX, penY float64) (*image.RGBA, bool, Rect, bool) {
+	bg, ok := t.bitmap(gid)
+	if !ok {
+		return nil, false, Rect{}, false
+	}
+	ppem := t.bitmapPpem()
+	if ppem <= 0 {
+		return nil, false, Rect{}, false
+	}
+	// Device pixels per bitmap pixel: the strike renders one em at
+	// ppem, the glyph's device em is scale*upem.
+	f := scale * t.upem / ppem
+	w := int(math.Ceil(float64(bg.img.Bounds().Dx()) * f))
+	h := int(math.Ceil(float64(bg.img.Bounds().Dy()) * f))
+	if w <= 0 || h <= 0 {
+		return nil, false, Rect{}, false
+	}
+	at := Rect{X: int(math.Floor(penX)), Y: int(math.Ceil(penY)) - h, W: w, H: h}
+	return cachedScaledBitmap(t, gid, bg, w, h), bg.mono, at, true
+}
+
+// drawBitmapGlyph blits an embedded bitmap glyph - a CBDT/sbix color
+// emoji, or a black-and-white strike tinted with col - at its
+// bitmapStrikeOf placement.
+func drawBitmapGlyph(cv *Canvas, clip Rect, t *Typeface, gid font.GID, scale, penX, penY float64, col Color) {
+	scaled, mono, at, ok := bitmapStrikeOf(t, gid, scale, penX, penY)
+	if !ok {
+		return
+	}
+	x0, y0, w, h := at.X, at.Y, at.W, at.H
+	for y := range h {
+		for x := range w {
+			c := scaled.RGBAAt(x, y)
+			if c.A == 0 {
+				continue
+			}
+			px, py := x0+x, y0+y
+			if px < clip.X || px >= clip.X+clip.W || py < clip.Y || py >= clip.Y+clip.H {
+				continue
+			}
+			var src Color
+			if mono {
+				m := uint32(c.A)
+				src = Color((uint32(col.A())*m/255)<<24 |
+					(uint32(col.R())*m/255)<<16 |
+					(uint32(col.G())*m/255)<<8 |
+					(uint32(col.B())*m)/255)
+			} else {
+				src = Color(uint32(c.A)<<24 | uint32(c.R)<<16 | uint32(c.G)<<8 | uint32(c.B))
+			}
+			cv.blend(px, py, src)
+		}
+	}
+}
+
+// bitmap returns the decoded embedded bitmap for gid; ok is false when
+// the face has none in a supported format. Decodes cache per glyph.
+func (t *Typeface) bitmap(gid font.GID) (bitmapGlyph, bool) {
+	if t.bitmaps == nil {
+		t.bitmaps = make(map[font.GID]bitmapGlyph)
+	}
+	if bg, ok := t.bitmaps[gid]; ok {
+		return bg, bg.img != nil
+	}
+	bg := decodeBitmap(t.face, gid)
+	t.bitmaps[gid] = bg
+	return bg, bg.img != nil
+}
+
+// decodeBitmap extracts the bitmap glyph data for gid.
+func decodeBitmap(f *font.Face, gid font.GID) bitmapGlyph {
+	bm, ok := f.GlyphDataBitmap(gid)
+	if !ok {
+		return bitmapGlyph{}
+	}
+	switch bm.Format {
+	case font.PNG:
+		img, err := png.Decode(bytes.NewReader(bm.Data))
+		if err != nil {
+			return bitmapGlyph{}
+		}
+		return bitmapGlyph{img: img}
+	case font.BlackAndWhite, font.BlackAndWhiteByteAligned:
+		img := image.NewAlpha(image.Rect(0, 0, bm.Width, bm.Height))
+		stride := 8 // bits per byte; byte-aligned rows pad per row
+		if bm.Format == font.BlackAndWhite {
+			stride = ((bm.Width + 7) / 8) * 8
+		}
+		for y := range bm.Height {
+			for x := range bm.Width {
+				bit := y*stride + x
+				if bm.Data[bit/8]&(1<<(7-uint(bit%8))) != 0 {
+					img.SetAlpha(x, y, color.Alpha{A: 255})
+				}
+			}
+		}
+		return bitmapGlyph{img: img, mono: true}
+	}
+	return bitmapGlyph{}
+}
+
+// bitmapPpem returns the pixels-per-em of the largest embedded bitmap
+// strike - the one the glyph loader selects when no resolution is
+// requested - or 0 when the face has no strikes.
+func (t *Typeface) bitmapPpem() float64 {
+	if !t.strikeRead {
+		t.strikeRead = true
+		for _, s := range t.face.BitmapSizes() {
+			t.strikePpem = math.Max(t.strikePpem, float64(s.XPpem))
+		}
+	}
+	return t.strikePpem
+}
+
+// Wrap breaks text into lines of at most maxWidth pixels, filling
+// greedily along Unicode UAX #14 break opportunities: each line takes
+// as much as fits before the first opportunity that overflows. Breaks
+// land where real typesetting puts them - at spaces, after hyphens,
+// inside CJK runs - not only at ASCII spaces. A run with no break
+// opportunity before the width, an unbreakable token, stays whole on
+// its own line and overflows. Hard newlines split unconditionally;
+// trailing spaces at a break and leading spaces of a continuation are
+// dropped.
+func (t *Typeface) Wrap(text string, maxWidth, px float64) []string {
+	return WrapText(t, text, maxWidth, px)
+}
+
+// EllipsizeMode selects which end of an overflowing line the ellipsis
+// replaces.
+type EllipsizeMode uint8
+
+const (
+	// EllipsizeNone never truncates: long text overflows and clips.
+	EllipsizeNone EllipsizeMode = iota
+	// EllipsizeStart cuts from the front: "…cated text".
+	EllipsizeStart
+	// EllipsizeMiddle keeps the head and the tail: "trunc…text" - the
+	// mode for paths and filenames, whose both halves identify them.
+	EllipsizeMiddle
+	// EllipsizeEnd cuts from the back: "truncated te…".
+	EllipsizeEnd
+)
+
+// Ellipsis is the mark a truncated text carries where it was cut.
+const Ellipsis = "…"
+
+// ellipsizeText is the shaper-agnostic body of Ellipsize and
+// EllipsizeText. Fitting text is returned unchanged; otherwise a binary
+// search over the kept-rune count finds the longest truncation whose
+// advance still fits maxWidth - the kept prefix and suffix only ever
+// grow with the count, so the search is monotone. EllipsizeNone cuts
+// from the end, the common default, so a stray None never silently
+// overflows.
+func ellipsizeText(s textShaper, text string, mode EllipsizeMode, maxWidth, px float64) string {
+	if s.Shape(text, px).Advance() <= maxWidth {
+		return text
+	}
+	const ell = Ellipsis
+	runes := []rune(text)
+	fits := func(cand string) bool { return s.Shape(cand, px).Advance() <= maxWidth }
+	// longest returns the largest keep whose built candidate fits.
+	longest := func(build func(keep int) string) int {
+		lo, hi := 0, len(runes)
+		for lo < hi {
+			mid := (lo + hi + 1) / 2
+			if fits(build(mid)) {
+				lo = mid
+				continue
+			}
+			hi = mid - 1
+		}
+		return lo
+	}
+	switch mode {
+	case EllipsizeStart:
+		keep := longest(func(k int) string { return ell + string(runes[len(runes)-k:]) })
+		return ell + string(runes[len(runes)-keep:])
+	case EllipsizeMiddle:
+		keep := longest(func(k int) string {
+			head := k - k/2 // the head keeps the odd rune
+			return string(runes[:head]) + ell + string(runes[len(runes)-(k-head):])
+		})
+		head := keep - keep/2
+		return string(runes[:head]) + ell + string(runes[len(runes)-(keep-head):])
+	default: // EllipsizeEnd, and EllipsizeNone as the safe reading
+		keep := longest(func(k int) string { return string(runes[:k]) + ell })
+		return string(runes[:keep]) + ell
+	}
+}
+
+// EllipsizeText shortens text so its advance fits maxWidth, cutting at
+// mode and inserting an ellipsis; see Typeface.Ellipsize. Package-level
+// so any Font - a lone typeface or a fallback chain - truncates through
+// the same code path the methods use.
+func EllipsizeText(f Font, text string, mode EllipsizeMode, maxWidth, px float64) string {
+	return ellipsizeText(f, text, mode, maxWidth, px)
+}
+
+// WrapText breaks text into lines of at most maxWidth pixels; see Wrap.
+// Package-level so any Font wraps through the same code path.
+func WrapText(f Font, text string, maxWidth, px float64) []string {
+	return wrapLines(f, text, maxWidth, px, wrapOptions)
+}
+
+// Ellipsize shortens text to fit maxWidth, replacing the cut remainder
+// with an ellipsis. Text that already fits is returned unchanged. For
+// the other cut points use EllipsizeText.
+func (t *Typeface) Ellipsize(text string, maxWidth, px float64) string {
+	return EllipsizeText(t, text, EllipsizeEnd, maxWidth, px)
+}
+
+// Alignment selects how a drawn run is positioned inside its box.
+type Alignment uint8
+
+// Text alignments: start (left for LTR lines), center, end.
+const (
+	AlignStart Alignment = iota
+	AlignCenter
+	AlignEnd
+)
+
+// textShaper is the shaping half of Font; the shared DrawAligned and
+// line-breaking helpers work for any shaper, single face or chain.
+type textShaper interface {
+	Shape(s string, px float64) *ShapedText
+	ShapeDir(s string, px float64, d text.Direction) *ShapedText
+}
+
+// drawAligned is the shared body of Typeface.DrawAligned and
+// Chain.DrawAligned: skip when the box cannot hold one line of the
+// font, position by the alignment mirrored for the paragraph's
+// resolved base direction (start hugs the right edge when it resolves
+// right to left), draw on the rounded line box.
+func drawAligned(cv *Canvas, sh textShaper, s string, box Rect, px float64, col Color, h Alignment, d text.Direction) *ShapedText {
+	st := sh.ShapeDir(s, px, d)
+	if float64(box.H) < float64(st.LineHeight()) {
+		return nil
+	}
+	x, baseline := AlignedPen(st, box, h, d)
+	st.Draw(cv, x, baseline, col)
+	return st
+}
+
+// AlignedPen is where an aligned draw puts sh's pen inside box: the
+// alignment mirrored for a right-to-left line, the line centered
+// vertically on its baseline. Decorations and carets drawn after a
+// DrawAligned use it to land on the painted text.
+func AlignedPen(sh *ShapedText, box Rect, h Alignment, d text.Direction) (x, baseline int) {
+	if text.RTL(sh.Text(), d) {
+		switch h {
+		case AlignStart:
+			h = AlignEnd
+		case AlignEnd:
+			h = AlignStart
+		}
+	}
+	var fx float64
+	switch h {
+	case AlignCenter:
+		fx = float64(box.X) + (float64(box.W)-sh.Advance())/2
+	case AlignEnd:
+		fx = float64(box.X) + float64(box.W) - sh.Advance()
+	default:
+		fx = float64(box.X)
+	}
+	baseline = box.Y + int(math.Round((float64(box.H)-float64(sh.LineHeight()))/2+sh.Ascent()))
+	return int(math.Round(fx)), baseline
+}
+
+// DrawAligned draws text inside box with the given alignment, skipping it
+// entirely when the box cannot hold one line of the font. The guard uses
+// the same rounded LineHeight the measurement reports.
+func (t *Typeface) DrawAligned(cv *Canvas, s string, box Rect, px float64, col Color, h Alignment) *ShapedText {
+	return drawAligned(cv, t, s, box, px, col, h, text.DirectionAuto)
+}
+
+// DrawAlignedDir draws text inside box under base direction d; start
+// and end mirror for a right-to-left base. See text.Direction.
+func (t *Typeface) DrawAlignedDir(cv *Canvas, s string, box Rect, px float64, col Color, h Alignment, d text.Direction) *ShapedText {
+	return drawAligned(cv, t, s, box, px, col, h, d)
+}
+
+// Chain shapes mixed-script text across faces: every rune goes to the
+// first face that covers it, so a line mixing latin, CJK, and emoji
+// renders instead of drawing .notdef boxes. The picks cache per rune,
+// so repeated shapes pay one lookup per distinct rune. Like Typeface,
+// a chain is not safe for concurrent use.
+type Chain struct {
+	primary *Typeface
+	extra   []*Typeface
+	// resolve, when set, is consulted for runes neither primary nor
+	// the fallback list covers; returning nil keeps the rune on the
+	// primary face, rendering .notdef as before.
+	resolve func(rune) *Typeface
+	picks   map[rune]*Typeface
+	// tabular shapes every run through its face's tnum twin.
+	tabular bool
+	// letter is the letter spacing (px) every run shapes with, word
+	// the word spacing (px), and features the canonical OpenType
+	// feature list every run shapes under.
+	letter   float64
+	word     float64
+	features string
+	// variants memoizes the derived chains (Tabular, WithVariations)
+	// by kind, so a style pass asking again gets the same chain - the
+	// identity the shaping cache and restyle comparisons key on.
+	variants map[string]*Chain
+}
+
+// Metrics reports the primary face's metrics; the CSS font-relative
+// units all resolve against the primary face.
+func (c *Chain) Metrics() FaceMetrics { return c.primary.Metrics() }
+
+// Primary is the chain's first face: the one variants resolve from.
+func (c *Chain) Primary() *Typeface { return c.primary }
+
+// NewChain returns a chain shaping with primary and, for runes it
+// lacks, the first covering face of fallback. A nil primary panics
+// here, naming the argument — the same nil-face contract the widget
+// constructors enforce — instead of failing on the first Shape.
+func NewChain(primary *Typeface, fallback ...*Typeface) *Chain {
+	if primary == nil {
+		panic("render.NewChain: nil primary")
+	}
+	return &Chain{primary: primary, extra: fallback, picks: map[rune]*Typeface{}}
+}
+
+// WithResolver installs a store-backed face picker consulted for runes
+// neither the primary nor the fallback list covers, and returns the
+// chain. internal/sysfont.Fallback wires one to the system font store.
+func (c *Chain) WithResolver(resolve func(rune) *Typeface) *Chain {
+	c.resolve = resolve
+	return c
+}
+
+// Face returns the face rune r shapes with: the diagnostic view of
+// the fallback decision, and a way for tests to pin which family a
+// rune lands on.
+func (c *Chain) Face(r rune) *Typeface { return c.faceFor(r) }
+
+// Tabular returns the chain shaping with each face's tnum twin: digits
+// on a uniform advance grid, what a clock or a numeric column wants.
+// The variant keeps its own rune picks, so it never rewrites the base
+// chain's.
+func (c *Chain) Tabular() *Chain {
+	return c.variant("tnum", func(n *Chain) { n.tabular = true })
+}
+
+// variant returns the memoized chain derived from c by derive under
+// key, building it on first use with its own rune picks and variants.
+func (c *Chain) variant(key string, derive func(n *Chain)) *Chain {
+	if v, ok := c.variants[key]; ok {
+		return v
+	}
+	n := *c
+	n.picks = map[rune]*Typeface{}
+	n.variants = nil
+	derive(&n)
+	if c.variants == nil {
+		c.variants = map[string]*Chain{}
+	}
+	c.variants[key] = &n
+	return &n
+}
+
+// Spaced returns the chain shaping with px of letter spacing after
+// every cluster, whichever face a rune lands on (see Typeface.Spaced).
+func (c *Chain) Spaced(px float64) *Chain {
+	if px == c.letter {
+		return c
+	}
+	return c.variant(fmt.Sprintf("ls:%g", px), func(n *Chain) { n.letter = px })
+}
+
+// faceFor returns the face rune r shapes with.
+func (c *Chain) faceFor(r rune) *Typeface {
+	if f, ok := c.picks[r]; ok {
+		return f
+	}
+	f := c.primary
+	if !f.Covers(r) {
+		for _, e := range c.extra {
+			if e.Covers(r) {
+				f = e
+				break
+			}
+		}
+		if f == c.primary && c.resolve != nil {
+			if rf := c.resolve(r); rf != nil {
+				f = rf
+			}
+		}
+	}
+	if c.tabular {
+		f = f.Tabular()
+	}
+	if c.features != "" {
+		f = f.WithFeatureSpec(c.features)
+	}
+	c.picks[r] = f
+	return f
+}
+
+// Shape splits text into runs of consecutive runes sharing a face and
+// shapes each with it, on one shared baseline, serving repeats from the
+// process-wide shaping cache like Typeface.Shape. Within that, the
+// line resolves into directional runs (internal/text.BidiRuns) laid
+// out in visual order, so mixed Hebrew/Arabic + Latin lines render
+// reading-correct. The chain is the key:
+// a chain held by the app reuses its entries across frames, and two
+// chains over the same faces never collide. Empty text still shapes one
+// primary run, so its metrics reserve the font's line height.
+func (c *Chain) Shape(s string, px float64) *ShapedText {
+	return c.ShapeDir(s, px, text.DirectionAuto)
+}
+
+// ShapeDir shapes under base direction d; see Chain.Shape and
+// text.Direction.
+func (c *Chain) ShapeDir(s string, px float64, d text.Direction) *ShapedText {
+	return cachedShape(c, px, s, d, func() *ShapedText { return c.shapeUncached(s, px, d) })
+}
+
+// ShapeRune shapes one rune; see Font.ShapeRune and Chain.Shape.
+func (c *Chain) ShapeRune(r rune, px float64) *ShapedText {
+	return cachedShapeRune(c, px, r, func() *ShapedText {
+		return c.shapeUncached(string(r), px, text.DirectionAuto)
+	})
+}
+
+// ShapeRunes shapes a rune slice; see Font.ShapeRunes.
+func (c *Chain) ShapeRunes(rs []rune, px float64) *ShapedText {
+	return c.ShapeDirRunes(rs, px, text.DirectionAuto)
+}
+
+// ShapeDirRunes shapes a rune slice under d; see Font.ShapeDirRunes.
+func (c *Chain) ShapeDirRunes(rs []rune, px float64, d text.Direction) *ShapedText {
+	return cachedShapeRunes(c, px, rs, d, func() *ShapedText {
+		return c.shapeUncached(string(rs), px, d)
+	})
+}
+
+// shapeUncached does the run-splitting and shaping work, bypassing the
+// cache: each directional run splits per covering face, shaped with its
+// own embedding direction.
+func (c *Chain) shapeUncached(s string, px float64, d text.Direction) *ShapedText {
+	if s == "" {
+		return newShapedText(s, px, text.RTL(s, d), []shapedRun{c.primary.shapeRun(s, px, 0, false, c.letter, c.word)})
+	}
+	var runs []shapedRun
+	bidiPieces(s, d, func(piece string, start int, rtl bool) {
+		runes := []rune(piece)
+		for i := 0; i < len(runes); {
+			f := c.faceFor(runes[i])
+			j := i + 1
+			for j < len(runes) && c.faceFor(runes[j]) == f {
+				j++
+			}
+			runs = append(runs, f.shapeRun(string(runes[i:j]), px, start+i, rtl, c.letter, c.word))
+			i = j
+		}
+	})
+	return newShapedText(s, px, text.RTL(s, d), runs)
+}
+
+// Draw paints a shaped line; see ShapedText.Draw.
+func (c *Chain) Draw(cv *Canvas, s *ShapedText, x, baselineY int, col Color) {
+	s.Draw(cv, x, baselineY, col)
+}
+
+// DrawAligned draws text inside box with the given alignment; see
+// Typeface.DrawAligned.
+func (c *Chain) DrawAligned(cv *Canvas, s string, box Rect, px float64, col Color, h Alignment) *ShapedText {
+	return drawAligned(cv, c, s, box, px, col, h, text.DirectionAuto)
+}
+
+// DrawAlignedDir draws text inside box under base direction d; start
+// and end mirror for a right-to-left base. See text.Direction.
+func (c *Chain) DrawAlignedDir(cv *Canvas, s string, box Rect, px float64, col Color, h Alignment, d text.Direction) *ShapedText {
+	return drawAligned(cv, c, s, box, px, col, h, d)
+}
+
+// Wrap breaks text into lines of at most maxWidth pixels; see
+// Typeface.Wrap.
+func (c *Chain) Wrap(text string, maxWidth, px float64) []string {
+	return wrapLines(c, text, maxWidth, px, wrapOptions)
+}
+
+// Ellipsize shortens text to fit maxWidth; see Typeface.Ellipsize.
+func (c *Chain) Ellipsize(text string, maxWidth, px float64) string {
+	return EllipsizeText(c, text, EllipsizeEnd, maxWidth, px)
+}
+
+// wrapLines is the shaper-agnostic body of Wrap: hard newlines split
+// unconditionally, and each hard line fills greedily along its break
+// opportunities (see wrapSoft) under the wrap options.
+func wrapLines(s textShaper, txt string, maxWidth, px float64, o WrapOptions) []string {
+	if txt == "" {
+		return []string{""}
+	}
+	txt = hyphenPrep(txt, o.Hyphens)
+	var lines []string
+	first := maxWidth - o.Indent
+	for hard := range strings.SplitSeq(txt, "\n") {
+		for _, ln := range wrapSoft(s, strings.TrimSuffix(hard, "\r"), first, maxWidth, px, o) {
+			lines = append(lines, hyphenRow(ln, o.Hyphens))
+		}
+		first = maxWidth
+	}
+	return lines
+}
+
+// wrapSoft greedily fills one hard line - no newlines - along its
+// break opportunities, its first row first px wide and the rest
+// width. The default computes the UAX #14 opportunities the
+// typesetting segmenter yields; the options trade them: break-all
+// and anywhere break at every grapheme cluster, keep-all keeps only
+// the space and hyphen opportunities (CJK runs stay whole),
+// break-spaces adds one after every preserved space, and preserved
+// spaces ride the rows instead of being collapsed. Each opportunity
+// ends a candidate line; the first one that overflows closes the line
+// before its segment, so a run with no opportunity before the width -
+// an unbreakable token - is accepted whole and overflows rather than
+// disappearing, unless BreakWords splits it between clusters.
+func wrapSoft(s textShaper, line string, first, width, px float64, o WrapOptions) []string {
+	runes := []rune(line)
+	if len(runes) == 0 {
+		return []string{""}
+	}
+	f := &rowFill{s: s, runes: runes, px: px, o: o, first: first, width: width}
+	if o.Break == WrapWordBreakAll || o.Anywhere {
+		return f.graphemes()
+	}
+	var seg segmenter.Segmenter
+	if err := seg.InitWithString(line); err != nil {
+		return []string{line} // invalid UTF-8: one overflowing line, never a failure
+	}
+	start, cur := skipRowSpaces(runes, 0, o), 0
+	step := func(end int) {
+		if cur > start && !f.fits(start, end) {
+			f.emit(start, cur)
+			start = skipRowSpaces(runes, cur, o)
+		}
+		if o.BreakWords {
+			start = f.splitWord(start, end)
+		}
+		cur = end
+	}
+	for it := seg.LineIterator(); it.Next(); {
+		l := it.Line()
+		end := l.Offset + len(l.Text)
+		if o.Break == WrapWordKeepAll && end < len(runes) && !keepAllOK(runes, end) {
+			cur = end
+			continue
+		}
+		if o.BreakSpaces {
+			word := end
+			for word > l.Offset && runes[word-1] == ' ' {
+				word--
+			}
+			for sp := word + 1; sp < end; sp++ {
+				step(sp)
+			}
+		}
+		step(end)
+	}
+	if cur > start {
+		f.emit(start, cur)
+	}
+	if len(f.lines) == 0 {
+		return []string{""} // whitespace only: an empty row, not a disappearance
+	}
+	return f.lines
+}
+
+func f266(px float64) fixed.Int26_6 {
+	return fixed.Int26_6(int32(math.Round(px * 64)))
+}
+
+func f64(v fixed.Int26_6) float64 {
+	return float64(int32(v)) / 64
+}

@@ -1,0 +1,677 @@
+package gpu
+
+import (
+	"bytes"
+	"fmt"
+	"image"
+	"image/color"
+	"testing"
+
+	"github.com/stubbedev/lys-ui/dmabuf"
+	"github.com/stubbedev/lys-ui/render"
+)
+
+// newTarget is a w x h offscreen target on d.
+func newTarget(t *testing.T, d *Device, w, h int) *Target {
+	t.Helper()
+	tg, err := d.NewOffscreen(w, h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(tg.Close)
+	return tg
+}
+
+// A frame renders into a dmabuf target, handed back to its consumer,
+// and the next frame draws over what the last left.
+func TestRenderIntoDmabuf(t *testing.T) {
+	d := exportingDevice(t)
+	mods, err := d.Modifiers(dmabuf.FormatARGB8888)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tg, err := d.NewTarget(32, 16, dmabuf.FormatARGB8888, mods)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tg.Close()
+	rec := render.NewRecorder(32, 16, 1, 1)
+	rec.Clear(rec.Rect(), render.RGBA(10, 20, 30, 255))
+	if err := d.Render(rec.Recording(), tg); err != nil {
+		t.Fatal(err)
+	}
+	rec.ResetRecorder(32, 16, 1, 1)
+	rec.FillRect(render.Rect{X: 16, W: 16, H: 16}, render.RGBA(200, 0, 0, 255))
+	if err := d.Render(rec.Recording(), tg); err != nil {
+		t.Fatal(err)
+	}
+	img, err := tg.ReadPixels()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c := img.RGBAAt(4, 4); c != (color.RGBA{10, 20, 30, 255}) {
+		t.Errorf("the first frame's pixel reads %v after the second", c)
+	}
+	if c := img.RGBAAt(20, 4); c != (color.RGBA{200, 0, 0, 255}) {
+		t.Errorf("the second frame's pixel reads %v", c)
+	}
+}
+
+// parity renders paint's recording on the GPU and on the CPU and fails
+// on any pixel whose premultiplied bytes differ: the GPU's shaders run
+// the CPU's arithmetic step for step.
+func parity(t *testing.T, d *Device, w, h, num, denom int, frames int, paint func(cv *render.Canvas, frame int)) {
+	t.Helper()
+	tg := newTarget(t, d, w, h)
+	rec := render.NewRecorder(w, h, num, denom)
+	buf := make([]byte, render.Stride(w)*h)
+	direct := render.NewScaled(buf, render.Stride(w), w, h, num, denom)
+	for frame := range frames {
+		rec.ResetRecorder(w, h, num, denom)
+		paint(rec, frame)
+		if err := d.Render(rec.Recording(), tg); err != nil {
+			t.Fatalf("frame %d: %v", frame, err)
+		}
+		paint(direct, frame)
+		got, err := tg.ReadPixels()
+		if err != nil {
+			t.Fatal(err)
+		}
+		bad, first := 0, ""
+		for y := range h {
+			for x := range w {
+				c := render.ColorFromBytes(buf[y*render.Stride(w)+x*4:])
+				want := color.RGBA{R: c.R(), G: c.G(), B: c.B(), A: c.A()}
+				if g := got.RGBAAt(x, y); g != want {
+					if bad == 0 {
+						first = fmt.Sprintf("(%d, %d): gpu %v cpu %v", x, y, g, want)
+					}
+					bad++
+				}
+			}
+		}
+		if bad > 0 {
+			t.Errorf("frame %d at %d/%d: %d pixels differ, first %s", frame, num, denom, bad, first)
+		}
+	}
+}
+
+// TestRenderNativeShapes pins the shapes the GPU draws itself against
+// the CPU's pixels.
+func TestRenderNativeShapes(t *testing.T) {
+	d := openDevice(t)
+	red, blue := render.RGBA(220, 40, 50, 255), render.RGBA(30, 90, 220, 180)
+	for _, sc := range [][2]int{{1, 1}, {3, 2}} {
+		w, h := 160*sc[0]/sc[1], 120*sc[0]/sc[1]
+		parity(t, d, w, h, sc[0], sc[1], 1, func(cv *render.Canvas, _ int) {
+			cv.Clear(cv.Rect(), render.RGBA(16, 18, 24, 255))
+			cv.FillRect(render.Rect{X: 2, Y: 2, W: 30, H: 12}, red)
+			cv.FillRect(render.Rect{X: 20, Y: 8, W: 30, H: 12}, blue)
+			cv.RoundedRect(render.Rect{X: 56, Y: 2, W: 24, H: 14}, 5, blue)
+			cv.RoundedRectCorners(render.Rect{X: 84, Y: 2, W: 40, H: 30}, render.Corners{TopLeft: 12, TopRight: 2, BottomRight: 8}, red)
+			cv.RoundedBorderSides(render.Rect{X: 2, Y: 40, W: 60, H: 40}, render.UniformCorners(10), render.Insets{Top: 2, Right: 3, Bottom: 4, Left: 1}, [4]render.Color{red, blue, red, blue})
+			prev := cv.PushAlpha(0.6)
+			b := cv.PushBrightness(1.4)
+			cv.RoundedRectCorners(render.Rect{X: 70, Y: 40, W: 40, H: 30}, render.UniformCorners(9), blue)
+			cv.PopBrightness(b)
+			cv.PopAlpha(prev)
+			clip := cv.PushClip(render.Rect{X: 115, Y: 45, W: 20, H: 20})
+			cv.RoundedRect(render.Rect{X: 110, Y: 40, W: 40, H: 40}, 12, red)
+			cv.PopClip(clip)
+			cv.Shadow(render.Rect{X: 8, Y: 90, W: 40, H: 18}, 6, 5, render.RGBA(0, 0, 0, 150))
+			prev = cv.PushAlpha(0.7)
+			b = cv.PushBrightness(1.2)
+			cv.Shadow(render.Rect{X: 64, Y: 88, W: 30, H: 22}, 0, 9, render.RGBA(30, 60, 200, 200))
+			cv.PopBrightness(b)
+			cv.PopAlpha(prev)
+			var path render.Path
+			path.MoveTo(104.3, 84.2)
+			path.CubeTo(130, 70, 150, 110, 156.7, 92.5)
+			path.LineTo(120.1, 118.6)
+			path.Close()
+			path.MoveTo(112, 92)
+			path.LineTo(118, 100)
+			path.LineTo(110, 104)
+			cv.FillPath(&path, blue)
+			prev = cv.PushAlpha(0.5)
+			b = cv.PushBrightness(1.3)
+			clip = cv.PushClip(render.Rect{X: 130, Y: 80, W: 30, H: 30})
+			cv.FillPath(path.Offset(-4, 3), red)
+			cv.PopClip(clip)
+			cv.PopBrightness(b)
+			cv.PopAlpha(prev)
+		})
+	}
+}
+
+// TestRenderFallbacksAndLayers pins the calls drawn as CPU sprites,
+// the layer composites and the layer calls run on the CPU.
+func TestRenderFallbacksAndLayers(t *testing.T) {
+	d := openDevice(t)
+	face, err := render.NewFixtureTypeface()
+	if err != nil {
+		t.Fatal(err)
+	}
+	red, blue := render.RGBA(220, 40, 50, 255), render.RGBA(30, 90, 220, 180)
+	for _, sc := range [][2]int{{1, 1}, {2, 1}} {
+		w, h := 160*sc[0]/sc[1], 140*sc[0]/sc[1]
+		keptBy := map[bool]*render.Layer{}
+		parity(t, d, w, h, sc[0], sc[1], 2, func(cv *render.Canvas, frame int) {
+			recorded := cv.Recording() != nil
+			kept := keptBy[recorded]
+			cv.Clear(cv.Rect(), render.RGBA(16, 18, 24, 255))
+			cv.Line(2, 4, 60, 20, 2, red)
+			cv.Line(70, 30, 70, 30, 3, blue)
+			cv.Line(100, 2, 102, 40, 1, red)
+			cv.Arc(130, 20, 12, 3, 0.4, 2.2, blue)
+			cv.Arc(130, 20, 6, 2, 0, 7, red)
+			cv.Arc(150, 40, 9, 4, -2.5, 4.4, red)
+			cv.BoxShadow(render.Rect{X: 70, Y: 6, W: 40, H: 20}, render.UniformCorners(6), render.BoxShadow{Y: 3, Blur: 8, Color: render.RGBA(0, 0, 0, 160)})
+			cv.PaintGradient(render.Rect{X: 2, Y: 30, W: 60, H: 20}, render.UniformCorners(4), render.Linear(90, render.GradientStop{Color: red}, render.GradientStop{Pos: 1, Color: blue}))
+			face.DrawAligned(cv, "GPU text", render.Rect{X: 70, Y: 30, W: 80, H: 20}, 14, render.RGBA(240, 240, 240, 255), render.AlignStart)
+			region := cv.MapRect(render.Rect{X: 2, Y: 56, W: 80, H: 40})
+			if frame == 0 || kept == nil {
+				kept = cv.Layer(kept, region)
+				keptBy[recorded] = kept
+				kc := kept.Canvas()
+				kc.RoundedRectCorners(render.Rect{X: 6, Y: 60, W: 50, H: 30}, render.UniformCorners(8), red)
+				face.DrawAligned(kc, "kept", render.Rect{X: 10, Y: 64, W: 40, H: 16}, 11, render.RGBA(255, 255, 255, 255), render.AlignStart)
+			}
+			cv.Composite(kept, region, render.Rotate(10).About(float64(region.X+region.W/2), float64(region.Y+region.H/2)), 0.8)
+			cv.DrawLayer(kept, region, render.BlendNormal)
+			area := cv.MapRect(render.Rect{X: 90, Y: 56, W: 60, H: 40})
+			snap := cv.ScratchSnapshot(area)
+			a := cv.ScratchLayer(area)
+			a.Canvas().DrawCanvasDevice(snap.Canvas(), 0, 0)
+			var fl render.Filters
+			fl.Append(render.FilterOp{Kind: render.FilterBlur, Amount: 3})
+			render.ApplyFilters(a, area, &fl, render.FilterShape{})
+			cv.DrawLayer(a, area, render.BlendMultiply)
+			a.Release()
+			snap.Release()
+		})
+	}
+}
+
+// A glyph atlas that fills mid-frame draws what it holds, empties and
+// refills: text needing more than a page still matches the CPU.
+func TestRenderGlyphAtlasRefills(t *testing.T) {
+	d := openDevice(t)
+	d.masks.size = 48
+	face, err := render.NewFixtureTypeface()
+	if err != nil {
+		t.Fatal(err)
+	}
+	parity(t, d, 200, 120, 1, 1, 2, func(cv *render.Canvas, _ int) {
+		cv.Clear(cv.Rect(), render.RGBA(16, 18, 24, 255))
+		for i, line := range []string{"The quick brown fox", "jumps over the lazy", "dog 0123456789 QWXZ"} {
+			face.DrawAligned(cv, line, render.Rect{X: 4, Y: 4 + 34*i, W: 190, H: 30}, float64(18+4*i), render.RGBA(240, 240, 240, 255), render.AlignStart)
+		}
+	})
+	if d.masks.py == 0 && d.masks.px == 0 {
+		t.Error("the atlas holds nothing after drawing text")
+	}
+}
+
+// Images draw as the CPU draws them: still images from their uploaded
+// textures, scaled, one to one, into a rect and as a cover, clipped and
+// faded; any other image from its pixels as they are at the draw, so
+// one changed in place between frames shows its change.
+func TestRenderImages(t *testing.T) {
+	d := openDevice(t)
+	img := image.NewRGBA(image.Rect(0, 0, 7, 5))
+	paintImg := func(shift int) {
+		for y := range 5 {
+			for x := range 7 {
+				a := uint8(255 - 30*((x+shift)%7))
+				img.SetRGBA(x, y, color.RGBA{R: uint8(int(a) * x / 7), G: uint8(int(a) * y / 5), B: a / 2, A: a})
+			}
+		}
+	}
+	paintImg(0)
+	still := render.StillImage{RGBA: &image.RGBA{Pix: bytes.Clone(img.Pix), Stride: img.Stride, Rect: img.Rect}}
+	ic, err := render.IconFromImage(img, 7, 5)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, sc := range [][2]int{{1, 1}, {3, 2}} {
+		w, h := 120*sc[0]/sc[1], 90*sc[0]/sc[1]
+		parity(t, d, w, h, sc[0], sc[1], 2, func(cv *render.Canvas, frame int) {
+			if cv.Recording() != nil {
+				paintImg(frame)
+			}
+			cv.Clear(cv.Rect(), render.RGBA(16, 18, 24, 255))
+			for row, src := range []image.Image{still, img} {
+				y := 2 + 60*row
+				sub := src.(interface {
+					SubImage(image.Rectangle) image.Image
+				}).SubImage(image.Rect(2, 1, 6, 4))
+				cv.DrawImage(src, 2, y)
+				cv.DrawImage(sub, 14, y)
+				cv.DrawImageDevice(src, 30, y+2)
+				cv.DrawImageRect(src, render.Rect{X: 44, Y: y, W: 30, H: 20})
+				cv.DrawImageCover(src, render.Rect{X: 78, Y: y, W: 30, H: 18}, render.UniformCorners(6))
+				prev := cv.PushAlpha(0.5)
+				clip := cv.PushClip(render.Rect{X: 0, Y: y + 22, W: 60, H: 6})
+				cv.DrawImageRect(src, render.Rect{X: 4, Y: y + 20, W: 50, H: 12})
+				cv.PopClip(clip)
+				cv.PopAlpha(prev)
+			}
+			ic.Draw(cv, 80, 30)
+			ic.DrawRotated(cv, 92, 30, 33)
+			ic.DrawXformed(cv, 104, 30, render.Scale(1.6, 1.2).Mul(render.Rotate(-70)))
+		})
+	}
+}
+
+// A still image keeps one texture however often it is drawn, even as a
+// sub-image taken anew each frame, as the image widget draws one.
+func TestRenderStillImageKeepsItsTexture(t *testing.T) {
+	d := openDevice(t)
+	img := image.NewRGBA(image.Rect(0, 0, 8, 8))
+	for i := range img.Pix {
+		img.Pix[i] = 0xff
+	}
+	tg := newTarget(t, d, 32, 32)
+	rec := render.NewRecorder(32, 32, 1, 1)
+	for range 4 {
+		rec.ResetRecorder(32, 32, 1, 1)
+		rec.DrawImageDevice(render.StillImage{RGBA: img}.SubImage(image.Rect(1, 1, 7, 7)), 4, 4)
+		if err := d.Render(rec.Recording(), tg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := len(d.images.byImage); n != 1 {
+		t.Errorf("%d textures for one still sub-image drawn four times, want 1", n)
+	}
+}
+
+// A versioned image keeps one texture and shows its new pixels each
+// time its version moves, held over frames where it stays.
+func TestRenderVersionedImageUpdatesItsTexture(t *testing.T) {
+	d := openDevice(t)
+	img := image.NewRGBA(image.Rect(0, 0, 8, 8))
+	parity(t, d, 40, 24, 1, 1, 4, func(cv *render.Canvas, frame int) {
+		v := render.VersionedImage{RGBA: img, Version: uint64(frame / 2)}
+		for i := range img.Pix {
+			img.Pix[i] = uint8(30*int(v.Version) + 11*i)
+		}
+		cv.Clear(cv.Rect(), render.RGBA(0, 0, 0, 255))
+		cv.DrawImageDevice(v, 2, 2)
+		cv.DrawImageRect(v, render.Rect{X: 14, Y: 2, W: 20, H: 18})
+	})
+	if n := len(d.images.byImage); n != 1 {
+		t.Errorf("%d textures for one versioned image, want 1", n)
+	}
+}
+
+// Gradients draw natively: linear, radial and conic geometry, the
+// extend modes, hard stops, rounded clips and opacity, as the CPU
+// paints them.
+func TestRenderGradients(t *testing.T) {
+	d := openDevice(t)
+	red, blue, clear := render.RGBA(220, 40, 50, 255), render.RGBA(30, 90, 220, 180), render.RGBA(0, 0, 0, 0)
+	stops := []render.GradientStop{{Pos: 0, Color: red}, {Pos: 0.4, Color: blue}, {Pos: 0.4, Color: clear}, {Pos: 1, Color: red}}
+	for _, sc := range [][2]int{{1, 1}, {3, 2}} {
+		w, h := 160*sc[0]/sc[1], 70*sc[0]/sc[1]
+		parity(t, d, w, h, sc[0], sc[1], 1, func(cv *render.Canvas, _ int) {
+			cv.Clear(cv.Rect(), render.RGBA(16, 18, 24, 255))
+			cv.PaintGradient(render.Rect{X: 2, Y: 2, W: 50, H: 30}, render.UniformCorners(8), render.Linear(70, stops...))
+			cv.PaintGradient(render.Rect{X: 56, Y: 2, W: 50, H: 30}, render.Corners{}, render.Radial(stops...))
+			cone := render.Gradient{Kind: render.GradientConic, CenterX: 0.4, CenterY: 0.6, Angle: 30, Stops: stops}
+			cv.PaintGradient(render.Rect{X: 110, Y: 2, W: 46, H: 30}, render.UniformCorners(23), cone)
+			// A repeat's hard edge, where t sits exactly on a period
+			// boundary, takes either band by rounding on both sides: a
+			// span whole rows land on would differ by a band there.
+			rep := render.Linear(0, render.GradientStop{Pos: 0.1, Color: red}, render.GradientStop{Pos: 0.35, Color: blue})
+			rep.Extend = render.ExtendRepeat
+			prev := cv.PushAlpha(0.6)
+			cv.PaintGradient(render.Rect{X: 2, Y: 36, W: 70, H: 30}, render.UniformCorners(4), rep)
+			cv.PopAlpha(prev)
+			rep.Extend = render.ExtendReflect
+			circle := render.Gradient{Kind: render.GradientRadial, CenterX: 0.3, CenterY: 0.5, Circle: true, Size: render.ClosestSide, Stops: rep.Stops, Extend: render.ExtendReflect}
+			cv.PaintGradient(render.Rect{X: 76, Y: 36, W: 80, H: 30}, render.Corners{}, circle)
+		})
+	}
+}
+
+// Color filter lists apply natively, as the CPU applies them: the
+// fixed-point functions on premultiplied pixels and the float32 ones on
+// straight colors, alone and chained, over translucent content.
+func TestRenderColorFilters(t *testing.T) {
+	d := openDevice(t)
+	face, err := render.NewFixtureTypeface()
+	if err != nil {
+		t.Fatal(err)
+	}
+	lists := [][]render.FilterOp{
+		{{Kind: render.FilterContrast, Amount: 1.7}},
+		{{Kind: render.FilterInvert, Amount: 0.8}},
+		{{Kind: render.FilterOpacity, Amount: 0.45}},
+		{{Kind: render.FilterSaturate, Amount: 2.5}, {Kind: render.FilterHueRotate, Amount: 75}},
+		{{Kind: render.FilterSepia, Amount: 0.7}, {Kind: render.FilterBrightness, Amount: 1.3}, {Kind: render.FilterGrayscale, Amount: 0.4}},
+	}
+	for _, sc := range [][2]int{{1, 1}, {3, 2}} {
+		w, h := 200*sc[0]/sc[1], 50*sc[0]/sc[1]
+		parity(t, d, w, h, sc[0], sc[1], 1, func(cv *render.Canvas, _ int) {
+			cv.Clear(cv.Rect(), render.RGBA(16, 18, 24, 255))
+			for i, ops := range lists {
+				box := render.Rect{X: 4 + 39*i, Y: 4, W: 36, H: 40}
+				region := cv.MapRect(box)
+				l := cv.ScratchLayer(region)
+				lc := l.Canvas()
+				lc.RoundedRectCorners(box, render.UniformCorners(6), render.RGBA(180, 60, 40, 200))
+				lc.FillRect(render.Rect{X: box.X + 4, Y: box.Y + 20, W: 28, H: 12}, render.RGBA(20, 90, 200, 140))
+				face.DrawAligned(lc, "Fx", render.Rect{X: box.X + 6, Y: box.Y + 4, W: 30, H: 14}, 12, render.RGBA(240, 240, 240, 255), render.AlignStart)
+				var fl render.Filters
+				for _, op := range ops {
+					fl.Append(op)
+				}
+				render.ApplyFilters(l, region, &fl, render.FilterShape{})
+				cv.DrawLayer(l, region, render.BlendNormal)
+				l.Release()
+			}
+		})
+	}
+}
+
+// Cross-fades, mask layers and path masks rework layers in place on the
+// GPU, as the CPU does.
+func TestRenderLayerMasks(t *testing.T) {
+	d := openDevice(t)
+	red, blue := render.RGBA(220, 40, 50, 255), render.RGBA(30, 90, 220, 180)
+	for _, sc := range [][2]int{{1, 1}, {3, 2}} {
+		w, h := 200*sc[0]/sc[1], 50*sc[0]/sc[1]
+		parity(t, d, w, h, sc[0], sc[1], 1, func(cv *render.Canvas, _ int) {
+			cv.Clear(cv.Rect(), render.RGBA(16, 18, 24, 255))
+			for i := range 5 {
+				box := render.Rect{X: 4 + 39*i, Y: 4, W: 36, H: 40}
+				region := cv.MapRect(box)
+				a, b := cv.ScratchLayer(region), cv.ScratchLayer(region)
+				a.Canvas().RoundedRectCorners(box, render.UniformCorners(8), red)
+				b.Canvas().PaintGradient(box, render.Corners{}, render.Linear(30, render.GradientStop{Color: blue}, render.GradientStop{Pos: 1, Color: render.RGBA(240, 240, 60, 120)}))
+				switch i {
+				case 0, 1:
+					a.CrossFade(b, region, []float64{0.3, 0.82}[i])
+				case 2, 3:
+					a.ApplyMaskLayer(b, region, i == 3)
+				default:
+					p := &render.Path{}
+					render.RoundedRectPath(p, render.Rect{X: box.X + 3, Y: box.Y + 5, W: 30, H: 28}, render.UniformCorners(11))
+					a.ApplyPathMask(p, region)
+				}
+				cv.DrawLayer(a, region, render.BlendNormal)
+				b.Release()
+				a.Release()
+			}
+		})
+	}
+}
+
+// Blurs run on the GPU by render's integer plan: full-resolution box
+// passes, and heavier ones area-averaged down, passed and sampled back,
+// mixed with color steps, as the CPU blurs them.
+func TestRenderBlurs(t *testing.T) {
+	d := openDevice(t)
+	face, err := render.NewFixtureTypeface()
+	if err != nil {
+		t.Fatal(err)
+	}
+	lists := [][]render.FilterOp{
+		{{Kind: render.FilterBlur, Amount: 3}},
+		{{Kind: render.FilterBlur, Amount: 14}},
+		{{Kind: render.FilterSaturate, Amount: 1.8}, {Kind: render.FilterBlur, Amount: 40}},
+		{{Kind: render.FilterBlur, Amount: 7}, {Kind: render.FilterContrast, Amount: 1.4}},
+	}
+	for _, sc := range [][2]int{{1, 1}, {3, 2}} {
+		w, h := 260*sc[0]/sc[1], 90*sc[0]/sc[1]
+		parity(t, d, w, h, sc[0], sc[1], 1, func(cv *render.Canvas, _ int) {
+			cv.Clear(cv.Rect(), render.RGBA(16, 18, 24, 255))
+			for i, ops := range lists {
+				box := render.Rect{X: 8 + 63*i, Y: 8, W: 51, H: 73}
+				var fl render.Filters
+				for _, op := range ops {
+					fl.Append(op)
+				}
+				region := cv.MapRect(fl.Extent().Grow(box)).Intersect(cv.Rect())
+				l := cv.ScratchLayer(region)
+				lc := l.Canvas()
+				lc.RoundedRectCorners(box, render.UniformCorners(9), render.RGBA(180, 60, 40, 220))
+				lc.FillRect(render.Rect{X: box.X + 6, Y: box.Y + 30, W: 30, H: 14}, render.RGBA(20, 90, 200, 160))
+				face.DrawAligned(lc, "Blur", render.Rect{X: box.X + 4, Y: box.Y + 4, W: 44, H: 18}, 14, render.RGBA(240, 240, 240, 255), render.AlignStart)
+				render.ApplyFilters(l, region, &fl, render.FilterShape{})
+				cv.DrawLayer(l, region, render.BlendNormal)
+				l.Release()
+			}
+		})
+	}
+}
+
+// Image textures stay within their limit: new still images drawn frame
+// after frame evict the least recently drawn, never one this frame
+// draws, and the frames still match the CPU.
+func TestRenderImageTexturesStayBounded(t *testing.T) {
+	d := openDevice(t)
+	d.images.limit = 8
+	imgs := make([]render.StillImage, 30)
+	for i := range imgs {
+		img := image.NewRGBA(image.Rect(0, 0, 3, 3))
+		for p := range img.Pix {
+			img.Pix[p] = uint8(40 + 7*i + p)
+		}
+		imgs[i] = render.StillImage{RGBA: img}
+	}
+	parity(t, d, 64, 16, 1, 1, 10, func(cv *render.Canvas, frame int) {
+		cv.Clear(cv.Rect(), render.RGBA(0, 0, 0, 255))
+		for k := range 3 {
+			cv.DrawImageDevice(imgs[(3*frame+k)%len(imgs)], 4*k, 4)
+		}
+		cv.DrawImageDevice(imgs[0], 40, 4)
+	})
+	if n := len(d.images.byImage); n > 8 {
+		t.Errorf("%d image textures kept, limit 8", n)
+	}
+}
+
+// Drop shadows draw on the GPU as the CPU draws them: offsets either
+// way, sharp or blurred, one whose silhouette outgrows the filter
+// surfaces (they grow), and one wider than the device makes images
+// (through the CPU).
+func TestRenderDropShadows(t *testing.T) {
+	d := openDevice(t)
+	face, err := render.NewFixtureTypeface()
+	if err != nil {
+		t.Fatal(err)
+	}
+	shadows := []render.DropShadow{
+		{DX: 4, DY: 6, Blur: 0, Color: render.RGBA(0, 0, 0, 160)},
+		{DX: -3.5, DY: 2.7, Blur: 5, Color: render.RGBA(20, 200, 90, 255)},
+		{DX: 0, DY: -4, Blur: 12, Color: render.RGBA(0, 0, 0, 90)},
+		{DX: 200, DY: 0, Blur: 2, Color: render.RGBA(200, 30, 30, 200)},
+		{DX: -40000, DY: 1, Blur: 0, Color: render.RGBA(0, 0, 0, 255)},
+	}
+	for _, sc := range [][2]int{{1, 1}, {3, 2}} {
+		w, h := 320*sc[0]/sc[1], 90*sc[0]/sc[1]
+		parity(t, d, w, h, sc[0], sc[1], 1, func(cv *render.Canvas, _ int) {
+			cv.Clear(cv.Rect(), render.RGBA(230, 232, 236, 255))
+			for i, s := range shadows {
+				box := render.Rect{X: 14 + 63*i, Y: 16, W: 40, H: 56}
+				var fl render.Filters
+				fl.Append(render.FilterOp{Kind: render.FilterDropShadow, Shadow: s})
+				fl.Append(render.FilterOp{Kind: render.FilterSaturate, Amount: 1.4})
+				region := cv.MapRect(fl.Extent().Grow(box)).Intersect(cv.Rect())
+				l := cv.ScratchLayer(region)
+				lc := l.Canvas()
+				lc.RoundedRectCorners(box, render.UniformCorners(8), render.RGBA(180, 60, 40, 200))
+				face.DrawAligned(lc, "Sh", render.Rect{X: box.X + 4, Y: box.Y + 20, W: 34, H: 18}, 14, render.RGBA(30, 30, 240, 255), render.AlignStart)
+				render.ApplyFilters(l, region, &fl, render.FilterShape{})
+				cv.DrawLayer(l, region, render.BlendNormal)
+				l.Release()
+			}
+		})
+	}
+}
+
+// Brightness rounds every channel value as the CPU does.
+func TestRenderBrightnessRounding(t *testing.T) {
+	d := openDevice(t)
+	parity(t, d, 256, 4, 1, 1, 1, func(cv *render.Canvas, _ int) {
+		for y, f := range []float64{1.3, 0.7, 1.1, 2.9} {
+			b := cv.PushBrightness(f)
+			for v := range 256 {
+				cv.FillRect(render.Rect{X: v, Y: y, W: 1, H: 1}, render.RGB(uint8(v), uint8(255-v), uint8(v/2)))
+			}
+			cv.PopBrightness(b)
+		}
+	})
+}
+
+// Grain draws on the GPU as the CPU draws it: rounded, offset either
+// way, under opacity and brightness.
+func TestRenderGrain(t *testing.T) {
+	d := openDevice(t)
+	for _, sc := range [][2]int{{1, 1}, {3, 2}} {
+		w, h := 200*sc[0]/sc[1], 80*sc[0]/sc[1]
+		parity(t, d, w, h, sc[0], sc[1], 1, func(cv *render.Canvas, _ int) {
+			cv.Clear(cv.Rect(), render.RGBA(120, 130, 140, 255))
+			cv.PaintGrain(render.Rect{X: 4, Y: 4, W: 90, H: 70}, render.UniformCorners(14), 0.3, 4, 4)
+			prev := cv.PushAlpha(0.6)
+			b := cv.PushBrightness(1.3)
+			cv.PaintGrain(render.Rect{X: 100, Y: 6, W: 94, H: 66}, render.Corners{TopLeft: 20, BottomRight: 9}, 1.4, -37, 211)
+			cv.PopBrightness(b)
+			cv.PopAlpha(prev)
+		})
+	}
+}
+
+// Closing a device frees its layers' surfaces, a kept layer's too, and
+// a layer it backed records on the next device into one of that
+// device's own.
+func TestLayerOutlivesItsDevice(t *testing.T) {
+	const w, h = 64, 48
+	red := render.RGBA(220, 40, 50, 255)
+	region := render.Rect{X: 4, Y: 4, W: 40, H: 30}
+	paint := func(cv *render.Canvas, kept *render.Layer) *render.Layer {
+		cv.Clear(cv.Rect(), render.RGBA(16, 18, 24, 255))
+		kept = cv.Layer(kept, region)
+		kept.Canvas().RoundedRectCorners(render.Rect{X: 8, Y: 8, W: 30, H: 20}, render.UniformCorners(6), red)
+		cv.DrawLayer(kept, region, render.BlendNormal)
+		return kept
+	}
+	first := openDevice(t)
+	tg := newTarget(t, first, w, h)
+	rec := render.NewRecorder(w, h, 1, 1)
+	kept := paint(rec, nil)
+	if err := first.Render(rec.Recording(), tg); err != nil {
+		t.Fatal(err)
+	}
+	ls := kept.Backing().(*layerSurface)
+	tg.Close()
+	first.Close()
+	if ls.s.memory != 0 {
+		t.Error("closing the device left a kept layer's surface")
+	}
+	var kepts [2]*render.Layer
+	kepts[1] = kept
+	parity(t, openDevice(t), w, h, 1, 1, 2, func(cv *render.Canvas, _ int) {
+		i := 0
+		if cv.Recording() != nil {
+			i = 1
+		}
+		kepts[i] = paint(cv, kepts[i])
+	})
+}
+
+// Tiled image and gradient layers draw natively as the CPU paints them:
+// repeating with and without gaps, a lone tile, fractional positions,
+// a rounded clip and opacity, at two device scales (#314).
+func TestRenderTiles(t *testing.T) {
+	d := openDevice(t)
+	img := image.NewRGBA(image.Rect(0, 0, 3, 2))
+	for i := range img.Pix {
+		img.Pix[i] = uint8(31*i + 40)
+	}
+	for i := 3; i < len(img.Pix); i += 4 {
+		img.Pix[i] = 255
+	}
+	still := render.StillImage{RGBA: img}
+	stops := []render.GradientStop{{Pos: 0, Color: render.RGBA(220, 40, 50, 255)}, {Pos: 1, Color: render.RGBA(30, 90, 220, 160)}}
+	for _, sc := range [][2]int{{1, 1}, {3, 2}} {
+		w, h := 180*sc[0]/sc[1], 80*sc[0]/sc[1]
+		parity(t, d, w, h, sc[0], sc[1], 1, func(cv *render.Canvas, _ int) {
+			cv.Clear(cv.Rect(), render.RGBA(16, 18, 24, 255))
+			cv.PaintImageTiles(still, render.Tile{X: 3.25, Y: 2.5, W: 7.5, H: 5, RepeatX: true, RepeatY: true}, render.Rect{X: 2, Y: 2, W: 50, H: 34}, render.UniformCorners(9))
+			cv.PaintImageTiles(still, render.Tile{X: 60, Y: 4, W: 9, H: 6, GapX: 3.5, GapY: 2, RepeatX: true, RepeatY: true}, render.Rect{X: 56, Y: 2, W: 50, H: 34}, render.Corners{})
+			cv.PaintImageTiles(still, render.Tile{X: 120, Y: 6, W: 20, H: 14}, render.Rect{X: 110, Y: 2, W: 60, H: 34}, render.UniformCorners(4))
+			prev := cv.PushAlpha(0.6)
+			cv.PaintGradientTiles(render.Linear(30, stops...), render.Tile{X: 4, Y: 42, W: 13.5, H: 11, GapX: 2, RepeatX: true, RepeatY: true}, render.Rect{X: 2, Y: 40, W: 80, H: 36}, render.UniformCorners(7))
+			cv.PopAlpha(prev)
+			cv.PaintGradientTiles(render.Radial(stops...), render.Tile{X: 90, Y: 44, W: 16, H: 12, RepeatX: true}, render.Rect{X: 88, Y: 40, W: 80, H: 36}, render.Corners{})
+		})
+		if len(d.frame.stats.sprites) != 0 {
+			t.Errorf("tiles drew as CPU sprites: %v", d.frame.stats.sprites)
+		}
+	}
+}
+
+// Every blend mode composites a layer over the backdrop on the GPU, as
+// the CPU does, byte for byte: translucent and antialiased layer pixels
+// over a varied, partly translucent backdrop, at an opacity, with no
+// readback (#316).
+func TestRenderBlendModes(t *testing.T) {
+	d := openDevice(t)
+	stops := []render.GradientStop{{Pos: 0, Color: render.RGBA(240, 30, 60, 255)}, {Pos: 0.5, Color: render.RGBA(30, 200, 90, 140)}, {Pos: 1, Color: render.RGBA(40, 70, 250, 220)}}
+	back := []render.GradientStop{{Pos: 0, Color: render.RGBA(250, 240, 20, 255)}, {Pos: 1, Color: render.RGBA(20, 30, 120, 90)}}
+	for _, sc := range [][2]int{{1, 1}, {3, 2}} {
+		w, h := 64*sc[0]/sc[1], 40*sc[0]/sc[1]
+		for m := render.BlendMultiply; m <= render.BlendLuminosity; m++ {
+			parity(t, d, w, h, sc[0], sc[1], 1, func(cv *render.Canvas, _ int) {
+				cv.Clear(cv.Rect(), 0)
+				cv.PaintGradient(render.Rect{W: 64, H: 40}, render.Corners{}, render.Linear(90, back...))
+				region := cv.MapRect(render.Rect{X: 4, Y: 4, W: 56, H: 32})
+				l := cv.ScratchLayer(region)
+				lc := l.Canvas()
+				lc.PaintGradient(render.Rect{X: 4, Y: 4, W: 56, H: 16}, render.UniformCorners(6), render.Linear(0, stops...))
+				lc.RoundedRect(render.Rect{X: 10, Y: 18, W: 30, H: 16}, 8, render.RGBA(120, 220, 250, 200))
+				prev := cv.PushAlpha(0.8)
+				cv.DrawLayer(l, region, m)
+				cv.PopAlpha(prev)
+				l.Release()
+			})
+			if d.frame.stats.readbacks != 0 || len(d.frame.stats.sprites) != 0 {
+				t.Errorf("%s at %d/%d: %d readbacks, sprites %v", m, sc[0], sc[1], d.frame.stats.readbacks, d.frame.stats.sprites)
+			}
+		}
+	}
+}
+
+// -lys-refract() bends a layer's bezel on the GPU as the CPU does, byte
+// for byte, rounded corners and the region's transparent edge included,
+// with no readback (#315).
+func TestRenderRefract(t *testing.T) {
+	d := openDevice(t)
+	stripes := []render.GradientStop{{Pos: 0, Color: render.RGBA(230, 60, 70, 255)}, {Pos: 0.33, Color: render.RGBA(230, 60, 70, 255)}, {Pos: 0.33, Color: render.RGBA(60, 180, 140, 255)}, {Pos: 0.66, Color: render.RGBA(60, 180, 140, 255)}, {Pos: 0.66, Color: render.RGBA(80, 120, 250, 200)}, {Pos: 1, Color: render.RGBA(80, 120, 250, 200)}}
+	for _, sc := range [][2]int{{1, 1}, {3, 2}} {
+		w, h := 90*sc[0]/sc[1], 60*sc[0]/sc[1]
+		parity(t, d, w, h, sc[0], sc[1], 1, func(cv *render.Canvas, _ int) {
+			cv.Clear(cv.Rect(), render.RGBA(16, 18, 24, 255))
+			g := render.Linear(60, stripes...)
+			g.Extend = render.ExtendRepeat
+			cv.PaintGradient(render.Rect{W: 90, H: 60}, render.Corners{}, g)
+			box := render.Rect{X: 10, Y: 8, W: 70, H: 44}
+			area := cv.MapRect(box)
+			snap := cv.ScratchSnapshot(area)
+			l := cv.ScratchLayer(area)
+			l.Canvas().DrawCanvasDevice(snap.Canvas(), 0, 0)
+			var fl render.Filters
+			fl.Append(render.FilterOp{Kind: render.FilterRefract, Amount: 6, Bezel: 9})
+			render.ApplyFilters(l, area, &fl, render.FilterShape{Box: box, Radii: render.UniformCorners(14)})
+			cv.DrawLayer(l, area, render.BlendNormal)
+			l.Release()
+			snap.Release()
+		})
+		if d.frame.stats.readbacks != 0 {
+			t.Errorf("refract at %d/%d read back %d times", sc[0], sc[1], d.frame.stats.readbacks)
+		}
+	}
+}

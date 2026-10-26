@@ -1,0 +1,857 @@
+package render
+
+import (
+	"encoding/binary"
+	"fmt"
+	"image"
+	"math"
+)
+
+// Canvas paints into a raw ARGB8888 premultiplied pixel buffer: the exact
+// format of a wl_shm buffer at any scale. All drawing clips to the
+// intersection of the requested rect, the canvas bounds, and any clip set
+// with PushClip, and blends through the opacity set with PushAlpha.
+//
+// The canvas carries a device scale: a rational number of device (buffer)
+// pixels per logical pixel - 240/120 is 2x, 150/120 is the fractional
+// 1.25x. Primitive arguments (FillRect, RoundedRect, text, ...) are in
+// logical pixels and land on device pixels rounded outward, so a logical
+// rect fully covers the device area it spans; text is shaped at its
+// logical size and rasterized at the device scale, which keeps it crisp
+// at any factor. PushClip takes a logical rect like every primitive;
+// the bounds returned by Rect and the explicit device bridge (MapRect,
+// ClearDevice, FillRectDevice, PushClipDevice) are in device pixels.
+type Canvas struct {
+	data   []byte
+	stride int
+	w, h   int
+	clip   Rect
+	// num/denom is the device scale: device pixels per logical pixel.
+	num, denom int
+	// touched counts the pixels drawn so far. Paint-count tests read
+	// it through Touched to pin how much of a frame damage-restricted
+	// repainting actually wrote.
+	touched int
+	// alpha is the PushAlpha stack's product: the subtree opacity every
+	// blended color is scaled by. alphaScale is the same factor as a
+	// uint8 in [0, 255], cached per push so the per-pixel work is
+	// integer math; 255 means unmodulated and 0 skips blends entirely.
+	alpha      float64
+	alphaScale uint32
+	// bright is the PushBrightness product; 0 and 1 both mean
+	// unmodulated, so the zero Canvas needs no initialization.
+	bright float64
+	// overlays are the top-layer paints deferred while a frame is armed
+	// (BeginOverlays): they run after the tree, under the frame clip.
+	overlays []overlay
+	focus    focusMark
+	armed    bool
+	frame    Rect
+	// ringCells is RoundedBorderSides' side-column scratch, reused
+	// across rings.
+	ringCells []ringCell
+	// rec is the List a recording canvas (NewRecorder) appends its
+	// calls to instead of painting; it has no pixels. owner is the
+	// recorded layer whose canvas it is, nil for the frame's.
+	rec   *List
+	owner *Layer
+}
+
+// overlay is one deferred top-layer paint and the opacity in force when
+// it was queued.
+type overlay struct {
+	paint         func(*Canvas)
+	alpha, bright float64
+}
+
+// Touched returns the number of pixels written since the last
+// ResetTouched (or since the canvas was created). Blends count even
+// when their source color equals the destination.
+func (c *Canvas) Touched() int { return c.touched }
+
+// ResetTouched zeroes the drawn-pixel counter and returns the previous
+// value.
+func (c *Canvas) ResetTouched() int {
+	n := c.touched
+	c.touched = 0
+	return n
+}
+
+// Stride returns the row stride in bytes for a width in pixels
+// (ARGB8888).
+func Stride(widthPx int) int { return widthPx * 4 }
+
+// New returns a canvas over data: height rows of stride bytes holding
+// width ARGB8888 pixels each, at device scale 1 (one device pixel per
+// logical pixel).
+func New(data []byte, stride, width, height int) *Canvas {
+	return NewScaled(data, stride, width, height, 1, 1)
+}
+
+// NewScaled returns a canvas over data at the given device scale: num
+// device pixels per denom logical pixels (240/120 doubles). width and
+// height are the buffer's device size. It panics on a non-positive
+// scale, which is a programming error, not a runtime condition.
+func NewScaled(data []byte, stride, width, height, num, denom int) *Canvas {
+	if num <= 0 || denom <= 0 {
+		panic(fmt.Sprintf("render: invalid device scale %d/%d", num, denom))
+	}
+	c := &Canvas{
+		data: data, stride: stride, w: width, h: height, num: num, denom: denom,
+		alpha: 1, alphaScale: 255,
+	}
+	c.clip = c.Rect()
+	return c
+}
+
+// Reset re-points the canvas at a fresh buffer, the window-owned
+// canvas's per-frame entry: the same struct re-readied instead of a
+// NewScaled allocation per painted frame. The scale must be positive,
+// as NewScaled's. Frame state (overlays, focus, counters) starts
+// clean, as after a completed frame.
+func (c *Canvas) Reset(data []byte, stride, width, height, num, denom int) *Canvas {
+	if c.rec != nil {
+		panic("render: Reset of a recording canvas")
+	}
+	c.data, c.stride = data, stride
+	c.resetFrame(width, height, num, denom)
+	return c
+}
+
+// resetFrame gives c the device size and scale, the full clip and the
+// clean frame state (opacity, overlays, focus, counters) of a new
+// frame.
+func (c *Canvas) resetFrame(width, height, num, denom int) {
+	if num <= 0 || denom <= 0 {
+		panic(fmt.Sprintf("render: invalid device scale %d/%d", num, denom))
+	}
+	c.w, c.h = width, height
+	c.num, c.denom = num, denom
+	c.alpha, c.alphaScale = 1, 255
+	c.bright = 0
+	c.touched = 0
+	c.overlays = c.overlays[:0]
+	c.focus = focusMark{}
+	c.armed = false
+	c.clip = c.Rect()
+}
+
+// DeviceScale returns the canvas's device scale as a rational: num
+// device pixels per denom logical pixels.
+func (c *Canvas) DeviceScale() (num, denom int) { return c.num, c.denom }
+
+// divFloor divides a by b rounding toward negative infinity; divCeil
+// rounds toward positive infinity. b must be positive.
+func divFloor(a, b int) int {
+	q := a / b
+	if a%b != 0 && a < 0 {
+		q--
+	}
+	return q
+}
+
+func divCeil(a, b int) int { return -divFloor(-a, b) }
+
+// MapRect maps the logical rect r into device pixels at scale num/denom,
+// rounding the origin down and the far edge up so the device rect fully
+// covers everything r spans. Package-level so the frame pipeline can map
+// damage without a canvas instance.
+func MapRect(r Rect, num, denom int) Rect {
+	x0 := divFloor(r.X*num, denom)
+	y0 := divFloor(r.Y*num, denom)
+	x1 := divCeil((r.X+r.W)*num, denom)
+	y1 := divCeil((r.Y+r.H)*num, denom)
+	return Rect{X: x0, Y: y0, W: x1 - x0, H: y1 - y0}
+}
+
+// MapRect maps the logical rect r into device pixels on this canvas.
+func (c *Canvas) MapRect(r Rect) Rect { return MapRect(r, c.num, c.denom) }
+
+// Rect returns the full canvas bounds in device pixels.
+func (c *Canvas) Rect() Rect {
+	return Rect{X: 0, Y: 0, W: c.w, H: c.h}
+}
+
+// PushClip narrows subsequent drawing to the intersection of the
+// logical rect r, mapped to device pixels the way FillRect maps, and
+// the current clip. It returns the previous clip; restore it with
+// PopClip.
+func (c *Canvas) PushClip(r Rect) Rect {
+	return c.PushClipDevice(c.MapRect(r))
+}
+
+// PushClipDevice is PushClip for a rect already in device pixels (a
+// damage region, a layer's rect).
+func (c *Canvas) PushClipDevice(r Rect) Rect {
+	prev := c.clip
+	c.clip = c.clip.Intersect(r)
+	return prev
+}
+
+// PopClip restores a clip returned by PushClip.
+func (c *Canvas) PopClip(prev Rect) {
+	c.clip = prev
+}
+
+// PushAlpha scales the opacity of everything painted until the matching
+// PopAlpha: every blended primitive (FillRect, RoundedRect, gradients,
+// Line, text, images) has its premultiplied color channels - color with
+// the alpha, never the alpha alone - multiplied by a. It is the
+// subtree-opacity primitive fades hang off: nested pushes multiply, and
+// a zero push makes every blend a no-op without touching a pixel. a
+// clamps to [0, 1], so a spring tween's overshoot saturates instead of
+// over-brightening.
+//
+// It returns the previous opacity; restore it with PopAlpha, the same
+// save-and-restore shape as PushClip. Clear and ClearDevice are the one
+// exception: they overwrite pixels rather than blend, so a faded subtree
+// cannot punch transparent holes in its background.
+func (c *Canvas) PushAlpha(a float64) float64 {
+	prev := c.alpha
+	c.alpha = prev * min(1, max(0, a))
+	c.rescaleAlpha()
+	return prev
+}
+
+// PopAlpha restores an opacity returned by PushAlpha.
+func (c *Canvas) PopAlpha(prev float64) {
+	c.alpha = prev
+	c.rescaleAlpha()
+}
+
+// rescaleAlpha re-derives the uint8 blend factor from the opacity
+// product: round-half-up to [0, 255], so two pushes of 0.5 and one push
+// of 0.25 produce the identical factor and identical pixels.
+func (c *Canvas) rescaleAlpha() {
+	c.alphaScale = uint32(min(255, max(0, math.Round(c.alpha*255))))
+}
+
+// blend writes src over the pixel at (x, y). It is the single
+// source-over write site: every blending primitive - fill, rounded
+// rect, gradient, line, text, image - goes through it, so the PushAlpha
+// stack is enforced by construction and a new primitive cannot forget
+// it. A zero opacity writes nothing at all, not even the touched
+// counter, which is the paint-count harness's skip proof.
+func (c *Canvas) blend(x, y int, src Color) {
+	if c.bright != 0 && c.bright != 1 {
+		src = brighten(src, c.bright)
+	}
+	switch c.alphaScale {
+	case 0:
+		return
+	case 255:
+	default:
+		src = modulate(src, c.alphaScale)
+	}
+	c.set(x, y, src.over(c.get(x, y)))
+}
+
+// blendRun is blend over the pixels x0 <= x < x1 of row y, with the
+// source's brightness and opacity resolved once: an opaque source
+// stores, a translucent one blends with its factors hoisted. Callers
+// keep the run inside the canvas and the clip.
+func (c *Canvas) blendRun(x0, x1, y int, src Color) {
+	if x1 <= x0 {
+		return
+	}
+	src, ok := c.shade(src)
+	if !ok {
+		return
+	}
+	c.touched += x1 - x0
+	row := c.data[y*c.stride+x0*4 : y*c.stride+x1*4]
+	if src.A() == 0xff {
+		binary.LittleEndian.PutUint32(row, uint32(src))
+		for n := 4; n < len(row); n *= 2 {
+			copy(row[n:], row[:n])
+		}
+		return
+	}
+	keep := 255 - uint32(src.A())
+	sb, sg, sr, sa := uint32(src.B()), uint32(src.G()), uint32(src.R()), uint32(src.A())
+	for o := 0; o < len(row); o += 4 {
+		p := row[o : o+4 : o+4]
+		p[0] = uint8(sb + (uint32(p[0])*keep+127)/255)
+		p[1] = uint8(sg + (uint32(p[1])*keep+127)/255)
+		p[2] = uint8(sr + (uint32(p[2])*keep+127)/255)
+		p[3] = uint8(sa + (uint32(p[3])*keep+127)/255)
+	}
+}
+
+// shade is src as blend writes it: brightened and scaled by the
+// opacity; false when the opacity is zero and nothing would be written.
+// blend, the per-pixel path, spells it out inline, as a call there
+// costs a frame measurably.
+func (c *Canvas) shade(src Color) (Color, bool) {
+	if c.bright != 0 && c.bright != 1 {
+		src = brighten(src, c.bright)
+	}
+	switch c.alphaScale {
+	case 0:
+		return 0, false
+	case 255:
+	default:
+		src = modulate(src, c.alphaScale)
+	}
+	return src, true
+}
+
+// blendMask blends col scaled by each mask byte over row y from x0 on,
+// one pixel per byte, skipping zero coverage: blend(coverageScale(col,
+// m)) a row at a time, the byte arithmetic inline while no brightness
+// or opacity applies. Callers keep the row inside the canvas and clip.
+func (c *Canvas) blendMask(x0, y int, mask []uint8, col Color) {
+	ca, cr, cg, cb := uint32(col.A()), uint32(col.R()), uint32(col.G()), uint32(col.B())
+	plain := (c.bright == 0 || c.bright == 1) && c.alphaScale == 255
+	base := y*c.stride + x0*4
+	for i, mb := range mask {
+		m := uint32(mb)
+		if m == 0 {
+			continue
+		}
+		sa, sr, sg, sb := ca*m/255, cr*m/255, cg*m/255, cb*m/255
+		if !plain {
+			c.blend(x0+i, y, Color(sa<<24|sr<<16|sg<<8|sb))
+			continue
+		}
+		c.touched++
+		p := c.data[base+i*4 : base+i*4+4 : base+i*4+4]
+		keep := 255 - sa
+		p[0] = uint8(sb + (uint32(p[0])*keep+127)/255)
+		p[1] = uint8(sg + (uint32(p[1])*keep+127)/255)
+		p[2] = uint8(sr + (uint32(p[2])*keep+127)/255)
+		p[3] = uint8(sa + (uint32(p[3])*keep+127)/255)
+	}
+}
+
+// modulate scales a premultiplied color's every channel by scale/255
+// with round-half-up uint8 arithmetic. Scaling the premultiplied
+// channels together keeps the result premultiplied; it is the same
+// invariant the anti-aliasing coverage ramps apply, one level up.
+func modulate(col Color, scale uint32) Color {
+	scaled := func(ch uint8) uint32 { return (uint32(ch)*scale + 127) / 255 }
+	return Color(scaled(col.A())<<24 |
+		scaled(col.R())<<16 |
+		scaled(col.G())<<8 |
+		scaled(col.B()))
+}
+
+// get returns the pixel value at (x, y). Callers must ensure the pixel
+// is inside both the canvas and the clip.
+func (c *Canvas) get(x, y int) Color {
+	o := y*c.stride + x*4
+	return Color(binary.LittleEndian.Uint32(c.data[o : o+4]))
+}
+
+// set overwrites the pixel at (x, y).
+func (c *Canvas) set(x, y int, v Color) {
+	c.touched++
+	o := y*c.stride + x*4
+	binary.LittleEndian.PutUint32(c.data[o:o+4], uint32(v))
+}
+
+// Clear overwrites the logical rect with col, ignoring what is
+// underneath. ClearDevice is the device-space counterpart for callers
+// that already hold mapped rects.
+func (c *Canvas) Clear(r Rect, col Color) {
+	c.ClearDevice(c.MapRect(r), col)
+}
+
+// ClearDevice overwrites the device-pixel rect r with col, ignoring what
+// is underneath. Unlike Clear it applies no logical mapping: it is the
+// bridge for frame pipelines that track damage in device pixels.
+func (c *Canvas) ClearDevice(r Rect, col Color) {
+	if c.rec != nil {
+		c.record(op{kind: opClear, r: r, col: col})
+		return
+	}
+	r = c.clip.Intersect(r)
+	if r.Empty() {
+		return
+	}
+	// The first row fills by doubling copies of one pixel; every later
+	// row copies it whole.
+	first := c.data[r.Y*c.stride+r.X*4 : r.Y*c.stride+(r.X+r.W)*4]
+	binary.LittleEndian.PutUint32(first, uint32(col))
+	for n := 4; n < len(first); n *= 2 {
+		copy(first[n:], first[:n])
+	}
+	for y := r.Y + 1; y < r.Y+r.H; y++ {
+		copy(c.data[y*c.stride+r.X*4:y*c.stride+(r.X+r.W)*4], first)
+	}
+	c.touched += r.W * r.H
+}
+
+// FillRect blends col over the logical rect with source-over compositing.
+func (c *Canvas) FillRect(r Rect, col Color) { c.FillRectDevice(c.MapRect(r), col) }
+
+// BorderRect blends col over a hollow rect of the given logical thickness.
+// The stroke grows inward from the rect edges.
+func (c *Canvas) BorderRect(r Rect, width int, col Color) {
+	r = c.MapRect(r)
+	t := max(1, divCeil(width*c.num, c.denom))
+	c.FillRectDevice(Rect{X: r.X, Y: r.Y, W: r.W, H: t}, col)
+	c.FillRectDevice(Rect{X: r.X, Y: r.Y + r.H - t, W: r.W, H: t}, col)
+	c.FillRectDevice(Rect{X: r.X, Y: r.Y, W: t, H: r.H}, col)
+	c.FillRectDevice(Rect{X: r.X + r.W - t, Y: r.Y, W: t, H: r.H}, col)
+}
+
+// FillRectDevice blends col over the device-pixel rect with source-over
+// compositing; the device counterpart of FillRect.
+func (c *Canvas) FillRectDevice(r Rect, col Color) {
+	if c.rec != nil {
+		c.record(op{kind: opFill, r: r, col: col})
+		return
+	}
+	r = c.clip.Intersect(r)
+	if r.Empty() || col == 0 {
+		return
+	}
+	c.blendRun(r.X, r.X+r.W, r.Y, col)
+	if src, ok := c.shade(col); ok && src.A() == 0xff {
+		// An opaque fill overwrites: every later row copies the first.
+		first := c.data[r.Y*c.stride+r.X*4 : r.Y*c.stride+(r.X+r.W)*4]
+		for y := r.Y + 1; y < r.Y+r.H; y++ {
+			copy(c.data[y*c.stride+r.X*4:y*c.stride+(r.X+r.W)*4], first)
+		}
+		c.touched += r.W * (r.H - 1)
+		return
+	}
+	for y := r.Y + 1; y < r.Y+r.H; y++ {
+		c.blendRun(r.X, r.X+r.W, y, col)
+	}
+}
+
+// DrawCanvasDevice paints src over c with its top-left device pixel
+// at (x, y), one to one - a retained surface's canvas drawn back at
+// the scale it was allocated at. Like DrawImageDevice it clips to c's
+// clip, blends through c's opacity, and overwrites where both pixels
+// are opaque.
+func (c *Canvas) DrawCanvasDevice(src *Canvas, x, y int) {
+	if c.rec != nil {
+		if src.owner != nil {
+			c.record(op{kind: opLayerAt, layer: src.owner, i: [5]int{x, y}})
+			return
+		}
+		c.record(op{kind: opCanvas, cv: src, i: [5]int{x, y}})
+		return
+	}
+	if src.rec != nil {
+		panic("render: DrawCanvasDevice of a recording canvas onto a raster one")
+	}
+	dr := Rect{X: x, Y: y, W: src.w, H: src.h}.Intersect(c.clip)
+	if dr.Empty() {
+		return
+	}
+	for py := dr.Y; py < dr.Y+dr.H; py++ {
+		row := src.data[(py-y)*src.stride:]
+		for px := dr.X; px < dr.X+dr.W; px++ {
+			col := Color(binary.LittleEndian.Uint32(row[(px-x)*4 : (px-x)*4+4]))
+			if col.A() == 0xff && c.alphaScale == 255 {
+				c.set(px, py, col)
+				continue
+			}
+			c.blend(px, py, col)
+		}
+	}
+}
+
+// RoundedRect blends col over a filled logical rect with corners rounded
+// by radius logical pixels, anti-aliased with per-pixel signed-distance
+// coverage. The rasterization runs at the device scale.
+func (c *Canvas) RoundedRect(r Rect, radius int, col Color) {
+	if c.rec != nil {
+		c.record(op{kind: opRoundedRect, r: r, i: [5]int{radius}, col: col})
+		return
+	}
+	full := c.MapRect(r)
+	box := c.clip.Intersect(full)
+	if box.Empty() {
+		return
+	}
+	rad := RoundedRadius(full, radius, c.num, c.denom)
+	// Coverage scales all four premultiplied channels, alpha included:
+	// scaling alpha alone leaves full-strength color on edge pixels (the
+	// halo class), and dropping the source's own alpha would paint
+	// translucent fills opaque, unlike FillRect.
+	shaded := func(d float32) (Color, bool) {
+		cov := 0.5 - d
+		if cov < 0 {
+			return 0, false
+		}
+		return coverageScale(col, cov255(min(cov, 1))), true
+	}
+	pixel := func(x, y int) {
+		if src, ok := shaded(sdRoundRect(float32(x)+0.5, float32(y)+0.5, full, rad)); ok {
+			c.blend(x, y, src)
+		}
+	}
+	x0, x1 := float32(full.X), float32(full.X+full.W)
+	y0, y1 := float32(full.Y), float32(full.Y+full.H)
+	cx, cy := (x0+x1)*0.5, (y0+y1)*0.5
+	hw, hh := float32((x1-x0)*0.5)-rad, float32((y1-y0)*0.5)-rad
+	qx := func(x int) float32 { return abs(float32(x)+0.5-cx) - hw }
+	end := box.X + box.W
+	for y := box.Y; y < box.Y+box.H; y++ {
+		// Where qx <= min(qy, 0) the distance is qy - rad whatever x is
+		// (sqrt of a square is exact), so one value covers the run; qx
+		// falls then rises along the row, so the run is one interval.
+		qy := abs(float32(y)+0.5-cy) - hh
+		m := min(qy, 0)
+		xs := min(max(box.X, int(math.Ceil(float64(cx-(hw+m)-0.5)))), end)
+		for xs < end && qx(xs) > m {
+			xs++
+		}
+		for xs > box.X && qx(xs-1) <= m {
+			xs--
+		}
+		xe := xs
+		for xe < end && qx(xe) <= m {
+			xe++
+		}
+		for x := box.X; x < xs; x++ {
+			pixel(x, y)
+		}
+		if src, ok := shaded(qy - rad); ok && xe > xs {
+			c.blendRun(xs, xe, y, src)
+		}
+		for x := xe; x < end; x++ {
+			pixel(x, y)
+		}
+	}
+}
+
+// RoundedRadius is RoundedRect's corner radius over its device rect
+// full at num/denom: radius scaled, at most half the shorter side.
+func RoundedRadius(full Rect, radius, num, denom int) float32 {
+	return float32(math.Min(float64(radius)*float64(num)/float64(denom), math.Min(float64(full.W), float64(full.H))/2))
+}
+
+// sdRoundRect is the signed distance from (px, py) to a rounded rect.
+// Negative inside, positive outside, in pixels.
+func sdRoundRect(px, py float32, r Rect, radius float32) float32 {
+	x0, y0, x1, y1 := float32(r.X), float32(r.Y), float32(r.X+r.W), float32(r.Y+r.H)
+	cx, cy := (x0+x1)*0.5, (y0+y1)*0.5
+	hw, hh := float32((x1-x0)*0.5)-radius, float32((y1-y0)*0.5)-radius // each conversion rounds its product, so it cannot fuse into an FMA
+	qx, qy := abs(px-cx)-hw, abs(py-cy)-hh
+	return lengthF(max(qx, 0), max(qy, 0)) + min(max(qx, qy), 0) - radius
+}
+
+// coverageScale scales a premultiplied color's every channel by
+// cov/255 with uint8 floor arithmetic - the anti-aliasing coverage
+// ramp the signed-distance primitives (RoundedRect, Line, Shadow)
+// publish. Scaling the four channels together keeps the result
+// premultiplied and composable through PushAlpha; scaling alpha alone
+// leaves full-strength color on the edge (the halo class), and
+// dropping the source's own alpha would paint translucent fills
+// opaque, unlike FillRect.
+func coverageScale(col Color, cov uint32) Color {
+	return Color((uint32(col.A())*cov/255)<<24 |
+		(uint32(col.R())*cov/255)<<16 |
+		(uint32(col.G())*cov/255)<<8 |
+		(uint32(col.B())*cov)/255)
+}
+
+// lineSpan is the device rect Line visits: the segment's box grown
+// by the width and a pixel.
+func (c *Canvas) lineSpan(x0, y0, x1, y1, width int) Rect {
+	return c.MapRect(Rect{
+		X: min(x0, x1) - width - 1,
+		Y: min(y0, y1) - width - 1,
+		W: abs(x1-x0) + 2*width + 2,
+		H: abs(y1-y0) + 2*width + 2,
+	})
+}
+
+// Line blends col along the segment from logical (x0, y0) to (x1, y1)
+// with the given thickness in logical pixels, anti-aliased with
+// per-pixel signed-distance coverage at the device scale. Caps are round.
+func (c *Canvas) Line(x0, y0, x1, y1, width int, col Color) {
+	if c.rec != nil {
+		c.record(op{kind: opLine, i: [5]int{x0, y0, x1, y1, width}, col: col})
+		return
+	}
+	if width < 1 || c.clip.Empty() {
+		return
+	}
+	bx := c.clip.Intersect(c.lineSpan(x0, y0, x1, y1, width))
+	if bx.Empty() {
+		return
+	}
+
+	ln := LineOf(x0, y0, x1, y1, width, c.num, c.denom)
+	for y := bx.Y; y < bx.Y+bx.H; y++ {
+		for x := bx.X; x < bx.X+bx.W; x++ {
+			cov := ln.Coverage(x, y)
+			if cov == 0 {
+				continue
+			}
+			// Coverage scales all four premultiplied channels, alpha
+			// included, exactly as in RoundedRect and the text
+			// rasterizer.
+			c.blend(x, y, coverageScale(col, uint32(math.Floor(float64(cov*255+0.5)))))
+		}
+	}
+}
+
+// LineGeometry is Line's segment in device pixels, in the float32 a GPU
+// shader evaluates it in: its start (the first point's pixel center),
+// its direction to the second's, the reciprocal of its squared length
+// (0 for a point) and its half width.
+type LineGeometry struct {
+	AX, AY, DX, DY, InvLen2, Half float32
+}
+
+// LineOf is the segment Line strokes at device scale num/denom.
+func LineOf(x0, y0, x1, y1, width, num, denom int) LineGeometry {
+	dev := float64(num) / float64(denom)
+	ax, ay := float32((float64(x0)+0.5)*dev), float32((float64(y0)+0.5)*dev)
+	dx, dy := float32((float64(x1)+0.5)*dev)-ax, float32((float64(y1)+0.5)*dev)-ay
+	g := LineGeometry{AX: ax, AY: ay, DX: dx, DY: dy, Half: float32(float64(width) * dev / 2)}
+	if len2 := float32(dx*dx) + float32(dy*dy); len2 > 0 {
+		g.InvLen2 = Reciprocal(len2)
+	}
+	return g
+}
+
+// Coverage is the stroke's coverage of pixel (x, y): its center's
+// distance to the segment (round caps), each product rounded on its
+// own, as the shader computes it.
+func (g LineGeometry) Coverage(x, y int) float32 {
+	px, py := float32(x)+0.5-g.AX, float32(y)+0.5-g.AY
+	t := min(1, max(0, float32(float32(px*g.DX)+float32(py*g.DY))*g.InvLen2))
+	ex, ey := px-float32(g.DX*t), py-float32(g.DY*t)
+	d := float32(math.Sqrt(float64(float32(ex*ex) + float32(ey*ey))))
+	return min(1, max(0, g.Half+0.5-d))
+}
+
+// Shadow blends a box shadow for the logical rect: the blurred
+// silhouette of a rounded rect, centered on r (no spread), falling off
+// with a precomputed Gaussian kernel. blur is the falloff radius in
+// logical pixels. The shadow paints OUTSIDE r - full strength at the
+// edges, tail gone past blur - so callers keep layout and hit-testing
+// on r itself and owe the ring only damage. The coverage raster is
+// cached per (rect size, radius, blur, device scale) in
+// shadowRasterFor, so a hover twitch that repaints the same shadow
+// re-blends the pixels but never re-Gaussians. Per-pixel coverage
+// scales all four premultiplied channels exactly as RoundedRect's AA,
+// and the draw blends through the PushAlpha stack like every
+// primitive, so a fading surface fades its shadow with it.
+func (c *Canvas) Shadow(r Rect, cornerRadius, blur int, col Color) {
+	if c.rec != nil {
+		c.record(op{kind: opShadow, r: r, i: [5]int{cornerRadius, blur}, col: col})
+		return
+	}
+	if col.A() == 0 || c.clip.Empty() {
+		return
+	}
+	m, at, ok := RectShadow(r, cornerRadius, blur, c.num, c.denom)
+	if !ok {
+		return
+	}
+	box := c.clip.Intersect(at)
+	if box.Empty() {
+		return
+	}
+	cov := m.Pix()
+	for y := box.Y; y < box.Y+box.H; y++ {
+		row := cov[(y-at.Y)*at.W:]
+		c.blendMask(box.X, y, row[box.X-at.X:box.X-at.X+box.W], col)
+	}
+}
+
+func abs[T ~int | ~float32 | ~float64](v T) T {
+	if v < 0 {
+		return -v
+	}
+	return v
+}
+
+// DrawImage blends img onto the canvas, scaled from its natural (logical)
+// size to the device rect its logical placement spans.
+func (c *Canvas) DrawImage(img image.Image, x, y int) {
+	if c.rec != nil {
+		c.record(op{kind: opImage, img: img, i: [5]int{x, y}})
+		return
+	}
+	b := img.Bounds()
+	full := c.MapRect(Rect{X: x, Y: y, W: b.Dx(), H: b.Dy()})
+	dst := c.clip.Intersect(full)
+	if dst.Empty() {
+		return
+	}
+	rgba := rgbaOf(img)
+	for py := dst.Y; py < dst.Y+dst.H; py++ {
+		sy := b.Min.Y + (py-full.Y)*b.Dy()/full.H
+		for px := dst.X; px < dst.X+dst.W; px++ {
+			sx := b.Min.X + (px-full.X)*b.Dx()/full.W
+			var src Color
+			if rgba != nil {
+				o := rgba.PixOffset(sx, sy)
+				p := rgba.Pix[o : o+4 : o+4]
+				src = Color(uint32(p[3])<<24 | uint32(p[0])<<16 | uint32(p[1])<<8 | uint32(p[2]))
+			} else {
+				sr, sg, sb, sa := img.At(sx, sy).RGBA()
+				src = Color(sa>>8<<24 | sr>>8<<16 | sg>>8<<8 | sb>>8)
+			}
+			if src != 0 {
+				c.blend(px, py, src)
+			}
+		}
+	}
+}
+
+// DrawImageCover blends img onto the canvas scaled to COVER r: the
+// image scales uniformly until it fills the rect, centered, the
+// overflow cropped (CSS background-size: cover), the whole masked by
+// the rounded rect.
+func (c *Canvas) DrawImageCover(img image.Image, r Rect, radii Corners) {
+	if c.rec != nil {
+		c.record(op{kind: opImageCover, img: img, r: r, radii: radii})
+		return
+	}
+	b := img.Bounds()
+	if b.Empty() || r.Empty() {
+		return
+	}
+	g := CoverOf(b, r, radii, c.num, c.denom)
+	dst := c.clip.Intersect(g.Full)
+	if dst.Empty() {
+		return
+	}
+	rgba := rgbaOf(img)
+	for py := dst.Y; py < dst.Y+dst.H; py++ {
+		for px := dst.X; px < dst.X+dst.W; px++ {
+			cov, sx, sy := g.At(px, py)
+			if cov <= 0 {
+				continue
+			}
+			var src Color
+			if rgba != nil {
+				p := rgba.Pix[rgba.PixOffset(b.Min.X+sx, b.Min.Y+sy):]
+				src = Color(uint32(p[3])<<24 | uint32(p[0])<<16 | uint32(p[1])<<8 | uint32(p[2]))
+			} else {
+				sr, sg, sb, sa := img.At(b.Min.X+sx, b.Min.Y+sy).RGBA()
+				src = Color(sa>>8<<24 | sr>>8<<16 | sg>>8<<8 | sb>>8)
+			}
+			c.blend(px, py, coverageScale(src, cov255(cov)))
+		}
+	}
+}
+
+// CoverGeometry is DrawImageCover's placement of an image of size
+// W x H over its device rect Full, in the float32 a GPU shader
+// evaluates it in: the uniform scale that covers Full (as its
+// reciprocal InvScale), the overflow cropped evenly (OffX, OffY), and
+// Full's rounded corners (Rad, the top-left radius, at most half the
+// shorter side).
+type CoverGeometry struct {
+	Full                      Rect
+	W, H                      int
+	Rad, OffX, OffY, InvScale float32
+}
+
+// CoverOf is the cover of image bounds b over the logical rect r with
+// radii at device scale num/denom.
+func CoverOf(b image.Rectangle, r Rect, radii Corners, num, denom int) CoverGeometry {
+	full := MapRect(r, num, denom)
+	sw, sh := float64(b.Dx()), float64(b.Dy())
+	scale := math.Max(float64(full.W)/sw, float64(full.H)/sh)
+	return CoverGeometry{
+		Full: full, W: b.Dx(), H: b.Dy(),
+		Rad:      float32(math.Min(float64(radii.TopLeft)*float64(num)/float64(denom), math.Min(float64(full.W), float64(full.H))/2)),
+		OffX:     float32((sw*scale - float64(full.W)) / 2),
+		OffY:     float32((sh*scale - float64(full.H)) / 2),
+		InvScale: Reciprocal(float32(scale)),
+	}
+}
+
+// At is pixel (x, y)'s coverage by the rounded rect and the image
+// texel it shows, from the image's top-left.
+func (g CoverGeometry) At(x, y int) (cov float32, sx, sy int) {
+	cov = min(1, 0.5-sdRoundRect(float32(x)+0.5, float32(y)+0.5, g.Full, g.Rad))
+	sx = min(max(int(float32((float32(x-g.Full.X)+g.OffX)*g.InvScale)), 0), g.W-1)
+	sy = min(max(int(float32((float32(y-g.Full.Y)+g.OffY)*g.InvScale)), 0), g.H-1)
+	return cov, sx, sy
+}
+
+// DrawImageCoverImage is DrawImageCover for an Icon's pixels.
+func (c *Canvas) DrawImageCoverImage(ic *Icon, r Rect, radii Corners) {
+	if ic == nil {
+		return
+	}
+	c.DrawImageCover(StillImage{ic.img}, r, radii)
+}
+
+// BeginOverlays arms the frame's top layer: until FlushOverlays,
+// Overlay defers its paints instead of running them in place. A window
+// arms it around painting its tree, so a widget that hangs content
+// outside its own bounds (an open dropdown list) paints above every
+// later sibling, as a popover would.
+func (c *Canvas) BeginOverlays() {
+	c.armed, c.frame, c.overlays = true, c.clip, c.overlays[:0]
+}
+
+// Overlay paints on the frame's top layer: deferred to FlushOverlays
+// while a frame is armed, in place otherwise (a subtree painted on its
+// own has no later siblings to escape). The deferred paint runs under
+// the frame's clip, not the caller's, so a scrolled container does not
+// cut it, with the opacity in force now.
+func (c *Canvas) Overlay(paint func(*Canvas)) {
+	if !c.armed {
+		paint(c)
+		return
+	}
+	c.overlays = append(c.overlays, overlay{paint, c.alpha, c.bright})
+}
+
+// FlushOverlays runs the deferred top-layer paints in queue order (one
+// queued while flushing runs too) and disarms the frame.
+func (c *Canvas) FlushOverlays() {
+	clip, alpha, bright := c.clip, c.alpha, c.bright
+	c.clip = c.frame
+	for i := 0; i < len(c.overlays); i++ { //nolint:intrange // an overlay queued while flushing extends the loop
+		o := c.overlays[i]
+		c.alpha, c.bright = o.alpha, o.bright
+		c.rescaleAlpha()
+		o.paint(c)
+	}
+	c.clip, c.alpha, c.bright = clip, alpha, bright
+	c.rescaleAlpha()
+	c.armed, c.overlays = false, c.overlays[:0]
+}
+
+// focusMark is the frame's keyboard focus ring: the widget it belongs
+// to (any comparable key) and how to draw it.
+type focusMark struct {
+	key   any
+	paint func(*Canvas)
+	done  bool
+}
+
+// MarkFocus arms the frame's focus ring: Painted draws it the moment
+// key's widget finishes painting, so everything painted after it in
+// tree order (a card over a list, a later sibling) covers it, as a
+// widget's own outline would be covered. A nil key clears it.
+func (c *Canvas) MarkFocus(key any, paint func(*Canvas)) {
+	c.focus = focusMark{key: key, paint: paint}
+}
+
+// Painted reports that w finished painting: the containers call it
+// after each child, drawing the armed focus ring after its widget.
+func (c *Canvas) Painted(w any) {
+	if f := &c.focus; f.paint != nil && !f.done && f.key == w {
+		f.done = true
+		f.paint(c)
+	}
+}
+
+// FinishFocus draws the focus ring if no container reached its widget
+// (a container defined outside the kit, a subtree composited from a
+// layer) and disarms it.
+func (c *Canvas) FinishFocus() {
+	if f := c.focus; f.paint != nil && !f.done {
+		f.paint(c)
+	}
+	c.focus = focusMark{}
+}

@@ -1,0 +1,99 @@
+# render/testdata
+
+Fixture assets for render-level and widget-level pixel tests.
+
+## Cantarell-Regular.ttf
+
+The golden-image harness (`internal/golden`, `render/golden_test.go`,
+`widget/golden_test.go`) shapes and rasterizes every snapshot with this
+font and nothing else, so glyph metrics and pixel output are byte-stable
+on any machine, with or without fonts installed.
+
+- Source: https://github.com/google/fonts/tree/main/ofl/cantarell
+  (Cantarell Regular)
+- SHA-256: `840a255779258a2b24b5e3d1f32a821ed641fdd5ef1e47c4dc180064db9ccfa1`
+- License: SIL Open Font License 1.1 — see LICENSE-Cantarell.txt, which
+  ships alongside the font and must be kept with it. The license permits
+  bundling and redistribution inside software.
+
+The file is the font's complete, unmodified regular weight (43 KB — small
+enough to bundle whole, no subsetting step to keep in sync). To refresh
+it, re-download, update the SHA-256 above, regenerate the goldens with
+`UPDATE_GOLDEN=1 go test ./render ./widget`, and review the diff.
+
+## NotoSansHebrew-Regular.ttf
+
+The second fixture face, loaded only by the bidirectional-text tests
+(`FixtureChain`): Cantarell covers no Hebrew, so mixed Hebrew + Latin
+goldens shape through a fallback chain over the two — which is exactly
+the path mixed-direction labels take in production.
+
+- Source: https://github.com/notofonts/hebrew (Noto Sans Hebrew
+  Regular)
+- SHA-256: `cdefaf8efd47045f6820928eba84db5bed7557539328952b5f828315485e02ee`
+- License: SIL Open Font License 1.1 — see LICENSE-NotoSansHebrew.txt,
+  which ships alongside the font and must be kept with it.
+
+The file is the font's complete, unmodified regular weight (26 KB).
+
+## Quicksand-VF.ttf
+
+The variable fixture face, read from disk (not embedded) by the
+variation tests in render, internal/sysfont and widget: its wght axis
+spans 300-700, so the 300/400/700 instance goldens pin real outline
+variation, not synthesized weight.
+
+- Source: https://github.com/google/fonts/tree/main/ofl/quicksand
+  (Quicksand[wght].ttf)
+- SHA-256: `39c9b64223561f56aaff6062a6f04063c4fc86809ad6768722c06614d977e1cc`
+- License: SIL Open Font License 1.1 — see LICENSE-Quicksand.txt,
+  which ships alongside the font and must be kept with it.
+
+The file is the font's complete, unmodified variable build (122 KB).
+
+## color/
+
+The color-glyph fixtures, read from disk by render/colorglyph_test.go:
+
+- `twemoji_smiley-glyf_colr_1.ttf`, `twemoji_smiley-picosvg.ttf`,
+  `twemoji_smiley-sbix.ttf`, `test_glyphs-glyf_colr_1.ttf` — test builds
+  from https://github.com/googlefonts/color-fonts (Apache License 2.0,
+  LICENSE-color-fonts.txt). The smiley
+  builds are one Twemoji glyph set (artwork CC-BY 4.0, Twitter, Inc.
+  and contributors) as COLRv1, OT-SVG and sbix, so the three paths
+  render the same glyph side by side; test_glyphs exercises every
+  COLRv1 paint format.
+- `BungeeColor-Regular.ttf` — Bungee Color from
+  https://github.com/google/fonts/tree/main/ofl/bungeecolor, a COLRv0
+  font (SIL OFL 1.1, LICENSE-BungeeColor.txt).
+
+The variable COLRv1 build (test_glyphs-glyf_colr_1_variable) is not
+bundled: go-text/typesetting v0.3.5 cannot parse its item variation
+store (LONG_WORDS delta sets), so its COLR table never loads.
+
+## images/
+
+`blue-purple-pink.lossy.webp` and `blue-purple-pink.lossless.webp`,
+copied unmodified from golang.org/x/image v0.46.0's testdata (BSD,
+LICENSE-x-image.txt): the still-WebP decode fixtures. Animated GIF and
+APNG fixtures are generated in the tests by the encoders themselves.
+
+## svgref/
+
+SVG fixtures (`name.svg`), each beside its reference rasterisation
+(`name.png`) by rsvg-convert, the renderer `render.LoadSVG` is held to:
+`TestLoadSVGMatchesReference` renders every SVG at its PNG's size and
+compares premultiplied pixels within anti-aliasing tolerance
+(`golden.Reference`). The references are another renderer's output, so
+`UPDATE_GOLDEN=1` never rewrites them; `just svg-refs` regenerates them
+with the dev shell's rsvg-convert (librsvg 2.62.3 at the time of
+writing). Where rsvg-convert's own output departs from the spec (it
+clips a group's children one by one, so overlapping children bleed
+along the clip edge) the fixture avoids the case rather than encoding
+the departure.
+
+## golden/
+
+Committed PNG snapshots. A test fails when its golden is missing, so a
+new widget comes with its snapshots; `just goldens`
+(`UPDATE_GOLDEN=1 go test ./render ./widget`) regenerates them.
