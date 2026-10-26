@@ -20,12 +20,12 @@ import (
 // IconCursor is used while parsing SVG files.
 type IconCursor struct {
 	PathCursor
-	icon                                                 *SvgIcon
-	StyleStack                                           []PathStyle
-	grad                                                 *rasterx.Gradient
+	icon       *SvgIcon
+	StyleStack []PathStyle
+	grad       *rasterx.Gradient
 	// gradHref is the open gradient's href: the gradient it inherits its
 	// stops from when it has none of its own.
-	gradHref string
+	gradHref                                             string
 	inTitleText, inDescText, inGrad, inDefs, inDefsStyle bool
 	currentDef                                           []definition
 }
@@ -34,7 +34,7 @@ type IconCursor struct {
 // Since the context of the gradient can affect the colors
 // the current fill or line color is passed in and used in
 // the case of a nil stopClor value
-func (c *IconCursor) ReadGradURL(v string, defaultColor interface{}) (grad rasterx.Gradient, ok bool) {
+func (c *IconCursor) ReadGradURL(v string, defaultColor any) (grad rasterx.Gradient, ok bool) {
 	if strings.HasPrefix(v, "url(") && strings.HasSuffix(v, ")") {
 		urlStr := strings.TrimSpace(v[4 : len(v)-1])
 		if strings.HasPrefix(urlStr, "#") {

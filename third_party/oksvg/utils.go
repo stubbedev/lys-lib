@@ -62,8 +62,8 @@ func splitOnCommaOrSpace(s string) []string {
 
 func parseClasses(data string) (map[string]styleAttribute, error) {
 	res := map[string]styleAttribute{}
-	arr := strings.Split(data, "}")
-	for _, v := range arr {
+	arr := strings.SplitSeq(data, "}")
+	for v := range arr {
 		v = strings.TrimSpace(v)
 		if v == "" {
 			continue
@@ -78,8 +78,8 @@ func parseClasses(data string) (map[string]styleAttribute, error) {
 		if err != nil {
 			return res, err
 		}
-		classes := strings.Split(classesStr, ",")
-		for _, class := range classes {
+		classes := strings.SplitSeq(classesStr, ",")
+		for class := range classes {
 			class = strings.TrimSpace(class)
 			if len(class) > 0 && class[0] == '.' {
 				class = class[1:]
@@ -134,7 +134,7 @@ func readFraction(v string) (f float64, err error) {
 
 // getColor is a helper function to get the background color
 // if ReadGradUrl needs it.
-func getColor(clr interface{}) color.Color {
+func getColor(clr any) color.Color {
 	switch c := clr.(type) {
 	case rasterx.Gradient: // This is a bit lazy but oh well
 		for _, s := range c.Stops {
@@ -148,7 +148,7 @@ func getColor(clr interface{}) color.Color {
 	return colornames.Black
 }
 
-func localizeGradIfStopClrNil(g *rasterx.Gradient, defaultColor interface{}) (grad rasterx.Gradient) {
+func localizeGradIfStopClrNil(g *rasterx.Gradient, defaultColor any) (grad rasterx.Gradient) {
 	grad = *g
 	for _, s := range grad.Stops {
 		if s.StopColor == nil { // This means we need copy the gradient's Stop slice

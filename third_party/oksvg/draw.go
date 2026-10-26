@@ -307,7 +307,7 @@ var (
 				case "offset":
 					stop.Offset, err = readFraction(attr.Value)
 				case "style":
-					for _, decl := range strings.Split(attr.Value, ";") {
+					for decl := range strings.SplitSeq(attr.Value, ";") {
 						if k, v, ok := strings.Cut(decl, ":"); ok && err == nil {
 							err = setStopProperty(&stop, strings.TrimSpace(k), strings.TrimSpace(v))
 						}

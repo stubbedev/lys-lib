@@ -1,7 +1,7 @@
 {
   perSystem = { pkgs, ... }:
     let
-      # The dev shell's Go toolchain. go.mod declares `go 1.27.1` and the
+      # The dev shell's Go toolchain. go.mod declares `go 1.27.3` and the
       # shell holds GOTOOLCHAIN=local, so the version is load-bearing:
       # nixpkgs' default `go` (1.26) cannot compile this module, so the
       # pin is go_1_27 - no toolchain is ever downloaded at dev time.

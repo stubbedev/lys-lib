@@ -1,6 +1,6 @@
 module github.com/stubbedev/lys-lib
 
-go 1.27.1
+go 1.27.3
 
 require (
 	github.com/ebitengine/purego v0.11.1
