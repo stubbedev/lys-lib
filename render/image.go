@@ -39,9 +39,14 @@ const (
 	ImageScaleDown
 )
 
-// roundDiv divides a by b, rounding halves up on the positive values
-// the scaling arithmetic produces.
-func roundDiv(a, b int) int { return (a + b/2) / b }
+// roundDiv is x / d for d > 0, rounded half away from zero, in
+// truncating integer division, as a shader computes it.
+func roundDiv[I int | int32](x, d I) I {
+	if x >= 0 {
+		return (x + d/2) / d
+	}
+	return -((d/2 - x) / d)
+}
 
 // ImagePos places an image's concrete object inside its box, CSS's
 // object-position: per axis the object's origin sits at X (or Y) of the

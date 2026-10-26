@@ -234,3 +234,14 @@ func cubicScale(dst *image.RGBA, rows rowSource) {
 
 // byteOf rounds an accumulated channel into a byte.
 func byteOf(v float32) uint8 { return uint8(clamp8(math.Round(float64(v)))) }
+
+// clamp8 bounds a channel to [0, 255].
+func clamp8(v float64) uint32 {
+	if v < 0 {
+		return 0
+	}
+	if v > 255 {
+		return 255
+	}
+	return uint32(v)
+}

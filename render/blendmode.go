@@ -4,10 +4,11 @@ import "math"
 
 // The CSS compositing and blending operators (mix-blend-mode's
 // separable and non-separable modes): each blends one source color
-// with one destination color the spec's way, then composites through
-// Porter-Duff source-over weighted by the destination alpha. The
-// blending runs on straight (non-premultiplied) channels per the
-// compositing spec; callers convert at the premultiplied boundary.
+// with one backdrop color the spec's way, then composites source-over
+// with the blend weighted by the backdrop alpha. The blending runs on
+// straight (non-premultiplied) channels per the compositing spec, all
+// in integers: every step is exact, so a GPU shader computes the same
+// bytes.
 
 // BlendMode is one CSS mix-blend-mode operator. BlendNormal is the
 // zero value, so an unset property composites as plain source-over.
@@ -63,182 +64,213 @@ func BlendModeNamed(name string) (BlendMode, bool) {
 	return BlendNormal, false
 }
 
-// blendChannel is one separable operator over straight channels in
-// [0, 1].
-func blendChannel(m BlendMode, cs, cb float64) float64 {
+// blendK is the separable modes' fixed-point unit: a channel in
+// [0, 1] is an integer in [0, blendK], 255 * 255, so a product of two
+// 8-bit channels is exact.
+const blendK = 255 * 255
+
+// blendQ is the non-separable modes' unit: a channel times 16, fine
+// enough for the luminance and saturation arithmetic and small enough
+// that their products fit 32 bits.
+const blendQ = 255 * 16
+
+// SoftLightTable is soft-light's D(Cb) for every 8-bit backdrop
+// channel, in blendK units: the one curve the integer blend cannot
+// compute exactly, tabled once for both renderers.
+var SoftLightTable = func() (t [256]int32) {
+	for b := range t {
+		x := float64(b) / 255
+		d := math.Sqrt(x)
+		if x <= 0.25 {
+			d = ((16*x-12)*x + 4) * x
+		}
+		t[b] = int32(math.Round(d * blendK))
+	}
+	return t
+}()
+
+// blendChannel is one channel of a source and backdrop pair: the
+// straight 8-bit values s and b, and the premultiplied sp and bp with
+// their alphas sa and ba, which dodge and burn divide exactly.
+type blendChannel struct{ s, b, sp, sa, bp, ba int32 }
+
+// blendSeparable is a separable mode's B(Cb, Cs) for one channel, in
+// blendK units.
+func blendSeparable(m BlendMode, c blendChannel) int32 {
+	s, b := c.s, c.b
 	switch m {
 	case BlendMultiply:
-		return cs * cb
+		return s * b
 	case BlendScreen:
-		return cs + cb - cs*cb
+		return (s+b)*255 - s*b
 	case BlendOverlay:
-		return blendChannel(BlendHardLight, cb, cs)
+		return blendSeparable(BlendHardLight, blendChannel{s: b, b: s})
 	case BlendDarken:
-		return min(cs, cb)
+		return min(s, b) * 255
 	case BlendLighten:
-		return max(cs, cb)
+		return max(s, b) * 255
 	case BlendColorDodge:
+		// Cb / (1 - Cs) = bp*sa / (ba*(sa - sp)), straight from the
+		// premultiplied channels: a source near white divides by a
+		// sliver, which 8-bit straight values would round away.
 		switch {
-		case cb == 0:
+		case c.bp == 0 || c.ba == 0:
 			return 0
-		case cs == 1:
-			return 1
+		case c.sp >= c.sa:
+			return blendK
 		}
-		return min(1, cb/(1-cs))
+		d := c.ba * (c.sa - c.sp)
+		return 255 * min(255, (c.bp*c.sa*255+d/2)/d)
 	case BlendColorBurn:
+		// 1 - (1 - Cb) / Cs = 1 - (ba - bp)*sa / (ba*sp).
 		switch {
-		case cb == 1:
-			return 1
-		case cs == 0:
+		case c.ba == 0:
+			return 0
+		case c.bp >= c.ba:
+			return blendK
+		case c.sp == 0:
 			return 0
 		}
-		return 1 - min(1, (1-cb)/cs)
+		d := c.ba * c.sp
+		return 255 * (255 - min(255, ((c.ba-c.bp)*c.sa*255+d/2)/d))
 	case BlendHardLight:
-		if cs <= 0.5 {
-			return blendChannel(BlendMultiply, cb, 2*cs)
+		if 2*s <= 255 {
+			return b * 2 * s
 		}
-		return blendChannel(BlendScreen, cb, 2*cs-1)
+		s2 := 2*s - 255
+		return (b+s2)*255 - b*s2
 	case BlendSoftLight:
-		if cs <= 0.5 {
-			return cb - (1-2*cs)*cb*(1-cb)
+		if 2*s <= 255 {
+			return b*255 - roundDiv((255-2*s)*b*(255-b), 255)
 		}
-		d := ((16*cb-12)*cb + 4) * cb
-		if cb > 0.25 {
-			d = math.Sqrt(cb)
-		}
-		return cb + (2*cs-1)*(d-cb)
+		return b*255 + roundDiv((2*s-255)*(SoftLightTable[b]-b*255), 255)
 	case BlendDifference:
-		return math.Abs(cb - cs)
+		if b > s {
+			return (b - s) * 255
+		}
+		return (s - b) * 255
 	case BlendExclusion:
-		return cs + cb - 2*cs*cb
+		return (s+b)*255 - 2*s*b
 	}
-	return cs
+	return s * 255
 }
 
-// lum is the WCAG luminance of a straight color.
-func lum(r, g, b float64) float64 { return 0.3*r + 0.59*g + 0.11*b }
+// lumQ is the spec's Lum of a color in blendQ units.
+func lumQ(c [3]int32) int32 { return (30*c[0] + 59*c[1] + 11*c[2] + 50) / 100 }
 
-// setLum clips the color toward the target luminance, per the
-// compositing spec's non-separable helper.
-func setLum(r, g, b, l float64) (float64, float64, float64) {
-	d := l - lum(r, g, b)
-	r, g, b = r+d, g+d, b+d
-	lo, hi := min(r, min(g, b)), max(r, max(g, b))
-	if lo < 0 {
-		r, g, b = r-lo, g-lo, b-lo
+// setLumQ is the spec's SetLum: c shifted to luminance l, then its
+// ClipColor pulling an out-of-range channel back toward l.
+func setLumQ(c [3]int32, l int32) [3]int32 {
+	d := l - lumQ(c)
+	for i := range c {
+		c[i] += d
 	}
-	if hi > 1 {
-		r, g, b = r+(1-hi), g+(1-hi), b+(1-hi)
-	}
-	return r, g, b
-}
-
-// sat is the color's saturation: max minus min channel.
-func sat(r, g, b float64) float64 { return max(r, max(g, b)) - min(r, min(g, b)) }
-
-// setSat reorders the channels by value and spreads them over
-// [0, max-min] — the spec's Sat() helper. n is the channel indices
-// sorted small, mid, large.
-func setSat(r, g, b float64, s float64) (float64, float64, float64) {
-	ch := [3]float64{r, g, b}
-	ord := [3]int{0, 1, 2}
-	for i := 1; i < 3; i++ {
-		for j := i; j > 0 && ch[ord[j-1]] > ch[ord[j]]; j-- {
-			ord[j-1], ord[j] = ord[j], ord[j-1]
+	l = lumQ(c)
+	lo, hi := min(c[0], c[1], c[2]), max(c[0], c[1], c[2])
+	if lo < 0 && l != lo {
+		for i := range c {
+			c[i] = l + (c[i]-l)*l/(l-lo)
 		}
 	}
-	c := [3]float64{}
-	c[ord[1]] = s / 2
-	if ch[ord[2]] > ch[ord[0]] {
-		c[ord[2]] = s
+	if hi > blendQ && hi != l {
+		for i := range c {
+			c[i] = l + (c[i]-l)*(blendQ-l)/(hi-l)
+		}
 	}
-	return c[0], c[1], c[2]
+	return c
 }
 
-// blendNonSeparable blends the non-separable modes: hue, saturation,
-// color and luminosity mix the two colors' hue/saturation/luminance
-// components, each result pinned to the backdrop's luminance except
-// luminosity, which takes the source's.
-func blendNonSeparable(m BlendMode, cs, cb [3]float64) [3]float64 {
+// satQ is the spec's Sat: the largest channel less the smallest.
+func satQ(c [3]int32) int32 { return max(c[0], c[1], c[2]) - min(c[0], c[1], c[2]) }
+
+// setSatQ is the spec's SetSat: the channels ordered small, mid, large
+// (ties kept in channel order), the small one at 0, the large at s and
+// the mid in proportion between; a gray stays black.
+func setSatQ(c [3]int32, s int32) [3]int32 {
+	o := [3]int{0, 1, 2}
+	if c[o[0]] > c[o[1]] {
+		o[0], o[1] = o[1], o[0]
+	}
+	if c[o[1]] > c[o[2]] {
+		o[1], o[2] = o[2], o[1]
+	}
+	if c[o[0]] > c[o[1]] {
+		o[0], o[1] = o[1], o[0]
+	}
+	var out [3]int32
+	if span := c[o[2]] - c[o[0]]; span > 0 {
+		out[o[1]] = (c[o[1]] - c[o[0]]) * s / span
+		out[o[2]] = s
+	}
+	return out
+}
+
+// blendNonSeparable is a non-separable mode's B(Cb, Cs) for straight
+// colors in blendQ units: hue, saturation and color keep the
+// backdrop's luminance, luminosity takes the source's.
+func blendNonSeparable(m BlendMode, s, b [3]int32) [3]int32 {
 	switch m {
 	case BlendHue:
-		r, g, b := setSat(cs[0], cs[1], cs[2], sat(cb[0], cb[1], cb[2]))
-		r, g, b = setLum(r, g, b, lum(cb[0], cb[1], cb[2]))
-		return [3]float64{r, g, b}
+		return setLumQ(setSatQ(s, satQ(b)), lumQ(b))
 	case BlendSaturation:
-		r, g, b := setSat(cb[0], cb[1], cb[2], sat(cs[0], cs[1], cs[2]))
-		r, g, b = setLum(r, g, b, lum(cb[0], cb[1], cb[2]))
-		return [3]float64{r, g, b}
+		return setLumQ(setSatQ(b, satQ(s)), lumQ(b))
 	case BlendColor:
-		r, g, b := setLum(cs[0], cs[1], cs[2], lum(cb[0], cb[1], cb[2]))
-		return [3]float64{r, g, b}
-	case BlendLuminosity:
-		r, g, b := setLum(cb[0], cb[1], cb[2], lum(cs[0], cs[1], cs[2]))
-		return [3]float64{r, g, b}
+		return setLumQ(s, lumQ(b))
 	}
-	return cs
+	return setLumQ(b, lumQ(s))
 }
 
-// BlendColors composites the straight source color (channels in
-// [0, 1], alpha a in [0, 1]) over the straight backdrop under the
-// blend mode, per the compositing and blending spec: the blended
-// color B(Cb, Cs) weighted by the backdrop alpha, then source-over.
-func BlendColors(m BlendMode, sr, sg, sb, sa float64, dr, dg, db, da float64) (float64, float64, float64, float64) {
-	if sa == 0 {
-		return dr, dg, db, da
+// separable reports whether m blends channel by channel.
+func (m BlendMode) separable() bool { return m < BlendHue }
+
+// straightIn is a premultiplied color's straight channels scaled to
+// unit (255 for 8 bits, blendQ for the non-separable modes), rounded;
+// all zero for a transparent color.
+func straightIn(c Color, unit int32) [3]int32 {
+	a := int32(c.A())
+	if a == 0 {
+		return [3]int32{}
 	}
-	if m == BlendNormal {
-		return sr, sg, sb, sa + da*(1-sa)
+	ch := [3]int32{int32(c.R()), int32(c.G()), int32(c.B())}
+	for i, v := range ch {
+		ch[i] = min(unit, (v*unit+a/2)/a)
 	}
-	var br, bg, bb float64
-	switch m {
-	case BlendHue, BlendSaturation, BlendColor, BlendLuminosity:
-		br, bg, bb = blendChannel3(m, sr, sg, sb, dr, dg, db)
-	default:
-		br = blendChannel(m, sr, dr)
-		bg = blendChannel(m, sg, dg)
-		bb = blendChannel(m, sb, db)
-	}
-	or := (1-da)*sr + da*br
-	og := (1-da)*sg + da*bg
-	ob := (1-da)*sb + da*bb
-	return or, og, ob, sa + da*(1-sa)
+	return ch
 }
 
-// blendChannel3 runs one non-separable mode and spreads its result.
-func blendChannel3(m BlendMode, sr, sg, sb, dr, dg, db float64) (float64, float64, float64) {
-	out := blendNonSeparable(m, [3]float64{sr, sg, sb}, [3]float64{dr, dg, db})
-	return out[0], out[1], out[2]
-}
-
-// blendPixel writes the premultiplied src over the premultiplied dst
-// under the blend mode: un-premultiply both, blend, composite, and
-// re-premultiply — the canvas's blend() with the operator applied.
+// blendPixel composites the premultiplied src over the premultiplied
+// dst under the blend mode, the compositing spec's way: the result is
+// the source where the backdrop is clear, B(Cb, Cs) where both cover,
+// and the backdrop where the source is clear,
+//
+//	co = as*(1-ab)*Cs + as*ab*B(Cb, Cs) + (1-as)*ab*Cb
+//	ao = as + ab*(1-as)
+//
+// in integers, B rounded to 8 bits first.
 func blendPixel(m BlendMode, src, dst Color) Color {
-	if src.A() == 0 {
+	sa, da := int32(src.A()), int32(dst.A())
+	if sa == 0 {
 		return dst
 	}
-	ss, ds := src.Straight(), dst.Straight()
-	r, g, b, a := BlendColors(m,
-		float64(ss[0])/255, float64(ss[1])/255, float64(ss[2])/255, float64(ss[3])/255,
-		float64(ds[0])/255, float64(ds[1])/255, float64(ds[2])/255, float64(ds[3])/255)
-	ai := uint32(min(255, math.Round(a*255)))
-	if ai == 0 {
-		return 0
+	var bl [3]int32
+	sp := [3]int32{int32(src.R()), int32(src.G()), int32(src.B())}
+	dp := [3]int32{int32(dst.R()), int32(dst.G()), int32(dst.B())}
+	if m.separable() {
+		s, b := straightIn(src, 255), straightIn(dst, 255)
+		for i := range bl {
+			bl[i] = (blendSeparable(m, blendChannel{s: s[i], b: b[i], sp: sp[i], sa: sa, bp: dp[i], ba: da}) + 127) / 255
+		}
+	} else {
+		q := blendNonSeparable(m, straightIn(src, blendQ), straightIn(dst, blendQ))
+		for i := range bl {
+			bl[i] = min(255, max(0, (q[i]+8)/16))
+		}
 	}
-	// Re-premultiply through the rounded alpha so the channels stay
-	// consistent with every other premultiplied producer here.
-	pm := float64(ai) / 255
-	return Color(ai<<24 | clamp8(math.Round(r*255*pm))<<16 | clamp8(math.Round(g*255*pm))<<8 | clamp8(math.Round(b*255*pm)))
-}
-
-// clamp8 bounds a channel to [0, 255].
-func clamp8(v float64) uint32 {
-	if v < 0 {
-		return 0
+	ao := (sa*255 + da*(255-sa) + 127) / 255
+	var out [3]uint32
+	for i := range out {
+		x := sp[i]*(255-da) + dp[i]*(255-sa) + (sa*da*bl[i]+127)/255
+		out[i] = uint32(min((x+127)/255, ao))
 	}
-	if v > 255 {
-		return 255
-	}
-	return uint32(v)
+	return Color(uint32(ao)<<24 | out[0]<<16 | out[1]<<8 | out[2])
 }

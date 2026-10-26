@@ -60,11 +60,7 @@ func (c *Canvas) DrawLayer(l *Layer, src Rect, mode BlendMode) {
 				c.set(x, y, col.over(c.get(x, y)))
 				continue
 			}
-			out := blendPixel(mode, col, c.get(x, y))
-			if c.bright != 0 && c.bright != 1 {
-				out = brighten(out, c.bright)
-			}
-			c.set(x, y, out)
+			c.set(x, y, blendPixel(mode, col, c.get(x, y)))
 		}
 	}
 }

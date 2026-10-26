@@ -2,136 +2,217 @@ package render
 
 import (
 	"math"
+	"math/rand/v2"
 	"testing"
 )
 
-// The blend-mode conformance set (CSS compositing-1): every separable
-// and non-separable operator probed on known straight-channel inputs
-// with an opaque backdrop (where the blend result is the operator's
-// own output), the destination-alpha weighting rule, and the keyword
-// table mix-blend-mode parses through.
+// The blend-mode conformance set (CSS compositing-1): blendPixel against
+// a float64 reference written from the spec's own formulas, over every
+// operator, translucent sources and backdrops included; the separable
+// operators' defining identities; and the keyword table mix-blend-mode
+// parses through.
 
-func TestBlendModesAgainstKnownColors(t *testing.T) {
-	cases := []struct {
-		name   string
-		cs, cb [3]float64
-		want   [3]float64
-	}{
-		{"multiply", [3]float64{0.5, 0.5, 0.5}, [3]float64{1, 0.5, 0}, [3]float64{0.5, 0.25, 0}},
-		{"screen", [3]float64{0.5, 1, 0}, [3]float64{1, 0.5, 0}, [3]float64{1, 1, 0}},
-		{"darken", [3]float64{0.8, 0.2, 0.5}, [3]float64{0.3, 0.9, 0.5}, [3]float64{0.3, 0.2, 0.5}},
-		{"lighten", [3]float64{0.8, 0.2, 0.5}, [3]float64{0.3, 0.9, 0.5}, [3]float64{0.8, 0.9, 0.5}},
-		// B(cb, cs) = min(1, cb / (1 - cs)): a black source keeps the
-		// backdrop, a white one saturates it.
-		{"color-dodge", [3]float64{0.5, 1, 0}, [3]float64{0.5, 0.5, 0.5}, [3]float64{1, 1, 0.5}},
-		{"color-burn", [3]float64{0.5, 0, 0.25}, [3]float64{0.5, 0.5, 1}, [3]float64{0, 0, 1}},
-		{"difference", [3]float64{0.8, 0.2, 0.5}, [3]float64{0.3, 0.9, 0.5}, [3]float64{0.5, 0.7, 0}},
-		{"exclusion", [3]float64{0.5, 0.5, 1}, [3]float64{0.5, 0.25, 0.5}, [3]float64{0.5, 0.5, 0.5}},
-	}
-	for _, c := range cases {
-		m, ok := BlendModeNamed(c.name)
-		if !ok {
-			t.Fatalf("%s: not a keyword", c.name)
-		}
-		for i := range 3 {
-			got := blendChannel(m, c.cs[i], c.cb[i])
-			if abs64(got-c.want[i]) > 1e-9 {
-				t.Errorf("%s channel %d: %v, want %v", c.name, i, got, c.want[i])
+// specBlend is the spec's B(Cb, Cs) for one mode over straight colors
+// in [0, 1].
+func specBlend(m BlendMode, cs, cb [3]float64) [3]float64 {
+	lum := func(c [3]float64) float64 { return 0.3*c[0] + 0.59*c[1] + 0.11*c[2] }
+	clip := func(c [3]float64) [3]float64 {
+		l := lum(c)
+		n, x := min(c[0], c[1], c[2]), max(c[0], c[1], c[2])
+		for i := range c {
+			if n < 0 {
+				c[i] = l + (c[i]-l)*l/(l-n)
 			}
 		}
+		for i := range c {
+			if x > 1 {
+				c[i] = l + (c[i]-l)*(1-l)/(x-l)
+			}
+		}
+		return c
+	}
+	setLum := func(c [3]float64, l float64) [3]float64 {
+		d := l - lum(c)
+		return clip([3]float64{c[0] + d, c[1] + d, c[2] + d})
+	}
+	sat := func(c [3]float64) float64 { return max(c[0], c[1], c[2]) - min(c[0], c[1], c[2]) }
+	setSat := func(c [3]float64, s float64) [3]float64 {
+		o := [3]int{0, 1, 2}
+		if c[o[0]] > c[o[1]] {
+			o[0], o[1] = o[1], o[0]
+		}
+		if c[o[1]] > c[o[2]] {
+			o[1], o[2] = o[2], o[1]
+		}
+		if c[o[0]] > c[o[1]] {
+			o[0], o[1] = o[1], o[0]
+		}
+		var out [3]float64
+		if c[o[2]] > c[o[0]] {
+			out[o[1]] = (c[o[1]] - c[o[0]]) * s / (c[o[2]] - c[o[0]])
+			out[o[2]] = s
+		}
+		return out
+	}
+	switch m {
+	case BlendHue:
+		return setLum(setSat(cs, sat(cb)), lum(cb))
+	case BlendSaturation:
+		return setLum(setSat(cb, sat(cs)), lum(cb))
+	case BlendColor:
+		return setLum(cs, lum(cb))
+	case BlendLuminosity:
+		return setLum(cb, lum(cs))
+	}
+	var out [3]float64
+	for i := range out {
+		s, b := cs[i], cb[i]
+		var v float64
+		hard := func(s, b float64) float64 {
+			if s <= 0.5 {
+				return b * 2 * s
+			}
+			return b + (2*s - 1) - b*(2*s-1)
+		}
+		switch m {
+		case BlendMultiply:
+			v = s * b
+		case BlendScreen:
+			v = s + b - s*b
+		case BlendOverlay:
+			v = hard(b, s)
+		case BlendDarken:
+			v = min(s, b)
+		case BlendLighten:
+			v = max(s, b)
+		case BlendColorDodge:
+			switch {
+			case b == 0:
+			case s == 1:
+				v = 1
+			default:
+				v = min(1, b/(1-s))
+			}
+		case BlendColorBurn:
+			switch {
+			case b == 1:
+				v = 1
+			case s == 0:
+			default:
+				v = 1 - min(1, (1-b)/s)
+			}
+		case BlendHardLight:
+			v = hard(s, b)
+		case BlendSoftLight:
+			if s <= 0.5 {
+				v = b - (1-2*s)*b*(1-b)
+			} else {
+				d := math.Sqrt(b)
+				if b <= 0.25 {
+					d = ((16*b-12)*b + 4) * b
+				}
+				v = b + (2*s-1)*(d-b)
+			}
+		case BlendDifference:
+			v = math.Abs(b - s)
+		case BlendExclusion:
+			v = s + b - 2*s*b
+		default:
+			v = s
+		}
+		out[i] = v
+	}
+	return out
+}
+
+// specComposite is the spec's premultiplied result of src over dst
+// under m, in 8-bit channels before rounding.
+func specComposite(m BlendMode, src, dst Color) (co [3]float64, ao float64) {
+	as, ab := float64(src.A())/255, float64(dst.A())/255
+	straight := func(c Color) [3]float64 {
+		a := float64(c.A())
+		if a == 0 {
+			return [3]float64{}
+		}
+		return [3]float64{float64(c.R()) / a, float64(c.G()) / a, float64(c.B()) / a}
+	}
+	cs, cb := straight(src), straight(dst)
+	b := specBlend(m, cs, cb)
+	for i := range co {
+		co[i] = 255 * (as*(1-ab)*cs[i] + as*ab*b[i] + (1-as)*ab*cb[i])
+	}
+	return co, 255 * (as + ab*(1-as))
+}
+
+// Every operator matches the spec within two levels, opaque and
+// translucent, separable and not (#334).
+func TestBlendPixelMatchesTheSpec(t *testing.T) {
+	r := rand.New(rand.NewPCG(1, 2))
+	color := func() Color {
+		a := uint32(r.IntN(256))
+		if r.IntN(4) == 0 {
+			a = 255
+		}
+		ch := func() uint32 { return uint32(r.IntN(int(a) + 1)) }
+		return Color(a<<24 | ch()<<16 | ch()<<8 | ch())
+	}
+	for m := BlendNormal; m <= BlendLuminosity; m++ {
+		worst := 0.0
+		for range 4000 {
+			src, dst := color(), color()
+			got := blendPixel(m, src, dst)
+			co, ao := specComposite(m, src, dst)
+			if src.A() == 0 {
+				co, ao = [3]float64{float64(dst.R()), float64(dst.G()), float64(dst.B())}, float64(dst.A())
+			}
+			worst = max(worst, math.Abs(float64(got.A())-ao))
+			for i, g := range [3]uint8{got.R(), got.G(), got.B()} {
+				d := math.Abs(float64(g) - co[i])
+				worst = max(worst, d)
+				if d > 2 {
+					t.Fatalf("%s: %08x over %08x = %08x, channel %d %.2f off the spec's %.2f", m, uint32(src), uint32(dst), uint32(got), i, d, co[i])
+				}
+			}
+		}
+		t.Logf("%s: worst %.2f", m, worst)
 	}
 }
 
-// TestBlendDodgeBurnOperandOrder pins which operand divides: dodge
-// divides the backdrop by the inverted source, burn the inverted
-// backdrop by the source — swapped operands give other numbers here.
-func TestBlendDodgeBurnOperandOrder(t *testing.T) {
+// Opaque colors under each separable operator give the spec's exact
+// 8-bit results, dodge and burn dividing the operand the spec divides.
+func TestBlendSeparableKnownColors(t *testing.T) {
 	for _, c := range []struct {
-		mode      BlendMode
-		cs, cb, w float64
+		m        BlendMode
+		src, dst Color
+		r, g, b  uint8
 	}{
-		{BlendColorDodge, 0.2, 0.4, 0.5},
-		{BlendColorDodge, 0.75, 0.1, 0.4},
-		{BlendColorBurn, 0.8, 0.6, 0.5},
-		{BlendColorBurn, 0.4, 0.9, 0.75},
+		{BlendMultiply, RGB(128, 128, 128), RGB(255, 128, 0), 128, 64, 0},
+		{BlendScreen, RGB(128, 255, 0), RGB(255, 128, 0), 255, 255, 0},
+		{BlendDarken, RGB(204, 51, 128), RGB(77, 230, 128), 77, 51, 128},
+		{BlendLighten, RGB(204, 51, 128), RGB(77, 230, 128), 204, 230, 128},
+		{BlendDifference, RGB(204, 51, 128), RGB(77, 230, 128), 127, 179, 0},
+		{BlendColorDodge, RGB(51, 191, 0), RGB(102, 26, 128), 128, 104, 128},
+		{BlendColorBurn, RGB(204, 102, 0), RGB(153, 230, 255), 127, 192, 255},
 	} {
-		if got := blendChannel(c.mode, c.cs, c.cb); abs64(got-c.w) > 1e-9 {
-			t.Errorf("%v(cs %v, cb %v) = %v, want %v", c.mode, c.cs, c.cb, got, c.w)
+		got := blendPixel(c.m, c.src, c.dst)
+		if got.A() != 255 || got.R() != c.r || got.G() != c.g || got.B() != c.b {
+			t.Errorf("%s: %08x over %08x = %08x, want %02x%02x%02x", c.m, uint32(c.src), uint32(c.dst), uint32(got), c.r, c.g, c.b)
 		}
 	}
 }
 
-func TestBlendOverlayHardLightSwap(t *testing.T) {
-	// overlay(Cb, Cs) is hard-light(Cs, Cb): the spec's one identity
-	// between operators, cheap to pin.
-	for _, p := range [][2]float64{{0.2, 0.7}, {0.6, 0.3}, {0.5, 0.5}, {1, 0}} {
-		if o := blendChannel(BlendOverlay, p[0], p[1]); o != blendChannel(BlendHardLight, p[1], p[0]) {
-			t.Errorf("overlay(%v,%v)=%v, hard-light swapped=%v", p[0], p[1], o, blendChannel(BlendHardLight, p[1], p[0]))
+// overlay(Cb, Cs) is hard-light(Cs, Cb), the spec's one identity
+// between operators; soft-light at mid-gray is the identity.
+func TestBlendSeparableIdentities(t *testing.T) {
+	for s := int32(0); s < 256; s += 17 {
+		for b := int32(0); b < 256; b += 15 {
+			if o, h := blendSeparable(BlendOverlay, blendChannel{s: s, b: b}), blendSeparable(BlendHardLight, blendChannel{s: b, b: s}); o != h {
+				t.Fatalf("overlay(%d, %d) = %d, hard-light swapped %d", s, b, o, h)
+			}
 		}
-	}
-}
-
-func TestBlendSoftLightSpecExample(t *testing.T) {
-	// The compositing spec's own soft-light example class: a dark
-	// source darkens, a light source lightens, and 0.5 is the identity.
-	for _, p := range [][2]float64{{0.25, 0.75}, {0.75, 0.25}, {0.5, 0.42}} {
-		got := blendChannel(BlendSoftLight, p[0], p[1])
-		if p[0] == 0.5 && got != p[1] {
-			t.Errorf("soft-light 0.5 must be the identity: %v", got)
+		if got := (blendSeparable(BlendSoftLight, blendChannel{s: 127, b: s}) + 127) / 255; got < s-1 || got > s+1 {
+			t.Errorf("soft-light at mid-gray over %d gives %d", s, got)
 		}
-		if p[0] < 0.5 && got > p[1] {
-			t.Errorf("soft-light dark source lightened: %v over %v", got, p[1])
-		}
-		if p[0] > 0.5 && got < p[1] {
-			t.Errorf("soft-light light source darkened: %v over %v", got, p[1])
-		}
-	}
-}
-
-func TestBlendNonSeparableKeepBackdropLuminance(t *testing.T) {
-	// hue, saturation and color pin the result to the backdrop's
-	// luminance; luminosity takes the source's.
-	cb := [3]float64{0.8, 0.4, 0.2}
-	cs := [3]float64{0.1, 0.6, 0.9}
-	for _, m := range []BlendMode{BlendHue, BlendSaturation, BlendColor} {
-		out := blendNonSeparable(m, cs, cb)
-		if abs64(lum(out[0], out[1], out[2])-lum(cb[0], cb[1], cb[2])) > 1e-9 {
-			t.Errorf("%s moved the backdrop luminance: %v", m, out)
-		}
-	}
-	out := blendNonSeparable(BlendLuminosity, cs, cb)
-	if abs64(lum(out[0], out[1], out[2])-lum(cs[0], cs[1], cs[2])) > 1e-9 {
-		t.Errorf("luminosity dropped the source luminance: %v", out)
-	}
-}
-
-func TestBlendColorsDestinationAlphaWeighting(t *testing.T) {
-	// With a transparent backdrop the blend result must be the source
-	// itself (B never shows through nothing), and with a fully
-	// transparent source the destination survives untouched.
-	r, g, b, a := BlendColors(BlendMultiply, 0.8, 0.6, 0.4, 1, 0.5, 0.5, 0.5, 0)
-	if r != 0.8 || g != 0.6 || b != 0.4 || a != 1 {
-		t.Errorf("blend over transparent backdrop: %v %v %v %v", r, g, b, a)
-	}
-	r, g, b, a = BlendColors(BlendMultiply, 0.8, 0.6, 0.4, 0, 0.5, 0.5, 0.5, 1)
-	if r != 0.5 || g != 0.5 || b != 0.5 || a != 1 {
-		t.Errorf("transparent source changed the destination: %v %v %v %v", r, g, b, a)
-	}
-}
-
-func TestBlendPixelPremultipliedComposite(t *testing.T) {
-	// An opaque source under multiply over an opaque backdrop is the
-	// multiplied color written opaque; a half-alpha source keeps the
-	// destination's other half.
-	dst := RGB(200, 100, 50)
-	got := blendPixel(BlendMultiply, RGB(128, 128, 128), dst)
-	wantR := uint32(200) * 128 / 255
-	if got.A() != 0xff || abs64(float64(got.R())-float64(wantR)) > 1 {
-		t.Errorf("multiply pixel = %08x, want ~%08x", uint32(got), 0xff000000|wantR<<16)
-	}
-	got = blendPixel(BlendMultiply, RGBA(255, 255, 255, 128), 0)
-	if got.A() != 128 || got.R() != 128 || got.G() != 128 || got.B() != 128 {
-		t.Errorf("half-alpha blend over transparent = %08x, want premultiplied 128s", uint32(got))
 	}
 }
 
