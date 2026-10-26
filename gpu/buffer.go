@@ -15,9 +15,12 @@ type buffer struct {
 	buf    vk.Buffer
 	memory vk.DeviceMemory
 	usage  vk.BufferUsageFlagBits
-	// coherent is whether device writes show in mapped without an
-	// invalidate.
-	coherent bool
+	// read marks a buffer the CPU reads (newReadBuffer), which fit
+	// reallocates as one.
+	read bool
+	// flags are the memory's properties: coherent memory shows device
+	// writes in mapped without an invalidate.
+	flags vk.MemoryPropertyFlags
 	// mapped is the whole buffer.
 	mapped []byte
 }
@@ -33,10 +36,14 @@ func (d *Device) newBuffer(size int, usage vk.BufferUsageFlagBits) (*buffer, err
 // next chains onto the buffer's create info.
 func (d *Device) newReadBuffer(size int, usage vk.BufferUsageFlagBits, next unsafe.Pointer) (*buffer, error) {
 	b, err := d.newMappedBuffer(size, usage, next, vk.MemoryPropertyHostVisibleBit|vk.MemoryPropertyHostCachedBit)
-	if err == nil {
-		return b, nil
+	if err != nil {
+		b, err = d.newMappedBuffer(size, usage, next, vk.MemoryPropertyHostVisibleBit|vk.MemoryPropertyHostCoherentBit)
 	}
-	return d.newMappedBuffer(size, usage, next, vk.MemoryPropertyHostVisibleBit|vk.MemoryPropertyHostCoherentBit)
+	if err != nil {
+		return nil, err
+	}
+	b.read = true
+	return b, nil
 }
 
 // newMappedBuffer allocates size bytes for usage in memory with every
@@ -49,12 +56,12 @@ func (d *Device) newMappedBuffer(size int, usage vk.BufferUsageFlagBits, next un
 	}
 	var req vk.MemoryRequirements
 	d.cmds.GetBufferMemoryRequirements(d.device, b.buf, &req)
-	mem, coherent, err := d.allocateMapped(req, want)
+	mem, flags, err := d.allocateMapped(req, want)
 	if err != nil {
 		b.close()
 		return nil, err
 	}
-	b.memory, b.coherent = mem, coherent
+	b.memory, b.flags = mem, flags
 	if r := d.cmds.BindBufferMemory(d.device, b.buf, b.memory, 0); r != vk.Success {
 		b.close()
 		return nil, fmt.Errorf("gpu: vkBindBufferMemory: %d", r)
@@ -75,14 +82,17 @@ func (b *buffer) fit(size int) (*buffer, error) {
 	if b != nil && len(b.mapped) >= size {
 		return b, nil
 	}
-	d, usage := b.d, b.usage
+	d, usage, read := b.d, b.usage, b.read
 	b.close()
+	if read {
+		return d.newReadBuffer(max(2*size, 1<<16), usage, nil)
+	}
 	return d.newBuffer(max(2*size, 1<<16), usage)
 }
 
 // invalidate makes the device's writes to b visible in mapped.
 func (b *buffer) invalidate() error {
-	if b.coherent {
+	if b.flags&vk.MemoryPropertyFlags(vk.MemoryPropertyHostCoherentBit) != 0 {
 		return nil
 	}
 	r := vk.MappedMemoryRange{SType: vk.StructureTypeMappedMemoryRange, Memory: b.memory, Size: vk.DeviceSize(vk.WholeSize)}

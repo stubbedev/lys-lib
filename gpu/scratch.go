@@ -90,14 +90,15 @@ func (d *Device) ensureScratch(w, h int) error {
 			return err
 		}
 		for _, b := range []**buffer{&d.prims, &d.words, &d.staging, &d.readback} {
-			usage := vk.BufferUsageStorageBufferBit
 			switch b {
 			case &d.staging:
-				usage = vk.BufferUsageTransferSrcBit
+				*b, err = d.newBuffer(1<<16, vk.BufferUsageTransferSrcBit)
 			case &d.readback:
-				usage = vk.BufferUsageTransferDstBit
+				*b, err = d.newReadBuffer(1<<16, vk.BufferUsageTransferDstBit, nil)
+			default:
+				*b, err = d.newBuffer(1<<16, vk.BufferUsageStorageBufferBit)
 			}
-			if *b, err = d.newBuffer(1<<16, usage); err != nil {
+			if err != nil {
 				return err
 			}
 		}

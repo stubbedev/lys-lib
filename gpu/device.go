@@ -297,14 +297,14 @@ func (d *Device) allocate(req vk.MemoryRequirements, want vk.MemoryPropertyFlagB
 	return mem, err
 }
 
-// allocateMapped is allocate for memory the CPU maps, and whether the
-// type it landed in is coherent.
-func (d *Device) allocateMapped(req vk.MemoryRequirements, want vk.MemoryPropertyFlagBits) (vk.DeviceMemory, bool, error) {
+// allocateMapped is allocate for memory the CPU maps, and the
+// properties of the type it landed in.
+func (d *Device) allocateMapped(req vk.MemoryRequirements, want vk.MemoryPropertyFlagBits) (vk.DeviceMemory, vk.MemoryPropertyFlags, error) {
 	mem, mt, err := d.allocateIn(req, want, nil)
 	if err != nil {
-		return 0, false, err
+		return 0, 0, err
 	}
-	return mem, d.memProps.MemoryTypes[mt].PropertyFlags&vk.MemoryPropertyFlags(vk.MemoryPropertyHostCoherentBit) != 0, nil
+	return mem, d.memProps.MemoryTypes[mt].PropertyFlags, nil
 }
 
 func (d *Device) allocateIn(req vk.MemoryRequirements, want vk.MemoryPropertyFlagBits, next unsafe.Pointer) (vk.DeviceMemory, uint32, error) {

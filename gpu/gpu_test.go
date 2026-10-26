@@ -12,6 +12,7 @@ import (
 
 	"github.com/stubbedev/lys-ui/dmabuf"
 	"github.com/stubbedev/lys-ui/internal/gputest"
+	"github.com/stubbedev/lys-ui/third_party/vk"
 )
 
 // openDevice opens the test's device (internal/gputest picks the
@@ -215,5 +216,32 @@ func TestBufferExportsWithoutRendering(t *testing.T) {
 	d.Close()
 	if len(d.buffers) != 0 {
 		t.Errorf("%d buffers outlived their device", len(d.buffers))
+	}
+}
+
+// Buffers the CPU reads back (a frame's readbacks, ReadPixels, the
+// encoder's bitstream) sit in cached memory where the device has any:
+// uncached, write-combined memory reads back some forty times slower
+// (418 MB/s against 16 GB/s on an RTX 3060 Ti).
+func TestReadBuffersAreCached(t *testing.T) {
+	d := openDevice(t)
+	cached := vk.MemoryPropertyFlags(vk.MemoryPropertyHostVisibleBit | vk.MemoryPropertyHostCachedBit)
+	offered := false
+	for i := range d.memProps.MemoryTypeCount {
+		offered = offered || d.memProps.MemoryTypes[i].PropertyFlags&cached == cached
+	}
+	if !offered {
+		t.Skipf("%s has no cached host memory", d.Name())
+	}
+	if err := d.ensureScratch(4, 4); err != nil {
+		t.Fatal(err)
+	}
+	grown, err := d.readback.fit(1 << 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d.readback = grown
+	if d.readback.flags&cached != cached {
+		t.Errorf("the grown readback buffer sits in memory %#x, want cached", d.readback.flags)
 	}
 }

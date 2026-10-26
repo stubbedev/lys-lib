@@ -137,7 +137,7 @@ func (t *Target) clear(rgba [4]float32) error {
 func (t *Target) ReadPixels() (*image.RGBA, error) {
 	d := t.s.d
 	w, h := t.buf.Width, t.buf.Height
-	staging, err := d.newBuffer(w*h*4, vk.BufferUsageTransferDstBit)
+	staging, err := d.newReadBuffer(w*h*4, vk.BufferUsageTransferDstBit, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -148,6 +148,9 @@ func (t *Target) ReadPixels() (*image.RGBA, error) {
 		t.release(cb)
 	})
 	if err != nil {
+		return nil, err
+	}
+	if err := staging.invalidate(); err != nil {
 		return nil, err
 	}
 	img := image.NewRGBA(image.Rect(0, 0, w, h))

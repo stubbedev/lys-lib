@@ -248,6 +248,9 @@ func (f *frame) cpu(region render.Rect, surfaces []*surface, fn func(cvs []*rend
 	if f.err = f.flush(false); f.err != nil {
 		return
 	}
+	if f.err = f.d.readback.invalidate(); f.err != nil {
+		return
+	}
 	cvs := make([]*render.Canvas, len(surfaces))
 	for i := range surfaces {
 		sc := f.d.scratchCanvas(i, f.target.s.w, f.target.s.h, f.num, f.denom)
