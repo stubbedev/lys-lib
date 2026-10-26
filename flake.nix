@@ -20,5 +20,8 @@
         ./nix/shell.nix
         ./nix/toolchain.nix
       ];
+      # The GPU driver environment for the lys family's dev shells:
+      # gpuDriverEnv pkgs is { libraries; shellHook; }.
+      flake.lib.gpuDriverEnv = import ./nix/gpu-drivers.nix;
     };
 }
