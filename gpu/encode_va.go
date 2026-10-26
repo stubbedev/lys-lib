@@ -388,6 +388,8 @@ func (vb *vaBackend) importPicture(b dmabuf.Buffer) (uint32, error) {
 	return id, nil
 }
 
+func (vb *vaBackend) kind() EncoderBackend { return VAAPI }
+
 func (vb *vaBackend) codedSize() [2]int { return vb.coded }
 
 func (vb *vaBackend) parameterSets() [][]byte { return vb.codec.parameterSets() }

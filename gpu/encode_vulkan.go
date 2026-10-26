@@ -64,6 +64,8 @@ func newVulkanBackend(d *Device, cfg EncoderConfig) (*vulkanBackend, error) {
 	return vb, nil
 }
 
+func (vb *vulkanBackend) kind() EncoderBackend { return VulkanVideo }
+
 func (vb *vulkanBackend) codedSize() [2]int { return vb.coded }
 
 func (vb *vulkanBackend) parameterSets() [][]byte { return vb.paramSets }

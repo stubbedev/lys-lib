@@ -310,7 +310,7 @@ func subsampled(t *testing.T, ffmpeg string, src []*image.RGBA) []float64 {
 
 // backend is a way the device encodes a codec.
 type backend struct {
-	name string
+	kind EncoderBackend
 	open func(EncoderConfig) (*Encoder, error)
 }
 
@@ -319,12 +319,49 @@ type backend struct {
 func backends(d *Device, c Codec) []backend {
 	var out []backend
 	if d.video != nil && slices.Contains(d.video.codecs, c) {
-		out = append(out, backend{"Vulkan", func(cfg EncoderConfig) (*Encoder, error) { return newEncoderOn(d, cfg, newVulkanBackend) }})
+		out = append(out, backend{VulkanVideo, func(cfg EncoderConfig) (*Encoder, error) { return newEncoderOn(d, cfg, newVulkanBackend) }})
 	}
 	if slices.Contains(d.vaCodecs(), c) {
-		out = append(out, backend{"VA-API", func(cfg EncoderConfig) (*Encoder, error) { return newEncoderOn(d, cfg, newVABackend) }})
+		out = append(out, backend{VAAPI, func(cfg EncoderConfig) (*Encoder, error) { return newEncoderOn(d, cfg, newVABackend) }})
 	}
 	return out
+}
+
+// An encoder says which path it encodes through, the one it was made
+// on, and NewEncoder takes the Vulkan video queue where it encodes the
+// codec: Vulkan video on NVIDIA, VA-API on Intel Xe2, whose Vulkan
+// driver encodes no video.
+func TestEncoderBackend(t *testing.T) {
+	for _, codec := range []Codec{H264, H265} {
+		t.Run(codec.String(), func(t *testing.T) {
+			d, _ := encodingDevice(t, codec)
+			cfg := EncoderConfig{Codec: codec, Width: 64, Height: 64, FrameRate: 30, KeyInterval: 30, QP: 20}
+			bs := backends(d, codec)
+			for _, b := range bs {
+				e, err := b.open(cfg)
+				if err != nil {
+					t.Fatal(err)
+				}
+				got := e.Backend()
+				e.Close()
+				if got != b.kind {
+					t.Errorf("an encoder made on %v says %v", b.kind, got)
+				}
+			}
+			e, err := d.NewEncoder(cfg)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer e.Close()
+			if want := bs[0].kind; e.Backend() != want {
+				t.Errorf("NewEncoder on %s chose %v, want %v", d.Name(), e.Backend(), want)
+			}
+			t.Logf("%s encodes %s through %v", d.Name(), codec, e.Backend())
+		})
+	}
+	if VulkanVideo.String() != "Vulkan video" || VAAPI.String() != "VA-API" {
+		t.Errorf("backends are named %q and %q", VulkanVideo, VAAPI)
+	}
 }
 
 // A clip encoded from GPU buffers decodes in ffmpeg to every frame at
@@ -342,7 +379,7 @@ func TestEncoderDecodes(t *testing.T) {
 			d, ffmpeg := encodingDevice(t, codec)
 			for _, b := range backends(d, codec) {
 				for _, size := range []image.Point{{640, 360}, {333, 241}, {64, 48}} {
-					t.Run(b.name+"/"+strconv.Itoa(size.X)+"x"+strconv.Itoa(size.Y), func(t *testing.T) {
+					t.Run(b.kind.String()+"/"+strconv.Itoa(size.X)+"x"+strconv.Itoa(size.Y), func(t *testing.T) {
 						testDecodes(t, ffmpeg, openClip(t, d, EncoderConfig{Codec: codec, Width: size.X, Height: size.Y, FrameRate: 30, KeyInterval: 15, QP: 20}, b.open))
 					})
 				}

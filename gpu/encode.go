@@ -184,9 +184,33 @@ type Encoder struct {
 	closed bool
 }
 
+// EncoderBackend is the path an Encoder encodes through.
+type EncoderBackend int
+
+// The encoder backends.
+const (
+	// VulkanVideo is the device's Vulkan video encode queue.
+	VulkanVideo EncoderBackend = iota
+	// VAAPI is the device's VA-API driver.
+	VAAPI
+)
+
+func (b EncoderBackend) String() string {
+	if b == VAAPI {
+		return "VA-API"
+	}
+	return "Vulkan video"
+}
+
+// Backend is the path the encoder encodes through, the Vulkan video
+// queue or the VA-API driver, as NewEncoder chose it.
+func (e *Encoder) Backend() EncoderBackend { return e.backend.kind() }
+
 // encodeBackend is what encodes the converted frames: the Vulkan video
 // queue or a VA-API driver.
 type encodeBackend interface {
+	// kind is which one.
+	kind() EncoderBackend
 	// codedSize is the coded picture's size.
 	codedSize() [2]int
 	// afterConvert records what follows slot's conversion on the
