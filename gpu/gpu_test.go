@@ -350,3 +350,24 @@ func TestDevicesOpenConcurrently(t *testing.T) {
 	}
 	wg.Wait()
 }
+
+// Devices come from the process's one Vulkan instance, which outlives
+// them: opening and closing again neither makes another instance nor
+// reloads the driver, so the device stays the same one (#12).
+func TestDevicesShareTheProcessInstance(t *testing.T) {
+	first := openDevice(t)
+	name, instance := first.Name(), first.instance
+	for i := range 20 {
+		d, err := Open()
+		if err != nil {
+			t.Fatalf("open %d: %v", i, err)
+		}
+		if d.instance != instance {
+			t.Fatalf("open %d made another instance", i)
+		}
+		if d.Name() != name {
+			t.Fatalf("open %d got %q, want %q", i, d.Name(), name)
+		}
+		d.Close()
+	}
+}

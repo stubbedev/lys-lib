@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"runtime"
 	"slices"
+	"sync"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -93,20 +94,52 @@ func OpenNode(dev uint64) (*Device, error) {
 // drmNode is a DRM render node's major and minor device number.
 type drmNode struct{ major, minor int64 }
 
+// vulkan is the process's Vulkan instance, made by the first Open that
+// succeeds in making one and held for the process's life: devices come
+// and go on it, so the driver stays loaded between them. Reloading an
+// ICD per device strands a static TLS block each time in some drivers
+// (NVIDIA's libnvidia-tls), which runs out after a few dozen cycles.
+// cmds holds the global and instance commands; each device loads its
+// own commands into a copy.
+var vulkan struct {
+	mu       sync.Mutex
+	instance vk.Instance
+	cmds     vk.Commands
+}
+
+// processInstance returns the process's instance and a copy of its
+// commands, making the instance on first use. A failure is not kept: a
+// later Open tries again.
+func processInstance() (vk.Instance, *vk.Commands, error) {
+	vulkan.mu.Lock()
+	defer vulkan.mu.Unlock()
+	if vulkan.instance == 0 {
+		if err := vk.Init(); err != nil {
+			return 0, nil, fmt.Errorf("%w: %w", ErrNoVulkan, err)
+		}
+		cmds := vk.NewCommands()
+		if err := cmds.LoadGlobal(); err != nil {
+			return 0, nil, fmt.Errorf("%w: %w", ErrNoVulkan, err)
+		}
+		instance, err := createInstance(cmds)
+		if err != nil {
+			return 0, nil, err
+		}
+		vulkan.instance, vulkan.cmds = instance, *cmds
+	}
+	cmds := vulkan.cmds
+	return vulkan.instance, &cmds, nil
+}
+
 // open picks the first device node names (any, nil) with a graphics
 // queue that exports dmabufs, else, with no node named, the first with
 // a graphics queue.
 func open(node *drmNode) (*Device, error) {
-	if err := vk.Init(); err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrNoVulkan, err)
-	}
-	d := &Device{cmds: vk.NewCommands(), targets: map[*Target]struct{}{}, buffers: map[*Buffer]struct{}{}}
-	if err := d.cmds.LoadGlobal(); err != nil {
-		return nil, fmt.Errorf("%w: %w", ErrNoVulkan, err)
-	}
-	if err := d.createInstance(); err != nil {
+	instance, cmds, err := processInstance()
+	if err != nil {
 		return nil, err
 	}
+	d := &Device{cmds: cmds, instance: instance, targets: map[*Target]struct{}{}, buffers: map[*Buffer]struct{}{}}
 	var n uint32
 	d.cmds.EnumeratePhysicalDevices(d.instance, &n, nil)
 	phys := make([]vk.PhysicalDevice, n)
@@ -137,23 +170,25 @@ func open(node *drmNode) (*Device, error) {
 			}
 		}
 	}
-	d.cmds.DestroyInstance(d.instance, nil)
 	return nil, fmt.Errorf("%w: %w", ErrNoDevice, errors.Join(reasons...))
 }
 
-func (d *Device) createInstance() error {
+// createInstance makes a Vulkan instance and loads its commands into
+// cmds.
+func createInstance(cmds *vk.Commands) (vk.Instance, error) {
 	var pin runtime.Pinner
 	defer pin.Unpin()
 	ai := vk.ApplicationInfo{SType: vk.StructureTypeApplicationInfo, PApplicationName: cstr(&pin, "lys"), ApiVersion: vkVersion(1, 3)}
 	ici := vk.InstanceCreateInfo{SType: vk.StructureTypeInstanceCreateInfo, PApplicationInfo: &ai}
-	if r := d.cmds.CreateInstance(&ici, nil, &d.instance); r != vk.Success {
-		return fmt.Errorf("%w: vkCreateInstance: %d", ErrNoDevice, r)
+	var instance vk.Instance
+	if r := cmds.CreateInstance(&ici, nil, &instance); r != vk.Success {
+		return 0, fmt.Errorf("%w: vkCreateInstance: %d", ErrNoDevice, r)
 	}
-	if err := d.cmds.LoadInstance(d.instance); err != nil {
-		d.cmds.DestroyInstance(d.instance, nil)
-		return fmt.Errorf("%w: %w", ErrNoDevice, err)
+	if err := cmds.LoadInstance(instance); err != nil {
+		cmds.DestroyInstance(instance, nil)
+		return 0, fmt.Errorf("%w: %w", ErrNoDevice, err)
 	}
-	return nil
+	return instance, nil
 }
 
 // pick takes p when it has a graphics queue, exporting the dmabuf
@@ -292,7 +327,8 @@ func (d *Device) Exports() bool { return d.exports }
 func (d *Device) Name() string { return d.name }
 
 // Close releases the device and the targets still open on it: a target
-// closed after is already closed. Closing it again does nothing.
+// closed after is already closed. Closing it again does nothing. The
+// process's Vulkan instance stays for the next Open.
 func (d *Device) Close() {
 	if d.closed {
 		return
@@ -305,7 +341,6 @@ func (d *Device) Close() {
 		b.Close()
 	}
 	d.closeDevice()
-	d.cmds.DestroyInstance(d.instance, nil)
 }
 
 // closeDevice releases the logical device and what was made on it.
