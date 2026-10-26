@@ -9,6 +9,7 @@ import (
 	"github.com/stubbedev/lys-ui/app"
 	"github.com/stubbedev/lys-ui/capture"
 	"github.com/stubbedev/lys-ui/dmabuf"
+	"github.com/stubbedev/lys-ui/gpu"
 	"github.com/stubbedev/lys-ui/internal/headlesstest/inproc"
 	"github.com/stubbedev/lys-ui/internal/udmabuf"
 	"github.com/stubbedev/lys-ui/widget"
@@ -162,4 +163,65 @@ func TestHeadlessDmabufCopyTakesAnIdleFrame(t *testing.T) {
 			t.Fatalf("copy %d of an idle output never returned", i)
 		}
 	}
+}
+
+// TestHeadlessDmabufCaptureIntoGPUBuffer is the recorder's path: a
+// buffer the GPU allocates on the compositor's main device in a
+// modifier both sides take, imported and copied into, then read back.
+// It needs a compositor rendering on a GPU (just gpu-host); the pixman
+// gate skips it.
+func TestHeadlessDmabufCaptureIntoGPUBuffer(t *testing.T) {
+	inproc.Require(t)
+	c := inproc.Capture(t)
+	if !c.HasDmabuf() {
+		t.Skip("compositor offers no linux-dmabuf (CPU renderer)")
+	}
+	inproc.Show(t, func(a *app.Application, out *app.Output) error {
+		_, err := a.NewLayer(app.LayerConfig{
+			Output:     out,
+			Layer:      app.LayerOverlay,
+			Anchor:     app.AnchorTop | app.AnchorBottom | app.AnchorLeft | app.AnchorRight,
+			Namespace:  "lys-ui-capture-gpu-test",
+			Root:       widget.NewBox(widget.Row, 0, 0),
+			Background: fillRed,
+		})
+		return err
+	})
+	out := c.Outputs()[0]
+	format, err := c.DmabufFormat(out, false)
+	if errors.Is(err, capture.ErrUnsupported) {
+		t.Skip("compositor offers no dmabuf screencopy target")
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	d, err := gpu.OpenNode(format.Device)
+	if errors.Is(err, gpu.ErrNoVulkan) {
+		t.Skipf("no Vulkan: %v", err)
+	}
+	if err != nil {
+		t.Fatalf("open the compositor's device %#x: %v", format.Device, err)
+	}
+	defer d.Close()
+	buf, err := d.NewBuffer(format.Width, format.Height, format.Fourcc, format.Modifiers)
+	if err != nil {
+		t.Fatalf("a %s buffer in one of the compositor's modifiers %#x: %v", d.Name(), format.Modifiers, err)
+	}
+	defer buf.Close()
+	imported, err := c.ImportDmabuf(buf.Dmabuf())
+	if err != nil {
+		t.Fatalf("import the %s buffer in modifier %#x: %v", d.Name(), buf.Dmabuf().Modifier, err)
+	}
+	defer imported.Destroy()
+	t.Logf("%s buffer in modifier %#x", d.Name(), buf.Dmabuf().Modifier)
+	inproc.Eventually(t, "red frame in the GPU buffer", func() error {
+		if err := c.CopyOutputDmabuf(out, false, imported); err != nil {
+			return err
+		}
+		img, err := buf.ReadPixels()
+		if err != nil {
+			return err
+		}
+		return inproc.WantColor(img, format.Width/2, format.Height/2, fillRed)
+	})
 }

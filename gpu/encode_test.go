@@ -35,18 +35,13 @@ func (b *Buffer) fill(t *testing.T, img *image.RGBA) {
 		staging.mapped[i], staging.mapped[i+1], staging.mapped[i+2], staging.mapped[i+3] = img.Pix[i+2], img.Pix[i+1], img.Pix[i], 0xff
 	}
 	err = d.submit(func(cb vk.CommandBuffer) {
-		toDst := imageBarrier(b.e.image, colorRange, vk.ImageLayoutUndefined, vk.ImageLayoutTransferDstOptimal)
-		toDst.DstStageMask, toDst.DstAccessMask = vk.PipelineStageFlags2(vk.PipelineStage2CopyBit), vk.AccessFlags2(vk.Access2TransferWriteBit)
-		barrier2(d, cb, nil, toDst)
+		fullBarrier(d, cb, b.e.image, vk.ImageLayoutUndefined, vk.ImageLayoutTransferDstOptimal, vk.QueueFamilyIgnored, vk.QueueFamilyIgnored)
 		region := vk.BufferImageCopy{
 			ImageSubresource: vk.ImageSubresourceLayers{AspectMask: vk.ImageAspectFlags(vk.ImageAspectColorBit), LayerCount: 1},
 			ImageExtent:      vk.Extent3D{Width: uint32(w), Height: uint32(h), Depth: 1},
 		}
 		d.cmds.CmdCopyBufferToImage(cb, staging.buf, b.e.image, vk.ImageLayoutTransferDstOptimal, 1, &region)
-		release := imageBarrier(b.e.image, colorRange, vk.ImageLayoutTransferDstOptimal, vk.ImageLayoutGeneral)
-		release.SrcQueueFamilyIndex, release.DstQueueFamilyIndex = d.family, vk.QueueFamilyForeignExt
-		release.SrcStageMask, release.SrcAccessMask = vk.PipelineStageFlags2(vk.PipelineStage2CopyBit), vk.AccessFlags2(vk.Access2TransferWriteBit)
-		barrier2(d, cb, nil, release)
+		fullBarrier(d, cb, b.e.image, vk.ImageLayoutTransferDstOptimal, vk.ImageLayoutGeneral, d.family, vk.QueueFamilyForeignExt)
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -373,3 +368,30 @@ func TestEncoderOverlayRefuses(t *testing.T) {
 }
 
 func abs(n int) int { return max(n, -n) }
+
+// A Buffer reads back what was copied into it, opaque in XRGB8888.
+func TestBufferReadsBack(t *testing.T) {
+	d := exportingDevice(t)
+	mods, err := d.ExportModifiers(dmabuf.FormatXRGB8888)
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf, err := d.NewBuffer(48, 20, dmabuf.FormatXRGB8888, mods)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer buf.Close()
+	src := encodeFrame(48, 20, 3)
+	buf.fill(t, src)
+	got, err := buf.ReadPixels()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(got.Pix, src.Pix) {
+		t.Errorf("read back %v..., want %v...", got.Pix[:16], src.Pix[:16])
+	}
+	buf.Close()
+	if _, err := buf.ReadPixels(); err == nil {
+		t.Error("a closed buffer read back")
+	}
+}

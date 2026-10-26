@@ -3,6 +3,7 @@ package gpu
 import (
 	"errors"
 	"fmt"
+	"image"
 	"runtime"
 	"slices"
 	"syscall"
@@ -28,11 +29,11 @@ var (
 		usage:    vk.ImageUsageFlags(vk.ImageUsageTransferDstBit | vk.ImageUsageTransferSrcBit | vk.ImageUsageColorAttachmentBit | vk.ImageUsageSampledBit),
 		verb:     "renders",
 	}
-	// shareUse is a Buffer: written by a transfer and read, never
-	// drawn into here.
+	// shareUse is a Buffer: written by a transfer, sampled and read
+	// back, never drawn into here.
 	shareUse = exportUse{
-		features: vk.FormatFeatureFlags(vk.FormatFeatureTransferDstBit | vk.FormatFeatureSampledImageBit),
-		usage:    vk.ImageUsageFlags(vk.ImageUsageTransferDstBit | vk.ImageUsageSampledBit),
+		features: vk.FormatFeatureFlags(vk.FormatFeatureTransferDstBit | vk.FormatFeatureTransferSrcBit | vk.FormatFeatureSampledImageBit),
+		usage:    vk.ImageUsageFlags(vk.ImageUsageTransferDstBit | vk.ImageUsageTransferSrcBit | vk.ImageUsageSampledBit),
 		verb:     "exports",
 	}
 )
@@ -258,6 +259,26 @@ func (d *Device) NewBuffer(width, height int, format uint32, offered []uint64) (
 // Dmabuf describes the buffer's memory. Its fd is the buffer's, open
 // until Close.
 func (b *Buffer) Dmabuf() dmabuf.Buffer { return b.e.buf }
+
+// ReadPixels copies what the buffer holds (the frame a compositor last
+// copied into it) back into memory as RGBA, opaque when its format
+// has no alpha: screenshots and tests.
+func (b *Buffer) ReadPixels() (*image.RGBA, error) {
+	if b.closed {
+		return nil, errors.New("gpu: read back a closed buffer")
+	}
+	d := b.d
+	w, h := b.e.buf.Width, b.e.buf.Height
+	return d.readPixels(w, h, b.e.buf.Format == dmabuf.FormatXRGB8888, func(cb vk.CommandBuffer, staging *buffer) {
+		fullBarrier(d, cb, b.e.image, vk.ImageLayoutGeneral, vk.ImageLayoutTransferSrcOptimal, vk.QueueFamilyForeignExt, d.family)
+		region := vk.BufferImageCopy{
+			ImageSubresource: vk.ImageSubresourceLayers{AspectMask: vk.ImageAspectFlags(vk.ImageAspectColorBit), LayerCount: 1},
+			ImageExtent:      vk.Extent3D{Width: uint32(w), Height: uint32(h), Depth: 1},
+		}
+		d.cmds.CmdCopyImageToBuffer(cb, b.e.image, vk.ImageLayoutTransferSrcOptimal, staging.buf, 1, &region)
+		fullBarrier(d, cb, b.e.image, vk.ImageLayoutTransferSrcOptimal, vk.ImageLayoutGeneral, d.family, vk.QueueFamilyForeignExt)
+	})
+}
 
 // view is the buffer's sampled view.
 func (b *Buffer) view() (vk.ImageView, error) {

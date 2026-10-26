@@ -135,19 +135,24 @@ func (t *Target) clear(rgba [4]float32) error {
 // ReadPixels copies the target back into memory as premultiplied
 // RGBA: tests and screenshots.
 func (t *Target) ReadPixels() (*image.RGBA, error) {
-	d := t.s.d
 	w, h := t.buf.Width, t.buf.Height
+	return t.s.d.readPixels(w, h, false, func(cb vk.CommandBuffer, staging *buffer) {
+		t.acquire(cb)
+		t.s.download(cb, image.Rect(0, 0, w, h), staging, 0)
+		t.release(cb)
+	})
+}
+
+// readPixels reads a w x h B8G8R8A8 image back as RGBA: record copies
+// it, tight, into the staging buffer it is handed. opaque reads every
+// alpha as 255, for a format whose fourth byte is padding.
+func (d *Device) readPixels(w, h int, opaque bool, record func(cb vk.CommandBuffer, staging *buffer)) (*image.RGBA, error) {
 	staging, err := d.newReadBuffer(w*h*4, vk.BufferUsageTransferDstBit, nil)
 	if err != nil {
 		return nil, err
 	}
 	defer staging.close()
-	err = d.submit(func(cb vk.CommandBuffer) {
-		t.acquire(cb)
-		t.s.download(cb, image.Rect(0, 0, w, h), staging, 0)
-		t.release(cb)
-	})
-	if err != nil {
+	if err := d.submit(func(cb vk.CommandBuffer) { record(cb, staging) }); err != nil {
 		return nil, err
 	}
 	if err := staging.invalidate(); err != nil {
@@ -157,6 +162,9 @@ func (t *Target) ReadPixels() (*image.RGBA, error) {
 	src := staging.mapped
 	for i := 0; i < len(img.Pix); i += 4 {
 		img.Pix[i], img.Pix[i+1], img.Pix[i+2], img.Pix[i+3] = src[i+2], src[i+1], src[i], src[i+3]
+		if opaque {
+			img.Pix[i+3] = 0xff
+		}
 	}
 	return img, nil
 }

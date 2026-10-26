@@ -100,15 +100,23 @@ func (s *surface) to(cb vk.CommandBuffer, layout vk.ImageLayout) {
 // barrier records the full barrier to layout, moving queue family from
 // src to dst (both ignored for none).
 func (s *surface) barrier(cb vk.CommandBuffer, layout vk.ImageLayout, src, dst uint32) {
+	fullBarrier(s.d, cb, s.image, s.layout, layout, src, dst)
+	s.layout = layout
+}
+
+// fullBarrier records moving img's color from one layout to another
+// and from queue family src to dst, after all earlier work and before
+// all later: core Vulkan, for what records on devices without
+// synchronization2.
+func fullBarrier(d *Device, cb vk.CommandBuffer, img vk.Image, from, to vk.ImageLayout, src, dst uint32) {
 	all := vk.AccessFlags(vk.AccessMemoryReadBit | vk.AccessMemoryWriteBit)
 	b := vk.ImageMemoryBarrier{
 		SType: vk.StructureTypeImageMemoryBarrier, SrcAccessMask: all, DstAccessMask: all,
-		OldLayout: s.layout, NewLayout: layout,
-		SrcQueueFamilyIndex: src, DstQueueFamilyIndex: dst, Image: s.image, SubresourceRange: colorRange,
+		OldLayout: from, NewLayout: to,
+		SrcQueueFamilyIndex: src, DstQueueFamilyIndex: dst, Image: img, SubresourceRange: colorRange,
 	}
 	stages := vk.PipelineStageFlags(vk.PipelineStageAllCommandsBit)
-	s.d.cmds.CmdPipelineBarrier(cb, stages, stages, 0, 0, nil, 0, nil, 1, &b)
-	s.layout = layout
+	d.cmds.CmdPipelineBarrier(cb, stages, stages, 0, 0, nil, 0, nil, 1, &b)
 }
 
 // download records copying s's region r into b at offset, rows tight.
