@@ -61,10 +61,10 @@
         # shell keeps no C compiler on PATH.
         LYS_RACE_CC = "${pkgs.gcc}/bin/gcc";
       } // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
-        # The GPU renderer (package gpu) loads libvulkan at runtime;
-        # the loader finds the host's drivers (/run/opengl-driver on
-        # NixOS).
-        LD_LIBRARY_PATH = "${pkgs.vulkan-loader}/lib";
+        # The GPU renderer (package gpu) loads libvulkan at runtime, and
+        # its VA-API encoder libva; both find the host's drivers
+        # (/run/opengl-driver on NixOS).
+        LD_LIBRARY_PATH = "${pkgs.vulkan-loader}/lib:${lib.getLib pkgs.libva}/lib";
         # Mesa's lavapipe, a CPU Vulkan driver: the GPU tests force it
         # (VK_DRIVER_FILES) to run without a GPU, as CI does.
         LYS_TEST_LAVAPIPE = "${pkgs.mesa}/share/vulkan/icd.d/lvp_icd.x86_64.json";
@@ -75,7 +75,8 @@
         # host's own Mesa cannot load into processes linked against
         # nixpkgs' glibc: the Vulkan loader, and sway's EGL and GBM,
         # would find no driver. There the shell points them at nixpkgs'
-        # Mesa: lavapipe, and the driver for each GPU the kernel drives
+        # Mesa (and Intel's VA-API driver): lavapipe, and the driver for
+        # each GPU the kernel drives
         # (AMD, Intel, nouveau, virtio and the SoC GPUs); NVIDIA's
         # proprietary driver needs nixGL. Only those: an ICD for absent
         # hardware can fault while it probes (CI's runners crashed so
@@ -110,6 +111,7 @@
             export __EGL_VENDOR_LIBRARY_FILENAMES=${pkgs.mesa}/share/glvnd/egl_vendor.d/50_mesa.json
             export GBM_BACKENDS_PATH=${pkgs.mesa}/lib/gbm
             export LIBGL_DRIVERS_PATH=${pkgs.mesa}/lib/dri
+            export LIBVA_DRIVERS_PATH=${pkgs.intel-media-driver}/lib/dri:${pkgs.mesa}/lib/dri
           fi
         '';
       });

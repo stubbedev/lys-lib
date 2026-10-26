@@ -5,32 +5,33 @@ import (
 	"math/bits"
 	"unsafe"
 
+	"github.com/stubbedev/lys-lib/internal/nal"
 	"github.com/stubbedev/lys-lib/third_party/vk"
 )
 
 // h264Levels are H.264's levels (Table A-1) in order, as the StdVideo
-// level enumerants number them: the largest frame (macroblocks) and
-// the highest macroblock rate each allows.
-var h264Levels = []struct{ frame, rate int }{
-	{99, 1485},
-	{396, 3000},
-	{396, 6000},
-	{396, 11880},
-	{396, 11880},
-	{792, 19800},
-	{1620, 20250},
-	{1620, 40500},
-	{3600, 108000},
-	{5120, 216000},
-	{8192, 245760},
-	{8192, 245760},
-	{8704, 522240},
-	{22080, 589824},
-	{36864, 983040},
-	{36864, 2073600},
-	{139264, 4177920},
-	{139264, 8355840},
-	{139264, 16711680},
+// level enumerants number them: level_idc, the largest frame
+// (macroblocks) and the highest macroblock rate each allows.
+var h264Levels = []struct{ idc, frame, rate int }{
+	{10, 99, 1485},
+	{11, 396, 3000},
+	{12, 396, 6000},
+	{13, 396, 11880},
+	{20, 396, 11880},
+	{21, 792, 19800},
+	{22, 1620, 20250},
+	{30, 1620, 40500},
+	{31, 3600, 108000},
+	{32, 5120, 216000},
+	{40, 8192, 245760},
+	{41, 8192, 245760},
+	{42, 8704, 522240},
+	{50, 22080, 589824},
+	{51, 36864, 983040},
+	{52, 36864, 2073600},
+	{60, 139264, 4177920},
+	{61, 139264, 8355840},
+	{62, 139264, 16711680},
 }
 
 // h264MinLevel is level 4.1, the lowest the encoder signals: its
@@ -53,8 +54,24 @@ func h264Level(mbs, fps int, limit vk.StdVideoH264LevelIdc) (vk.StdVideoH264Leve
 	return 0, fmt.Errorf("gpu: no H.264 level up to the device's %d carries %d macroblocks at %d frames a second", limit, mbs, fps)
 }
 
-// h264Params are the sequence and picture parameter sets the session
-// is made with, and what they point at.
+// h264Header is the stream's parameter sets for cfg coded at coded in
+// profile at level (a StdVideo level enumerant): BT.709 limited range,
+// frames only, one reference picture, picture order count type 2
+// (output order is decode order), cropped back to the even size
+// around the frame, the entropy coder and 8x8 transform as given, and
+// initQP the pictures' initial quantiser. Both backends build from it.
+func h264Header(cfg EncoderConfig, coded [2]int, profile vk.StdVideoH264ProfileIdc, level vk.StdVideoH264LevelIdc, cabac, transform8x8 bool, initQP int) nal.H264 {
+	return nal.H264{
+		ProfileIdc: uint8(profile), LevelIdc: uint8(h264Levels[level].idc),
+		WidthMbs: coded[0] / 16, HeightMbs: coded[1] / 16,
+		CropRight: (coded[0] - evenUp(cfg.Width)) / 2, CropBottom: (coded[1] - evenUp(cfg.Height)) / 2,
+		Log2MaxFrameNum: log2MaxFrameNum(cfg.KeyInterval), MaxNumRefFrames: 1,
+		CABAC: cabac, Transform8x8: transform8x8 && profile == vk.StdVideoH264ProfileIdcHigh, InitQP: initQP,
+	}
+}
+
+// h264Params are the sequence and picture parameter sets the Vulkan
+// session is made with, and what they point at.
 type h264Params struct {
 	vui vk.StdVideoH264SequenceParameterSetVui
 	sps vk.StdVideoH264SequenceParameterSet
@@ -65,13 +82,9 @@ type h264Params struct {
 // counts the frames since the last IDR and never wraps.
 func log2MaxFrameNum(keyInterval int) int { return max(4, bits.Len(uint(keyInterval))) }
 
-// newH264Params lays out the parameter sets for a picture of size
-// width x height coded as coded (macroblock multiples), cropped back to
-// the even size around it: BT.709 limited range, frames only, one
-// reference picture, picture order count type 2 (output order is
-// decode order), and the entropy coder and 8x8 transform where the
-// profile and device have them.
-func newH264Params(profile vk.StdVideoH264ProfileIdc, level vk.StdVideoH264LevelIdc, width, height int, coded [2]int, keyInterval int, syntax vk.VideoEncodeH264StdFlagsKHR) *h264Params {
+// newH264Params lays h out as StdVideo parameter sets, at level (its
+// StdVideo enumerant).
+func newH264Params(h nal.H264, level vk.StdVideoH264LevelIdc) *h264Params {
 	p := &h264Params{}
 	p.vui = vk.StdVideoH264SequenceParameterSetVui{
 		Flags:                   vk.StdVideoH264VuiVideoSignalTypePresent | vk.StdVideoH264VuiColorDescriptionPresent | vk.StdVideoH264VuiBitstreamRestriction,
@@ -79,35 +92,34 @@ func newH264Params(profile vk.StdVideoH264ProfileIdc, level vk.StdVideoH264Level
 		ColourPrimaries:         1,
 		TransferCharacteristics: 1,
 		MatrixCoefficients:      1,
-		MaxDecFrameBuffering:    1,
+		MaxDecFrameBuffering:    uint8(h.MaxNumRefFrames),
 	}
-	cropRight, cropBottom := (coded[0]-evenUp(width))/2, (coded[1]-evenUp(height))/2
 	flags := vk.StdVideoH264SpsDirect8x8Inference | vk.StdVideoH264SpsFrameMbsOnly | vk.StdVideoH264SpsVuiParametersPresent
-	if cropRight != 0 || cropBottom != 0 {
+	if h.CropRight != 0 || h.CropBottom != 0 {
 		flags |= vk.StdVideoH264SpsFrameCropping
 	}
 	p.sps = vk.StdVideoH264SequenceParameterSet{
 		Flags:                     flags,
-		ProfileIdc:                profile,
+		ProfileIdc:                vk.StdVideoH264ProfileIdc(h.ProfileIdc),
 		LevelIdc:                  level,
 		ChromaFormatIdc:           vk.StdVideoH264ChromaFormatIdc420,
-		Log2MaxFrameNumMinus4:     uint8(log2MaxFrameNum(keyInterval) - 4),
+		Log2MaxFrameNumMinus4:     uint8(h.Log2MaxFrameNum - 4),
 		PicOrderCntType:           vk.StdVideoH264PocType2,
-		MaxNumRefFrames:           1,
-		PicWidthInMbsMinus1:       uint32(coded[0]/16 - 1),
-		PicHeightInMapUnitsMinus1: uint32(coded[1]/16 - 1),
-		FrameCropRightOffset:      uint32(cropRight),
-		FrameCropBottomOffset:     uint32(cropBottom),
+		MaxNumRefFrames:           uint8(h.MaxNumRefFrames),
+		PicWidthInMbsMinus1:       uint32(h.WidthMbs - 1),
+		PicHeightInMapUnitsMinus1: uint32(h.HeightMbs - 1),
+		FrameCropRightOffset:      uint32(h.CropRight),
+		FrameCropBottomOffset:     uint32(h.CropBottom),
 		PSequenceParameterSetVui:  &p.vui,
 	}
 	var ppsFlags uint32
-	if syntax&vk.VideoEncodeH264StdFlagsKHR(vk.VideoEncodeH264StdEntropyCodingModeFlagSetBitKhr) != 0 {
+	if h.CABAC {
 		ppsFlags |= vk.StdVideoH264PpsEntropyCodingMode
 	}
-	if profile == vk.StdVideoH264ProfileIdcHigh && syntax&vk.VideoEncodeH264StdFlagsKHR(vk.VideoEncodeH264StdTransform8x8ModeFlagSetBitKhr) != 0 {
+	if h.Transform8x8 {
 		ppsFlags |= vk.StdVideoH264PpsTransform8x8Mode
 	}
-	p.pps = vk.StdVideoH264PictureParameterSet{Flags: ppsFlags}
+	p.pps = vk.StdVideoH264PictureParameterSet{Flags: ppsFlags, PicInitQpMinus26: int8(h.InitQP - 26)}
 	return p
 }
 
@@ -172,6 +184,7 @@ var h264Profiles = []vk.StdVideoH264ProfileIdc{vk.StdVideoH264ProfileIdcHigh, vk
 type h264Codec struct {
 	profileInfo vk.VideoEncodeH264ProfileInfoKHR
 	capsInfo    vk.VideoEncodeH264CapabilitiesKHR
+	header      nal.H264
 	params      *h264Params
 	add         vk.VideoEncodeH264SessionParametersAddInfoKHR
 	create      vk.VideoEncodeH264SessionParametersCreateInfoKHR
@@ -203,7 +216,11 @@ func (c *h264Codec) parameters(cfg EncoderConfig, coded [2]int) (create, get uns
 	if err != nil {
 		return nil, nil, 0, err
 	}
-	c.params = newH264Params(c.profileInfo.StdProfileIdc, level, cfg.Width, cfg.Height, coded, cfg.KeyInterval, c.capsInfo.StdSyntaxFlags)
+	syntax := c.capsInfo.StdSyntaxFlags
+	c.header = h264Header(cfg, coded, c.profileInfo.StdProfileIdc, level,
+		syntax&vk.VideoEncodeH264StdFlagsKHR(vk.VideoEncodeH264StdEntropyCodingModeFlagSetBitKhr) != 0,
+		syntax&vk.VideoEncodeH264StdFlagsKHR(vk.VideoEncodeH264StdTransform8x8ModeFlagSetBitKhr) != 0, 26)
+	c.params = newH264Params(c.header, level)
 	c.add = vk.VideoEncodeH264SessionParametersAddInfoKHR{
 		SType:       vk.StructureTypeVideoEncodeH264SessionParametersAddInfoKhr,
 		StdSPSCount: 1, PStdSPSs: &c.params.sps,

@@ -17,6 +17,8 @@ import (
 	"time"
 
 	"github.com/stubbedev/lys-lib/dmabuf"
+	"github.com/stubbedev/lys-lib/internal/nal"
+	"github.com/stubbedev/lys-lib/internal/nal/naltest"
 	"github.com/stubbedev/lys-lib/media/mux"
 	"github.com/stubbedev/lys-lib/third_party/vk"
 )
@@ -530,6 +532,32 @@ func TestEncoderSourceAndTransform(t *testing.T) {
 					}
 				}
 			})
+		}
+	}
+}
+
+// The parameter sets nal writes from an encoder's header (what the
+// VA-API backend hands its driver) say what the Vulkan driver's own
+// say for the same stream, field for field where slices depend on
+// them: the driver is the reference the writer is held to.
+func TestEncoderHeadersMatchTheDrivers(t *testing.T) {
+	d, _ := encodingDevice(t, H264)
+	for _, size := range []image.Point{{640, 360}, {333, 241}} {
+		c := newClip(t, d, EncoderConfig{Codec: H264, Width: size.X, Height: size.Y, FrameRate: 60, KeyInterval: 120, QP: 20})
+		h := c.enc.codec.(*h264Codec).header
+		driver := naltest.Trace(t, "h264", nal.AnnexB(c.enc.ParameterSets()...))
+		ours := naltest.Trace(t, "h264", nal.AnnexB(h.SPS(), h.PPS()))
+		for _, f := range []string{
+			"profile_idc", "level_idc", "chroma_format_idc", "log2_max_frame_num_minus4", "pic_order_cnt_type", "max_num_ref_frames",
+			"pic_width_in_mbs_minus1", "pic_height_in_map_units_minus1", "frame_mbs_only_flag", "direct_8x8_inference_flag",
+			"frame_cropping_flag", "frame_crop_right_offset", "frame_crop_bottom_offset",
+			"video_full_range_flag", "colour_primaries", "transfer_characteristics", "matrix_coefficients",
+			"entropy_coding_mode_flag", "transform_8x8_mode_flag", "num_ref_idx_l0_default_active_minus1", "weighted_pred_flag",
+			"deblocking_filter_control_present_flag", "pic_init_qp_minus26",
+		} {
+			if driver[f] != ours[f] {
+				t.Errorf("%v: %s is %d in the driver's parameter sets, %d in ours", size, f, driver[f], ours[f])
+			}
 		}
 	}
 }
