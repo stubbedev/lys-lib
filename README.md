@@ -7,7 +7,7 @@ through.
 
 - **Rendering:** the 2D canvas and its CPU and Vulkan renderers.
 - **GPU:** Vulkan devices, exportable dmabufs, and H.264/H.265 encoding.
-- **Media:** MP4/Matroska muxing and the Opus encoder.
+- **Media:** MP4/Matroska muxing, the Opus encoder, PCM mixing and V4L2 webcam capture.
 - **Wayland:** screen capture, virtual input and the protocol bindings they use.
 - **System services:** the PipeWire native-protocol client and the EIS server.
 
@@ -22,9 +22,12 @@ where the system provides the API: libvulkan.
 | `gpu` | Vulkan devices, the GPU renderer, exportable dmabufs, and H.264/H.265 encoding |
 | `dmabuf`, `dmabufwl`, `udmabuf` | dmabuf descriptions, their linux-dmabuf protocol plumbing, and memfd-backed udmabufs |
 | `capture` | Screen and window capture: wlr-screencopy, ext-image-copy-capture, Hyprland's toplevel export |
+| `dmabufprobe` | Picks the DRM modifier a screencopy into GPU memory uses, trying the compositor's in order until one takes a frame |
 | `vinput` | Virtual pointer and keyboard input (with `keymapfd`) |
 | `wlr` | Wayland protocol bindings beyond the core and xdg-shell |
 | `media/mux`, `media/opus` | MP4 and Matroska muxing, and the Opus encoder |
+| `audiomix` | Sums interleaved 16-bit PCM sources into one stream, with clipping |
+| `v4l2` | Webcam capture from V4L2 nodes, as RGBA frames letterboxed to an aspect; the system's capture nodes |
 | `pipewire` | The ScreenCast video producer: a node over PipeWire's native protocol, no libpipewire |
 | `eis` | An EIS server: the receiving end of libei, replaying what a remote-desktop client emulates |
 | `clib` | dlopen over a candidate list and C string copies, for bindings made with purego |

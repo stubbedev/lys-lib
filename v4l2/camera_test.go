@@ -48,7 +48,7 @@ func TestOpenRejectsANonCamera(t *testing.T) {
 	if _, err := Open("/dev/null", frame, 30); err == nil || !strings.Contains(err.Error(), "v4l2: camera /dev/null: VIDIOC_S_FMT") {
 		t.Errorf("/dev/null: %v, want the format negotiation to fail", err)
 	}
-	if _, err := Open("/dev/lys-shell-no-camera", frame, 30); err == nil || !strings.Contains(err.Error(), "v4l2: open the camera /dev/lys-shell-no-camera") {
+	if _, err := Open("/dev/lys-no-camera", frame, 30); err == nil || !strings.Contains(err.Error(), "v4l2: open the camera /dev/lys-no-camera") {
 		t.Errorf("a missing node: %v", err)
 	}
 }
@@ -56,7 +56,7 @@ func TestOpenRejectsANonCamera(t *testing.T) {
 // A node that does not exist, or is no V4L2 device, has no capture
 // card.
 func TestCaptureCardOfANonCamera(t *testing.T) {
-	for _, path := range []string{"/dev/lys-shell-no-camera", "/dev/null"} {
+	for _, path := range []string{"/dev/lys-no-camera", "/dev/null"} {
 		if card, ok := CaptureCard(path); ok {
 			t.Errorf("%s probed as the camera %q", path, card)
 		}
@@ -65,11 +65,11 @@ func TestCaptureCardOfANonCamera(t *testing.T) {
 
 // A real camera streams letterboxed frames until Close, which ends
 // Frames without an error. Opt-in, as it switches the camera on:
-// LYS_SHELL_TEST_CAMERA names the node.
+// LYS_TEST_CAMERA names the node.
 func TestRealCameraStreams(t *testing.T) {
-	device := os.Getenv("LYS_SHELL_TEST_CAMERA")
+	device := os.Getenv("LYS_TEST_CAMERA")
 	if device == "" {
-		t.Skip("LYS_SHELL_TEST_CAMERA names no camera node; this test switches one on")
+		t.Skip("LYS_TEST_CAMERA names no camera node; this test switches one on")
 	}
 	frame := image.Pt(384, 216)
 	c, err := Open(device, frame, 30)
