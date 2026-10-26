@@ -459,3 +459,77 @@ func TestEncoderMuxes(t *testing.T) {
 		})
 	}
 }
+
+// A source region of a larger buffer, under each wl_output transform,
+// encodes to the frame the output shows: the region's quadrants
+// (buffer orientation: red, green / blue, white) land where turning
+// them back puts them, and no pixel of the black around the region
+// reaches the frame's edges. The expected layouts are worked by hand:
+// the buffer holds the output flipped, then turned counter-clockwise.
+func TestEncoderSourceAndTransform(t *testing.T) {
+	d, ffmpeg := encodingDevice(t, H264)
+	red, green, blue, white := color.RGBA{220, 30, 30, 255}, color.RGBA{20, 200, 40, 255}, color.RGBA{30, 60, 200, 255}, color.RGBA{250, 250, 250, 255}
+	for _, tc := range []struct {
+		transform Transform
+		quads     [4]color.RGBA // top left, top right, bottom left, bottom right
+	}{
+		{TransformNormal, [4]color.RGBA{red, green, blue, white}},
+		{Transform90, [4]color.RGBA{blue, red, white, green}},
+		{Transform180, [4]color.RGBA{white, blue, green, red}},
+		{Transform270, [4]color.RGBA{green, white, red, blue}},
+		{TransformFlipped, [4]color.RGBA{green, red, white, blue}},
+		{TransformFlipped90, [4]color.RGBA{red, blue, green, white}},
+		{TransformFlipped180, [4]color.RGBA{blue, white, red, green}},
+		{TransformFlipped270, [4]color.RGBA{white, green, blue, red}},
+	} {
+		for _, size := range []image.Point{{96, 64}, {95, 63}} {
+			t.Run(strconv.Itoa(int(tc.transform))+"/"+strconv.Itoa(size.X)+"x"+strconv.Itoa(size.Y), func(t *testing.T) {
+				cfg := EncoderConfig{Codec: H264, Width: size.X, Height: size.Y, FrameRate: 30, KeyInterval: 30, QP: 18, Transform: tc.transform}
+				rs := cfg.sourceSize()
+				cfg.Source = image.Rectangle{Min: image.Pt(37, 21)}
+				cfg.Source.Max = cfg.Source.Min.Add(rs)
+				mods, err := d.ExportModifiers(dmabuf.FormatXRGB8888)
+				if err != nil {
+					t.Fatal(err)
+				}
+				buf, err := d.NewBuffer(200, 160, dmabuf.FormatXRGB8888, mods)
+				if err != nil {
+					t.Fatal(err)
+				}
+				defer buf.Close()
+				enc, err := d.NewEncoder(cfg)
+				if err != nil {
+					t.Fatal(err)
+				}
+				img := solid(200, 160, color.RGBA{A: 255})
+				for i, q := range []color.RGBA{red, green, blue, white} {
+					r := image.Rect(0, 0, rs.X/2, rs.Y/2)
+					if i&1 != 0 {
+						r.Min.X, r.Max.X = rs.X/2, rs.X
+					}
+					if i&2 != 0 {
+						r.Min.Y, r.Max.Y = rs.Y/2, rs.Y
+					}
+					draw.Draw(img, r.Add(cfg.Source.Min), image.NewUniform(q), image.Point{}, draw.Src)
+				}
+				c := &clip{t: t, cfg: cfg, enc: enc, buf: buf}
+				t.Cleanup(enc.Close)
+				c.frame(img)
+				c.frame(nil)
+				frame := c.decode(ffmpeg)[1]
+				w, h := size.X, size.Y
+				for i, p := range []image.Point{{w / 4, h / 4}, {3 * w / 4, h / 4}, {w / 4, 3 * h / 4}, {3 * w / 4, 3 * h / 4}} {
+					if !near(frame, w, p.X, p.Y, tc.quads[i]) {
+						t.Errorf("quadrant %d at %v is %v, want about %v", i, p, frame[(p.Y*w+p.X)*3:][:3], tc.quads[i])
+					}
+				}
+				for _, p := range []image.Point{{0, 0}, {w - 1, 0}, {0, h - 1}, {w - 1, h - 1}, {w / 4, 0}, {0, h / 4}, {w - 1, 3 * h / 4}, {3 * w / 4, h - 1}} {
+					px := frame[(p.Y*w+p.X)*3:][:3]
+					if int(px[0])+int(px[1])+int(px[2]) < 120 {
+						t.Errorf("edge pixel %v is %v: the black around the source reached the frame", p, px)
+					}
+				}
+			})
+		}
+	}
+}

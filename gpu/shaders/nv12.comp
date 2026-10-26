@@ -3,8 +3,12 @@
 // One invocation converts a 4x2 block of the source into BT.709
 // limited-range NV12: two words of luma (a row of four each) and one
 // of interleaved chroma (two 2x2 averages). Past the source's edge the
-// edge pixels repeat into the coded size's padding. Inside the overlay
-// rectangle the overlay, scaled to fill it, stands in for the source.
+// edge pixels repeat into the coded size's padding. A frame pixel
+// reads the source region turned by the output's wl_output transform:
+// the buffer holds the output's pixels flipped, then turned
+// counter-clockwise, and the frame turns them back. Inside the overlay
+// rectangle (frame coordinates) the overlay, scaled to fill it, stands
+// in for the source.
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
@@ -13,9 +17,11 @@ layout(set = 0, binding = 1, std430) writeonly buffer Planes { uint words[]; };
 layout(set = 0, binding = 2) uniform sampler2D overlay;
 
 layout(push_constant) uniform Size {
-    ivec2 src;
+    ivec2 frame;
     ivec2 coded;
     ivec4 overlay;
+    ivec2 origin;
+    int transform;
 } size;
 
 const vec3 kLuma = vec3(0.2126, 0.7152, 0.0722);
@@ -24,14 +30,33 @@ float luma(vec3 c) { return 16.0 + 219.0 * dot(c, kLuma); }
 
 uint byteOf(float v) { return uint(clamp(floor(v + 0.5), 0.0, 255.0)); }
 
+ivec2 sourceOf(ivec2 q) {
+    ivec2 f = size.frame;
+    if (size.transform >= 4) {
+        q.x = f.x - 1 - q.x;
+    }
+    switch (size.transform & 3) {
+    case 1:
+        q = ivec2(q.y, f.x - 1 - q.x);
+        break;
+    case 2:
+        q = f - 1 - q;
+        break;
+    case 3:
+        q = ivec2(f.y - 1 - q.y, q.x);
+        break;
+    }
+    return size.origin + q;
+}
+
 vec3 pixel(ivec2 p) {
-    ivec2 q = min(p, size.src - 1);
+    ivec2 q = min(p, size.frame - 1);
     ivec4 o = size.overlay;
     if (q.x >= o.x && q.y >= o.y && q.x < o.z && q.y < o.w) {
         vec2 uv = (vec2(q - o.xy) + 0.5) / vec2(o.zw - o.xy);
         return textureLod(overlay, uv, 0.0).rgb;
     }
-    return texelFetch(src, q, 0).rgb;
+    return texelFetch(src, sourceOf(q), 0).rgb;
 }
 
 void main() {

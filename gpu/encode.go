@@ -40,14 +40,69 @@ type EncoderConfig struct {
 	FrameRate int
 	// KeyInterval is the frames from one keyframe to the next.
 	KeyInterval int
+	// Source is the region of the buffer Encode reads, in the buffer's
+	// own orientation; the zero rectangle reads all of it.
+	Source image.Rectangle
+	// Transform is the captured output's wl_output transform: the
+	// buffer holds the output's pixels so turned, and the encoder turns
+	// them back, so the frame shows what the output shows. Width and
+	// Height are the frame's, turned: a 90 or 270 degree transform
+	// swaps the source region's.
+	Transform Transform
 	// QP is the constant quantiser, 0 (best) to 51. A device without
 	// constant-QP coding runs its own rate control at a bitrate
 	// matching QP 20 on desktop content instead.
 	QP int
 }
 
+// Transform is a wl_output transform: how an output's pixels are
+// turned in its buffer.
+type Transform int
+
+// The transforms, valued as wl_output's.
+const (
+	TransformNormal Transform = iota
+	Transform90
+	Transform180
+	Transform270
+	TransformFlipped
+	TransformFlipped90
+	TransformFlipped180
+	TransformFlipped270
+)
+
+// swaps reports whether t turns by a quarter, swapping width and
+// height.
+func (t Transform) swaps() bool { return t&1 != 0 }
+
+// sourceSize is the source region's size for a w x h frame.
+func (c EncoderConfig) sourceSize() image.Point {
+	if c.Transform.swaps() {
+		return image.Pt(c.Height, c.Width)
+	}
+	return image.Pt(c.Width, c.Height)
+}
+
+// source is the region of a w x h buffer Encode reads, or an error
+// naming it and the buffer's size when the buffer does not hold it.
+func (c EncoderConfig) source(w, h int) (image.Rectangle, error) {
+	buf := image.Rect(0, 0, w, h)
+	r := c.Source
+	if r == (image.Rectangle{}) {
+		r = buf
+	}
+	if r.Size() != c.sourceSize() || !r.In(buf) {
+		return image.Rectangle{}, fmt.Errorf("gpu: source %v (want %v for a %dx%d frame under transform %d) is not in the %dx%d buffer", r, c.sourceSize(), c.Width, c.Height, c.Transform, w, h)
+	}
+	return r, nil
+}
+
 func (c EncoderConfig) validate() error {
 	switch {
+	case c.Transform < TransformNormal || c.Transform > TransformFlipped270:
+		return fmt.Errorf("gpu: transform %d is no wl_output transform", c.Transform)
+	case c.Source != (image.Rectangle{}) && (c.Source.Empty() || c.Source.Size() != c.sourceSize()):
+		return fmt.Errorf("gpu: source %v is not the %v region a %dx%d frame under transform %d reads", c.Source, c.sourceSize(), c.Width, c.Height, c.Transform)
 	case c.Codec < 0 || int(c.Codec) >= len(codecs):
 		return fmt.Errorf("gpu: codec %d is none of the %d known", c.Codec, len(codecs))
 	case c.Width <= 0 || c.Height <= 0:
@@ -578,11 +633,13 @@ func (e *Encoder) createBuffers() error {
 	return nil
 }
 
-// nv12Constants is nv12.comp's push constant block: the source and
-// coded sizes and the overlay's rectangle, empty for none.
+// nv12Constants is nv12.comp's push constant block: the frame and
+// coded sizes, the overlay's rectangle (empty for none), the source
+// region's origin and the transform.
 type nv12Constants struct {
-	srcW, srcH, codedW, codedH int32
-	overlay                    [4]int32
+	frameW, frameH, codedW, codedH int32
+	overlay                        [4]int32
+	originX, originY, transform    int32
 }
 
 // createPipeline makes the NV12 conversion's compute pipeline and the
@@ -686,8 +743,12 @@ func (e *Encoder) Encode(src *Buffer, pts time.Duration) ([]Packet, error) {
 	if src.d != e.d {
 		return nil, errors.New("gpu: encode a buffer of another device")
 	}
-	if src.closed || src.e.buf.Width != e.cfg.Width || src.e.buf.Height != e.cfg.Height {
-		return nil, fmt.Errorf("gpu: encode a %dx%d buffer (closed %v) on a %dx%d encoder", src.e.buf.Width, src.e.buf.Height, src.closed, e.cfg.Width, e.cfg.Height)
+	if src.closed {
+		return nil, errors.New("gpu: encode a closed buffer")
+	}
+	region, err := e.cfg.source(src.e.buf.Width, src.e.buf.Height)
+	if err != nil {
+		return nil, err
 	}
 	slot := &e.slots[e.frames%encodeSlots]
 	var out []Packet
@@ -698,7 +759,7 @@ func (e *Encoder) Encode(src *Buffer, pts time.Duration) ([]Packet, error) {
 		}
 		out = append(out, p)
 	}
-	if err := e.convert(src, slot); err != nil {
+	if err := e.convert(src, region.Min, slot); err != nil {
 		return nil, err
 	}
 	sinceIDR := e.frames % e.cfg.KeyInterval
@@ -850,7 +911,7 @@ func (e *Encoder) collect(slot *encodeSlot) (Packet, error) {
 
 // convert records and submits the NV12 conversion of src into slot's
 // source picture, signalling slot.ready for the video queue.
-func (e *Encoder) convert(src *Buffer, slot *encodeSlot) error {
+func (e *Encoder) convert(src *Buffer, origin image.Point, slot *encodeSlot) error {
 	d := e.d
 	view, err := src.view()
 	if err != nil {
@@ -881,7 +942,10 @@ func (e *Encoder) convert(src *Buffer, slot *encodeSlot) error {
 	barrier2(d, cb, nil, foreign)
 	d.cmds.CmdBindPipeline(cb, vk.PipelineBindPointCompute, e.pipeline)
 	d.cmds.CmdBindDescriptorSets(cb, vk.PipelineBindPointCompute, e.layout, 0, 1, &e.set, 0, nil)
-	pc := nv12Constants{int32(e.cfg.Width), int32(e.cfg.Height), int32(e.coded[0]), int32(e.coded[1]), over}
+	pc := nv12Constants{
+		frameW: int32(e.cfg.Width), frameH: int32(e.cfg.Height), codedW: int32(e.coded[0]), codedH: int32(e.coded[1]), overlay: over,
+		originX: int32(origin.X), originY: int32(origin.Y), transform: int32(e.cfg.Transform),
+	}
 	d.cmds.CmdPushConstants(cb, e.layout, vk.ShaderStageFlags(vk.ShaderStageComputeBit), 0, uint32(unsafe.Sizeof(pc)), unsafe.Pointer(&pc))
 	d.cmds.CmdDispatch(cb, uint32((e.coded[0]/4+7)/8), uint32((e.coded[1]/2+7)/8), 1)
 	planes := vk.MemoryBarrier2{

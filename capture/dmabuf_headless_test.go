@@ -2,6 +2,11 @@ package capture_test
 
 import (
 	"errors"
+	"fmt"
+	"image"
+	"os"
+	"os/exec"
+	"path/filepath"
 	"reflect"
 	"testing"
 	"time"
@@ -224,4 +229,106 @@ func TestHeadlessDmabufCaptureIntoGPUBuffer(t *testing.T) {
 		}
 		return inproc.WantColor(img, format.Width/2, format.Height/2, fillRed)
 	})
+}
+
+// TestHeadlessDmabufTransformedOutput pins what a rotated or flipped
+// output's capture holds, the convention gpu.EncoderConfig.Transform
+// turns back: the output's pixels flipped (for the flipped
+// transforms), then turned counter-clockwise by the transform. A band
+// down the output's left edge lands on the buffer edge worked out by
+// hand for each of sway's eight transforms, and the output reports the
+// transform. It needs a compositor rendering on a GPU (just gpu-host).
+func TestHeadlessDmabufTransformedOutput(t *testing.T) {
+	inproc.Require(t)
+	c := inproc.Capture(t)
+	if !c.HasDmabuf() {
+		t.Skip("compositor offers no linux-dmabuf (CPU renderer)")
+	}
+	socks, _ := filepath.Glob(filepath.Join(os.Getenv("XDG_RUNTIME_DIR"), "sway-ipc.*.sock"))
+	swaymsg, err := exec.LookPath("swaymsg")
+	if len(socks) == 0 || err != nil {
+		t.Skip("needs sway's IPC socket and swaymsg to turn the output")
+	}
+	turn := func(transform string) {
+		t.Helper()
+		if out, err := exec.Command(swaymsg, "-s", socks[0], "output", "*", "transform", transform).CombinedOutput(); err != nil {
+			t.Fatalf("swaymsg transform %s: %v: %s", transform, err, out)
+		}
+	}
+	t.Cleanup(func() { turn("normal") })
+	inproc.Show(t, func(a *app.Application, out *app.Output) error {
+		_, err := a.NewLayer(app.LayerConfig{
+			Output:     out,
+			Layer:      app.LayerOverlay,
+			Anchor:     app.AnchorTop | app.AnchorBottom | app.AnchorLeft,
+			Namespace:  "lys-ui-capture-transform-test",
+			Root:       widget.NewSpacer(48, 1),
+			Background: fillRed,
+		})
+		return err
+	})
+	// sway names its transforms turning clockwise, so its 90 is
+	// wl_output's 270 and the other way round.
+	for _, tc := range []struct {
+		name      string
+		transform capture.Transform
+		edge      string
+	}{
+		{"normal", 0, "left"},
+		{"270", 1, "bottom"},
+		{"180", 2, "right"},
+		{"90", 3, "top"},
+		{"flipped", 4, "right"},
+		{"flipped-270", 5, "top"},
+		{"flipped-180", 6, "left"},
+		{"flipped-90", 7, "bottom"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			turn(tc.name)
+			inproc.Eventually(t, "the band on the "+tc.edge+" edge", func() error {
+				if err := c.Refresh(); err != nil {
+					return err
+				}
+				out := c.Outputs()[0]
+				if out.Transform != tc.transform {
+					return fmt.Errorf("output reports transform %d, want %d", out.Transform, tc.transform)
+				}
+				format, err := c.DmabufFormat(out, false)
+				if err != nil {
+					return err
+				}
+				d, err := gpu.OpenNode(format.Device)
+				if err != nil {
+					return err
+				}
+				defer d.Close()
+				buf, err := d.NewBuffer(format.Width, format.Height, format.Fourcc, format.Modifiers)
+				if err != nil {
+					return err
+				}
+				defer buf.Close()
+				imported, err := c.ImportDmabuf(buf.Dmabuf())
+				if err != nil {
+					return err
+				}
+				defer imported.Destroy()
+				if err := c.CopyOutputDmabuf(out, false, imported); err != nil {
+					return err
+				}
+				img, err := buf.ReadPixels()
+				if err != nil {
+					return err
+				}
+				w, h := format.Width, format.Height
+				edges := map[string]image.Point{"left": {10, h / 2}, "right": {w - 11, h / 2}, "top": {w / 2, 10}, "bottom": {w / 2, h - 11}}
+				for name, p := range edges {
+					err := inproc.WantColor(img, p.X, p.Y, fillRed)
+					if (name == tc.edge) != (err == nil) {
+						return fmt.Errorf("%dx%d buffer: %s edge at %v is %v, want the band only on the %s edge", w, h, name, p, img.RGBAAt(p.X, p.Y), tc.edge)
+					}
+				}
+				return nil
+			})
+		})
+	}
 }
