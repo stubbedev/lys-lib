@@ -2,7 +2,6 @@ package render
 
 import (
 	"image"
-	"math"
 )
 
 // Tile is one image layer's tiling (the CSS background and mask
@@ -16,6 +15,58 @@ type Tile struct {
 	RepeatX, RepeatY bool
 }
 
+// TileGeometry is a tiling laid out in device pixels, in the float32 a
+// GPU shader evaluates it in: the clip's box and corner radii, and per
+// axis the positioned tile's start and size, the repeat period (tile
+// and gap) with its reciprocal, and whether the axis repeats.
+type TileGeometry struct {
+	Box, Radii                               [4]float32
+	X0, Y0, W, H                             float32
+	PeriodX, PeriodY, InvPeriodX, InvPeriodY float32
+	RepeatX, RepeatY                         bool
+}
+
+// TileGeometryOf lays t out over clip's rounded outline (radii in
+// logical pixels) at device scale num/denom; false for an empty tile.
+func TileGeometryOf(t Tile, clip Rect, radii Corners, num, denom int) (TileGeometry, bool) {
+	if t.W <= 0 || t.H <= 0 {
+		return TileGeometry{}, false
+	}
+	c := Canvas{num: num, denom: denom}
+	b, rc := c.devBox(clip, radii)
+	s := float64(num) / float64(denom)
+	px, py := float32((t.W+t.GapX)*s), float32((t.H+t.GapY)*s)
+	return TileGeometry{
+		Box: to32(b.array()), Radii: to32(rc),
+		X0: float32(t.X * s), Y0: float32(t.Y * s), W: float32(t.W * s), H: float32(t.H * s),
+		PeriodX: px, PeriodY: py, InvPeriodX: Reciprocal(px), InvPeriodY: Reciprocal(py),
+		RepeatX: t.RepeatX, RepeatY: t.RepeatY,
+	}, true
+}
+
+// At is the offset (u, v) of device pixel center (px, py) within the
+// tile it falls in, and whether one covers it: false in a gap between
+// repeated tiles, or outside the lone tile of a non-repeating axis.
+func (g TileGeometry) At(px, py float32) (u, v float32, ok bool) {
+	u, inX := tileAxis(px-g.X0, g.W, g.PeriodX, g.InvPeriodX, g.RepeatX)
+	v, inY := tileAxis(py-g.Y0, g.H, g.PeriodY, g.InvPeriodY, g.RepeatY)
+	return u, v, inX && inY
+}
+
+// tileAxis maps a distance d from the positioned tile's start onto the
+// offset within the tile it falls in, folding repeats with modFloor.
+func tileAxis(d, size, period, inv float32, repeat bool) (float32, bool) {
+	if repeat {
+		d = modFloor(d, period, inv)
+	}
+	return d, d >= 0 && d < size
+}
+
+// TexelScale is the factor that maps a tile offset onto one of n
+// texels across a tile size device pixels long: n over size, rounded
+// once to float32, so both renderers truncate the same product.
+func TexelScale(n int, size float32) float32 { return float32(n) * Reciprocal(size) }
+
 // PaintImageTiles paints img over every tile t lays out, each tile the
 // image scaled to the tile's size and nearest sampled, all clipped to
 // clip's rounded outline (radii in logical pixels).
@@ -28,12 +79,17 @@ func (c *Canvas) PaintImageTiles(img image.Image, t Tile, clip Rect, radii Corne
 	if ib.Empty() {
 		return
 	}
-	iw, ih := float64(ib.Dx()), float64(ib.Dy())
-	c.paintTiles(t, clip, radii, func(u, v, tw, th float64) Color {
-		sx := min(max(ib.Min.X+int(u/tw*iw), ib.Min.X), ib.Max.X-1)
-		sy := min(max(ib.Min.Y+int(v/th*ih), ib.Min.Y), ib.Max.Y-1)
-		r, g, b, a := img.At(sx, sy).RGBA()
-		return Color(a>>8<<24 | r>>8<<16 | g>>8<<8 | b>>8)
+	g, ok := TileGeometryOf(t, clip, radii, c.num, c.denom)
+	if !ok {
+		return
+	}
+	iw, ih := ib.Dx(), ib.Dy()
+	kx, ky := TexelScale(iw, g.W), TexelScale(ih, g.H)
+	c.paintTiles(g, func(u, v float32) Color {
+		sx := ib.Min.X + min(max(int(u*kx), 0), iw-1)
+		sy := ib.Min.Y + min(max(int(v*ky), 0), ih-1)
+		r, gr, b, a := img.At(sx, sy).RGBA()
+		return Color(a>>8<<24 | r>>8<<16 | gr>>8<<8 | b>>8)
 	})
 }
 
@@ -47,57 +103,43 @@ func (c *Canvas) PaintGradientTiles(g Gradient, t Tile, clip Rect, radii Corners
 	if len(g.Stops) == 0 {
 		return
 	}
-	s := float64(c.num) / float64(c.denom)
-	m, ok := g.mapping(frect{0, 0, t.W * s, t.H * s}, s)
+	m, ok := g.TileMap(t, c.num, c.denom)
 	if !ok {
 		return
 	}
-	c.paintTiles(t, clip, radii, func(u, v, _, _ float64) Color {
-		return sampleStops(g.Stops, g.Extend, m.At(u, v))
+	tg, ok := TileGeometryOf(t, clip, radii, c.num, c.denom)
+	if !ok {
+		return
+	}
+	c.paintTiles(tg, func(u, v float32) Color {
+		return sampleStops(g.Stops, g.Extend, m.At(float64(u), float64(v)))
 	})
 }
 
-// paintTiles runs sample over the device pixels of clip's rounded
-// outline that a tile covers, with the pixel center's offset into its
-// tile and the tile's device size.
-func (c *Canvas) paintTiles(t Tile, clip Rect, radii Corners, sample func(u, v, tw, th float64) Color) {
-	if t.W <= 0 || t.H <= 0 {
-		return
-	}
-	b, rc := c.devBox(clip, radii)
-	s := float64(c.num) / float64(c.denom)
-	x0, y0, tw, th := t.X*s, t.Y*s, t.W*s, t.H*s
-	sp := c.span(b)
-	for y := sp.Y; y < sp.Y+sp.H; y++ {
-		py := float64(y) + 0.5
-		v, inY := tileOffset(py-y0, th, t.GapY*s, t.RepeatY)
-		if !inY {
-			continue
-		}
-		for x := sp.X; x < sp.X+sp.W; x++ {
-			px := float64(x) + 0.5
-			u, inX := tileOffset(px-x0, tw, t.GapX*s, t.RepeatX)
-			if !inX {
-				continue
-			}
-			if cov := coverage(sdBox(px, py, b, rc)); cov > 0 {
-				c.blendCov(x, y, sample(u, v, tw, th), cov)
-			}
-		}
-	}
+// TileMap is g's mapping over one tile of t at device scale num/denom:
+// a box at the origin, sampled at a pixel's offset into its tile;
+// false when it is degenerate.
+func (g Gradient) TileMap(t Tile, num, denom int) (GradientMap, bool) {
+	s := float64(num) / float64(denom)
+	return g.mapping(frect{0, 0, t.W * s, t.H * s}, s)
 }
 
-// tileOffset maps a distance d from the positioned tile's start onto
-// the offset within the tile it falls in: false in a gap between
-// repeated tiles, or outside the lone tile of a non-repeating axis.
-func tileOffset(d, size, gap float64, repeat bool) (float64, bool) {
-	if !repeat {
-		return d, d >= 0 && d < size
+// paintTiles runs sample over the device pixels of g's rounded clip
+// that a tile covers, with the pixel center's offset into its tile.
+func (c *Canvas) paintTiles(g TileGeometry, sample func(u, v float32) Color) {
+	b := g.Box
+	sp := c.span(frect{float64(b[0]), float64(b[1]), float64(b[2]), float64(b[3])})
+	for y := sp.Y; y < sp.Y+sp.H; y++ {
+		py := float32(y) + 0.5
+		for x := sp.X; x < sp.X+sp.W; x++ {
+			px := float32(x) + 0.5
+			u, v, ok := g.At(px, py)
+			if !ok {
+				continue
+			}
+			if cov := coverage(sdBoxF(px, py, g.Box, g.Radii)); cov > 0 {
+				blendCovF(c, x, y, sample(u, v), cov)
+			}
+		}
 	}
-	period := size + gap
-	m := math.Mod(d, period)
-	if m < 0 {
-		m += period
-	}
-	return m, m < size
 }

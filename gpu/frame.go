@@ -84,16 +84,12 @@ func (d *Device) Render(l *render.List, t *Target) error {
 	f := &d.frame
 	f.d, f.target, f.num, f.denom, f.err = d, t, num, denom, nil
 	f.clear()
-	if debug.Enabled {
-		f.stats = frameStats{sprites: map[string]int{}}
-	}
+	f.stats.reset()
 	l.Play(f)
 	if f.err != nil {
 		return f.err
 	}
-	if debug.Enabled {
-		f.stats.prims += len(f.prims)
-	}
+	f.stats.prims += len(f.prims)
 	err := f.flush(true)
 	if debug.Enabled {
 		debug.Log("gpu", "frame %dx%d: %d prims, %d segments, %d readbacks, sprite pixels %v", t.s.w, t.s.h, f.stats.prims, f.stats.segments, f.stats.readbacks, f.stats.sprites)
@@ -106,6 +102,16 @@ func (d *Device) Render(l *render.List, t *Target) error {
 type frameStats struct {
 	prims, segments, readbacks int
 	sprites                    map[string]int
+}
+
+// reset empties the stats for a new frame, keeping the map.
+func (s *frameStats) reset() {
+	sprites := s.sprites
+	if sprites == nil {
+		sprites = map[string]int{}
+	}
+	clear(sprites)
+	*s = frameStats{sprites: sprites}
 }
 
 // fail records the frame's first error.
@@ -177,9 +183,7 @@ func (f *frame) sprite(s render.State, call string, paint func(cv *render.Canvas
 	if f.err != nil || b.Empty() {
 		return
 	}
-	if debug.Enabled {
-		f.stats.sprites[call] += b.W * b.H
-	}
+	f.stats.sprites[call] += b.W * b.H
 	at, ok := f.pageSlot(b.W, b.H)
 	if !ok {
 		return
@@ -239,10 +243,8 @@ func (f *frame) cpu(region render.Rect, surfaces []*surface, fn func(cvs []*rend
 		f.steps = append(f.steps, step{kind: stepDownload, dst: s, region: r, first: uint32(f.downloads)})
 		f.downloads += r.Dx() * r.Dy() * 4
 	}
-	if debug.Enabled {
-		f.stats.readbacks++
-		f.stats.prims += len(f.prims)
-	}
+	f.stats.readbacks++
+	f.stats.prims += len(f.prims)
 	if f.err = f.flush(false); f.err != nil {
 		return
 	}
@@ -281,9 +283,7 @@ func (f *frame) flush(final bool) error {
 	if d.readback, err = d.readback.fit(f.downloads); err != nil {
 		return err
 	}
-	if debug.Enabled {
-		f.stats.segments++
-	}
+	f.stats.segments++
 	err = d.submit(func(cb vk.CommandBuffer) { f.record(cb, final) })
 	f.clear()
 	return err
@@ -611,6 +611,13 @@ func (f *frame) PaintGradient(s render.State, r render.Rect, radii render.Corner
 	box, rc := render.DeviceBox(r, radii, f.num, f.denom)
 	p := shaded(kindGradient, s, 0)
 	p.quad, p.box, p.radii = quadOf(s.Bounds), vec(box), vec(rc)
+	f.gradientStops(&p, m, g)
+	f.draw(f.on(s), nil, pipeOver, p)
+}
+
+// gradientStops sets p's gradient mapping m and appends g's stops to the
+// frame's words, as the shader's gradientAt and sampleStops read them.
+func (f *frame) gradientStops(p *prim, m render.GradientMap, g render.Gradient) {
 	p.m0 = [4]float32{float32(m.CX), float32(m.CY), float32(m.DX), float32(m.DY)}
 	p.m1 = [4]float32{m.InvLength, m.InvRX, m.InvRY, float32(m.From)}
 	p.m2 = [4]float32{float32(m.Kind), float32(g.Extend), float32(len(f.words)), float32(len(g.Stops))}
@@ -627,15 +634,58 @@ func (f *frame) PaintGradient(s render.State, r render.Rect, radii render.Corner
 		f.words = append(f.words, math.Float32bits(pos), uint32(st.Color), math.Float32bits(inv))
 		prev = pos
 	}
-	f.draw(f.on(s), nil, pipeOver, p)
+}
+
+// tiled is a primitive of kind over g's tiles, as the shader's tileAt
+// reads them.
+func tiled(kind uint32, s render.State, g render.TileGeometry) prim {
+	p := shaded(kind, s, 0)
+	p.quad, p.box, p.radii = quadOf(s.Bounds), g.Box, g.Radii
+	p.inner = [4]float32{g.X0, g.Y0, g.W, g.H}
+	p.iradii = [4]float32{g.PeriodX, g.PeriodY, g.InvPeriodX, g.InvPeriodY}
+	if g.RepeatX {
+		p.widths[0] = 1
+	}
+	if g.RepeatY {
+		p.widths[1] = 1
+	}
+	return p
 }
 
 func (f *frame) PaintGradientTiles(s render.State, g render.Gradient, t render.Tile, clip render.Rect, radii render.Corners) {
-	f.sprite(s, "PaintGradientTiles", func(cv *render.Canvas) { cv.PaintGradientTiles(g, t, clip, radii) })
+	if len(g.Stops) == 0 {
+		return
+	}
+	m, ok := g.TileMap(t, f.num, f.denom)
+	if !ok {
+		return
+	}
+	tg, ok := render.TileGeometryOf(t, clip, radii, f.num, f.denom)
+	if !ok {
+		return
+	}
+	p := tiled(kindGradientTiles, s, tg)
+	f.gradientStops(&p, m, g)
+	f.draw(f.on(s), nil, pipeOver, p)
 }
 
+// PaintImageTiles samples a still or versioned image's texture over
+// the tiles; any other image draws as a sprite.
 func (f *frame) PaintImageTiles(s render.State, img image.Image, t render.Tile, clip render.Rect, radii render.Corners) {
-	f.sprite(s, "PaintImageTiles", func(cv *render.Canvas) { cv.PaintImageTiles(img, t, clip, radii) })
+	ib := img.Bounds()
+	tg, ok := render.TileGeometryOf(t, clip, radii, f.num, f.denom)
+	if ib.Empty() || !ok {
+		return
+	}
+	tex, ok := f.texture(img)
+	if !ok {
+		f.sprite(s, "PaintImageTiles", func(cv *render.Canvas) { cv.PaintImageTiles(img, t, clip, radii) })
+		return
+	}
+	p := tiled(kindImageTiles, s, tg)
+	p.widths[2], p.widths[3] = render.TexelScale(ib.Dx(), tg.W), render.TexelScale(ib.Dy(), tg.H)
+	p.cols[0], p.cols[1] = uint32(ib.Dx()), uint32(ib.Dy())
+	f.draw(f.on(s), tex, pipeOver, p)
 }
 
 func (f *frame) FillPath(s render.State, path *render.Path, col render.Color) {

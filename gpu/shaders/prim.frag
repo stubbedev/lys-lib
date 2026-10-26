@@ -27,6 +27,8 @@ const uint kindUpsample = 20u;
 const uint kindSilhouette = 21u;
 const uint kindShadow = 22u;
 const uint kindGrain = 23u;
+const uint kindImageTiles = 24u;
+const uint kindGradientTiles = 25u;
 
 // The info.w flags, gpu/prim.go's.
 const uint flagRaw = 1u;
@@ -186,6 +188,22 @@ float modFloor(float x, float y, float invY) {
     precise float q = floor(x * invY);
     precise float r = x - y * q;
     return r;
+}
+
+// tileAt is render.TileGeometry.At: px's offset into the tile it falls
+// in, folded by modFloor along a repeating axis, and whether a tile
+// covers it.
+bool tileAt(Prim p, vec2 px, out vec2 uv) {
+    precise float u = px.x - p.inner.x;
+    precise float v = px.y - p.inner.y;
+    if (p.widths.x != 0.0) {
+        u = modFloor(u, p.iradii.x, p.iradii.z);
+    }
+    if (p.widths.y != 0.0) {
+        v = modFloor(v, p.iradii.y, p.iradii.w);
+    }
+    uv = vec2(u, v);
+    return u >= 0.0 && u < p.inner.z && v >= 0.0 && v < p.inner.w;
 }
 
 // atanf and atan2f are render's: Cephes' float atan, step for step,
@@ -623,6 +641,37 @@ void main() {
             discard;
         }
         c = n < 128u ? uvec4(a, 0u, 0u, 0u) : uvec4(a);
+        break;
+    }
+    case kindImageTiles: {
+        // render.Canvas.PaintImageTiles: the tile's texel, nearest
+        // sampled through the image's texel scale, under the clip.
+        vec2 uv;
+        if (!tileAt(p, px, uv)) {
+            discard;
+        }
+        float cov = coverage(sdBox(px, p.box, p.radii));
+        if (cov <= 0.0) {
+            discard;
+        }
+        precise float fx = uv.x * p.widths.z;
+        precise float fy = uv.y * p.widths.w;
+        ivec2 at = clamp(ivec2(int(fx), int(fy)), ivec2(0), ivec2(p.cols.xy) - 1);
+        c = covered(texel(at), cov);
+        break;
+    }
+    case kindGradientTiles: {
+        // render.Canvas.PaintGradientTiles: each tile its own gradient
+        // box, sampled at the offset into it.
+        vec2 uv;
+        if (!tileAt(p, px, uv)) {
+            discard;
+        }
+        float cov = coverage(sdBox(px, p.box, p.radii));
+        if (cov <= 0.0) {
+            discard;
+        }
+        c = covered(sampleStops(p, gradientAt(p, uv)), cov);
         break;
     }
     case kindSilhouette: {

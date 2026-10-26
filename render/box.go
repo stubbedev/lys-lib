@@ -225,11 +225,8 @@ func (c *Canvas) span(b frect) Rect {
 	return c.clip.Intersect(r)
 }
 
-// blendCov blends col at coverage cov in [0, 1].
-func (c *Canvas) blendCov(x, y int, col Color, cov float64) { blendCovF(c, x, y, col, cov) }
-
-// blendCovF is blendCov in either precision, the coverage quantized as
-// floor(cov*255 + 0.5), as the shader does.
+// blendCovF blends col at coverage cov in [0, 1], in either precision,
+// the coverage quantized as floor(cov*255 + 0.5), as the shader does.
 func blendCovF[F float](c *Canvas, x, y int, col Color, cov F) {
 	if cov <= 0 {
 		return

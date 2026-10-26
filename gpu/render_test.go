@@ -581,3 +581,35 @@ func TestLayerOutlivesItsDevice(t *testing.T) {
 		kepts[i] = paint(cv, kepts[i])
 	})
 }
+
+// Tiled image and gradient layers draw natively as the CPU paints them:
+// repeating with and without gaps, a lone tile, fractional positions,
+// a rounded clip and opacity, at two device scales (#314).
+func TestRenderTiles(t *testing.T) {
+	d := openDevice(t)
+	img := image.NewRGBA(image.Rect(0, 0, 3, 2))
+	for i := range img.Pix {
+		img.Pix[i] = uint8(31*i + 40)
+	}
+	for i := 3; i < len(img.Pix); i += 4 {
+		img.Pix[i] = 255
+	}
+	still := render.StillImage{RGBA: img}
+	stops := []render.GradientStop{{Pos: 0, Color: render.RGBA(220, 40, 50, 255)}, {Pos: 1, Color: render.RGBA(30, 90, 220, 160)}}
+	for _, sc := range [][2]int{{1, 1}, {3, 2}} {
+		w, h := 180*sc[0]/sc[1], 80*sc[0]/sc[1]
+		parity(t, d, w, h, sc[0], sc[1], 1, func(cv *render.Canvas, _ int) {
+			cv.Clear(cv.Rect(), render.RGBA(16, 18, 24, 255))
+			cv.PaintImageTiles(still, render.Tile{X: 3.25, Y: 2.5, W: 7.5, H: 5, RepeatX: true, RepeatY: true}, render.Rect{X: 2, Y: 2, W: 50, H: 34}, render.UniformCorners(9))
+			cv.PaintImageTiles(still, render.Tile{X: 60, Y: 4, W: 9, H: 6, GapX: 3.5, GapY: 2, RepeatX: true, RepeatY: true}, render.Rect{X: 56, Y: 2, W: 50, H: 34}, render.Corners{})
+			cv.PaintImageTiles(still, render.Tile{X: 120, Y: 6, W: 20, H: 14}, render.Rect{X: 110, Y: 2, W: 60, H: 34}, render.UniformCorners(4))
+			prev := cv.PushAlpha(0.6)
+			cv.PaintGradientTiles(render.Linear(30, stops...), render.Tile{X: 4, Y: 42, W: 13.5, H: 11, GapX: 2, RepeatX: true, RepeatY: true}, render.Rect{X: 2, Y: 40, W: 80, H: 36}, render.UniformCorners(7))
+			cv.PopAlpha(prev)
+			cv.PaintGradientTiles(render.Radial(stops...), render.Tile{X: 90, Y: 44, W: 16, H: 12, RepeatX: true}, render.Rect{X: 88, Y: 40, W: 80, H: 36}, render.Corners{})
+		})
+		if len(d.frame.stats.sprites) != 0 {
+			t.Errorf("tiles drew as CPU sprites: %v", d.frame.stats.sprites)
+		}
+	}
+}
