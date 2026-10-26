@@ -21,8 +21,7 @@ type vaEncoders struct {
 }
 
 // vaProfile is how the driver encodes a codec: the VA profile and
-// entrypoint, the rate control mode, the largest picture (0 where the
-// driver does not say), whether P frames go as B slices predicting
+// entrypoint, the rate control mode, whether P frames go as B slices predicting
 // from the same picture in both lists (a driver that codes no P
 // slices), and the H.265 features and block sizes it reports
 // (AttribNotSupported where it does not).
@@ -30,7 +29,6 @@ type vaProfile struct {
 	profile, entrypoint int32
 	stdProfile          vk.StdVideoH264ProfileIdc
 	rc                  uint32
-	maxW, maxH          int
 	gpb                 bool
 	hevcFeatures        uint32
 	hevcBlocks          uint32
@@ -134,8 +132,6 @@ func vaConfigOf(dpy *va.Display, profile, entrypoint int32) (vaProfile, error) {
 		{Type: va.ConfigAttribRateControl},
 		{Type: va.ConfigAttribEncPackedHeaders},
 		{Type: va.ConfigAttribEncMaxRefFrames},
-		{Type: va.ConfigAttribMaxPictureWidth},
-		{Type: va.ConfigAttribMaxPictureHeight},
 		{Type: va.ConfigAttribPredictionDirection},
 		{Type: va.ConfigAttribEncHEVCFeatures},
 		{Type: va.ConfigAttribEncHEVCBlockSizes},
@@ -143,8 +139,8 @@ func vaConfigOf(dpy *va.Display, profile, entrypoint int32) (vaProfile, error) {
 	if err := dpy.ConfigAttributes(profile, entrypoint, attrs); err != nil {
 		return vaProfile{}, err
 	}
-	rt, rc, packed, refs, maxW, maxH, dir := attrs[0].Value, attrs[1].Value, attrs[2].Value, attrs[3].Value, attrs[4].Value, attrs[5].Value, attrs[6].Value
-	p := vaProfile{profile: profile, entrypoint: entrypoint, hevcFeatures: attrs[7].Value, hevcBlocks: attrs[8].Value}
+	rt, rc, packed, refs, dir := attrs[0].Value, attrs[1].Value, attrs[2].Value, attrs[3].Value, attrs[4].Value
+	p := vaProfile{profile: profile, entrypoint: entrypoint, hevcFeatures: attrs[5].Value, hevcBlocks: attrs[6].Value}
 	switch {
 	case rt == va.AttribNotSupported || rt&va.RTFormatYUV420 == 0:
 		return vaProfile{}, fmt.Errorf("no 4:2:0 pictures (render target formats %#x)", rt)
@@ -163,9 +159,6 @@ func vaConfigOf(dpy *va.Display, profile, entrypoint int32) (vaProfile, error) {
 	}
 	if p.rc == 0 {
 		return vaProfile{}, fmt.Errorf("none of our rate control modes (%#x)", rc)
-	}
-	if maxW != va.AttribNotSupported && maxH != va.AttribNotSupported {
-		p.maxW, p.maxH = int(maxW), int(maxH)
 	}
 	p.gpb = dir != va.AttribNotSupported && dir&va.PredictionDirectionBiNotEmpty != 0
 	return p, nil
@@ -239,7 +232,7 @@ func newVABackend(d *Device, cfg EncoderConfig) (*vaBackend, error) {
 	for i := range vb.slots {
 		vb.slots[i] = vaSlot{surface: va.InvalidID, coded: va.InvalidID}
 	}
-	for _, step := range []func() error{vb.open, vb.createConfig, vb.createSlots} {
+	for _, step := range []func() error{vb.createConfig, vb.layout, vb.createContext, vb.createSlots} {
 		if err := step(); err != nil {
 			vb.close()
 			return nil, err
@@ -248,14 +241,36 @@ func newVABackend(d *Device, cfg EncoderConfig) (*vaBackend, error) {
 	return vb, nil
 }
 
-// open opens the display and lays out the stream: the coded size, the
-// rate and the codec's parameters.
-func (vb *vaBackend) open() error {
+// createConfig opens the display and makes the encode configuration.
+func (vb *vaBackend) createConfig() error {
 	dpy, err := va.Open(vb.d.renderNode)
 	if err != nil {
 		return err
 	}
 	vb.dpy = dpy
+	attrs := []va.ConfigAttrib{
+		{Type: va.ConfigAttribRTFormat, Value: va.RTFormatYUV420},
+		{Type: va.ConfigAttribRateControl, Value: vb.prof.rc},
+		{Type: va.ConfigAttribEncPackedHeaders, Value: va.EncPackedHeaderSequence},
+	}
+	vb.config, err = dpy.CreateConfig(vb.prof.profile, vb.prof.entrypoint, attrs)
+	return err
+}
+
+// vaCodedSize is cfg's even frame size in whole units of unit, padded
+// up to the driver's smallest picture.
+func vaCodedSize(cfg EncoderConfig, unit, minW, minH int) [2]int {
+	return [2]int{alignUp(max(evenUp(cfg.Width), minW), unit), alignUp(max(evenUp(cfg.Height), minH), unit)}
+}
+
+// layout lays out the stream within the sizes the configuration takes:
+// the coded size, the rate, the codec's parameters and the planes in
+// each slot's buffer.
+func (vb *vaBackend) layout() error {
+	minW, minH, maxW, maxH, err := vb.dpy.SurfaceSizes(vb.config)
+	if err != nil {
+		return err
+	}
 	cqp := vb.prof.rc == va.RCCQP
 	vb.bitrate = uint32(min(desktopBitrate(vb.cfg), 1<<32-1))
 	initQP := 26
@@ -264,16 +279,18 @@ func (vb *vaBackend) open() error {
 	}
 	switch vb.cfg.Codec {
 	case H264:
-		vb.coded = [2]int{alignUp(evenUp(vb.cfg.Width), 16), alignUp(evenUp(vb.cfg.Height), 16)}
+		vb.coded = vaCodedSize(vb.cfg, 16, minW, minH)
 		vb.codec, err = newH264VA(vb.cfg, vb.coded, vb.prof, initQP, vb.bitrate)
 	case H265:
-		vb.coded, vb.codec, err = newHEVCVA(vb.cfg, vb.prof, cqp, initQP, vb.bitrate)
+		blocks := vaHEVCBlocks(vb.prof.hevcBlocks)
+		vb.coded = vaCodedSize(vb.cfg, 1<<blocks.minCB, minW, minH)
+		vb.codec, err = newHEVCVA(vb.cfg, vb.coded, blocks, vb.prof, cqp, initQP, vb.bitrate)
 	}
 	if err != nil {
 		return err
 	}
-	if p := vb.prof; p.maxW > 0 && (vb.coded[0] > p.maxW || vb.coded[1] > p.maxH) {
-		return fmt.Errorf("gpu: %s encodes up to %dx%d, not %dx%d", dpy.Vendor(), p.maxW, p.maxH, vb.coded[0], vb.coded[1])
+	if maxW > 0 && maxH > 0 && (vb.coded[0] > maxW || vb.coded[1] > maxH) {
+		return fmt.Errorf("gpu: %s encodes up to %dx%d, not %dx%d", vb.dpy.Vendor(), maxW, maxH, vb.coded[0], vb.coded[1])
 	}
 	vb.pitch = alignUp(vb.coded[0], vaPitch)
 	vb.uvOffset = vb.pitch * alignUp(vb.coded[1], vaRows)
@@ -281,18 +298,9 @@ func (vb *vaBackend) open() error {
 	return nil
 }
 
-// createConfig makes the encode configuration, the reconstructed
-// pictures and the context.
-func (vb *vaBackend) createConfig() error {
-	attrs := []va.ConfigAttrib{
-		{Type: va.ConfigAttribRTFormat, Value: va.RTFormatYUV420},
-		{Type: va.ConfigAttribRateControl, Value: vb.prof.rc},
-		{Type: va.ConfigAttribEncPackedHeaders, Value: va.EncPackedHeaderSequence},
-	}
+// createContext makes the reconstructed pictures and the context.
+func (vb *vaBackend) createContext() error {
 	var err error
-	if vb.config, err = vb.dpy.CreateConfig(vb.prof.profile, vb.prof.entrypoint, attrs); err != nil {
-		return err
-	}
 	if vb.recon, err = vb.dpy.CreateSurfaces(va.RTFormatYUV420, vb.coded[0], vb.coded[1], dpbSlots); err != nil {
 		vb.recon = nil
 		return err
@@ -306,7 +314,7 @@ func (vb *vaBackend) createConfig() error {
 func (vb *vaBackend) createSlots() error {
 	for i := range vb.slots {
 		s := &vb.slots[i]
-		b, err := vb.d.newExportedBuffer(vb.planeSize, vk.BufferUsageStorageBufferBit)
+		b, err := vb.d.newExportedBuffer(vb.planeSize, vk.BufferUsageStorageBufferBit|vk.BufferUsageTransferSrcBit)
 		if err != nil {
 			return fmt.Errorf("gpu: encoder planes: %w", err)
 		}
@@ -616,16 +624,12 @@ func vaHEVCFeature(features uint32, feature va.Bits, want bool) bool {
 	return want
 }
 
-// newHEVCVA lays out cfg's sequence in the driver's block sizes and
-// features, at the lowest level that carries it, and the coded size
-// (whole smallest coding blocks) that comes to.
-func newHEVCVA(cfg EncoderConfig, prof vaProfile, cqp bool, qp int, bitrate uint32) ([2]int, *hevcVA, error) {
-	blocks := vaHEVCBlocks(prof.hevcBlocks)
-	unit := 1 << blocks.minCB
-	coded := [2]int{alignUp(evenUp(cfg.Width), unit), alignUp(evenUp(cfg.Height), unit)}
+// newHEVCVA lays out cfg's sequence coded at coded in blocks and the
+// driver's features, at the lowest level that carries it.
+func newHEVCVA(cfg EncoderConfig, coded [2]int, blocks h265Blocks, prof vaProfile, cqp bool, qp int, bitrate uint32) (*hevcVA, error) {
 	level, err := h265Level(coded[0], coded[1], cfg.FrameRate, vk.StdVideoH265LevelIdc(len(h265Levels)-1))
 	if err != nil {
-		return coded, nil, err
+		return nil, err
 	}
 	f := prof.hevcFeatures
 	amp := vaHEVCFeature(f, va.HEVCFeatureAmp, true)
@@ -662,7 +666,7 @@ func newHEVCVA(cfg EncoderConfig, prof vaProfile, cqp bool, qp int, bitrate uint
 			va.HEVCVuiRestrictedRefPicListsFlag.Put(1) | va.HEVCVuiLog2MaxMvLengthHorizontal.Put(15) | va.HEVCVuiLog2MaxMvLengthVertical.Put(15),
 		VuiNumUnitsInTick: 1, VuiTimeScale: uint32(cfg.FrameRate),
 	}
-	return coded, c, nil
+	return c, nil
 }
 
 func (c *hevcVA) parameterSets() [][]byte {

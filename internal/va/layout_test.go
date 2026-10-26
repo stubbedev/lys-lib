@@ -13,6 +13,20 @@ func TestLayouts(t *testing.T) {
 		name      string
 		got, want uintptr
 	}{
+		{"ImageFormat", unsafe.Sizeof(ImageFormat{}), 48},
+		{"ImageFormat.AlphaMask", unsafe.Offsetof((ImageFormat{}).AlphaMask), 28},
+		{"ImageFormat.VaReserved", unsafe.Offsetof((ImageFormat{}).VaReserved), 32},
+		{"Image", unsafe.Sizeof(Image{}), 120},
+		{"Image.Format", unsafe.Offsetof((Image{}).Format), 4},
+		{"Image.Buf", unsafe.Offsetof((Image{}).Buf), 52},
+		{"Image.Width", unsafe.Offsetof((Image{}).Width), 56},
+		{"Image.DataSize", unsafe.Offsetof((Image{}).DataSize), 60},
+		{"Image.NumPlanes", unsafe.Offsetof((Image{}).NumPlanes), 64},
+		{"Image.Pitches", unsafe.Offsetof((Image{}).Pitches), 68},
+		{"Image.Offsets", unsafe.Offsetof((Image{}).Offsets), 80},
+		{"Image.NumPaletteEntries", unsafe.Offsetof((Image{}).NumPaletteEntries), 92},
+		{"Image.ComponentOrder", unsafe.Offsetof((Image{}).ComponentOrder), 100},
+		{"Image.VaReserved", unsafe.Offsetof((Image{}).VaReserved), 104},
 		{"EncMiscParameterFrameRate", unsafe.Sizeof(EncMiscParameterFrameRate{}), 24},
 		{"EncMiscParameterFrameRate.FramerateFlags", unsafe.Offsetof((EncMiscParameterFrameRate{}).FramerateFlags), 4},
 		{"EncMiscParameterFrameRate.VaReserved", unsafe.Offsetof((EncMiscParameterFrameRate{}).VaReserved), 8},

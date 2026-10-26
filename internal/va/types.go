@@ -96,6 +96,36 @@ type EncMiscParameterRateControl struct {
 	VaReserved       [4]uint32
 }
 
+// ImageFormat is VAImageFormat.
+type ImageFormat struct {
+	Fourcc       uint32
+	ByteOrder    uint32
+	BitsPerPixel uint32
+	Depth        uint32
+	RedMask      uint32
+	GreenMask    uint32
+	BlueMask     uint32
+	AlphaMask    uint32
+	VaReserved   [4]uint32
+}
+
+// Image is VAImage.
+type Image struct {
+	ImageID           uint32
+	Format            ImageFormat
+	Buf               uint32
+	Width             uint16
+	Height            uint16
+	DataSize          uint32
+	NumPlanes         uint32
+	Pitches           [3]uint32
+	Offsets           [3]uint32
+	NumPaletteEntries int32
+	EntryBytes        int32
+	ComponentOrder    [4]int8
+	VaReserved        [4]uint32
+}
+
 // EncMiscParameterFrameRate is VAEncMiscParameterFrameRate.
 type EncMiscParameterFrameRate struct {
 	Framerate      uint32

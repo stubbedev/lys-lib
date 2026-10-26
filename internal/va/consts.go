@@ -13,8 +13,6 @@ const (
 	ConfigAttribRateControl               int32  = 5
 	ConfigAttribEncPackedHeaders          int32  = 10
 	ConfigAttribEncMaxRefFrames           int32  = 13
-	ConfigAttribMaxPictureWidth           int32  = 18
-	ConfigAttribMaxPictureHeight          int32  = 19
 	ConfigAttribPredictionDirection       int32  = 39
 	ConfigAttribEncHEVCFeatures           int32  = 50
 	ConfigAttribEncHEVCBlockSizes         int32  = 51
@@ -40,10 +38,16 @@ const (
 	EncMiscParameterTypeFrameRate         int32  = 0
 	EncMiscParameterTypeRateControl       int32  = 1
 	EncMiscParameterTypeHRD               int32  = 5
+	SurfaceAttribMinWidth                 int32  = 2
+	SurfaceAttribMaxWidth                 int32  = 3
+	SurfaceAttribMinHeight                int32  = 4
+	SurfaceAttribMaxHeight                int32  = 5
 	SurfaceAttribMemoryType               int32  = 6
 	SurfaceAttribExternalBufferDescriptor int32  = 7
 	SurfaceAttribMemTypeDRMPrime2         uint32 = 1073741824
 	SurfaceAttribSettable                 uint32 = 2
+	ExportSurfaceReadOnly                 uint32 = 1
+	ExportSurfaceComposedLayers           uint32 = 8
 	GenericValueTypeInteger               int32  = 1
 	GenericValueTypePointer               int32  = 3
 	FourccNV12                            uint32 = 842094158

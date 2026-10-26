@@ -46,6 +46,11 @@ var lib struct {
 	renderPicture     func(dpy uintptr, context uint32, bufs *uint32, num int32) int32
 	endPicture        func(dpy uintptr, context uint32) int32
 	syncSurface       func(dpy uintptr, surface uint32) int32
+	querySurfAttribs  func(dpy uintptr, config uint32, attribs *SurfaceAttrib, num *uint32) int32
+	createImage       func(dpy uintptr, format *ImageFormat, width, height int32, image *Image) int32
+	getImage          func(dpy uintptr, surface uint32, x, y int32, width, height uint32, image uint32) int32
+	destroyImage      func(dpy uintptr, image uint32) int32
+	exportSurface     func(dpy uintptr, surface, memType, flags uint32, desc unsafe.Pointer) int32
 }
 
 // load opens libva and libva-drm and resolves the entry points.
@@ -88,6 +93,11 @@ func load() error {
 			{va, "vaRenderPicture", &lib.renderPicture},
 			{va, "vaEndPicture", &lib.endPicture},
 			{va, "vaSyncSurface", &lib.syncSurface},
+			{va, "vaQuerySurfaceAttributes", &lib.querySurfAttribs},
+			{va, "vaCreateImage", &lib.createImage},
+			{va, "vaGetImage", &lib.getImage},
+			{va, "vaDestroyImage", &lib.destroyImage},
+			{va, "vaExportSurfaceHandle", &lib.exportSurface},
 		} {
 			sym, err := purego.Dlsym(f.handle, f.name)
 			if err != nil {
@@ -210,6 +220,72 @@ func (d *Display) ImportSurface(desc *DRMPRIMESurfaceDescriptor) (uint32, error)
 	var id uint32
 	err := check("vaCreateSurfaces (PRIME 2)", lib.createSurfaces(d.dpy, RTFormatYUV420, desc.Width, desc.Height, &id, 1, &attribs[0], 2))
 	return id, err
+}
+
+// SurfaceSizes are the smallest and largest surfaces config takes,
+// zero where the driver does not say.
+func (d *Display) SurfaceSizes(config uint32) (minW, minH, maxW, maxH int, err error) {
+	var n uint32
+	if err := check("vaQuerySurfaceAttributes", lib.querySurfAttribs(d.dpy, config, nil, &n)); err != nil {
+		return 0, 0, 0, 0, err
+	}
+	attribs := make([]SurfaceAttrib, max(n, 1))
+	if err := check("vaQuerySurfaceAttributes", lib.querySurfAttribs(d.dpy, config, &attribs[0], &n)); err != nil {
+		return 0, 0, 0, 0, err
+	}
+	for _, a := range attribs[:n] {
+		v := int(int32(a.Value.Value))
+		switch a.Type {
+		case SurfaceAttribMinWidth:
+			minW = v
+		case SurfaceAttribMinHeight:
+			minH = v
+		case SurfaceAttribMaxWidth:
+			maxW = v
+		case SurfaceAttribMaxHeight:
+			maxH = v
+		}
+	}
+	return minW, minH, maxW, maxH, nil
+}
+
+// ExportSurface describes a surface as a PRIME 2 dmabuf, composed in
+// one layer: how the driver lays its own surfaces out. The fds are the
+// caller's to close.
+func (d *Display) ExportSurface(id uint32) (DRMPRIMESurfaceDescriptor, error) {
+	var pin runtime.Pinner
+	defer pin.Unpin()
+	desc := new(DRMPRIMESurfaceDescriptor)
+	pin.Pin(desc)
+	err := check("vaExportSurfaceHandle", lib.exportSurface(d.dpy, id, SurfaceAttribMemTypeDRMPrime2, ExportSurfaceReadOnly|ExportSurfaceComposedLayers, unsafe.Pointer(desc)))
+	return *desc, err
+}
+
+// ReadNV12 copies what an NV12 surface holds: its luma rows, then its
+// interleaved chroma rows, tight.
+func (d *Display) ReadNV12(id uint32, width, height int) ([]byte, error) {
+	format := ImageFormat{Fourcc: FourccNV12, ByteOrder: 1, BitsPerPixel: 12}
+	var img Image
+	if err := check("vaCreateImage", lib.createImage(d.dpy, &format, int32(width), int32(height), &img)); err != nil {
+		return nil, err
+	}
+	defer lib.destroyImage(d.dpy, img.ImageID)
+	if err := check("vaGetImage", lib.getImage(d.dpy, id, 0, 0, uint32(width), uint32(height), img.ImageID)); err != nil {
+		return nil, err
+	}
+	p, err := d.MapBuffer(img.Buf)
+	if err != nil {
+		return nil, err
+	}
+	data := unsafe.Slice((*byte)(p), img.DataSize)
+	out := make([]byte, 0, width*height*3/2)
+	for y := range height {
+		out = append(out, data[int(img.Offsets[0])+y*int(img.Pitches[0]):][:width]...)
+	}
+	for y := range height / 2 {
+		out = append(out, data[int(img.Offsets[1])+y*int(img.Pitches[1]):][:width]...)
+	}
+	return out, d.UnmapBuffer(img.Buf)
 }
 
 // DestroySurfaces releases surfaces.
