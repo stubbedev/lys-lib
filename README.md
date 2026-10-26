@@ -37,10 +37,26 @@ where the system provides the API: libvulkan.
 ## Development
 
 `nix develop` (or direnv) enters the dev shell; `just` lists the
-recipes. `just check` runs the release gates, `just gpu` the GPU tests
-on lavapipe, `just headless` the capture and virtual input tests
-against a private headless sway, and `just gpu-host` every GPU path on
-the host's own GPU.
+recipes. `just gates` runs every gate CI runs: formatting, then `just
+check` (vet, lint, test, build), the race detector, `just gpu` (the GPU
+tests on lavapipe) and `just headless` (the capture and virtual input
+tests against a private headless sway). `just gpu-host` runs every GPU
+path on the host's own GPU.
+
+`just docker <recipe>` (default `gates`) runs a recipe in a container
+that sees the dev shell's store paths, the checkout, the GPUs' render
+and NVIDIA device nodes and the host's drivers, but no display socket,
+session bus or runtime dir of the desktop session, with memory capped.
+`nix fmt` formats the nix files with alejandra.
+
+## CI
+
+`.github/workflows/ci.yml` runs `just gates` in the dev shell.
+`.github/workflows/security.yml` runs CodeQL (Go and GitHub Actions),
+Grype and govulncheck, uploading findings to code scanning; dependency
+review gates pull requests against a licence allow-list. Dependabot
+keeps the module and the workflows current. Every action is pinned to
+a commit.
 
 The packages moved here from lys-ui and lys-shell with their history;
 issue numbers in that history name their repository

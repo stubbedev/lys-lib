@@ -7,9 +7,15 @@ default:
 # Directory for headless test sessions: compositor socket, logs, pids.
 test_dir := "/tmp/lys-lib-test-env"
 
-# Run every release gate in order: vet, lint, test.
-check: vet lint test
+# Every gate a commit must pass, as CI runs them in the dev shell:
+# formatting, the release gates, the race detector, the GPU tests on
+# lavapipe and the compositor-in-the-loop suite.
+gates: fmt-check check race gpu headless
 
+# Run every release gate in order: vet, lint, test, build.
+check: vet lint test build
+
+# Static analysis of every package with go vet.
 vet:
     go vet ./...
 
@@ -20,6 +26,10 @@ lint:
 # Run the test suite for every package.
 test:
     go test ./...
+
+# Compile-check every package; the output is discarded.
+build:
+    go build -o /dev/null ./...
 
 # Run every benchmark once, tests skipped.
 bench:
@@ -86,6 +96,37 @@ gpu-host:
     export WAYLAND_DISPLAY DBUS_SESSION_BUS_ADDRESS XDG_RUNTIME_DIR="$dir" LYS_TEST_HEADLESS=1
     go test -count=1 -v -run Dmabuf ./capture 2>&1 | grep -vE '^=== (RUN|PAUSE|CONT)' || rc=1
     exit $rc
+
+# Run a recipe in a container that sees only the dev shell's store paths,
+# the checkout, its own Go caches, /dev/kvm, the GPUs' render nodes and
+# NVIDIA's device nodes, and the host's GPU drivers: no DRM card nodes,
+# no host runtime dir, no session bus and no display sockets, so nothing
+# it runs reaches the desktop session. Memory is capped, as the race
+# suite runs many binaries. `just docker gpu-host` renders on the host's
+# GPU.
+docker recipe="gates" memory="10g":
+    #!/usr/bin/env bash
+    set -euo pipefail
+    dir=$(mktemp -d)
+    trap 'rm -rf "$dir"' EXIT
+    nix print-dev-env > "$dir/env.sh"
+    printf 'root:x:0:0::/root:/bin/sh\nlys-lib:x:%s:%s::/go/home:/bin/sh\n' "$(id -u)" "$(id -g)" > "$dir/passwd"
+    printf 'root:x:0:\nlys-lib:x:%s:\n' "$(id -g)" > "$dir/group"
+    bash=$(nix build --inputs-from . --no-link --print-out-paths nixpkgs#bash^out)/bin/bash
+    certs=$(nix build --inputs-from . --no-link --print-out-paths nixpkgs#cacert^out)/etc/ssl/certs/ca-bundle.crt
+    docker volume create lys-lib-go > /dev/null
+    docker run --rm -v lys-lib-go:/go debian:trixie-slim chown "$(id -u):$(id -g)" /go
+    gpu=()
+    for node in /dev/dri/renderD* /dev/nvidia*; do
+        [[ -c "$node" ]] && gpu+=(--device "$node" --group-add "$(stat -c %g "$node")")
+    done
+    if [[ -e /run/opengl-driver ]]; then
+        gpu+=(-v /run/opengl-driver:/run/opengl-driver:ro)
+    fi
+    docker run --rm --init --user "$(id -u):$(id -g)" --device /dev/kvm "${gpu[@]}" \
+        --memory {{quote(memory)}} --memory-swap {{quote(memory)}} --pids-limit 4096 --shm-size 1g \
+        -v /nix/store:/nix/store:ro -v "$dir/env.sh:/env.sh:ro" -v "$dir/passwd:/etc/passwd:ro" -v "$dir/group:/etc/group:ro" -v "$PWD:/src" -v lys-lib-go:/go -w /src -e SSL_CERT_FILE="$certs" \
+        debian:trixie-slim "$bash" -c 'source /env.sh && export HOME=/go/home GOMODCACHE=/go/mod GOCACHE=/go/cache GOLANGCI_LINT_CACHE=/go/lint TMPDIR=/tmp && unset XDG_RUNTIME_DIR WAYLAND_DISPLAY DISPLAY DBUS_SESSION_BUS_ADDRESS PIPEWIRE_REMOTE PIPEWIRE_RUNTIME_DIR && mkdir -p "$HOME" && exec just "$1"' docker {{quote(recipe)}}
 
 # Run the suite under the race detector. It needs cgo, so only this
 # recipe enables it, with the dev shell's pinned C compiler

@@ -1,6 +1,7 @@
-# lys-lib CI: the release gates, the race detector, the GPU tests on
-# lavapipe and the compositor-in-the-loop capture and virtual input
-# suite against a headless sway (LYS_TEST_HEADLESS=1).
+# lys-lib CI: every gate `just gates` runs (formatting, vet, lint, test,
+# build, the race detector, the GPU tests on lavapipe and the
+# compositor-in-the-loop capture and virtual input suite against a
+# headless sway with LYS_TEST_HEADLESS=1).
 #
 # Everything runs in the flake's dev shell (nix/shell.nix, pinned by
 # flake.lock): the Go toolchain, golangci-lint, just, sway, Mesa's
@@ -16,21 +17,19 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
 jobs:
   check:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v7
-      - uses: cachix/install-nix-action@v31
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: cachix/install-nix-action@75c75c31ebece974e48ebc36b4ad125bd97bd97b # v31.11.3
         with:
           github_access_token: ${{ secrets.GITHUB_TOKEN }}
-      - name: formatting gate
-        run: nix develop -c just fmt-check
-      - name: Release gates (vet, lint, test)
-        run: nix develop -c just check
-      - name: Race detector gate
-        run: nix develop -c just race
-      - name: GPU on lavapipe
-        run: nix develop -c just gpu
-      - name: Headless compositor gate
-        run: nix develop -c just headless
+      - name: Gates (formatting, vet, lint, test, build, race, GPU, headless)
+        run: nix develop -c just gates
