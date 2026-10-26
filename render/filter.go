@@ -254,7 +254,9 @@ func ApplyFilters(l *Layer, region Rect, f *Filters, shape FilterShape) {
 		case FilterDropShadow:
 			dropShadowRegion(l, region, ShadowPlanOf(op.Shadow, scale))
 		case FilterRefract:
-			refractRegion(l, region, shape, op.Bezel*scale, op.Amount*scale)
+			if p, ok := RefractPlanOf(shape, op.Bezel*scale, op.Amount*scale, l.cv.num, l.cv.denom); ok {
+				refractRegion(l, region, p)
+			}
 		default:
 			// Each color function applies on its own: the spec clamps
 			// every function's output, and composing the matrices would
@@ -274,15 +276,18 @@ const (
 	StepBlur
 	// StepShadow draws the step's Shadow plan.
 	StepShadow
+	// StepRefract bends by the step's Refract plan.
+	StepRefract
 )
 
 // FilterStep is one function of a filter list as a GPU renderer
 // applies it: the field its Kind names holds it.
 type FilterStep struct {
-	Kind   FilterStepKind
-	Matrix MatrixStep
-	Blur   BlurPlan
-	Shadow ShadowPlan
+	Kind    FilterStepKind
+	Matrix  MatrixStep
+	Blur    BlurPlan
+	Shadow  ShadowPlan
+	Refract RefractPlan
 }
 
 // MatrixStep is one color function of a filter list as both renderers
@@ -311,16 +316,19 @@ func stepOf(m colorMatrix) MatrixStep {
 	return st
 }
 
-// Steps is f's functions as filter steps, in order, at device scale
-// (device pixels per CSS pixel, scale); false when f holds one a GPU
-// does not run (refract).
-func (f *Filters) Steps(scale float64) ([]FilterStep, bool) {
+// Steps is f's functions as filter steps over shape, in order, at
+// device scale num/denom; a function that changes nothing (a refract
+// with no bezel) has none.
+func (f *Filters) Steps(shape FilterShape, num, denom int) []FilterStep {
+	scale := float64(num) / float64(denom)
 	steps := make([]FilterStep, 0, f.N)
 	for i := range f.N {
 		op := &f.Ops[i]
 		switch op.Kind {
 		case FilterRefract:
-			return nil, false
+			if p, ok := RefractPlanOf(shape, op.Bezel*scale, op.Amount*scale, num, denom); ok {
+				steps = append(steps, FilterStep{Kind: StepRefract, Refract: p})
+			}
 		case FilterDropShadow:
 			steps = append(steps, FilterStep{Kind: StepShadow, Shadow: ShadowPlanOf(op.Shadow, scale)})
 		case FilterBlur:
@@ -331,7 +339,7 @@ func (f *Filters) Steps(scale float64) ([]FilterStep, bool) {
 			steps = append(steps, FilterStep{Kind: StepMatrix, Matrix: stepOf(filterMatrix(op.Kind, op.Amount))})
 		}
 	}
-	return steps, true
+	return steps
 }
 
 // Inv255 is 1/255 in float32, what re-premultiplying scales by.
@@ -597,70 +605,86 @@ func lerp256(a, b Color, t uint32) Color {
 	return Color(ch(24)<<24 | ch(16)<<16 | ch(8)<<8 | ch(0))
 }
 
-// refractRegion bends region's pixels through a glass bezel along
-// shape's edge: inside the shape, within bezel device pixels of the
-// edge, each pixel samples the backdrop displaced outward along the
-// edge normal, by disp at the edge falling off quadratically to none
-// at the bezel's inner side - the rim of a lens, which shows what lies
-// just beyond it. Samples are bilinear; past the bezel, and outside
-// the shape, pixels stay as they are.
-func refractRegion(l *Layer, region Rect, shape FilterShape, bezel, disp float64) {
+// RefractPlan is -lys-refract() over a shape at device scale, in the
+// arithmetic both renderers share: the shape's border box and corner
+// radii in float32 device pixels, the bezel's reciprocal and the
+// displacement at the rim. Every step of At is exact in float32, but
+// for the one per-pixel division, which runs in integers.
+type RefractPlan struct {
+	Box, Radii     [4]float32
+	InvBezel, Disp float32
+}
+
+// RefractPlanOf is the plan for a bezel and displacement in device
+// pixels over shape at device scale num/denom; false when nothing
+// bends.
+func RefractPlanOf(shape FilterShape, bezel, disp float64, num, denom int) (RefractPlan, bool) {
 	if bezel <= 0 || disp <= 0 || shape.Box.Empty() {
-		return
+		return RefractPlan{}, false
 	}
-	b, rc := l.cv.devBox(shape.Box, shape.Radii)
+	c := Canvas{num: num, denom: denom}
+	b, rc := c.devBox(shape.Box, shape.Radii)
+	return RefractPlan{Box: to32(b.array()), Radii: to32(rc), InvBezel: Reciprocal(float32(bezel)), Disp: float32(disp)}, true
+}
+
+// At is how far device pixel (x, y) samples off itself, in 1/256
+// pixels, and whether it bends at all: inside the shape, within the
+// bezel of the edge, it looks outward along the edge normal, by Disp
+// at the edge falling off quadratically to none at the bezel's inner
+// side - the rim of a lens, which shows what lies just beyond it.
+func (p RefractPlan) At(x, y int) (dx, dy int32, ok bool) {
+	px, py := float32(x)+0.5, float32(y)+0.5
+	d := sdBoxF(px, py, p.Box, p.Radii)
+	k := 1 + float32(d*p.InvBezel) // 1 at the edge, 0 at the bezel's inner side
+	if d > 0 || k <= 0 {
+		return 0, 0, false
+	}
+	nx := sdBoxF(px+0.5, py, p.Box, p.Radii) - sdBoxF(px-0.5, py, p.Box, p.Radii)
+	ny := sdBoxF(px, py+0.5, p.Box, p.Radii) - sdBoxF(px, py-0.5, p.Box, p.Radii)
+	norm := float32(math.Sqrt(float64(float32(nx*nx) + float32(ny*ny))))
+	if norm == 0 {
+		return 0, 0, false
+	}
+	// The displacement nx*num/norm in 1/256 pixels: the products
+	// rounded to integers, divided exactly.
+	num := float32(float32(p.Disp*k) * k)
+	den := int32(math.Floor(float64(float32(norm*256) + 0.5)))
+	fix := func(n float32) int32 {
+		return roundDiv(int32(math.Floor(float64(float32(float32(n*num)*65536)+0.5))), den)
+	}
+	return fix(nx), fix(ny), true
+}
+
+// refractRegion bends region's pixels through p's bezel: each bending
+// pixel samples the region's pixels bilinearly at its displacement,
+// transparent past the region; the rest stay as they are.
+func refractRegion(l *Layer, region Rect, p RefractPlan) {
 	n := region.W * region.H
 	l.blurA = growColors(l.blurA, n)
 	src := l.blurA[:n]
 	readRegion(l.cv, region, src)
-	at := func(x, y int) Color {
-		if x < 0 || y < 0 || x >= region.W || y >= region.H {
+	at := func(x, y int32) Color {
+		if x < 0 || y < 0 || x >= int32(region.W) || y >= int32(region.H) {
 			return 0
 		}
-		return src[y*region.W+x]
+		return src[int(y)*region.W+int(x)]
 	}
-	sample := func(fx, fy float64) Color {
-		x0, y0 := int(math.Floor(fx)), int(math.Floor(fy))
-		tx, ty := uint32((fx-float64(x0))*256), uint32((fy-float64(y0))*256)
-		top := lerp256(at(x0, y0), at(x0+1, y0), tx)
-		bot := lerp256(at(x0, y0+1), at(x0+1, y0+1), tx)
-		return lerp256(top, bot, ty)
-	}
-	// Deeper than the bezel nothing moves: that run skips the field.
-	deep := frect{b.x0 + bezel, b.y0 + bezel, b.x1 - bezel, b.y1 - bezel}
-	var drc fcorners
-	for i := range rc {
-		drc[i] = math.Max(0, rc[i]-bezel)
-	}
-	deepOK := deep.x1 > deep.x0 && deep.y1 > deep.y0
-	rows := region.Intersect(l.cv.span(b))
-	for y := rows.Y; y < rows.Y+rows.H; y++ {
-		py := float64(y) + 0.5
-		xa, xb, skip := solidRun(deep, drc, py)
-		skip = skip && deepOK
+	for y := region.Y; y < region.Y+region.H; y++ {
 		out := l.cv.data[y*l.cv.stride:]
-		for x := rows.X; x < rows.X+rows.W; x++ {
-			px := float64(x) + 0.5
-			if skip && px >= xa && px <= xb {
+		for x := region.X; x < region.X+region.W; x++ {
+			dx, dy, ok := p.At(x, y)
+			if !ok {
 				continue
 			}
-			d := sdBox(px, py, b, rc)
-			if d > 0 || d <= -bezel {
-				continue
-			}
-			nx := sdBox(px+0.5, py, b, rc) - sdBox(px-0.5, py, b, rc)
-			ny := sdBox(px, py+0.5, b, rc) - sdBox(px, py-0.5, b, rc)
-			norm := math.Hypot(nx, ny)
-			if norm == 0 {
-				continue
-			}
-			k := 1 + d/bezel // 1 at the edge, 0 at the bezel's inner side
-			m := disp * k * k / norm
-			c := sample(px-0.5-float64(region.X)+nx*m, py-0.5-float64(region.Y)+ny*m)
-			binary.LittleEndian.PutUint32(out[x*4:], uint32(c))
+			fx, fy := int32(x-region.X)*256+dx, int32(y-region.Y)*256+dy
+			x0, y0 := fx>>8, fy>>8 // arithmetic: floors negative positions too
+			tx, ty := uint32(fx-x0*256), uint32(fy-y0*256)
+			top := lerp256(at(x0, y0), at(x0+1, y0), tx)
+			bot := lerp256(at(x0, y0+1), at(x0+1, y0+1), tx)
+			binary.LittleEndian.PutUint32(out[x*4:], uint32(lerp256(top, bot, ty)))
 		}
 	}
-	l.cv.touched += rows.W * rows.H
+	l.cv.touched += region.W * region.H
 }
 
 // growColors returns s with room for n colors, reusing its storage.

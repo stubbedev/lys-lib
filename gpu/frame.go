@@ -901,7 +901,7 @@ func (f *frame) ApplyPathMask(l *render.Layer, path *render.Path, region render.
 func (f *frame) ApplyFilters(l *render.Layer, region render.Rect, fl *render.Filters, shape render.FilterShape) {
 	s := f.layer(l)
 	region = region.Intersect(render.Rect{W: s.w, H: s.h})
-	if steps, ok := fl.Steps(float64(f.num) / float64(f.denom)); ok && f.gpuSteps(steps, region) {
+	if steps := fl.Steps(shape, f.num, f.denom); f.gpuSteps(steps, region) {
 		for _, st := range steps {
 			switch st.Kind {
 			case render.StepMatrix:
@@ -910,6 +910,8 @@ func (f *frame) ApplyFilters(l *render.Layer, region render.Rect, fl *render.Fil
 				f.blur(s, region, st.Blur)
 			case render.StepShadow:
 				f.dropShadow(s, region, st.Shadow)
+			case render.StepRefract:
+				f.refract(s, region, st.Refract)
 			}
 		}
 		return
@@ -929,6 +931,11 @@ func (f *frame) gpuSteps(steps []render.FilterStep, region render.Rect) bool {
 		switch st.Kind {
 		case render.StepBlur:
 			continue
+		case render.StepRefract:
+			if !f.filterRoom(region.X+region.W, region.Y+region.H) {
+				return false
+			}
+			continue
 		case render.StepShadow:
 			if w, h := st.Shadow.Size(region); !f.filterRoom(w, h) {
 				return false
@@ -946,6 +953,17 @@ func (f *frame) gpuSteps(steps []render.FilterStep, region render.Rect) bool {
 		}
 	}
 	return true
+}
+
+// refract bends s's region in place on the GPU through p, as render's
+// refractRegion does: the region copied aside, every bending pixel
+// sampled bilinearly from the copy at its displacement.
+func (f *frame) refract(s *surface, region render.Rect, p render.RefractPlan) {
+	var pr prim
+	pr.box, pr.radii = p.Box, p.Radii
+	pr.inner = [4]float32{float32(region.X), float32(region.Y), float32(region.W), float32(region.H)}
+	pr.m0 = [4]float32{p.InvBezel, p.Disp}
+	f.inPlace(s, region, nil, kindRefract, pr)
 }
 
 // matrixStep applies one color matrix step to s's region in place on

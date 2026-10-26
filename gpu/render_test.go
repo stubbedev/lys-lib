@@ -644,3 +644,34 @@ func TestRenderBlendModes(t *testing.T) {
 		}
 	}
 }
+
+// -lys-refract() bends a layer's bezel on the GPU as the CPU does, byte
+// for byte, rounded corners and the region's transparent edge included,
+// with no readback (#315).
+func TestRenderRefract(t *testing.T) {
+	d := openDevice(t)
+	stripes := []render.GradientStop{{Pos: 0, Color: render.RGBA(230, 60, 70, 255)}, {Pos: 0.33, Color: render.RGBA(230, 60, 70, 255)}, {Pos: 0.33, Color: render.RGBA(60, 180, 140, 255)}, {Pos: 0.66, Color: render.RGBA(60, 180, 140, 255)}, {Pos: 0.66, Color: render.RGBA(80, 120, 250, 200)}, {Pos: 1, Color: render.RGBA(80, 120, 250, 200)}}
+	for _, sc := range [][2]int{{1, 1}, {3, 2}} {
+		w, h := 90*sc[0]/sc[1], 60*sc[0]/sc[1]
+		parity(t, d, w, h, sc[0], sc[1], 1, func(cv *render.Canvas, _ int) {
+			cv.Clear(cv.Rect(), render.RGBA(16, 18, 24, 255))
+			g := render.Linear(60, stripes...)
+			g.Extend = render.ExtendRepeat
+			cv.PaintGradient(render.Rect{W: 90, H: 60}, render.Corners{}, g)
+			box := render.Rect{X: 10, Y: 8, W: 70, H: 44}
+			area := cv.MapRect(box)
+			snap := cv.ScratchSnapshot(area)
+			l := cv.ScratchLayer(area)
+			l.Canvas().DrawCanvasDevice(snap.Canvas(), 0, 0)
+			var fl render.Filters
+			fl.Append(render.FilterOp{Kind: render.FilterRefract, Amount: 6, Bezel: 9})
+			render.ApplyFilters(l, area, &fl, render.FilterShape{Box: box, Radii: render.UniformCorners(14)})
+			cv.DrawLayer(l, area, render.BlendNormal)
+			l.Release()
+			snap.Release()
+		})
+		if d.frame.stats.readbacks != 0 {
+			t.Errorf("refract at %d/%d read back %d times", sc[0], sc[1], d.frame.stats.readbacks)
+		}
+	}
+}

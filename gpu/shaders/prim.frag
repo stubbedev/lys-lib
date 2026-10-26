@@ -30,6 +30,7 @@ const uint kindGrain = 23u;
 const uint kindImageTiles = 24u;
 const uint kindGradientTiles = 25u;
 const uint kindBlend = 26u;
+const uint kindRefract = 27u;
 
 // The info.w flags, gpu/prim.go's.
 const uint flagRaw = 1u;
@@ -515,6 +516,37 @@ uvec4 lerp256(uvec4 a, uvec4 b, uint t) {
     return (a * (256u - t) + b * t + 128u) >> 8;
 }
 
+// refractAt is render.RefractPlan.At: how far the pixel at px samples
+// off itself in 1/256 pixels, and whether it bends.
+bool refractAt(Prim p, vec2 px, out ivec2 off) {
+    precise float d = sdBox(px, p.box, p.radii);
+    precise float k = 1.0 + d * p.m0.x;
+    if (d > 0.0 || k <= 0.0) {
+        return false;
+    }
+    precise float nx = sdBox(px + vec2(0.5, 0.0), p.box, p.radii) - sdBox(px - vec2(0.5, 0.0), p.box, p.radii);
+    precise float ny = sdBox(px + vec2(0.0, 0.5), p.box, p.radii) - sdBox(px - vec2(0.0, 0.5), p.box, p.radii);
+    precise float norm = sqrt(nx * nx + ny * ny);
+    if (norm == 0.0) {
+        return false;
+    }
+    precise float num = p.m0.y * k * k;
+    precise float den = floor(norm * 256.0 + 0.5);
+    precise float ax = floor(nx * num * 65536.0 + 0.5);
+    precise float ay = floor(ny * num * 65536.0 + 0.5);
+    off = ivec2(roundDiv(int(ax), int(den)), roundDiv(int(ay), int(den)));
+    return true;
+}
+
+// regionTexel is the texel at i inside the region p.inner names,
+// transparent past it.
+uvec4 regionTexel(Prim p, ivec2 i) {
+    if (any(lessThan(i, ivec2(0))) || any(greaterThanEqual(i, ivec2(p.inner.zw)))) {
+        return uvec4(0u);
+    }
+    return texel(ivec2(p.inner.xy) + i);
+}
+
 // bilinear is render.Layer.sample: texels outside src are transparent.
 uvec4 bilinear(vec4 src, vec2 at) {
     vec2 f0 = floor(at);
@@ -844,6 +876,23 @@ void main() {
             src = (src * p.cols.z + 127u) / 255u;
         }
         c = blendPixel(p, p.cols.x, src, dst);
+        break;
+    }
+    case kindRefract: {
+        // render's refractRegion: a bending pixel samples the region's
+        // copy bilinearly at its displacement; the rest keep theirs.
+        ivec2 at = ivec2(floor(px));
+        c = texel(at);
+        ivec2 off;
+        if (!refractAt(p, px, off)) {
+            break;
+        }
+        ivec2 pos = (at - ivec2(p.inner.xy)) * 256 + off;
+        ivec2 i0 = pos >> 8;
+        uvec2 t = uvec2(pos - i0 * 256);
+        uvec4 top = lerp256(regionTexel(p, i0), regionTexel(p, i0 + ivec2(1, 0)), t.x);
+        uvec4 bot = lerp256(regionTexel(p, i0 + ivec2(0, 1)), regionTexel(p, i0 + ivec2(1, 1)), t.x);
+        c = lerp256(top, bot, t.y);
         break;
     }
     case kindSilhouette: {
