@@ -181,7 +181,7 @@ type Encoder struct {
 
 	slots  [encodeSlots]encodeSlot
 	frames int
-	idrs   int
+	idrs   uint16
 	closed bool
 }
 
@@ -221,7 +221,7 @@ type encodeBackend interface {
 	afterConvert(cb vk.CommandBuffer, slot int, planes vk.Buffer) *vk.SemaphoreSubmitInfo
 	// encode queues slot's converted frame, the encoder's frame-th,
 	// sinceIDR frames after its IDR, the idrs-th IDR's.
-	encode(slot, frame, sinceIDR, idrs int) error
+	encode(slot, frame, sinceIDR int, idrs uint16) error
 	// collect waits for slot's frame and returns its access unit.
 	collect(slot int) ([]byte, error)
 	// parameterSets are the stream's parameter set NAL units.

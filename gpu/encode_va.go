@@ -190,12 +190,12 @@ type vaCodec interface {
 	isParameterSet(unit []byte) bool
 	// sliceHeader is the packed slice header of frame sinceIDR of its
 	// key interval, the idrs-th IDR's, and its length in bits.
-	sliceHeader(sinceIDR, idrs int) (unit []byte, bits int)
+	sliceHeader(sinceIDR int, idrs uint16) (unit []byte, bits int)
 	// params are frame sinceIDR's of its key interval, the idrs-th
 	// IDR's, reconstructed into surface cur from prev (the frame
 	// before) and coded into the coded buffer: the sequence's, which
 	// goes with an IDR, the picture's and the slice's.
-	params(sinceIDR, idrs int, cur, prev, coded uint32) (seq, pic, slice vaParam)
+	params(sinceIDR int, idrs uint16, cur, prev, coded uint32) (seq, pic, slice vaParam)
 }
 
 // vaBackend encodes on the device's VA-API driver: the conversion's
@@ -420,7 +420,7 @@ func (vb *vaBackend) afterConvert(cb vk.CommandBuffer, slot int, planes vk.Buffe
 // rate and rate control and our parameter sets, in the order ffmpeg
 // renders them, which iHD takes: the packed headers before the slice
 // they belong to.
-func (vb *vaBackend) encode(slot, frame, sinceIDR, idrs int) error {
+func (vb *vaBackend) encode(slot, frame, sinceIDR int, idrs uint16) error {
 	s := &vb.slots[slot]
 	cur, prev := vb.recon[frame%dpbSlots], vb.recon[(frame+dpbSlots-1)%dpbSlots]
 	seq, pic, slice := vb.codec.params(sinceIDR, idrs, cur, prev, s.coded)
@@ -592,13 +592,13 @@ func newH264VA(cfg EncoderConfig, coded [2]int, prof vaProfile, qp int, bitrate 
 
 func (c *h264VA) parameterSets() [][]byte { return [][]byte{c.header.SPS(), c.header.PPS()} }
 
-func (c *h264VA) sliceHeader(sinceIDR, idrs int) ([]byte, int) {
+func (c *h264VA) sliceHeader(sinceIDR int, idrs uint16) ([]byte, int) {
 	return c.header.SliceHeader(sinceIDR, idrs, c.qp)
 }
 
 func (c *h264VA) isParameterSet(u []byte) bool { t := u[0] & 0x1f; return t == 7 || t == 8 }
 
-func (c *h264VA) params(sinceIDR, idrs int, cur, prev, coded uint32) (seq, pic, slice vaParam) {
+func (c *h264VA) params(sinceIDR int, idrs uint16, cur, prev, coded uint32) (seq, pic, slice vaParam) {
 	h := &c.header
 	idr := sinceIDR == 0
 	none := va.PictureH264{PictureID: va.InvalidID, Flags: va.PictureH264Invalid}
@@ -622,7 +622,7 @@ func (c *h264VA) params(sinceIDR, idrs int, cur, prev, coded uint32) (seq, pic, 
 		CodedBuf: coded, FrameNum: intconv.Must[uint16](sinceIDR), PicInitQp: intconv.Must[uint8](h.InitQP), PicFields: picFields,
 	}
 	c.slice = va.EncSliceParameterBufferH264{
-		MacroblockInfo: va.InvalidID, NumMacroblocks: intconv.Must[uint32](h.WidthMbs * h.HeightMbs), SliceType: 0, IdrPicID: uint16(idrs & 0xffff), SliceQpDelta: intconv.Must[int8](c.qp - h.InitQP),
+		MacroblockInfo: va.InvalidID, NumMacroblocks: intconv.Must[uint32](h.WidthMbs * h.HeightMbs), SliceType: 0, IdrPicID: idrs, SliceQpDelta: intconv.Must[int8](c.qp - h.InitQP),
 	}
 	for i := range c.pic.ReferenceFrames {
 		c.pic.ReferenceFrames[i] = none
@@ -731,7 +731,7 @@ func (c *hevcVA) parameterSets() [][]byte {
 	return [][]byte{c.header.VPS(), c.header.SPS(), c.header.PPS()}
 }
 
-func (c *hevcVA) sliceHeader(sinceIDR, _ int) ([]byte, int) {
+func (c *hevcVA) sliceHeader(sinceIDR int, _ uint16) ([]byte, int) {
 	return c.header.SliceHeader(sinceIDR, c.gpb, c.qp)
 }
 
@@ -747,7 +747,7 @@ const (
 	hevcSliceI   = 2
 )
 
-func (c *hevcVA) params(sinceIDR, _ int, cur, prev, coded uint32) (seq, pic, slice vaParam) {
+func (c *hevcVA) params(sinceIDR int, _ uint16, cur, prev, coded uint32) (seq, pic, slice vaParam) {
 	h := &c.header
 	idr := sinceIDR == 0
 	none := va.PictureHEVC{PictureID: va.InvalidID, Flags: va.PictureHEVCInvalid}

@@ -99,7 +99,7 @@ func (h *H264) vui(w *Writer) {
 // from the picture before otherwise, the reference list and marking as
 // the parameter sets imply. It is a Packed unit, stopping where the
 // slice data starts.
-func (h *H264) SliceHeader(sinceIDR, idrPicID, qp int) (unit []byte, bits int) {
+func (h *H264) SliceHeader(sinceIDR int, idrPicID uint16, qp int) (unit []byte, bits int) {
 	var w Writer
 	idr := sinceIDR == 0
 	w.UE(0)
@@ -111,7 +111,7 @@ func (h *H264) SliceHeader(sinceIDR, idrPicID, qp int) (unit []byte, bits int) {
 	w.UE(0)
 	w.UInt(uint(h.Log2MaxFrameNum), sinceIDR)
 	if idr {
-		w.UEInt(idrPicID)
+		w.UE(uint32(idrPicID))
 		w.Flag(false)
 		w.Flag(false)
 	} else {

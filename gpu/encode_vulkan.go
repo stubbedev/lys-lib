@@ -201,7 +201,7 @@ type videoCodec interface {
 	// idrs among IDRs, predicting from DPB slot prev: its picture info,
 	// and the DPB slot infos of the picture it reconstructs and the one
 	// it references.
-	picture(sinceIDR, idrs, prev, qp int) (info, setup, ref unsafe.Pointer)
+	picture(sinceIDR int, idrs uint16, prev, qp int) (info, setup, ref unsafe.Pointer)
 }
 
 // codecLimits are a codec's capabilities the encoder heeds.
@@ -541,7 +541,7 @@ func (vb *vulkanBackend) createBuffers() error {
 
 // encode records and submits encoding slot's source picture, after
 // its semaphore.
-func (vb *vulkanBackend) encode(slot, frame, sinceIDR, idrs int) error {
+func (vb *vulkanBackend) encode(slot, frame, sinceIDR int, idrs uint16) error {
 	d, s := vb.d, &vb.slots[slot]
 	cb := s.cb
 	if err := begin(d, cb); err != nil {

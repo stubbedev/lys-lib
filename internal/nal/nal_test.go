@@ -2,6 +2,7 @@ package nal
 
 import (
 	"bytes"
+	"math"
 	"strconv"
 	"strings"
 	"testing"
@@ -137,6 +138,13 @@ func TestH264SliceHeaders(t *testing.T) {
 	p := asDriver(h.SliceHeader(9, 0, 30))
 	fields = naltest.Trace(t, "h264", AnnexB(h.SPS(), h.PPS(), idr, p))
 	naltest.Want(t, fields, map[string]int{"nal_unit_type": 1, "slice_type": 5, "frame_num": 9, "num_ref_idx_active_override_flag": 0, "ref_pic_list_modification_flag_l0": 0, "adaptive_ref_pic_marking_mode_flag": 0, "cabac_init_idc": 0, "slice_qp_delta": 4})
+}
+
+func TestH264SliceHeaderCarriesTheLargestIdrPicID(t *testing.T) {
+	h := H264{ProfileIdc: 100, LevelIdc: 41, WidthMbs: 40, HeightMbs: 23, CropBottom: 4, Log2MaxFrameNum: 4, MaxNumRefFrames: 1, CABAC: true, Transform8x8: true, InitQP: 26}
+	idr := asDriver(h.SliceHeader(0, math.MaxUint16, 26))
+	fields := naltest.Trace(t, "h264", AnnexB(h.SPS(), h.PPS(), idr))
+	naltest.Want(t, fields, map[string]int{"nal_unit_type": 5, "idr_pic_id": math.MaxUint16})
 }
 
 // ffmpeg reads the slice segment headers back behind the parameter sets

@@ -283,7 +283,7 @@ func (c *h265Codec) rateControl(cfg EncoderConfig) unsafe.Pointer {
 	return unsafe.Pointer(&c.rc)
 }
 
-func (c *h265Codec) picture(sinceIDR, _, prev, qp int) (info, setup, ref unsafe.Pointer) {
+func (c *h265Codec) picture(sinceIDR int, _ uint16, prev, qp int) (info, setup, ref unsafe.Pointer) {
 	c.pic.fill(sinceIDR, prev, qp, &c.params.rps, c.params.sps.Flags&vk.StdVideoH265SpsSampleAdaptiveOffset != 0)
 	return unsafe.Pointer(&c.pic.vkInfo), unsafe.Pointer(&c.pic.dpb[0]), unsafe.Pointer(&c.pic.dpb[1])
 }

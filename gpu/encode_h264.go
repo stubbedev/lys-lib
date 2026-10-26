@@ -142,7 +142,7 @@ type h264Picture struct {
 // numbered idrID among IDRs, predicting from DPB slot prev, which
 // holds the frame before; qp is the constant quantiser, 0 under the
 // device's rate control.
-func (p *h264Picture) fill(sinceIDR, idrID, prev, qp int) {
+func (p *h264Picture) fill(sinceIDR int, idrID uint16, prev, qp int) {
 	idr := sinceIDR == 0
 	picType, sliceType := vk.StdVideoH264PictureTypeP, vk.StdVideoH264SliceTypeP
 	flags := vk.StdVideoEncodeH264PictureIsReference
@@ -159,7 +159,7 @@ func (p *h264Picture) fill(sinceIDR, idrID, prev, qp int) {
 		p.lists.RefPicList0[0] = intconv.Must[uint8](prev)
 	}
 	p.info = vk.StdVideoEncodeH264PictureInfo{
-		Flags: flags, IdrPicID: uint16(idrID & 0xffff), PrimaryPicType: picType,
+		Flags: flags, IdrPicID: idrID, PrimaryPicType: picType,
 		FrameNum: intconv.Must[uint32](sinceIDR), PicOrderCnt: intconv.Must[int32](2 * sinceIDR), PRefLists: &p.lists,
 	}
 	p.slice = vk.StdVideoEncodeH264SliceHeader{SliceType: sliceType}
@@ -243,7 +243,7 @@ func (c *h264Codec) rateControl(cfg EncoderConfig) unsafe.Pointer {
 	return unsafe.Pointer(&c.rc)
 }
 
-func (c *h264Codec) picture(sinceIDR, idrs, prev, qp int) (info, setup, ref unsafe.Pointer) {
+func (c *h264Codec) picture(sinceIDR int, idrs uint16, prev, qp int) (info, setup, ref unsafe.Pointer) {
 	c.pic.fill(sinceIDR, idrs, prev, qp)
 	return unsafe.Pointer(&c.pic.vkInfo), unsafe.Pointer(&c.pic.dpb[0]), unsafe.Pointer(&c.pic.dpb[1])
 }

@@ -208,7 +208,7 @@ func TestVAEncodesFromItsOwnSurfaces(t *testing.T) {
 				vb.dpy.DestroySurfaces(own)
 			})
 			src := make([]*image.RGBA, 40)
-			idrs := 0
+			var idrs uint16
 			for i := range src {
 				src[i] = encodeFrame(cfg.Width, cfg.Height, i)
 				c.buf.fill(t, src[i])
