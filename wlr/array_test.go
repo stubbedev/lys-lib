@@ -5,7 +5,7 @@ import (
 	"slices"
 	"testing"
 
-	"github.com/neurlang/wayland/wl"
+	"github.com/stubbedev/lys-lib/third_party/wayland/wl"
 )
 
 // A wl_array of 16-bit values decodes whole, an odd count's last value

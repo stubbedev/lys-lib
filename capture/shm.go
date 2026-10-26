@@ -5,10 +5,9 @@ import (
 	"fmt"
 	"os"
 
-	wlos "github.com/neurlang/wayland/os"
-	"github.com/neurlang/wayland/wl"
-
 	"github.com/stubbedev/lys-lib/internal/intconv"
+	wlos "github.com/stubbedev/lys-lib/third_party/wayland/os"
+	"github.com/stubbedev/lys-lib/third_party/wayland/wl"
 )
 
 // shmBuffer is one memfd-backed wl_buffer the compositor copies a

@@ -8,12 +8,12 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/neurlang/wayland/wl"
-	"github.com/neurlang/wayland/wlclient"
-	"github.com/neurlang/wayland/xdg"
 	"golang.org/x/sys/unix"
 
 	"github.com/stubbedev/lys-lib/internal/intconv"
+	"github.com/stubbedev/lys-lib/third_party/wayland/wl"
+	"github.com/stubbedev/lys-lib/third_party/wayland/wlclient"
+	"github.com/stubbedev/lys-lib/third_party/wayland/xdg"
 	"github.com/stubbedev/lys-lib/wlr"
 )
 

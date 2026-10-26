@@ -1,0 +1,45 @@
+# github.com/neurlang/wayland v0.4.5, patched for lys-lib
+
+A copy of the packages of github.com/neurlang/wayland at v0.4.5
+(9245b77, MIT, LICENSE) that lys-lib and lys-ui use, their non-test
+sources only: `wl`, `os`, `xdg`, `wlclient`, `wlcursor`,
+`wlcursor/xcursor`, `external/swizzle`, `unstable/text-input-v3`,
+`unstable/xdg-decoration-v1`, and `cmd/wayland-scanner`, which
+generates `wlr`'s bindings (`go tool wayland-scanner`). They are
+carried as packages of the lys-lib module and imported as
+`github.com/stubbedev/lys-lib/third_party/wayland/...`; the only change
+to every file is that import path.
+
+## Why it lives inside the module
+
+As with `third_party/vk` and `third_party/oksvg`: Go ignores a
+dependency's `replace` directives, so a patched copy wired in through
+go.mod would reach lys-lib's own builds and none of its consumers'
+(lys-ui, lys-shell, lys-wm). As packages of the lys-lib module, the
+patches reach every application importing them, and every one of them
+shares the same `wl` types.
+
+## Patches
+
+Each bug fix goes upstream as its own pull request; drop it here once
+merged.
+
+### An absolute WAYLAND_DISPLAY connects as is
+
+Upstream: https://github.com/neurlang/wayland/pull/46
+
+`wl/context.go`, `Connect`: it always joined `XDG_RUNTIME_DIR` and the
+display name, so an absolute `WAYLAND_DISPLAY`, which lys-wm hands the
+programs it starts, dialed `/run/user/1000//run/user/1000/wayland-0`
+and failed with ENOENT. As in libwayland's `wl_display_connect`, an
+absolute name is the socket's path and `XDG_RUNTIME_DIR` is needed only
+for a relative one (lys-lib#10). `wl/connect_test.go` is the upstream
+pull request's test.
+
+### Byte order comes from encoding/binary
+
+`wl/event.go`, `wl/request.go`: the wire's native byte order is
+`encoding/binary.NativeEndian` instead of
+github.com/yalue/native_endian, which kept a dependency for what the
+standard library has had since Go 1.21. This is a lys-lib integration
+choice rather than an upstream bug.

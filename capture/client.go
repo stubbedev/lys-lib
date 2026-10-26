@@ -5,10 +5,9 @@ import (
 	"fmt"
 	"sync"
 
-	"github.com/neurlang/wayland/wl"
-	"github.com/neurlang/wayland/wlclient"
-
 	"github.com/stubbedev/lys-lib/dmabufwl"
+	"github.com/stubbedev/lys-lib/third_party/wayland/wl"
+	"github.com/stubbedev/lys-lib/third_party/wayland/wlclient"
 	"github.com/stubbedev/lys-lib/wlr"
 )
 
@@ -90,7 +89,7 @@ type Client struct {
 }
 
 // Connect opens a capture connection to the compositor named by
-// WAYLAND_DISPLAY (inside XDG_RUNTIME_DIR) and binds the capture
+// WAYLAND_DISPLAY and binds the capture
 // globals. Missing protocols are not an error here: each capture call
 // reports ErrUnsupported for the path it needs, and the Has* methods
 // probe ahead of time.
@@ -98,8 +97,9 @@ func Connect() (*Client, error) {
 	return ConnectTo("")
 }
 
-// ConnectTo is Connect against an explicit socket name inside
-// XDG_RUNTIME_DIR; "" means WAYLAND_DISPLAY.
+// ConnectTo is Connect against an explicit socket: an absolute path as
+// is, a name inside XDG_RUNTIME_DIR, or "" for WAYLAND_DISPLAY, as
+// libwayland resolves them.
 func ConnectTo(socket string) (*Client, error) {
 	display, err := wl.Connect(socket)
 	if err != nil {

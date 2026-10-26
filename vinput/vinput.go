@@ -15,11 +15,10 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/neurlang/wayland/wl"
-	"github.com/neurlang/wayland/wlclient"
-
 	"github.com/stubbedev/lys-lib/internal/intconv"
 	"github.com/stubbedev/lys-lib/keymapfd"
+	"github.com/stubbedev/lys-lib/third_party/wayland/wl"
+	"github.com/stubbedev/lys-lib/third_party/wayland/wlclient"
 	"github.com/stubbedev/lys-lib/wlr"
 )
 
@@ -58,8 +57,8 @@ type Device struct {
 // capKeyboard is wl_seat.capabilities' keyboard bit.
 const capKeyboard = 2
 
-// Dial connects to display ("" is WAYLAND_DISPLAY) and creates the
-// devices.
+// Dial connects to display (an absolute socket path, a name inside
+// XDG_RUNTIME_DIR, or "" for WAYLAND_DISPLAY) and creates the devices.
 func Dial(display string, opts Options) (*Device, error) {
 	d, err := wl.Connect(display)
 	if err != nil {

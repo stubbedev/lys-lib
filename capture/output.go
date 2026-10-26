@@ -3,9 +3,8 @@ package capture
 import (
 	"fmt"
 
-	"github.com/neurlang/wayland/wl"
-
 	"github.com/stubbedev/lys-lib/internal/intconv"
+	"github.com/stubbedev/lys-lib/third_party/wayland/wl"
 )
 
 // Output is one wl_output as the capture connection sees it: the
