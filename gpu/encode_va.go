@@ -186,9 +186,9 @@ type vaCodec interface {
 	isParameterSet(unit []byte) bool
 	// params are frame sinceIDR's of its key interval, the idrs-th
 	// IDR's, reconstructed into surface cur from prev (the frame
-	// before) and coded into the coded buffer: the sequence's too on
-	// an IDR.
-	params(sinceIDR, idrs int, cur, prev, coded uint32) []vaParam
+	// before) and coded into the coded buffer: the sequence's, which
+	// goes with an IDR, the picture's and the slice's.
+	params(sinceIDR, idrs int, cur, prev, coded uint32) (seq, pic, slice vaParam)
 }
 
 // vaBackend encodes on the device's VA-API driver: the conversion's
@@ -392,11 +392,12 @@ func (vb *vaBackend) afterConvert(cb vk.CommandBuffer, slot int, planes vk.Buffe
 
 // encode hands slot's surface to the driver with the frame's
 // parameters, and on an IDR the sequence's, its rate control and our
-// parameter sets.
+// parameter sets, in the order ffmpeg renders them, which iHD takes:
+// the packed headers before the slice they belong to.
 func (vb *vaBackend) encode(slot, frame, sinceIDR, idrs int) error {
 	s := &vb.slots[slot]
 	cur, prev := vb.recon[frame%dpbSlots], vb.recon[(frame+dpbSlots-1)%dpbSlots]
-	params := vb.codec.params(sinceIDR, idrs, cur, prev, s.coded)
+	seq, pic, slice := vb.codec.params(sinceIDR, idrs, cur, prev, s.coded)
 	var bufs []uint32
 	defer func() {
 		for _, b := range bufs {
@@ -419,17 +420,21 @@ func (vb *vaBackend) encode(slot, frame, sinceIDR, idrs int) error {
 		bufs = append(bufs, id)
 		return nil
 	}
-	for _, p := range params {
-		if err := add(p); err != nil {
+	idr := sinceIDR == 0
+	if idr {
+		if err := add(seq); err != nil {
 			return err
 		}
-	}
-	if sinceIDR == 0 {
 		if vb.prof.rc != va.RCCQP {
 			if err := vb.rateControl(misc); err != nil {
 				return err
 			}
 		}
+	}
+	if err := add(pic); err != nil {
+		return err
+	}
+	if idr {
 		headers := nal.AnnexB(vb.codec.parameterSets()...)
 		packed := va.EncPackedHeaderParameterBuffer{Type: va.EncPackedHeaderSequence, BitLength: uint32(len(headers) * 8), HasEmulationBytes: 1}
 		if err := add(vaParam{va.EncPackedHeaderParameterBufferType, unsafe.Pointer(&packed), int(unsafe.Sizeof(packed))}); err != nil {
@@ -438,6 +443,9 @@ func (vb *vaBackend) encode(slot, frame, sinceIDR, idrs int) error {
 		if err := add(vaParam{va.EncPackedHeaderDataBufferType, unsafe.Pointer(&headers[0]), len(headers)}); err != nil {
 			return err
 		}
+	}
+	if err := add(slice); err != nil {
+		return err
 	}
 	if err := vb.dpy.Encode(vb.context, s.surface, bufs); err != nil {
 		return fmt.Errorf("gpu: encode frame %d: %w", frame, err)
@@ -551,7 +559,7 @@ func (c *h264VA) parameterSets() [][]byte { return [][]byte{c.header.SPS(), c.he
 
 func (c *h264VA) isParameterSet(u []byte) bool { t := u[0] & 0x1f; return t == 7 || t == 8 }
 
-func (c *h264VA) params(sinceIDR, idrs int, cur, prev, coded uint32) []vaParam {
+func (c *h264VA) params(sinceIDR, idrs int, cur, prev, coded uint32) (seq, pic, slice vaParam) {
 	h := &c.header
 	idr := sinceIDR == 0
 	none := va.PictureH264{PictureID: va.InvalidID, Flags: va.PictureH264Invalid}
@@ -575,7 +583,7 @@ func (c *h264VA) params(sinceIDR, idrs int, cur, prev, coded uint32) []vaParam {
 		CodedBuf: coded, FrameNum: uint16(sinceIDR), PicInitQp: uint8(h.InitQP), PicFields: picFields,
 	}
 	c.slice = va.EncSliceParameterBufferH264{
-		NumMacroblocks: uint32(h.WidthMbs * h.HeightMbs), SliceType: 0, IdrPicID: uint16(idrs), SliceQpDelta: int8(c.qp - h.InitQP),
+		MacroblockInfo: va.InvalidID, NumMacroblocks: uint32(h.WidthMbs * h.HeightMbs), SliceType: 0, IdrPicID: uint16(idrs), SliceQpDelta: int8(c.qp - h.InitQP),
 	}
 	for i := range c.pic.ReferenceFrames {
 		c.pic.ReferenceFrames[i] = none
@@ -588,14 +596,9 @@ func (c *h264VA) params(sinceIDR, idrs int, cur, prev, coded uint32) []vaParam {
 	} else {
 		c.pic.ReferenceFrames[0], c.slice.RefPicList0[0] = ref, ref
 	}
-	out := []vaParam{
-		{va.EncPictureParameterBufferType, unsafe.Pointer(&c.pic), int(unsafe.Sizeof(c.pic))},
-		{va.EncSliceParameterBufferType, unsafe.Pointer(&c.slice), int(unsafe.Sizeof(c.slice))},
-	}
-	if idr {
-		out = append([]vaParam{{va.EncSequenceParameterBufferType, unsafe.Pointer(&c.seq), int(unsafe.Sizeof(c.seq))}}, out...)
-	}
-	return out
+	return vaParam{va.EncSequenceParameterBufferType, unsafe.Pointer(&c.seq), int(unsafe.Sizeof(c.seq))},
+		vaParam{va.EncPictureParameterBufferType, unsafe.Pointer(&c.pic), int(unsafe.Sizeof(c.pic))},
+		vaParam{va.EncSliceParameterBufferType, unsafe.Pointer(&c.slice), int(unsafe.Sizeof(c.slice))}
 }
 
 // hevcVA is H.265's part of a VA encoder.
@@ -651,7 +654,7 @@ func newHEVCVA(cfg EncoderConfig, coded [2]int, blocks h265Blocks, prof vaProfil
 	amp := vaHEVCFeature(f, va.HEVCFeatureAmp, true)
 	sao := vaHEVCFeature(f, va.HEVCFeatureSao, true)
 	tmvp := vaHEVCFeature(f, va.HEVCFeatureTemporalMvp, false)
-	cuQPDelta := vaHEVCFeature(f, va.HEVCFeatureCuQpDelta, !cqp)
+	cuQPDelta := !cqp && vaHEVCFeature(f, va.HEVCFeatureCuQpDelta, true)
 	ctb := 1 << blocks.ctb
 	c := &hevcVA{
 		header: h265Header(cfg, coded, level, blocks, amp, sao, tmvp, cuQPDelta, qp), qp: qp, gpb: prof.gpb,
@@ -701,7 +704,7 @@ const (
 	hevcSliceI   = 2
 )
 
-func (c *hevcVA) params(sinceIDR, _ int, cur, prev, coded uint32) []vaParam {
+func (c *hevcVA) params(sinceIDR, _ int, cur, prev, coded uint32) (seq, pic, slice vaParam) {
 	h := &c.header
 	idr := sinceIDR == 0
 	none := va.PictureHEVC{PictureID: va.InvalidID, Flags: va.PictureHEVCInvalid}
@@ -719,7 +722,7 @@ func (c *hevcVA) params(sinceIDR, _ int, cur, prev, coded uint32) []vaParam {
 		picFields |= va.HEVCPicCuQpDeltaEnabledFlag.Put(1)
 	}
 	collocated := uint8(0xff)
-	sliceFields := va.HEVCSliceLastSliceOfPicFlag.Put(1) | va.HEVCSliceSliceLoopFilterAcrossSlicesEnabledFlag.Put(1)
+	sliceFields := va.HEVCSliceLastSliceOfPicFlag.Put(1)
 	if h.SAO {
 		sliceFields |= va.HEVCSliceSliceSaoLumaFlag.Put(1) | va.HEVCSliceSliceSaoChromaFlag.Put(1)
 	}
@@ -746,12 +749,7 @@ func (c *hevcVA) params(sinceIDR, _ int, cur, prev, coded uint32) []vaParam {
 			c.slice.RefPicList1[0] = ref
 		}
 	}
-	out := []vaParam{
-		{va.EncPictureParameterBufferType, unsafe.Pointer(&c.pic), int(unsafe.Sizeof(c.pic))},
-		{va.EncSliceParameterBufferType, unsafe.Pointer(&c.slice), int(unsafe.Sizeof(c.slice))},
-	}
-	if idr {
-		out = append([]vaParam{{va.EncSequenceParameterBufferType, unsafe.Pointer(&c.seq), int(unsafe.Sizeof(c.seq))}}, out...)
-	}
-	return out
+	return vaParam{va.EncSequenceParameterBufferType, unsafe.Pointer(&c.seq), int(unsafe.Sizeof(c.seq))},
+		vaParam{va.EncPictureParameterBufferType, unsafe.Pointer(&c.pic), int(unsafe.Sizeof(c.pic))},
+		vaParam{va.EncSliceParameterBufferType, unsafe.Pointer(&c.slice), int(unsafe.Sizeof(c.slice))}
 }
