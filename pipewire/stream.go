@@ -70,7 +70,7 @@ type Config struct {
 	Name                  string
 	Width, Height, Stride uint32
 	Format                VideoFormat
-	// FPS is the advertised and paced frame rate.
+	// FPS is the advertised and paced frame rate. Required.
 	FPS uint32
 	// Transform is the constant spa_meta_videotransform value (the
 	// output's wl_output transform; 0 for a window).
@@ -119,9 +119,6 @@ func Start(cfg Config) (*Producer, error) {
 	if err := cfg.validate(); err != nil {
 		return nil, err
 	}
-	if cfg.FPS == 0 {
-		cfg.FPS = 1
-	}
 	p := &Producer{
 		cfg: cfg, done: make(chan struct{}), closing: make(chan struct{}), start: time.Now(),
 		minInterval: time.Second * 10 / time.Duration(cfg.FPS*12),
@@ -157,13 +154,17 @@ func Start(cfg Config) (*Producer, error) {
 	return p, nil
 }
 
-// validate refuses a config missing a name the stream is known by.
+// validate refuses a config missing a name the stream is known by or
+// its frame rate.
 func (c Config) validate() error {
 	if c.Application == "" {
 		return errors.New("pipewire: Config.Application is empty: the client needs the application name it is listed under")
 	}
 	if c.Name == "" {
 		return errors.New("pipewire: Config.Name is empty: the stream needs the node name its consumer links to")
+	}
+	if c.FPS == 0 {
+		return errors.New("pipewire: Config.FPS is 0: the stream needs the frame rate it advertises and paces")
 	}
 	return nil
 }

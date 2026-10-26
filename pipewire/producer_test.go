@@ -15,17 +15,19 @@ const (
 	testNode        = "lys-lib-test-screencast"
 )
 
-// A config without either name is refused before anything connects,
-// with the missing field named; neither falls back to a default.
-func TestStartRefusesAConfigMissingAName(t *testing.T) {
+// A config without either name or without a frame rate is refused
+// before anything connects, with the missing field named; none falls
+// back to a default.
+func TestStartRefusesAConfigMissingARequiredField(t *testing.T) {
 	t.Setenv("PIPEWIRE_RUNTIME_DIR", t.TempDir())
 	t.Setenv("PIPEWIRE_REMOTE", "no-server-here")
 	for _, c := range []struct {
 		cfg  Config
 		want string
 	}{
-		{Config{Name: testNode, Width: 64, Height: 32, Stride: 256, Format: VideoBGRx, Source: solid{1}}, "pipewire: Config.Application is empty: the client needs the application name it is listed under"},
-		{Config{Application: testApplication, Width: 64, Height: 32, Stride: 256, Format: VideoBGRx, Source: solid{1}}, "pipewire: Config.Name is empty: the stream needs the node name its consumer links to"},
+		{Config{Name: testNode, Width: 64, Height: 32, Stride: 256, Format: VideoBGRx, FPS: 30, Source: solid{1}}, "pipewire: Config.Application is empty: the client needs the application name it is listed under"},
+		{Config{Application: testApplication, Width: 64, Height: 32, Stride: 256, Format: VideoBGRx, FPS: 30, Source: solid{1}}, "pipewire: Config.Name is empty: the stream needs the node name its consumer links to"},
+		{Config{Application: testApplication, Name: testNode, Width: 64, Height: 32, Stride: 256, Format: VideoBGRx, Source: solid{1}}, "pipewire: Config.FPS is 0: the stream needs the frame rate it advertises and paces"},
 	} {
 		p, err := Start(c.cfg)
 		if p != nil || err == nil || err.Error() != c.want {
