@@ -208,6 +208,12 @@ bool tileAt(Prim p, vec2 px, out vec2 uv) {
     return u >= 0.0 && u < p.inner.z && v >= 0.0 && v < p.inner.w;
 }
 
+// Every division below by a value that can be zero divides by at
+// least 1, the guards before it notwithstanding: a division by zero
+// is only an undefined value in SPIR-V, yet llvmpipe's AVX-512 code
+// (Mesa 26.2, LLVM 21, on Zen 4) traps on one in lanes the guard has
+// already sent elsewhere.
+
 // The blend modes' fixed-point units, render's blendK and blendQ.
 const int blendK = 65025;
 const int blendQ = 4080;
@@ -248,7 +254,7 @@ int blendSeparable(Prim p, uint m, int s, int b, int sp, int sa, int bp, int ba)
         if (sp >= sa) {
             return blendK;
         }
-        int d = ba * (sa - sp);
+        int d = max(ba * (sa - sp), 1);
         return 255 * min(255, (bp * sa * 255 + d / 2) / d);
     }
     case 7u: {
@@ -261,7 +267,7 @@ int blendSeparable(Prim p, uint m, int s, int b, int sp, int sa, int bp, int ba)
         if (sp == 0) {
             return 0;
         }
-        int d = ba * sp;
+        int d = max(ba * sp, 1);
         return 255 * (255 - min(255, ((ba - bp) * sa * 255 + d / 2) / d));
     }
     case 8u:
@@ -291,10 +297,10 @@ ivec3 setLumQ(ivec3 c, int l) {
     int lo = min(c.x, min(c.y, c.z));
     int hi = max(c.x, max(c.y, c.z));
     if (lo < 0 && l != lo) {
-        c = l + (c - l) * l / (l - lo);
+        c = l + (c - l) * l / max(l - lo, 1);
     }
     if (hi > blendQ && hi != l) {
-        c = l + (c - l) * (blendQ - l) / (hi - l);
+        c = l + (c - l) * (blendQ - l) / max(hi - l, 1);
     }
     return c;
 }
@@ -313,7 +319,7 @@ ivec3 setSatQ(ivec3 c, int s) {
     ivec3 out_ = ivec3(0);
     int span = c[o2] - c[o0];
     if (span > 0) {
-        out_[o1] = (c[o1] - c[o0]) * s / span;
+        out_[o1] = (c[o1] - c[o0]) * s / max(span, 1);
         out_[o2] = s;
     }
     return out_;
@@ -337,7 +343,7 @@ ivec3 straightIn(uvec4 c, int unit) {
     if (a == 0) {
         return ivec3(0);
     }
-    return min(ivec3(unit), (ivec3(c.yzw) * unit + a / 2) / a);
+    return min(ivec3(unit), (ivec3(c.yzw) * unit + a / 2) / max(a, 1));
 }
 
 // blendPixel is render's: src over dst under mode m, the spec's
@@ -497,6 +503,7 @@ uvec4 boxQ4(uvec4 v, uint half_, uint recip) {
 
 // boxRecip is render.newBoxDiv's reciprocal, 2^32/n + 1, for n from 2.
 uint boxRecip(uint n) {
+    n = max(n, 1u);
     uint q = 0xFFFFFFFFu / n;
     if (0xFFFFFFFFu % n == n - 1u) {
         q += 1u;
@@ -507,7 +514,7 @@ uint boxRecip(uint n) {
 // upSource is render's: a destination index's lower source index at
 // scale d and the next one's weight, in 1/256.
 ivec2 upSource(int i, int d) {
-    int f = ((2 * i + 1) * 128 - d * 128) / d;
+    int f = ((2 * i + 1) * 128 - d * 128) / max(d, 1);
     int i0 = f >> 8;
     return ivec2(i0, f - i0 * 256);
 }
@@ -638,7 +645,7 @@ void main() {
         break;
     }
     case kindImage: {
-        ivec2 at = (ivec2(floor(px)) - ivec2(p.box.xy)) * ivec2(p.radii.xy) / ivec2(p.box.zw);
+        ivec2 at = (ivec2(floor(px)) - ivec2(p.box.xy)) * ivec2(p.radii.xy) / max(ivec2(p.box.zw), ivec2(1));
         c = texel(at);
         if (c == uvec4(0u)) {
             discard;
@@ -709,7 +716,7 @@ void main() {
             break;
         }
         uint a = c.x;
-        uvec4 st = uvec4((c.yzw * 255u + a / 2u) / a, a);
+        uvec4 st = uvec4((c.yzw * 255u + a / 2u) / max(a, 1u), a);
         float m[20] = float[20](p.box.x, p.box.y, p.box.z, p.box.w, p.radii.x, p.radii.y, p.radii.z, p.radii.w,
             p.inner.x, p.inner.y, p.inner.z, p.inner.w, p.iradii.x, p.iradii.y, p.iradii.z, p.iradii.w,
             p.widths.x, p.widths.y, p.widths.z, p.widths.w);
@@ -747,7 +754,7 @@ void main() {
         uvec4 m = texel2(at);
         uint cov = m.x;
         if (p.cols.x != 0u) {
-            uvec3 st = m.x == 0u ? uvec3(0u) : (m.yzw * 255u + m.x / 2u) / m.x;
+            uvec3 st = m.x == 0u ? uvec3(0u) : (m.yzw * 255u + m.x / 2u) / max(m.x, 1u);
             cov = (st.x * 77u + st.y * 151u + st.z * 28u) / 256u * m.x / 255u;
         }
         c = masked(texel(at), cov);
