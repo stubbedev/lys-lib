@@ -114,24 +114,28 @@ func (c *Client) dmabufFeedback() (dmabufwl.Feedback, error) {
 	return fb, nil
 }
 
-// paramsState records a zwp_linux_buffer_params_v1 import's verdict;
-// with create_immed success is silent, so only failed matters.
-type paramsState struct{ failed bool }
+// paramsState records a zwp_linux_buffer_params_v1 import's verdict:
+// the created buffer or the failure.
+type paramsState struct {
+	buf    *wlr.Buffer
+	failed bool
+}
 
-// HandleZwpBufferParamsV1Created implements the created handler; it
-// only fires for the non-immediate create, which the client never
-// sends.
-func (p *paramsState) HandleZwpBufferParamsV1Created(wlr.ZwpBufferParamsV1CreatedEvent) {}
+// HandleZwpBufferParamsV1Created takes the imported buffer.
+func (p *paramsState) HandleZwpBufferParamsV1Created(ev wlr.ZwpBufferParamsV1CreatedEvent) {
+	p.buf = ev.Buffer
+}
 
 // HandleZwpBufferParamsV1Failed implements the failed handler.
 func (p *paramsState) HandleZwpBufferParamsV1Failed(wlr.ZwpBufferParamsV1FailedEvent) {
 	p.failed = true
 }
 
-// ImportDmabuf imports a caller-allocated dmabuf as a wl_buffer
-// (create_immed) and waits one roundtrip for the compositor's verdict,
-// so a rejected import surfaces here as ErrDmabufRejected rather than
-// as a failed copy later.
+// ImportDmabuf imports a caller-allocated dmabuf as a wl_buffer and
+// waits one roundtrip for the compositor's verdict. The import uses
+// the asynchronous create, whose failure is an event: a rejected
+// import surfaces here as ErrDmabufRejected with the connection intact,
+// where create_immed's failure is a fatal protocol error.
 func (c *Client) ImportDmabuf(d dmabuf.Buffer) (*DmabufBuffer, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -145,24 +149,23 @@ func (c *Client) ImportDmabuf(d dmabuf.Buffer) (*DmabufBuffer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("capture: %w", err)
 	}
+	defer func() { _ = params.Destroy() }()
 	st := &paramsState{}
 	params.AddCreatedHandler(st)
 	params.AddFailedHandler(st)
-	buf, err := params.CreateImmed(int32(d.Width), int32(d.Height), d.Format, 0)
-	if err != nil {
-		_ = params.Destroy()
-		return nil, fmt.Errorf("capture: dmabuf create_immed: %w", err)
+	if err := params.Create(int32(d.Width), int32(d.Height), d.Format, 0); err != nil {
+		return nil, fmt.Errorf("capture: dmabuf create: %w", err)
 	}
-	err = c.roundtrip()
-	_ = params.Destroy()
-	if err != nil {
+	if err := c.roundtrip(); err != nil {
 		return nil, err
 	}
-	if st.failed {
-		_ = buf.Destroy()
+	switch {
+	case st.failed:
 		return nil, ErrDmabufRejected
+	case st.buf == nil:
+		return nil, fmt.Errorf("capture: the compositor answered a %dx%d dmabuf import with neither created nor failed", d.Width, d.Height)
 	}
-	return &DmabufBuffer{wl: buf, client: c, Attrs: d}, nil
+	return &DmabufBuffer{wl: st.buf, client: c, Attrs: d}, nil
 }
 
 // Destroy releases the compositor-side buffer. The caller's plane fds
