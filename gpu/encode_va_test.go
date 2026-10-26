@@ -74,7 +74,9 @@ func planesDiffer(pix []byte, w, h int, y, u, v byte) (int, bool) {
 
 // The surface the VA-API driver encodes from holds what the conversion
 // wrote: the slot's buffer, read back through Vulkan and through the
-// driver (vaGetImage), holds the frame's colour in NV12. It logs how
+// driver (vaGetImage), holds the frame's colour in NV12, and a
+// patterned frame reads back from the driver byte for byte as Vulkan
+// wrote it, which a solid one cannot show of a tiling. It logs how
 // the driver lays out its own surfaces, the layout to import in where
 // it reads ours wrong.
 func TestVASurfaceHoldsTheConversion(t *testing.T) {
@@ -117,6 +119,30 @@ func TestVASurfaceHoldsTheConversion(t *testing.T) {
 			}
 			if i, bad := planesDiffer(pix, w, h, y, u, v); bad {
 				t.Errorf("the driver reads byte %d of the imported %dx%d NV12 as %d, want Y %d U %d V %d: it does not see what Vulkan wrote", i, w, h, pix[i], y, u, v)
+			}
+			c.buf.fill(t, encodeFrame(cfg.Width, cfg.Height, 7))
+			if err := c.enc.convert(c.buf, image.Point{}, 0); err != nil {
+				t.Fatal(err)
+			}
+			if r := d.cmds.WaitForFences(d.device, 1, &c.enc.gfxDone, vk.True, ^uint64(0)); r != vk.Success {
+				t.Fatalf("wait for the conversion: %d", r)
+			}
+			written := readExported(t, vb, 0)
+			if pix, err = vb.dpy.ReadNV12(vb.slots[0].surface, w, h); err != nil {
+				t.Fatal(err)
+			}
+			wrong, first := 0, -1
+			for i := range written {
+				if pix[i] != written[i] {
+					wrong++
+					if first < 0 {
+						first = i
+					}
+				}
+			}
+			if wrong > 0 {
+				t.Errorf("the driver reads %d of %d bytes of a patterned %dx%d NV12 picture otherwise than Vulkan wrote them, the first at (%d, %d) of plane %d: it lays the import out otherwise",
+					wrong, len(written), w, h, first%w, first/w%h, first/(w*h))
 			}
 		})
 	}
