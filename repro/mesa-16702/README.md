@@ -27,7 +27,7 @@ Add `-code-model=large` to match the JIT's code exactly.
 | Host | Code compiled for | Result |
 | --- | --- | --- |
 | Zen 4 with AVX-512 exposed (20 runs) | znver4 | SIGFPE every time |
-| Zen 4 with AVX-512 hidden by the VM | znver3-class | pass |
+| Zen 4 with AVX-512 hidden by the VM | its own, without AVX-512 | pass |
 | Zen 4 with AVX-512 | sapphirerapids (cpuname.c) | pass |
 | Intel Xeon 8370C (Ice Lake) | its own | pass |
 | Intel Xeon 8370C (Ice Lake) | znver4 (cpuname.c) | SIGFPE |
