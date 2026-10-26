@@ -39,6 +39,13 @@ func (e *rangeEncoder) reset(buf []byte) {
 	*e = rangeEncoder{buf: buf, nbitsTotal: codeBits + 1, rng: codeTop, rem: -1}
 }
 
+// shrink cuts the frame to size bytes, moving the raw bits already
+// written at the end of buf back with it (ec_enc_shrink).
+func (e *rangeEncoder) shrink(size int) {
+	copy(e.buf[size-e.endOffs:size], e.buf[len(e.buf)-e.endOffs:])
+	e.buf = e.buf[:size]
+}
+
 func (e *rangeEncoder) writeByte(v int) {
 	if e.offs+e.endOffs >= len(e.buf) {
 		e.failed = true

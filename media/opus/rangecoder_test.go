@@ -89,6 +89,28 @@ func TestRangeEncoderMatchesReference(t *testing.T) {
 	}
 }
 
+func TestRangeEncoderShrinkKeepsRawBits(t *testing.T) {
+	code := func(rc *rangeEncoder) {
+		for i := range 40 {
+			rc.encode(uint32(i%3), uint32(i%3+1), 3)
+			rc.bits(uint32(i), 5)
+		}
+	}
+	direct := make([]byte, 100)
+	var rc rangeEncoder
+	rc.reset(direct)
+	code(&rc)
+	rc.done()
+	shrunk := make([]byte, 300)
+	rc.reset(shrunk)
+	code(&rc)
+	rc.shrink(len(direct))
+	rc.done()
+	if rc.failed || !bytes.Equal(shrunk[:len(direct)], direct) {
+		t.Fatalf("shrinking to %d bytes gave %x, want %x", len(direct), shrunk[:len(direct)], direct)
+	}
+}
+
 func TestRangeEncoderReportsOverrun(t *testing.T) {
 	var rc rangeEncoder
 	rc.reset(make([]byte, 2))

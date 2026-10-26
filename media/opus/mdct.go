@@ -2,53 +2,66 @@ package opus
 
 import "math"
 
-// The 20 ms MDCT: 1920 inputs (960 new samples behind the 120-sample
-// overlap, the window zero elsewhere) to 960 coefficients, through a
-// 480-point complex FFT.
+// The MDCT runs at two sizes: one long block over the whole frame (1920
+// inputs to 960 coefficients) or, on transients, shortBlocks short ones
+// (240 inputs to 120 coefficients each), all sharing the 120-sample
+// overlap window and a mixed-radix complex FFT of a quarter the size.
 const (
-	mdctN    = 2 * FrameSize
-	mdctN2   = mdctN / 2
-	mdctN4   = mdctN / 4
-	maxRadix = 5
+	shortBlocks = FrameSize / shortMdct
+	maxRadix    = 5
+	longN4      = FrameSize / 2
 )
 
-// fftFactors factors mdctN4 into the radices the FFT runs.
-var fftFactors = [...]int{4, 4, 2, 3, 5}
-
-// mdctTables are the transform's constants, computed once.
-type mdctTables struct {
-	window  [overlap]float32
-	trig    [mdctN4 + 1]float32
-	twiddle [mdctN4]complex64
+// mdct is one transform size's constants, computed once.
+type mdct struct {
+	n       int
+	factors []int
+	trig    []float32
+	twiddle []complex64
 	sine    float32
 }
 
-var mdctConsts = newMDCTTables()
+var (
+	mdctWindow = newWindow()
+	longMDCT   = newMDCT(2*FrameSize, 4, 4, 2, 3, 5)
+	shortMDCT  = newMDCT(2*shortMdct, 4, 3, 5)
+)
 
-func newMDCTTables() *mdctTables {
-	t := &mdctTables{sine: float32(2 * math.Pi * 0.125 / mdctN)}
-	for i := range t.window {
+func newWindow() *[overlap]float32 {
+	var w [overlap]float32
+	for i := range w {
 		s := math.Sin(0.5 * math.Pi * (float64(i) + 0.5) / overlap)
-		t.window[i] = float32(math.Sin(0.5 * math.Pi * s * s))
+		w[i] = float32(math.Sin(0.5 * math.Pi * s * s))
+	}
+	return &w
+}
+
+// newMDCT builds an n-input transform whose quarter-size FFT factors
+// into the given radices.
+func newMDCT(n int, factors ...int) *mdct {
+	n4 := n / 4
+	t := &mdct{
+		n:       n,
+		factors: factors,
+		trig:    make([]float32, n4+1),
+		twiddle: make([]complex64, n4),
+		sine:    float32(2 * math.Pi * 0.125 / float64(n)),
 	}
 	for i := range t.trig {
-		t.trig[i] = float32(math.Cos(2 * math.Pi * float64(i) / mdctN))
+		t.trig[i] = float32(math.Cos(2 * math.Pi * float64(i) / float64(n)))
 	}
 	for i := range t.twiddle {
-		phase := -2 * math.Pi * float64(i) / mdctN4
+		phase := -2 * math.Pi * float64(i) / float64(n4)
 		t.twiddle[i] = complex(float32(math.Cos(phase)), float32(math.Sin(phase)))
 	}
 	return t
 }
 
-// fft is the forward DFT of src into dst (both mdctN4 long, unscaled),
-// a recursive mixed-radix decimation in time.
-func (t *mdctTables) fft(dst, src []complex64) {
-	t.fftStage(dst, src, 1, 0)
-}
-
-func (t *mdctTables) fftStage(dst, src []complex64, stride, depth int) {
-	p := fftFactors[depth]
+// fftStage is the forward DFT of src into dst (unscaled), a recursive
+// mixed-radix decimation in time.
+func (t *mdct) fftStage(dst, src []complex64, stride, depth int) {
+	n4 := len(t.twiddle)
+	p := t.factors[depth]
 	m := len(dst) / p
 	for q := range p {
 		if m == 1 {
@@ -60,9 +73,14 @@ func (t *mdctTables) fftStage(dst, src []complex64, stride, depth int) {
 	var sums [maxRadix]complex64
 	for k := range m {
 		for u := range p {
+			step := (k + u*m) * stride % n4
+			w := 0
 			var sum complex64
 			for q := range p {
-				sum += dst[q*m+k] * t.twiddle[q*(k+u*m)*stride%mdctN4]
+				sum += dst[q*m+k] * t.twiddle[w]
+				if w += step; w >= n4 {
+					w -= n4
+				}
 			}
 			sums[u] = sum
 		}
@@ -72,17 +90,20 @@ func (t *mdctTables) fftStage(dst, src []complex64, stride, depth int) {
 	}
 }
 
-// mdct is clt_mdct_forward for one long block: in holds the overlap
-// and the frame (FrameSize+overlap samples), out the coefficients.
-func (t *mdctTables) mdct(in []float32, out []float32, f, g *[mdctN4]complex64) {
-	w := &t.window
+// forward is clt_mdct_forward: in holds the overlap and the block
+// (n/2+overlap samples); coefficient k lands in out[k*stride], so short
+// blocks interleave. f and g are scratch of at least n/4.
+func (t *mdct) forward(in, out []float32, stride int, f, g []complex64) {
+	n2, n4 := t.n/2, t.n/4
+	f, g = f[:n4], g[:n4]
+	w := mdctWindow
 	xp1 := overlap / 2
-	xp2 := mdctN2 - 1 + overlap/2
+	xp2 := n2 - 1 + overlap/2
 	wp1 := overlap / 2
 	wp2 := overlap/2 - 1
 	i := 0
 	for ; i < overlap/4; i++ {
-		f[i] = complex(w[wp2]*in[xp1+mdctN2]+w[wp1]*in[xp2], w[wp1]*in[xp1]-w[wp2]*in[xp2-mdctN2])
+		f[i] = complex(w[wp2]*in[xp1+n2]+w[wp1]*in[xp2], w[wp1]*in[xp1]-w[wp2]*in[xp2-n2])
 		xp1 += 2
 		xp2 -= 2
 		wp1 += 2
@@ -90,31 +111,31 @@ func (t *mdctTables) mdct(in []float32, out []float32, f, g *[mdctN4]complex64) 
 	}
 	wp1 = 0
 	wp2 = overlap - 1
-	for ; i < mdctN4-overlap/4; i++ {
+	for ; i < n4-overlap/4; i++ {
 		f[i] = complex(in[xp2], in[xp1])
 		xp1 += 2
 		xp2 -= 2
 	}
-	for ; i < mdctN4; i++ {
-		f[i] = complex(-w[wp1]*in[xp1-mdctN2]+w[wp2]*in[xp2], w[wp2]*in[xp1]+w[wp1]*in[xp2+mdctN2])
+	for ; i < n4; i++ {
+		f[i] = complex(-w[wp1]*in[xp1-n2]+w[wp2]*in[xp2], w[wp2]*in[xp1]+w[wp1]*in[xp2+n2])
 		xp1 += 2
 		xp2 -= 2
 		wp1 += 2
 		wp2 -= 2
 	}
-	for i := range mdctN4 {
+	for i := range n4 {
 		re, im := real(f[i]), imag(f[i])
-		yr := -re*t.trig[i] - im*t.trig[mdctN4-i]
-		yi := -im*t.trig[i] + re*t.trig[mdctN4-i]
+		yr := -re*t.trig[i] - im*t.trig[n4-i]
+		yi := -im*t.trig[i] + re*t.trig[n4-i]
 		f[i] = complex(yr+yi*t.sine, yi-yr*t.sine)
 	}
-	t.fft(g[:], f[:])
-	const scale = float32(1) / mdctN4
-	for i := range mdctN4 {
+	t.fftStage(g, f, 1, 0)
+	scale := 1 / float32(n4)
+	for i := range n4 {
 		re, im := real(g[i])*scale, imag(g[i])*scale
-		yr := im*t.trig[mdctN4-i] + re*t.trig[i]
-		yi := re*t.trig[mdctN4-i] - im*t.trig[i]
-		out[2*i] = yr - yi*t.sine
-		out[mdctN2-1-2*i] = yi + yr*t.sine
+		yr := im*t.trig[n4-i] + re*t.trig[i]
+		yi := re*t.trig[n4-i] - im*t.trig[i]
+		out[2*i*stride] = yr - yi*t.sine
+		out[(n2-1-2*i)*stride] = yi + yr*t.sine
 	}
 }

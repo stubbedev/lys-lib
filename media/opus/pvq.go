@@ -22,9 +22,10 @@ type pvq struct {
 }
 
 // rotate is exp_rotation in the forward direction: it spreads the
-// energy of x before the pulse search so sparse pulse vectors
-// reconstruct as less tonal shapes, which the decoder undoes.
-func rotate(x []float32, k, spread int) {
+// energy of each of the blocks interleaved in x before the pulse search,
+// so sparse pulse vectors reconstruct as less tonal shapes, which the
+// decoder undoes.
+func rotate(x []float32, k, spread, blocks int) {
 	n := len(x)
 	if 2*k >= n || spread == spreadNone {
 		return
@@ -34,15 +35,19 @@ func rotate(x []float32, k, spread int) {
 	c := float32(math.Cos(0.5 * math.Pi * float64(theta)))
 	s := float32(math.Cos(0.5 * math.Pi * float64(1-theta)))
 	stride2 := 0
-	if n >= 8 {
+	if n >= 8*blocks {
 		stride2 = 1
-		for stride2*stride2+stride2 < n {
+		for (stride2*stride2+stride2)*blocks+blocks>>2 < n {
 			stride2++
 		}
 	}
-	rotate1(x, 1, c, -s)
-	if stride2 != 0 {
-		rotate1(x, stride2, s, -c)
+	n /= blocks
+	for b := range blocks {
+		block := x[b*n : (b+1)*n]
+		rotate1(block, 1, c, -s)
+		if stride2 != 0 {
+			rotate1(block, stride2, s, -c)
+		}
 	}
 }
 
@@ -63,10 +68,11 @@ func rotate1(x []float32, stride int, c, s float32) {
 }
 
 // quant is alg_quant: it finds the k-pulse vector closest in direction
-// to x and codes its index. x is clobbered.
-func (p *pvq) quant(rc *rangeEncoder, x []float32, k, spread int) {
+// to x (blocks interleaved short blocks) and codes its index. x is
+// clobbered.
+func (p *pvq) quant(rc *rangeEncoder, x []float32, k, spread, blocks int) {
 	n := len(x)
-	rotate(x, k, spread)
+	rotate(x, k, spread, blocks)
 	y, iy, sign := p.y[:n], p.iy[:n], p.sign[:n]
 	for j, v := range x {
 		sign[j] = v <= 0

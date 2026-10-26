@@ -65,19 +65,27 @@ func testSignals() []signal {
 		return 0.25 * (float64(int32(seed)) / (1 << 31))
 	}
 	return []signal{
-		{name: "sweep", channels: 2, pcm: synth(2, sweep), minSNR: 20},
-		{name: "two-tone", channels: 2, pcm: synth(2, tone), minSNR: 22},
-		{name: "gated-tone", channels: 2, pcm: synth(2, gated), minSNR: 22},
-		{name: "mono-tone", channels: 1, pcm: synth(1, tone), minSNR: 33},
+		{name: "sweep", channels: 2, pcm: synth(2, sweep), minSNR: 33},
+		{name: "two-tone", channels: 2, pcm: synth(2, tone), minSNR: 27},
+		{name: "gated-tone", channels: 2, pcm: synth(2, gated), minSNR: 27},
+		{name: "mono-tone", channels: 1, pcm: synth(1, tone), minSNR: 45},
 		{name: "noise", channels: 2, pcm: synth(2, noise)},
 		{name: "silence", channels: 2, pcm: make([]int16, testSeconds*SampleRate*2)},
 	}
 }
 
+// rateControls names the rate controls the tests run.
+var rateControls = []struct {
+	name string
+	rate RateControl
+}{{"cbr", CBR}, {"cvbr", ConstrainedVBR}}
+
 // encodeOgg codes pcm into an Ogg Opus file (RFC 7845), padding the
 // end with silence so the lookahead is flushed and trimming it again by
-// the last page's granule position.
-func encodeOgg(t *testing.T, enc *Encoder, pcm []int16) []byte {
+// the last page's granule position. It checks every packet's size
+// against the encoder's rate control and returns the file and the
+// packets' total size.
+func encodeOgg(t *testing.T, enc *Encoder, pcm []int16) ([]byte, int) {
 	t.Helper()
 	ch := enc.Channels()
 	samples := len(pcm) / ch
@@ -92,15 +100,17 @@ func encodeOgg(t *testing.T, enc *Encoder, pcm []int16) []byte {
 	tags = binary.LittleEndian.AppendUint32(tags, 0)
 	w.page(tags, 0, 0)
 	var pkt []byte
+	total := 0
 	for f := range frames {
 		var err error
 		pkt, err = enc.Encode(pkt[:0], padded[f*FrameSize*ch:(f+1)*FrameSize*ch])
 		if err != nil {
 			t.Fatalf("frame %d: %v", f, err)
 		}
-		if len(pkt) != enc.PacketBytes() {
-			t.Fatalf("frame %d: packet of %d bytes, want %d", f, len(pkt), enc.PacketBytes())
+		if len(pkt) > enc.MaxPacketBytes() || (enc.rate == CBR && len(pkt) != enc.MaxPacketBytes()) {
+			t.Fatalf("frame %d: packet of %d bytes, want %d at most (all of them in CBR)", f, len(pkt), enc.MaxPacketBytes())
 		}
+		total += len(pkt)
 		granule := int64(f+1) * FrameSize
 		flags := byte(0)
 		if f == frames-1 {
@@ -109,7 +119,19 @@ func encodeOgg(t *testing.T, enc *Encoder, pcm []int16) []byte {
 		}
 		w.page(pkt, granule, flags)
 	}
-	return w.buf.Bytes()
+	return w.buf.Bytes(), total
+}
+
+// writeOgg encodes pcm into an Ogg Opus file in a test directory and
+// returns its path and the packets' total size.
+func writeOgg(t *testing.T, enc *Encoder, pcm []int16) (string, int) {
+	t.Helper()
+	file, total := encodeOgg(t, enc, pcm)
+	path := filepath.Join(t.TempDir(), "test.opus")
+	if err := os.WriteFile(path, file, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path, total
 }
 
 // oggWriter writes one packet per Ogg page.
@@ -198,6 +220,25 @@ func snr(want, got []int16, channels, lag int) float64 {
 	return 10 * math.Log10(sig/max(errSum, 1e-9))
 }
 
+// highPassed is pcm through the encoder's input filter, the first-order
+// 3 Hz high-pass of libopus's dc_reject. The filter is part of what the
+// encoder is asked to code, so the SNR and pre-echo measurements take
+// it as their reference; it alone would cap the sweep's SNR at 35 dB
+// by shifting the phase of its lowest notes.
+func highPassed(pcm []int16, channels int) []int16 {
+	const coef = 6.3 * 3 / SampleRate
+	out := make([]int16, len(pcm))
+	for c := range channels {
+		var mem float64
+		for i := c; i < len(pcm); i += channels {
+			x := float64(pcm[i])
+			out[i] = int16(max(math.MinInt16, min(math.MaxInt16, math.Round(x-mem))))
+			mem = coef*x + (1-coef)*mem
+		}
+	}
+	return out
+}
+
 // alignment is the lag of got against want, within a quarter frame,
 // that correlates best over a quarter second of the first channel.
 func alignment(want, got []int16, channels int) int {
@@ -256,49 +297,49 @@ func TestEncodeDecodesWithFFmpeg(t *testing.T) {
 		t.Skip("ffmpeg not on PATH")
 	}
 	for _, s := range testSignals() {
-		t.Run(s.name, func(t *testing.T) {
-			enc, err := NewEncoder(s.channels, 128000)
-			if err != nil {
-				t.Fatal(err)
-			}
-			path := filepath.Join(t.TempDir(), s.name+".opus")
-			if err := os.WriteFile(path, encodeOgg(t, enc, s.pcm), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			for _, decoder := range []string{"libopus", "opus"} {
-				got := decode(t, ffmpeg, decoder, path)
-				if len(got) != len(s.pcm) {
-					t.Fatalf("%s decoded %d samples, want %d", decoder, len(got), len(s.pcm))
+		for _, rc := range rateControls {
+			t.Run(s.name+"-"+rc.name, func(t *testing.T) {
+				enc, err := NewEncoder(s.channels, 128000, rc.rate)
+				if err != nil {
+					t.Fatal(err)
 				}
-				switch {
-				case s.name == "silence":
-					for i, v := range got {
-						if v != 0 {
-							t.Fatalf("%s: sample %d of silence is %d", decoder, i, v)
-						}
+				path, _ := writeOgg(t, enc, s.pcm)
+				for _, decoder := range []string{"libopus", "opus"} {
+					got := decode(t, ffmpeg, decoder, path)
+					if len(got) != len(s.pcm) {
+						t.Fatalf("%s decoded %d samples, want %d", decoder, len(got), len(s.pcm))
 					}
-				case s.minSNR > 0:
-					aligned := snr(s.pcm, got, s.channels, 0)
-					t.Logf("%s: SNR %.2f dB", decoder, aligned)
-					if bestLag := alignment(s.pcm, got, s.channels); bestLag != 0 {
-						t.Errorf("%s: output is %d samples off the input; PreSkip is wrong", decoder, bestLag)
-					}
-					if aligned < s.minSNR {
-						t.Errorf("%s: SNR %.2f dB, want at least %.0f dB", decoder, aligned, s.minSNR)
-					}
-				default:
-					for c := range s.channels {
-						want, have := spectrum(s.pcm, s.channels, c), spectrum(got, s.channels, c)
-						for b := range want {
-							if d := have[b] - want[b]; math.Abs(d) > 1.5 {
-								t.Errorf("%s: channel %d octave %d is %.2f dB off the input", decoder, c, b, d)
+					switch {
+					case s.name == "silence":
+						for i, v := range got {
+							if v != 0 {
+								t.Fatalf("%s: sample %d of silence is %d", decoder, i, v)
 							}
 						}
-						t.Logf("%s: channel %d octave levels in %.1f out %.1f", decoder, c, want, have)
+					case s.minSNR > 0:
+						want := highPassed(s.pcm, s.channels)
+						aligned := snr(want, got, s.channels, 0)
+						t.Logf("%s: SNR %.2f dB (%.2f dB against the unfiltered input)", decoder, aligned, snr(s.pcm, got, s.channels, 0))
+						if bestLag := alignment(want, got, s.channels); bestLag != 0 {
+							t.Errorf("%s: output is %d samples off the input; PreSkip is wrong", decoder, bestLag)
+						}
+						if aligned < s.minSNR {
+							t.Errorf("%s: SNR %.2f dB, want at least %.1f dB", decoder, aligned, s.minSNR)
+						}
+					default:
+						for c := range s.channels {
+							want, have := spectrum(s.pcm, s.channels, c), spectrum(got, s.channels, c)
+							for b := range want {
+								if d := have[b] - want[b]; math.Abs(d) > 1.5 {
+									t.Errorf("%s: channel %d octave %d is %.2f dB off the input", decoder, c, b, d)
+								}
+							}
+							t.Logf("%s: channel %d octave levels in %.1f out %.1f", decoder, c, want, have)
+						}
 					}
 				}
-			}
-		})
+			})
+		}
 	}
 }
 
@@ -308,58 +349,160 @@ func TestEncodeDecodesAtEveryBitrate(t *testing.T) {
 		t.Skip("ffmpeg not on PATH")
 	}
 	sweep := testSignals()[0]
+	seconds := float64(len(sweep.pcm)/2) / SampleRate
 	for _, c := range []struct {
 		channels, bitrate int
 		minSNR            float64
 	}{
-		{2, MinBitrate, -5},
-		{1, MinBitrate, -5},
-		{2, 24000, 4},
-		{2, 64000, 10},
-		{1, 64000, 20},
-		{2, 256000, 27},
-		{2, MaxBitrate, 32},
-		{1, MaxBitrate, 32},
+		{2, MinBitrate, -1},
+		{1, MinBitrate, 0},
+		{2, 24000, 6},
+		{2, 64000, 12},
+		{1, 64000, 33},
+		{2, 256000, 34},
+		{2, MaxBitrate, 34},
+		{1, MaxBitrate, 34},
 	} {
-		t.Run(strconv.Itoa(c.channels)+"ch-"+strconv.Itoa(c.bitrate), func(t *testing.T) {
-			pcm := sweep.pcm
-			if c.channels == 1 {
-				pcm = make([]int16, len(sweep.pcm)/2)
-				for i := range pcm {
-					pcm[i] = sweep.pcm[2*i]
+		for _, rc := range rateControls {
+			t.Run(strconv.Itoa(c.channels)+"ch-"+strconv.Itoa(c.bitrate)+"-"+rc.name, func(t *testing.T) {
+				pcm := sweep.pcm
+				if c.channels == 1 {
+					pcm = make([]int16, len(sweep.pcm)/2)
+					for i := range pcm {
+						pcm[i] = sweep.pcm[2*i]
+					}
 				}
+				enc, err := NewEncoder(c.channels, c.bitrate, rc.rate)
+				if err != nil {
+					t.Fatal(err)
+				}
+				path, total := writeOgg(t, enc, pcm)
+				rate := float64(total*8) / (seconds + float64(PreSkip)/SampleRate)
+				t.Logf("%.0f b/s", rate)
+				if rc.rate == ConstrainedVBR && math.Abs(rate/float64(c.bitrate)-1) > 0.05 {
+					t.Errorf("averaged %.0f b/s, want %d within 5%%", rate, c.bitrate)
+				}
+				for _, decoder := range []string{"libopus", "opus"} {
+					got := decode(t, ffmpeg, decoder, path)
+					if len(got) != len(pcm) {
+						t.Fatalf("%s decoded %d samples, want %d", decoder, len(got), len(pcm))
+					}
+					v := snr(highPassed(pcm, c.channels), got, c.channels, 0)
+					t.Logf("%s: SNR %.2f dB", decoder, v)
+					if v < c.minSNR {
+						t.Errorf("%s: SNR %.2f dB, want at least %.0f dB", decoder, v, c.minSNR)
+					}
+				}
+				transients, _ := clicks(c.channels, func(i int) float64 { return 0.1 * math.Sin(2*math.Pi*440*float64(i)/SampleRate) })
+				enc, err = NewEncoder(c.channels, c.bitrate, rc.rate)
+				if err != nil {
+					t.Fatal(err)
+				}
+				path, _ = writeOgg(t, enc, transients)
+				for _, decoder := range []string{"libopus", "opus"} {
+					if got := decode(t, ffmpeg, decoder, path); len(got) != len(transients) {
+						t.Fatalf("%s decoded %d samples of clicks, want %d", decoder, len(got), len(transients))
+					}
+				}
+			})
+		}
+	}
+}
+
+// clicks is castanet-like test input: 5 ms bursts of decaying noise
+// every 0.23 s (so the onsets fall at varying points of their frames)
+// over bed, and the onsets.
+func clicks(channels int, bed func(i int) float64) ([]int16, []int) {
+	n := testSeconds * SampleRate
+	var onsets []int
+	for o := SampleRate / 10; o < n-SampleRate/10; o += 11017 {
+		onsets = append(onsets, o)
+	}
+	seed := uint32(3)
+	burst := make([]float64, n)
+	for _, o := range onsets {
+		for j := range SampleRate / 200 {
+			seed = 1664525*seed + 1013904223
+			burst[o+j] = 0.7 * math.Exp(-float64(j)/40) * float64(int32(seed)) / (1 << 31)
+		}
+	}
+	return synth(channels, func(i, _ int) float64 { return bed(i) + burst[i] }), onsets
+}
+
+// preEcho is the energy in dB of the coding error from 20 to 5 ms
+// before each onset, summed over onsets and channels: the time a long
+// block smears an onset's noise over, less the two short blocks' span
+// that short blocks still smear it over.
+func preEcho(want, got []int16, channels int, onsets []int) float64 {
+	const from, to = SampleRate / 50, SampleRate / 200
+	var sum float64
+	for _, o := range onsets {
+		for i := o - from; i < o-to; i++ {
+			for c := range channels {
+				d := float64(got[i*channels+c]) - float64(want[i*channels+c])
+				sum += d * d
 			}
-			enc, err := NewEncoder(c.channels, c.bitrate)
-			if err != nil {
-				t.Fatal(err)
-			}
-			path := filepath.Join(t.TempDir(), "sweep.opus")
-			if err := os.WriteFile(path, encodeOgg(t, enc, pcm), 0o600); err != nil {
-				t.Fatal(err)
-			}
-			got := decode(t, ffmpeg, "libopus", path)
-			if len(got) != len(pcm) {
-				t.Fatalf("decoded %d samples, want %d", len(got), len(pcm))
-			}
-			v := snr(pcm, got, c.channels, 0)
-			t.Logf("SNR %.2f dB", v)
-			if v < c.minSNR {
-				t.Errorf("SNR %.2f dB, want at least %.0f dB", v, c.minSNR)
-			}
-		})
+		}
+	}
+	return 10 * math.Log10(sum+1)
+}
+
+func TestShortBlocksCutPreEcho(t *testing.T) {
+	ffmpeg, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Skip("ffmpeg not on PATH")
+	}
+	beds := []struct {
+		name string
+		bed  func(i int) float64
+		// minDrop is how much less pre-echo, in dB, short blocks must
+		// leave than long blocks alone.
+		minDrop float64
+	}{
+		{"silence", func(int) float64 { return 0 }, 40},
+		{"tone", func(i int) float64 { return 0.1 * math.Sin(2*math.Pi*440*float64(i)/SampleRate) }, 10},
+	}
+	for _, b := range beds {
+		for _, rc := range rateControls {
+			t.Run(b.name+"-"+rc.name, func(t *testing.T) {
+				pcm, onsets := clicks(2, b.bed)
+				var echo [2]float64
+				for i, long := range []bool{true, false} {
+					enc, err := NewEncoder(2, 128000, rc.rate)
+					if err != nil {
+						t.Fatal(err)
+					}
+					enc.longBlocksOnly = long
+					path, _ := writeOgg(t, enc, pcm)
+					got := decode(t, ffmpeg, "libopus", path)
+					if len(got) != len(pcm) {
+						t.Fatalf("decoded %d samples, want %d", len(got), len(pcm))
+					}
+					echo[i] = preEcho(highPassed(pcm, 2), got, 2, onsets)
+				}
+				drop := echo[0] - echo[1]
+				t.Logf("pre-echo %.1f dB with long blocks only, %.1f dB with short blocks: %.1f dB less", echo[0], echo[1], drop)
+				if drop < b.minDrop {
+					t.Errorf("short blocks cut pre-echo by %.1f dB, want at least %.0f dB", drop, b.minDrop)
+				}
+			})
+		}
 	}
 }
 
 func TestNewEncoderRejectsBadArguments(t *testing.T) {
-	for _, c := range []struct{ channels, bitrate int }{{0, 128000}, {3, 128000}, {2, MinBitrate - 1}, {2, MaxBitrate + 1}} {
-		if _, err := NewEncoder(c.channels, c.bitrate); err == nil {
-			t.Errorf("NewEncoder(%d, %d) succeeded", c.channels, c.bitrate)
+	for _, c := range []struct {
+		channels, bitrate int
+		rate              RateControl
+	}{{0, 128000, CBR}, {3, 128000, CBR}, {2, MinBitrate - 1, CBR}, {2, MaxBitrate + 1, ConstrainedVBR}, {2, 128000, ConstrainedVBR + 1}} {
+		if _, err := NewEncoder(c.channels, c.bitrate, c.rate); err == nil {
+			t.Errorf("NewEncoder(%d, %d, %d) succeeded", c.channels, c.bitrate, c.rate)
 		}
 	}
 }
 
 func TestEncodeRejectsWrongFrameSize(t *testing.T) {
-	enc, err := NewEncoder(2, 128000)
+	enc, err := NewEncoder(2, 128000, CBR)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -374,7 +517,7 @@ func TestEncodeRejectsWrongFrameSize(t *testing.T) {
 }
 
 func TestEncodeAppendsOneCBRPacket(t *testing.T) {
-	enc, err := NewEncoder(2, 128000)
+	enc, err := NewEncoder(2, 128000, CBR)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -398,13 +541,13 @@ func TestEncodeAllocatesNothing(t *testing.T) {
 	if raceEnabled {
 		t.Skip("-race instrumentation allocates")
 	}
-	enc, err := NewEncoder(2, 128000)
+	enc, err := NewEncoder(2, 128000, CBR)
 	if err != nil {
 		t.Fatal(err)
 	}
 	pcm := testSignals()[0].pcm
 	frames := len(pcm) / (2 * FrameSize)
-	dst := make([]byte, 0, enc.PacketBytes())
+	dst := make([]byte, 0, enc.MaxPacketBytes())
 	frame := 0
 	allocs := testing.AllocsPerRun(50, func() {
 		off := frame % frames * 2 * FrameSize
@@ -419,13 +562,13 @@ func TestEncodeAllocatesNothing(t *testing.T) {
 }
 
 func BenchmarkEncode(b *testing.B) {
-	enc, err := NewEncoder(2, 128000)
+	enc, err := NewEncoder(2, 128000, CBR)
 	if err != nil {
 		b.Fatal(err)
 	}
 	pcm := testSignals()[0].pcm
 	frames := len(pcm) / (2 * FrameSize)
-	dst := make([]byte, 0, enc.PacketBytes())
+	dst := make([]byte, 0, enc.MaxPacketBytes())
 	b.ReportAllocs()
 	for i := 0; b.Loop(); i++ {
 		off := i % frames * 2 * FrameSize
@@ -436,7 +579,7 @@ func BenchmarkEncode(b *testing.B) {
 }
 
 func TestAppendHead(t *testing.T) {
-	enc, err := NewEncoder(2, 128000)
+	enc, err := NewEncoder(2, 128000, CBR)
 	if err != nil {
 		t.Fatal(err)
 	}
