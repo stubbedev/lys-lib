@@ -36,8 +36,11 @@ jobs:
           if ! grep -qw avx512f /proc/cpuinfo; then echo "hi16: no AVX-512 here" | tee out/hi16.txt; exit 0; fi
           nix shell --inputs-from . nixpkgs#gcc -c gcc -O2 -mavx2 -pthread -o hi16 repro/mesa-16702/hi16.c
           ./hi16 50000000 2>&1 | tee out/hi16.txt || true
-      - name: Native CPU caps
-        run: repro/mesa-16702/run.sh out/native
+      - name: Native CPU caps, every module's IR captured
+        run: |
+          nix shell --inputs-from . nixpkgs#gcc -c gcc -O2 -shared -fPIC -Wl,--version-script=repro/mesa-16702/irdump.map -o "$PWD/irdump.so" repro/mesa-16702/irdump.c -ldl
+          mkdir -p out/native/ir
+          repro/mesa-16702/run.sh out/native LD_PRELOAD="$PWD/irdump.so" LYS_IR_DIR="$PWD/out/native/ir"
       - name: Same features, code tuned for the other vendor's AVX-512 CPU
         run: |
           if ! grep -qw avx512f /proc/cpuinfo; then mkdir -p out/swap; echo "result: skipped (no AVX-512)" > out/swap/system.txt; exit 0; fi

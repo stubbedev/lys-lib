@@ -1,0 +1,4 @@
+LLVM_21.1 {
+  global: LLVMRunPasses;
+  local: *;
+};
