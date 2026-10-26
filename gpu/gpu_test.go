@@ -179,3 +179,41 @@ func TestOpenNode(t *testing.T) {
 	}
 	t.Skipf("no render node opens a Vulkan device: %v", errors.Join(reasons...))
 }
+
+// A Buffer is allocated for transfer and sampling only, so it is
+// offered the layouts the device exports but cannot render to (linear
+// on NVIDIA) besides the rest; it allocates in an offered one and
+// refuses a list with none it can, closing with the device (#335).
+func TestBufferExportsWithoutRendering(t *testing.T) {
+	d := exportingDevice(t)
+	mods, err := d.ExportModifiers(dmabuf.FormatXRGB8888)
+	if err != nil || len(mods) == 0 {
+		t.Fatalf("export modifiers %v, %v", mods, err)
+	}
+	render, _ := d.Modifiers(dmabuf.FormatXRGB8888)
+	t.Logf("%s: export %#x, render %#x", d.Name(), mods, render)
+	if strings.Contains(d.Name(), "NVIDIA") && !slices.Contains(mods, dmabuf.ModifierLinear) {
+		t.Errorf("NVIDIA exports no linear XRGB8888 buffer: %#x", mods)
+	}
+	for _, m := range mods {
+		b, err := d.NewBuffer(64, 16, dmabuf.FormatXRGB8888, []uint64{m})
+		if err != nil {
+			t.Fatalf("modifier %#x: %v", m, err)
+		}
+		if buf := b.Dmabuf(); buf.Modifier != m || len(buf.Planes) != 1 || buf.Format != dmabuf.FormatXRGB8888 || (m == dmabuf.ModifierLinear && buf.Planes[0].Stride < 64*4) {
+			t.Errorf("modifier %#x: allocated %+v", m, buf)
+		}
+		b.Close()
+		b.Close()
+	}
+	if _, err := d.NewBuffer(16, 8, dmabuf.FormatXRGB8888, []uint64{dmabuf.ModifierInvalid}); err == nil || !strings.Contains(err.Error(), "none of the modifiers") {
+		t.Errorf("an implicit-only list: %v, want an error naming the lists", err)
+	}
+	if _, err := d.NewBuffer(16, 8, dmabuf.FormatXRGB8888, []uint64{mods[0]}); err != nil {
+		t.Fatal(err)
+	}
+	d.Close()
+	if len(d.buffers) != 0 {
+		t.Errorf("%d buffers outlived their device", len(d.buffers))
+	}
+}

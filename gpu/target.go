@@ -1,12 +1,8 @@
 package gpu
 
 import (
-	"errors"
 	"fmt"
 	"image"
-	"runtime"
-	"slices"
-	"syscall"
 	"unsafe"
 
 	"github.com/stubbedev/lys-ui/dmabuf"
@@ -62,15 +58,6 @@ func vkFormatOf(fourcc uint32) (vk.Format, error) {
 // both take it. None in common, as with only the implicit
 // dmabuf.ModifierInvalid on offer, is an error naming both lists.
 func (d *Device) NewTarget(width, height int, format uint32, modifiers []uint64) (*Target, error) {
-	if width <= 0 || height <= 0 {
-		return nil, fmt.Errorf("gpu: target size %dx%d is not positive", width, height)
-	}
-	if !d.exports {
-		return nil, ErrNoDmabuf
-	}
-	if len(modifiers) == 0 {
-		return nil, errors.New("gpu: no modifier to allocate a target in")
-	}
 	vf, err := vkFormatOf(format)
 	if err != nil {
 		return nil, err
@@ -78,88 +65,13 @@ func (d *Device) NewTarget(width, height int, format uint32, modifiers []uint64)
 	if vf != surfaceFormat {
 		return nil, fmt.Errorf("gpu: DRM format %#08x renders as Vulkan format %d, surfaces are %d", format, vf, surfaceFormat)
 	}
-	supported, err := d.Modifiers(format)
+	e, err := d.export(width, height, format, modifiers, renderUse)
 	if err != nil {
 		return nil, err
 	}
-	usable := slices.DeleteFunc(slices.Clone(modifiers), func(m uint64) bool { return !slices.Contains(supported, m) })
-	if len(usable) == 0 {
-		return nil, fmt.Errorf("gpu: none of the modifiers %#x is one %s renders DRM format %#08x in (%#x)", modifiers, d.name, format, supported)
-	}
-	modifiers = usable
-	t := &Target{s: surface{d: d, w: width, h: height, layout: vk.ImageLayoutUndefined}}
-	if err := t.create(width, height, modifiers); err != nil {
-		t.Close()
-		return nil, err
-	}
-	t.buf.Format = format
+	t := &Target{s: surface{d: d, w: width, h: height, layout: vk.ImageLayoutUndefined, image: e.image}, memory: e.memory, buf: e.buf}
 	d.targets[t] = struct{}{}
 	return t, nil
-}
-
-func (t *Target) create(width, height int, modifiers []uint64) error {
-	d := t.s.d
-	modList := vk.ImageDrmFormatModifierListCreateInfoEXT{
-		SType: vk.StructureTypeImageDrmFormatModifierListCreateInfoExt, DrmFormatModifierCount: uint32(len(modifiers)), PDrmFormatModifiers: &modifiers[0],
-	}
-	ext := vk.ExternalMemoryImageCreateInfo{
-		SType: vk.StructureTypeExternalMemoryImageCreateInfo, PNext: (*uintptr)(unsafe.Pointer(&modList)),
-		HandleTypes: vk.ExternalMemoryHandleTypeFlags(vk.ExternalMemoryHandleTypeDmaBufBitExt),
-	}
-	ici := vk.ImageCreateInfo{
-		SType: vk.StructureTypeImageCreateInfo, PNext: (*uintptr)(unsafe.Pointer(&ext)),
-		ImageType: vk.ImageType2d, Format: surfaceFormat,
-		Extent: vk.Extent3D{Width: uint32(width), Height: uint32(height), Depth: 1}, MipLevels: 1, ArrayLayers: 1,
-		Samples: vk.SampleCount1Bit, Tiling: vk.ImageTilingDrmFormatModifierExt,
-		Usage:       vk.ImageUsageFlags(vk.ImageUsageTransferDstBit | vk.ImageUsageTransferSrcBit | vk.ImageUsageColorAttachmentBit | vk.ImageUsageSampledBit),
-		SharingMode: vk.SharingModeExclusive, InitialLayout: vk.ImageLayoutUndefined,
-	}
-	r := d.cmds.CreateImage(d.device, &ici, nil, &t.s.image)
-	runtime.KeepAlive(&modList)
-	runtime.KeepAlive(&ext)
-	runtime.KeepAlive(modifiers)
-	if r != vk.Success {
-		return fmt.Errorf("gpu: vkCreateImage %dx%d in %d modifiers: %d", width, height, len(modifiers), r)
-	}
-	var req vk.MemoryRequirements
-	d.cmds.GetImageMemoryRequirements(d.device, t.s.image, &req)
-	mt, err := d.memoryType(req.MemoryTypeBits, vk.MemoryPropertyFlags(vk.MemoryPropertyDeviceLocalBit))
-	if err != nil {
-		return err
-	}
-	ded := vk.MemoryDedicatedAllocateInfo{SType: vk.StructureTypeMemoryDedicatedAllocateInfo, Image: t.s.image}
-	exp := vk.ExportMemoryAllocateInfo{
-		SType: vk.StructureTypeExportMemoryAllocateInfo, PNext: (*uintptr)(unsafe.Pointer(&ded)),
-		HandleTypes: vk.ExternalMemoryHandleTypeFlags(vk.ExternalMemoryHandleTypeDmaBufBitExt),
-	}
-	mai := vk.MemoryAllocateInfo{SType: vk.StructureTypeMemoryAllocateInfo, PNext: (*uintptr)(unsafe.Pointer(&exp)), AllocationSize: req.Size, MemoryTypeIndex: mt}
-	r = d.cmds.AllocateMemory(d.device, &mai, nil, &t.memory)
-	runtime.KeepAlive(&ded)
-	runtime.KeepAlive(&exp)
-	if r != vk.Success {
-		return fmt.Errorf("gpu: vkAllocateMemory %d bytes: %d", req.Size, r)
-	}
-	if r := d.cmds.BindImageMemory(d.device, t.s.image, t.memory, 0); r != vk.Success {
-		return fmt.Errorf("gpu: vkBindImageMemory: %d", r)
-	}
-	gfi := vk.MemoryGetFdInfoKHR{SType: vk.StructureTypeMemoryGetFdInfoKhr, Memory: t.memory, HandleType: vk.ExternalMemoryHandleTypeDmaBufBitExt}
-	var fd int32
-	if r := d.cmds.GetMemoryFdKHR(d.device, &gfi, &fd); r != vk.Success {
-		return fmt.Errorf("gpu: vkGetMemoryFdKHR: %d", r)
-	}
-	mod := vk.ImageDrmFormatModifierPropertiesEXT{SType: vk.StructureTypeImageDrmFormatModifierPropertiesExt}
-	if r := d.cmds.GetImageDrmFormatModifierPropertiesEXT(d.device, t.s.image, &mod); r != vk.Success {
-		_ = syscall.Close(int(fd))
-		return fmt.Errorf("gpu: vkGetImageDrmFormatModifierPropertiesEXT: %d", r)
-	}
-	sub := vk.ImageSubresource{AspectMask: vk.ImageAspectFlags(vk.ImageAspectMemoryPlane0BitExt)}
-	var lay vk.SubresourceLayout
-	d.cmds.GetImageSubresourceLayout(d.device, t.s.image, &sub, &lay)
-	t.buf = dmabuf.Buffer{
-		Width: width, Height: height, Modifier: mod.DrmFormatModifier,
-		Planes: []dmabuf.Plane{{FD: int(fd), Offset: uint32(lay.Offset), Stride: uint32(lay.RowPitch)}},
-	}
-	return nil
 }
 
 // Dmabuf describes the target's memory for its consumer. Its fd is the
@@ -178,19 +90,10 @@ func (t *Target) Close() {
 	t.closed = true
 	d := t.s.d
 	delete(d.targets, t)
-	for _, p := range t.buf.Planes {
-		_ = syscall.Close(p.FD)
-	}
-	t.buf.Planes = nil
 	t.s.close()
-	if t.s.image != 0 {
-		d.cmds.DestroyImage(d.device, t.s.image, nil)
-		t.s.image = 0
-	}
-	if t.memory != 0 {
-		d.cmds.FreeMemory(d.device, t.memory, nil)
-		t.memory = 0
-	}
+	e := exported{image: t.s.image, memory: t.memory, buf: t.buf}
+	e.close(d)
+	t.s.image, t.memory, t.buf.Planes = 0, 0, nil
 }
 
 // acquire records taking t back from its consumer for drawing; its
@@ -258,29 +161,4 @@ func (t *Target) ReadPixels() (*image.RGBA, error) {
 // Modifiers are the DRM modifiers the device renders format into as a
 // single-plane color attachment: what to intersect with the ones a
 // consumer imports before NewTarget.
-func (d *Device) Modifiers(format uint32) ([]uint64, error) {
-	if !d.exports {
-		return nil, ErrNoDmabuf
-	}
-	vf, err := vkFormatOf(format)
-	if err != nil {
-		return nil, err
-	}
-	list := vk.DrmFormatModifierPropertiesListEXT{SType: vk.StructureTypeDrmFormatModifierPropertiesListExt}
-	props := vk.FormatProperties2{SType: vk.StructureTypeFormatProperties2, PNext: (*uintptr)(unsafe.Pointer(&list))}
-	d.cmds.GetPhysicalDeviceFormatProperties2(d.phys, vf, &props)
-	all := make([]vk.DrmFormatModifierPropertiesEXT, list.DrmFormatModifierCount)
-	if len(all) > 0 {
-		list.PDrmFormatModifierProperties = &all[0]
-		d.cmds.GetPhysicalDeviceFormatProperties2(d.phys, vf, &props)
-	}
-	runtime.KeepAlive(&list)
-	want := vk.FormatFeatureFlags(vk.FormatFeatureColorAttachmentBit | vk.FormatFeatureColorAttachmentBlendBit)
-	var out []uint64
-	for _, m := range all[:list.DrmFormatModifierCount] {
-		if m.DrmFormatModifierPlaneCount == 1 && m.DrmFormatModifierTilingFeatures&want == want {
-			out = append(out, m.DrmFormatModifier)
-		}
-	}
-	return out, nil
-}
+func (d *Device) Modifiers(format uint32) ([]uint64, error) { return d.modifiers(format, renderUse) }

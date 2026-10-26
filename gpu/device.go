@@ -56,8 +56,9 @@ type Device struct {
 	maxDim int
 	// exports is whether the device renders into dmabufs.
 	exports bool
-	// targets are the live targets, closed with the device.
+	// targets and buffers are the live ones, closed with the device.
 	targets map[*Target]struct{}
+	buffers map[*Buffer]struct{}
 	// closed marks a device Close released.
 	closed bool
 	pipelines
@@ -85,7 +86,7 @@ func open(node *drmNode) (*Device, error) {
 	if err := vk.Init(); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrNoVulkan, err)
 	}
-	d := &Device{cmds: vk.NewCommands(), targets: map[*Target]struct{}{}}
+	d := &Device{cmds: vk.NewCommands(), targets: map[*Target]struct{}{}, buffers: map[*Buffer]struct{}{}}
 	if err := d.cmds.LoadGlobal(); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrNoVulkan, err)
 	}
@@ -233,6 +234,9 @@ func (d *Device) Close() {
 	d.closed = true
 	for t := range d.targets {
 		t.Close()
+	}
+	for b := range d.buffers {
+		b.Close()
 	}
 	d.closeDevice()
 	d.cmds.DestroyInstance(d.instance, nil)
