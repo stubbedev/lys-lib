@@ -3,9 +3,11 @@ package gpu
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"image"
 	"image/color"
 	"image/draw"
+	"image/png"
 	"math"
 	"os"
 	"os/exec"
@@ -193,6 +195,9 @@ func (c *clip) decode(ffmpeg string) [][]byte {
 		stream.Write(p.Data)
 	}
 	path := filepath.Join(t.TempDir(), "clip")
+	if dir := os.Getenv(encodeDirEnv); dir != "" {
+		path = filepath.Join(dir, artifactName(t)+"."+ffmpegFormats[c.cfg.Codec])
+	}
 	if err := os.WriteFile(path, stream.Bytes(), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -219,6 +224,47 @@ func (c *clip) decode(ffmpeg string) [][]byte {
 		frames[i] = crop
 	}
 	return frames
+}
+
+// encodeDirEnv names a directory the encoder tests keep what they
+// encode in, to look at where a hardware encoder goes wrong: each
+// clip's stream, and the first and last frames, source and decoded, as
+// PNG.
+const encodeDirEnv = "LYS_TEST_ENCODE_DIR"
+
+// artifactName is t's name as a file name.
+func artifactName(t *testing.T) string {
+	return strings.NewReplacer("/", "_", " ", "_").Replace(t.Name())
+}
+
+// keepFrames writes frames i of src and of the decoded rgb24 frames
+// into the encodeDirEnv directory, when there is one.
+func keepFrames(t *testing.T, src []*image.RGBA, decoded [][]byte, frames ...int) {
+	t.Helper()
+	dir := os.Getenv(encodeDirEnv)
+	if dir == "" {
+		return
+	}
+	for _, i := range frames {
+		b := src[i].Rect
+		got := image.NewRGBA(b)
+		for p := range b.Dx() * b.Dy() {
+			copy(got.Pix[p*4:], decoded[i][p*3:p*3+3])
+			got.Pix[p*4+3] = 255
+		}
+		for _, f := range []struct {
+			kind string
+			img  *image.RGBA
+		}{{"source", src[i]}, {"decoded", got}} {
+			var buf bytes.Buffer
+			if err := png.Encode(&buf, f.img); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(dir, fmt.Sprintf("%s.%02d.%s.png", artifactName(t), i, f.kind)), buf.Bytes(), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
 }
 
 // subsampled is each frame's PSNR through 4:2:0 alone (ffmpeg's BT.709
@@ -304,7 +350,9 @@ func testDecodes(t *testing.T, ffmpeg string, c *clip) {
 	}
 	ceiling := subsampled(t, ffmpeg, src)
 	worst := math.Inf(1)
-	for i, f := range c.decode(ffmpeg) {
+	decoded := c.decode(ffmpeg)
+	keepFrames(t, src, decoded, 0, 1, len(src)-1)
+	for i, f := range decoded {
 		got := psnr(src[i], f)
 		worst = min(worst, got)
 		if want := min(ceiling[i], 40) - 6; got < want {
