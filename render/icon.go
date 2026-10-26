@@ -14,9 +14,45 @@ import (
 	xdraw "golang.org/x/image/draw"
 )
 
-// Icon is a rasterized icon ready to blend onto a canvas.
+// Icon is a rasterized icon ready to blend onto a canvas. Its pixels
+// are logical pixels unless AtScale says they were rasterized at a
+// device scale.
 type Icon struct {
 	img *image.RGBA
+	// num and denom are the device scale the raster was made at, num
+	// device pixels per denom logical ones; zero for logical pixels.
+	num, denom int
+}
+
+// AtScale returns the icon marked as rasterized at num device pixels
+// per denom logical pixels (an icon drawn crisp on a 1.5x output is
+// rasterized at 1.5 times its logical size). It shares the raster. A
+// draw on a canvas of that scale blits the pixels one to one; at any
+// other scale they resample into the logical box. It panics on a
+// non-positive scale, which is a programming error.
+func (i *Icon) AtScale(num, denom int) *Icon {
+	if num <= 0 || denom <= 0 {
+		panic(fmt.Sprintf("render: invalid icon scale %d/%d", num, denom))
+	}
+	return &Icon{img: i.img, num: num, denom: denom}
+}
+
+// LogicalSize returns the size the icon covers in logical pixels: its
+// pixel size, scaled down by the scale it was rasterized at. A raster
+// made at the ceiling of a logical size times the scale maps back to
+// that size.
+func (i *Icon) LogicalSize() (int, int) {
+	w, h := i.Size()
+	if i.num == 0 {
+		return w, h
+	}
+	return w * i.denom / i.num, h * i.denom / i.num
+}
+
+// native reports whether the raster was made at the device scale
+// num/denom, so it blits one to one.
+func (i *Icon) native(num, denom int) bool {
+	return i.num != 0 && i.num*denom == num*i.denom
 }
 
 // LoadSVG rasterizes SVG icon data at w x h pixels. The icon's viewBox is
@@ -169,7 +205,7 @@ func (i *Icon) Tint(tint Color) *Icon {
 			out.Pix[o+3] = uint8(min(ta*a/255, 255))
 		}
 	}
-	return &Icon{img: out}
+	return &Icon{img: out, num: i.num, denom: i.denom}
 }
 
 // Image is the icon's raster, premultiplied, shared by every draw:
@@ -179,9 +215,20 @@ func (i *Icon) Image() *image.RGBA { return i.img }
 // At returns the pixel at (x, y) in icon coordinates.
 func (i *Icon) At(x, y int) color.Color { return i.img.At(x, y) }
 
-// Draw blends the icon with its top-left corner at (x, y).
+// Draw blends the icon with its top-left corner at the logical point
+// (x, y), covering its logical size: a raster made at the canvas's
+// scale lands one to one at the mapped origin, any other one resamples
+// into the logical box.
 func (i *Icon) Draw(cv *Canvas, x, y int) {
-	cv.DrawImage(StillImage{i.img}, x, y)
+	switch {
+	case i.num == 0:
+		cv.DrawImage(StillImage{i.img}, x, y)
+	case i.native(cv.num, cv.denom):
+		cv.DrawImageDevice(StillImage{i.img}, divFloor(x*cv.num, cv.denom), divFloor(y*cv.num, cv.denom))
+	default:
+		w, h := i.LogicalSize()
+		cv.DrawImageRect(StillImage{i.img}, Rect{X: x, Y: y, W: w, H: h})
+	}
 }
 
 // DrawRotated blends the icon turned deg degrees clockwise about its
@@ -196,8 +243,7 @@ func (i *Icon) DrawRotated(cv *Canvas, x, y int, deg float64) {
 // device pixel, since bilinear sampling reaches one past the exact
 // footprint at the edges and corners.
 func (i *Icon) xformSpan(x, y int, m Affine, num, denom int) Rect {
-	b := i.img.Bounds()
-	w, h := b.Dx(), b.Dy()
+	w, h := i.LogicalSize()
 	cx := float64(x) + float64(w)/2
 	cy := float64(y) + float64(h)/2
 	var x0, y0, x1, y1 float64
@@ -218,14 +264,15 @@ func (i *Icon) xformSpan(x, y int, m Affine, num, denom int) Rect {
 // icon's center (Xform): each destination pixel's center inverse-maps
 // into the icon (Mapped) and samples it bilinearly, so turned edges
 // antialias and a symmetric icon turns about its exact center; past its
-// edges it is transparent. The identity draws straight.
+// edges it is transparent. The identity draws straight (Draw), so a
+// recorded opIcon is never the identity.
 func (i *Icon) DrawXformed(cv *Canvas, x, y int, m Affine) {
-	if cv.rec != nil {
-		cv.record(op{kind: opIcon, icon: i, i: [5]int{x, y}, aff: m})
-		return
-	}
 	if m == Identity {
 		i.Draw(cv, x, y)
+		return
+	}
+	if cv.rec != nil {
+		cv.record(op{kind: opIcon, icon: i, i: [5]int{x, y}, aff: m})
 		return
 	}
 	num, denom := cv.DeviceScale()
@@ -239,15 +286,17 @@ func (i *Icon) DrawXformed(cv *Canvas, x, y int, m Affine) {
 }
 
 // Xform is the map DrawXformed draws the icon at (x, y) through m with:
-// icon pixels, about the icon's center, through m (logical pixels),
-// placed at the unturned draw's center and scaled to device pixels at
-// num/denom.
+// icon pixels scaled to its logical size, about the icon's center,
+// through m (logical pixels), placed at the unturned draw's center and
+// scaled to device pixels at num/denom.
 func (i *Icon) Xform(x, y int, m Affine, num, denom int) M3 {
-	b := i.img.Bounds()
-	w, h := float64(b.Dx()), float64(b.Dy())
+	pw, ph := i.Size()
+	lw, lh := i.LogicalSize()
+	w, h := float64(lw), float64(lh)
 	f := float64(num) / float64(denom)
 	toDevice := Scale(f, f).Mul(Translate(float64(x)+w/2, float64(y)+h/2))
-	return Affine3(toDevice.Mul(m).Mul(Translate(-w/2, -h/2)))
+	toLogical := Scale(w/float64(pw), h/float64(ph))
+	return Affine3(toDevice.Mul(m).Mul(Translate(-w/2, -h/2)).Mul(toLogical))
 }
 
 // texel is the premultiplied pixel at (x, y) from the icon's origin.

@@ -582,3 +582,54 @@ func TestDrawRotatedTurnsAboutTheCenter(t *testing.T) {
 		}
 	}
 }
+
+// solidIcon is an opaque px x px icon.
+func solidIcon(px int) *Icon {
+	img := image.NewRGBA(image.Rect(0, 0, px, px))
+	for i := range img.Pix {
+		img.Pix[i] = 0xff
+	}
+	return &Icon{img: img}
+}
+
+// An icon rasterized at a device scale covers its logical size on a
+// canvas of any scale: one to one at its own, resampled at another,
+// turned or straight, painted directly or replayed from a recording
+// (#11).
+func TestIconAtScaleCoversItsLogicalSize(t *testing.T) {
+	const w, h = 60, 60
+	for _, tc := range []struct {
+		name       string
+		ic         *Icon
+		num, denom int
+		m          Affine
+		want       Rect
+	}{
+		{"native 1.5x", solidIcon(30).AtScale(180, 120), 180, 120, Identity, Rect{X: 15, Y: 15, W: 30, H: 30}},
+		{"native 1.5x turned", solidIcon(30).AtScale(180, 120), 180, 120, Scale(1.0001, 1.0001), Rect{X: 15, Y: 15, W: 30, H: 30}},
+		{"2x raster on 1.5x", solidIcon(40).AtScale(240, 120), 180, 120, Identity, Rect{X: 15, Y: 15, W: 30, H: 30}},
+		{"logical 20 on 1.5x", solidIcon(20), 180, 120, Identity, Rect{X: 15, Y: 15, W: 30, H: 30}},
+		{"native 1x", solidIcon(20).AtScale(120, 120), 120, 120, Identity, Rect{X: 10, Y: 10, W: 20, H: 20}},
+	} {
+		for _, recorded := range []bool{false, true} {
+			data := make([]byte, Stride(w)*h)
+			cv := NewScaled(data, Stride(w), w, h, tc.num, tc.denom)
+			if recorded {
+				rec := NewRecorder(w, h, tc.num, tc.denom)
+				tc.ic.DrawXformed(rec, 10, 10, tc.m)
+				rec.Recording().Paint(cv)
+			} else {
+				tc.ic.DrawXformed(cv, 10, 10, tc.m)
+			}
+			if got, _ := inkBounds(data, Stride(w), w, h); got != tc.want {
+				t.Errorf("%s (recorded %v): inked %+v, want %+v", tc.name, recorded, got, tc.want)
+			}
+		}
+	}
+	if lw, lh := solidIcon(17).AtScale(150, 120).LogicalSize(); lw != 13 || lh != 13 {
+		t.Errorf("a 17px raster at 1.25x covers %dx%d logical, want the 13 it was made for", lw, lh)
+	}
+	if got := solidIcon(30).AtScale(180, 120).Tint(0xff102030); !got.native(3, 2) {
+		t.Error("Tint dropped the raster scale")
+	}
+}

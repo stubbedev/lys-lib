@@ -521,10 +521,6 @@ func (f *frame) DrawImageRect(s render.State, img image.Image, r render.Rect) {
 }
 
 func (f *frame) DrawIcon(s render.State, ic *render.Icon, x, y int, m render.Affine) {
-	if m == render.Identity {
-		f.DrawImage(s, render.StillImage{RGBA: ic.Image()}, x, y)
-		return
-	}
 	mp, invertible := render.MappedOf(ic.Xform(x, y, m, f.num, f.denom))
 	img := ic.Image()
 	tex, ok := (*surface)(nil), invertible && f.err == nil

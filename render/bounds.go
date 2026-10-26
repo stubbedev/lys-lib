@@ -25,9 +25,6 @@ func (c *Canvas) bounds(o *op) Rect {
 	case opImageDevice:
 		return imageAt(o.img, o.i[0], o.i[1])
 	case opIcon:
-		if o.aff == Identity {
-			return c.MapRect(imageAt(o.icon.img, o.i[0], o.i[1]))
-		}
 		return o.icon.xformSpan(o.i[0], o.i[1], o.aff, c.num, c.denom)
 	case opArc:
 		return c.arcSpan(o.f[0], o.f[1], o.f[2], o.f[3])
