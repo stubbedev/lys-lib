@@ -93,6 +93,42 @@ func (h *H264) vui(w *Writer) {
 	w.UE(uint32(h.MaxNumRefFrames))
 }
 
+// SliceHeader is the slice header (7.3.3) of the picture sinceIDR
+// frames into its key interval, the idrPicID-th IDR when sinceIDR is
+// 0, at quantiser qp: one I slice for the IDR, one P slice predicting
+// from the picture before otherwise, the reference list and marking as
+// the parameter sets imply. It is a Packed unit, stopping where the
+// slice data starts.
+func (h *H264) SliceHeader(sinceIDR, idrPicID, qp int) (unit []byte, bits int) {
+	var w Writer
+	idr := sinceIDR == 0
+	w.UE(0)
+	if idr {
+		w.UE(7)
+	} else {
+		w.UE(5)
+	}
+	w.UE(0)
+	w.U(uint(h.Log2MaxFrameNum), uint32(sinceIDR))
+	if idr {
+		w.UE(uint32(idrPicID))
+		w.Flag(false)
+		w.Flag(false)
+	} else {
+		w.Flag(false)
+		w.Flag(false)
+		w.Flag(false)
+		if h.CABAC {
+			w.UE(0)
+		}
+	}
+	w.SE(int32(qp - h.InitQP))
+	if idr {
+		return w.Packed(0x65)
+	}
+	return w.Packed(0x21)
+}
+
 // PPS is the picture parameter set NAL unit (7.3.2.2).
 func (h *H264) PPS() []byte {
 	var w Writer

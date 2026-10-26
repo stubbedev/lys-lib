@@ -78,6 +78,20 @@ func (w *Writer) Unit(header ...byte) []byte {
 	return out
 }
 
+// Packed is the NAL unit of header bytes and the bits written so far
+// for a driver to continue (a slice header before its slice data):
+// escaped, its last byte zero-padded, and how many of its bits are
+// the unit's.
+func (w *Writer) Packed(header ...byte) (unit []byte, bits int) {
+	pad := 0
+	if w.bits > 0 {
+		pad = int(8 - w.bits)
+		w.U(uint(pad), 0)
+	}
+	unit = w.Unit(header...)
+	return unit, len(unit)*8 - pad
+}
+
 // AnnexB joins NAL units, each behind a four-byte start code.
 func AnnexB(units ...[]byte) []byte {
 	var out []byte

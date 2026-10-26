@@ -149,6 +149,58 @@ func (h *HEVC) vui(w *Writer) {
 	w.UE(15)
 }
 
+// SliceHeader is the slice segment header (7.3.6.1) of the picture
+// sinceIDR frames into its key interval at quantiser qp: one IDR_W_RADL
+// I slice, or one TRAIL_R slice predicting from the picture before
+// through the sequence's short-term reference set, a P slice or, with
+// gpb, a B slice with the same picture in both lists. It ends
+// byte-aligned, where the slice data starts.
+func (h *HEVC) SliceHeader(sinceIDR int, gpb bool, qp int) (unit []byte, bits int) {
+	var w Writer
+	idr := sinceIDR == 0
+	w.Flag(true)
+	if idr {
+		w.Flag(false)
+	}
+	w.UE(0)
+	switch {
+	case idr:
+		w.UE(2)
+	case gpb:
+		w.UE(0)
+	default:
+		w.UE(1)
+	}
+	if !idr {
+		w.U(uint(h.Log2MaxPocLsb), uint32(sinceIDR%(1<<h.Log2MaxPocLsb)))
+		w.Flag(true)
+		if h.TemporalMVP {
+			w.Flag(true)
+		}
+	}
+	if h.SAO {
+		w.Flag(true)
+		w.Flag(true)
+	}
+	if !idr {
+		w.Flag(false)
+		if gpb {
+			w.Flag(false)
+		}
+		if h.TemporalMVP && gpb {
+			w.Flag(true)
+		}
+		w.UE(0)
+	}
+	w.SE(int32(qp - h.InitQP))
+	w.Flag(false)
+	w.Trailing()
+	if idr {
+		return w.Packed(19<<1, 1)
+	}
+	return w.Packed(1<<1, 1)
+}
+
 // PPS is the picture parameter set NAL unit (7.3.2.3.1).
 func (h *HEVC) PPS() []byte {
 	var w Writer

@@ -25,9 +25,9 @@ const (
 	RCVBR                                 uint32 = 4
 	RCCQP                                 uint32 = 16
 	EncPackedHeaderSequence               uint32 = 1
-	EncPackedHeaderPicture                uint32 = 2
+	EncPackedHeaderSlice                  uint32 = 4
 	PackedHeaderSequence                  uint32 = 1
-	PackedHeaderPicture                   uint32 = 2
+	PackedHeaderSlice                     uint32 = 3
 	EncCodedBufferType                    int32  = 21
 	EncSequenceParameterBufferType        int32  = 22
 	EncPictureParameterBufferType         int32  = 23

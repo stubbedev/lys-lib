@@ -25,7 +25,8 @@ type vaEncoders struct {
 }
 
 // vaProfile is how the driver encodes a codec: the VA profile and
-// entrypoint, the rate control mode, whether P frames go as B slices predicting
+// entrypoint, the rate control mode, whether it takes our slice
+// headers packed, whether P frames go as B slices predicting
 // from the same picture in both lists (a driver that codes no P
 // slices), and the H.265 features and block sizes it reports
 // (AttribNotSupported where it does not).
@@ -33,6 +34,7 @@ type vaProfile struct {
 	profile, entrypoint int32
 	stdProfile          vk.StdVideoH264ProfileIdc
 	rc                  uint32
+	packedSlice         bool
 	gpb                 bool
 	hevcFeatures        uint32
 	hevcBlocks          uint32
@@ -165,6 +167,7 @@ func vaConfigOf(dpy *va.Display, profile, entrypoint int32) (vaProfile, error) {
 		return vaProfile{}, fmt.Errorf("none of our rate control modes (%#x)", rc)
 	}
 	p.gpb = dir != va.AttribNotSupported && dir&va.PredictionDirectionBiNotEmpty != 0
+	p.packedSlice = packed&va.EncPackedHeaderSlice != 0
 	return p, nil
 }
 
@@ -184,6 +187,9 @@ type vaCodec interface {
 	parameterSets() [][]byte
 	// isParameterSet reports whether a NAL unit is one.
 	isParameterSet(unit []byte) bool
+	// sliceHeader is the packed slice header of frame sinceIDR of its
+	// key interval, the idrs-th IDR's, and its length in bits.
+	sliceHeader(sinceIDR, idrs int) (unit []byte, bits int)
 	// params are frame sinceIDR's of its key interval, the idrs-th
 	// IDR's, reconstructed into surface cur from prev (the frame
 	// before) and coded into the coded buffer: the sequence's, which
@@ -245,10 +251,21 @@ func (vb *vaBackend) createConfig() error {
 	attrs := []va.ConfigAttrib{
 		{Type: va.ConfigAttribRTFormat, Value: va.RTFormatYUV420},
 		{Type: va.ConfigAttribRateControl, Value: vb.prof.rc},
-		{Type: va.ConfigAttribEncPackedHeaders, Value: va.EncPackedHeaderSequence},
+		{Type: va.ConfigAttribEncPackedHeaders, Value: vb.packedHeaders()},
 	}
 	vb.config, err = dpy.CreateConfig(vb.prof.profile, vb.prof.entrypoint, attrs)
 	return err
+}
+
+// packedHeaders are the headers the encoder hands the driver packed:
+// the parameter sets, and the slice headers where the driver takes
+// them, as ffmpeg hands iHD, whose own slice headers after the first
+// IDR code another picture than the one asked for.
+func (vb *vaBackend) packedHeaders() uint32 {
+	if vb.prof.packedSlice {
+		return va.EncPackedHeaderSequence | va.EncPackedHeaderSlice
+	}
+	return va.EncPackedHeaderSequence
 }
 
 // vaCodedSize is cfg's even frame size in whole units of unit, padded
@@ -391,9 +408,10 @@ func (vb *vaBackend) afterConvert(cb vk.CommandBuffer, slot int, planes vk.Buffe
 }
 
 // encode hands slot's surface to the driver with the frame's
-// parameters, and on an IDR the sequence's, its rate control and our
-// parameter sets, in the order ffmpeg renders them, which iHD takes:
-// the packed headers before the slice they belong to.
+// parameters and slice header, and on an IDR the sequence's, its frame
+// rate and rate control and our parameter sets, in the order ffmpeg
+// renders them, which iHD takes: the packed headers before the slice
+// they belong to.
 func (vb *vaBackend) encode(slot, frame, sinceIDR, idrs int) error {
 	s := &vb.slots[slot]
 	cur, prev := vb.recon[frame%dpbSlots], vb.recon[(frame+dpbSlots-1)%dpbSlots]
@@ -421,8 +439,19 @@ func (vb *vaBackend) encode(slot, frame, sinceIDR, idrs int) error {
 		return nil
 	}
 	idr := sinceIDR == 0
+	packed := func(typ uint32, data []byte, bits int) error {
+		param := va.EncPackedHeaderParameterBuffer{Type: typ, BitLength: uint32(bits), HasEmulationBytes: 1}
+		if err := add(vaParam{va.EncPackedHeaderParameterBufferType, unsafe.Pointer(&param), int(unsafe.Sizeof(param))}); err != nil {
+			return err
+		}
+		return add(vaParam{va.EncPackedHeaderDataBufferType, unsafe.Pointer(&data[0]), len(data)})
+	}
 	if idr {
 		if err := add(seq); err != nil {
+			return err
+		}
+		fr := va.EncMiscParameterFrameRate{Framerate: uint32(vb.cfg.FrameRate)}
+		if err := misc(va.EncMiscParameterTypeFrameRate, unsafe.Pointer(&fr), int(unsafe.Sizeof(fr))); err != nil {
 			return err
 		}
 		if vb.prof.rc != va.RCCQP {
@@ -436,11 +465,13 @@ func (vb *vaBackend) encode(slot, frame, sinceIDR, idrs int) error {
 	}
 	if idr {
 		headers := nal.AnnexB(vb.codec.parameterSets()...)
-		packed := va.EncPackedHeaderParameterBuffer{Type: va.EncPackedHeaderSequence, BitLength: uint32(len(headers) * 8), HasEmulationBytes: 1}
-		if err := add(vaParam{va.EncPackedHeaderParameterBufferType, unsafe.Pointer(&packed), int(unsafe.Sizeof(packed))}); err != nil {
+		if err := packed(va.PackedHeaderSequence, headers, 8*len(headers)); err != nil {
 			return err
 		}
-		if err := add(vaParam{va.EncPackedHeaderDataBufferType, unsafe.Pointer(&headers[0]), len(headers)}); err != nil {
+	}
+	if vb.prof.packedSlice {
+		unit, bits := vb.codec.sliceHeader(sinceIDR, idrs)
+		if err := packed(va.PackedHeaderSlice, nal.AnnexB(unit), 32+bits); err != nil {
 			return err
 		}
 	}
@@ -454,21 +485,17 @@ func (vb *vaBackend) encode(slot, frame, sinceIDR, idrs int) error {
 }
 
 // rateControl adds the variable or constant bitrate state: the target
-// rate (half the peak for VBR, which peaks at twice it), the frame
-// rate and a one-second buffer starting half full, as the Vulkan
-// backend codes at.
+// rate (half the peak for VBR, which peaks at twice it) and a
+// one-second buffer starting half full, as the Vulkan backend codes
+// at.
 func (vb *vaBackend) rateControl(misc func(typ int32, data unsafe.Pointer, size int) error) error {
 	peak, percent := vb.bitrate, uint32(100)
 	if vb.prof.rc == va.RCVBR {
 		peak, percent = uint32(min(2*uint64(vb.bitrate), 1<<32-1)), 50
 	}
 	rc := va.EncMiscParameterRateControl{BitsPerSecond: peak, TargetPercentage: percent, WindowSize: 1000}
-	fr := va.EncMiscParameterFrameRate{Framerate: uint32(vb.cfg.FrameRate)}
 	hrd := va.EncMiscParameterHRD{BufferSize: peak, InitialBufferFullness: peak / 2}
 	if err := misc(va.EncMiscParameterTypeRateControl, unsafe.Pointer(&rc), int(unsafe.Sizeof(rc))); err != nil {
-		return err
-	}
-	if err := misc(va.EncMiscParameterTypeFrameRate, unsafe.Pointer(&fr), int(unsafe.Sizeof(fr))); err != nil {
 		return err
 	}
 	return misc(va.EncMiscParameterTypeHRD, unsafe.Pointer(&hrd), int(unsafe.Sizeof(hrd)))
@@ -556,6 +583,10 @@ func newH264VA(cfg EncoderConfig, coded [2]int, prof vaProfile, qp int, bitrate 
 }
 
 func (c *h264VA) parameterSets() [][]byte { return [][]byte{c.header.SPS(), c.header.PPS()} }
+
+func (c *h264VA) sliceHeader(sinceIDR, idrs int) ([]byte, int) {
+	return c.header.SliceHeader(sinceIDR, idrs, c.qp)
+}
 
 func (c *h264VA) isParameterSet(u []byte) bool { t := u[0] & 0x1f; return t == 7 || t == 8 }
 
@@ -690,6 +721,10 @@ func newHEVCVA(cfg EncoderConfig, coded [2]int, blocks h265Blocks, prof vaProfil
 
 func (c *hevcVA) parameterSets() [][]byte {
 	return [][]byte{c.header.VPS(), c.header.SPS(), c.header.PPS()}
+}
+
+func (c *hevcVA) sliceHeader(sinceIDR, _ int) ([]byte, int) {
+	return c.header.SliceHeader(sinceIDR, c.gpb, c.qp)
 }
 
 func (c *hevcVA) isParameterSet(u []byte) bool { t := u[0] >> 1 & 0x3f; return t >= 32 && t <= 34 }
