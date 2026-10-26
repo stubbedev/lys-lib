@@ -48,6 +48,9 @@
             # `just shaders` compiles the GPU renderer's GLSL to the
             # SPIR-V package gpu embeds.
             pkgs.glslang
+            # The nal and gpu encoder tests read the H.264 and H.265
+            # headers they write back through ffmpeg's trace_headers.
+            pkgs.ffmpeg-headless
           ]
           # Editor tooling (gopls, delve, and the tools vscode-go and
           # vim-go install), built against the pinned Go: vscode-go
