@@ -132,22 +132,18 @@ func (e *exported) create(d *Device, width, height int, vf vk.Format, mods []uin
 	}
 	var req vk.MemoryRequirements
 	d.cmds.GetImageMemoryRequirements(d.device, e.image, &req)
-	mt, err := d.memoryType(req.MemoryTypeBits, vk.MemoryPropertyFlags(vk.MemoryPropertyDeviceLocalBit))
-	if err != nil {
-		return err
-	}
 	ded := vk.MemoryDedicatedAllocateInfo{SType: vk.StructureTypeMemoryDedicatedAllocateInfo, Image: e.image}
 	exp := vk.ExportMemoryAllocateInfo{
 		SType: vk.StructureTypeExportMemoryAllocateInfo, PNext: (*uintptr)(unsafe.Pointer(&ded)),
 		HandleTypes: vk.ExternalMemoryHandleTypeFlags(vk.ExternalMemoryHandleTypeDmaBufBitExt),
 	}
-	mai := vk.MemoryAllocateInfo{SType: vk.StructureTypeMemoryAllocateInfo, PNext: (*uintptr)(unsafe.Pointer(&exp)), AllocationSize: req.Size, MemoryTypeIndex: mt}
-	r = d.cmds.AllocateMemory(d.device, &mai, nil, &e.memory)
+	mem, err := d.allocate(req, vk.MemoryPropertyDeviceLocalBit, unsafe.Pointer(&exp))
 	runtime.KeepAlive(&ded)
 	runtime.KeepAlive(&exp)
-	if r != vk.Success {
-		return fmt.Errorf("gpu: vkAllocateMemory %d bytes: %d", req.Size, r)
+	if err != nil {
+		return err
 	}
+	e.memory = mem
 	if r := d.cmds.BindImageMemory(d.device, e.image, e.memory, 0); r != vk.Success {
 		return fmt.Errorf("gpu: vkBindImageMemory: %d", r)
 	}
@@ -193,9 +189,12 @@ func (e *exported) close(d *Device) {
 // sampling, so layouts a device cannot render to (NVIDIA's linear) are
 // on offer (ExportModifiers).
 type Buffer struct {
-	d      *Device
-	e      exported
-	closed bool
+	d *Device
+	e exported
+	// sampled is the view the encoder reads the buffer through, made
+	// on its first frame.
+	sampled vk.ImageView
+	closed  bool
 }
 
 // ExportModifiers are the single-plane DRM modifiers the device
@@ -224,6 +223,22 @@ func (d *Device) NewBuffer(width, height int, format uint32, offered []uint64) (
 // until Close.
 func (b *Buffer) Dmabuf() dmabuf.Buffer { return b.e.buf }
 
+// view is the buffer's sampled view.
+func (b *Buffer) view() (vk.ImageView, error) {
+	if b.sampled != 0 {
+		return b.sampled, nil
+	}
+	vf, err := vkFormatOf(b.e.buf.Format)
+	if err != nil {
+		return 0, err
+	}
+	vci := vk.ImageViewCreateInfo{SType: vk.StructureTypeImageViewCreateInfo, Image: b.e.image, ViewType: vk.ImageViewType2d, Format: vf, SubresourceRange: colorRange}
+	if r := b.d.cmds.CreateImageView(b.d.device, &vci, nil, &b.sampled); r != vk.Success {
+		return 0, fmt.Errorf("gpu: vkCreateImageView (buffer): %d", r)
+	}
+	return b.sampled, nil
+}
+
 // Close releases the buffer and its fd; closing it again, or after its
 // device, does nothing.
 func (b *Buffer) Close() {
@@ -232,5 +247,9 @@ func (b *Buffer) Close() {
 	}
 	b.closed = true
 	delete(b.d.buffers, b)
+	if b.sampled != 0 {
+		b.d.cmds.DestroyImageView(b.d.device, b.sampled, nil)
+		b.sampled = 0
+	}
 	b.e.close(b.d)
 }

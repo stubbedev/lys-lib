@@ -1,0 +1,51 @@
+#version 450
+
+// One invocation converts a 4x2 block of the source into BT.709
+// limited-range NV12: two words of luma (a row of four each) and one
+// of interleaved chroma (two 2x2 averages). Past the source's edge the
+// edge pixels repeat into the coded size's padding.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0) uniform sampler2D src;
+layout(set = 0, binding = 1, std430) writeonly buffer Planes { uint words[]; };
+
+layout(push_constant) uniform Size {
+    ivec2 src;
+    ivec2 coded;
+} size;
+
+const vec3 kLuma = vec3(0.2126, 0.7152, 0.0722);
+
+float luma(vec3 c) { return 16.0 + 219.0 * dot(c, kLuma); }
+
+uint byteOf(float v) { return uint(clamp(floor(v + 0.5), 0.0, 255.0)); }
+
+void main() {
+    ivec2 g = ivec2(gl_GlobalInvocationID.xy);
+    ivec2 o = g * ivec2(4, 2);
+    if (o.x >= size.coded.x || o.y >= size.coded.y) {
+        return;
+    }
+    ivec2 last = size.src - 1;
+    vec3 c[8];
+    for (int i = 0; i < 8; i++) {
+        c[i] = texelFetch(src, min(o + ivec2(i & 3, i >> 2), last), 0).rgb;
+    }
+    int rowWords = size.coded.x / 4;
+    for (int row = 0; row < 2; row++) {
+        uint w = 0u;
+        for (int col = 0; col < 4; col++) {
+            w |= byteOf(luma(c[row * 4 + col])) << (8 * col);
+        }
+        words[(o.y + row) * rowWords + g.x] = w;
+    }
+    uint uv = 0u;
+    for (int side = 0; side < 2; side++) {
+        vec3 a = (c[side * 2] + c[side * 2 + 1] + c[side * 2 + 4] + c[side * 2 + 5]) * 0.25;
+        float y = dot(a, kLuma);
+        uv |= byteOf(128.0 + 224.0 * (a.b - y) / 1.8556) << (16 * side);
+        uv |= byteOf(128.0 + 224.0 * (a.r - y) / 1.5748) << (16 * side + 8);
+    }
+    words[size.coded.y * rowWords + (o.y / 2) * rowWords + g.x] = uv;
+}

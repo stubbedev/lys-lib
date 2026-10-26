@@ -42,16 +42,12 @@ func (d *Device) newSurface(w, h int) (*surface, error) {
 	}
 	var req vk.MemoryRequirements
 	d.cmds.GetImageMemoryRequirements(d.device, s.image, &req)
-	mt, err := d.memoryType(req.MemoryTypeBits, vk.MemoryPropertyFlags(vk.MemoryPropertyDeviceLocalBit))
+	mem, err := d.allocate(req, vk.MemoryPropertyDeviceLocalBit, nil)
 	if err != nil {
 		s.close()
 		return nil, err
 	}
-	mai := vk.MemoryAllocateInfo{SType: vk.StructureTypeMemoryAllocateInfo, AllocationSize: req.Size, MemoryTypeIndex: mt}
-	if r := d.cmds.AllocateMemory(d.device, &mai, nil, &s.memory); r != vk.Success {
-		s.close()
-		return nil, fmt.Errorf("gpu: vkAllocateMemory %d bytes: %d", req.Size, r)
-	}
+	s.memory = mem
 	if r := d.cmds.BindImageMemory(d.device, s.image, s.memory, 0); r != vk.Success {
 		s.close()
 		return nil, fmt.Errorf("gpu: vkBindImageMemory: %d", r)

@@ -56,6 +56,9 @@ type Device struct {
 	maxDim int
 	// exports is whether the device renders into dmabufs.
 	exports bool
+	// video is the video encode queue, nil on a device that encodes
+	// none.
+	video *videoQueue
 	// targets and buffers are the live ones, closed with the device.
 	targets map[*Target]struct{}
 	buffers map[*Buffer]struct{}
@@ -126,7 +129,7 @@ func open(node *drmNode) (*Device, error) {
 
 func (d *Device) createInstance() error {
 	app := cstr("lys-ui")
-	ai := vk.ApplicationInfo{SType: vk.StructureTypeApplicationInfo, PApplicationName: uintptr(unsafe.Pointer(&app[0])), ApiVersion: vkVersion(1, 2)}
+	ai := vk.ApplicationInfo{SType: vk.StructureTypeApplicationInfo, PApplicationName: uintptr(unsafe.Pointer(&app[0])), ApiVersion: vkVersion(1, 3)}
 	ici := vk.InstanceCreateInfo{SType: vk.StructureTypeInstanceCreateInfo, PApplicationInfo: &ai}
 	r := d.cmds.CreateInstance(&ici, nil, &d.instance)
 	runtime.KeepAlive(app)
@@ -182,24 +185,42 @@ func (d *Device) pick(p vk.PhysicalDevice, exporting bool, node *drmNode) error 
 		d.cmds.GetPhysicalDeviceQueueFamilyProperties(p, &n, &fams[0])
 	}
 	for i, f := range fams {
-		if f.QueueFlags&vk.QueueFlags(vk.QueueGraphicsBit) != 0 {
+		if f.QueueFlags&vk.QueueFlags(vk.QueueGraphicsBit|vk.QueueComputeBit) == vk.QueueFlags(vk.QueueGraphicsBit|vk.QueueComputeBit) {
 			d.phys, d.family, d.name, d.exports, d.maxDim = p, uint32(i), name, exporting, int(props.Limits.MaxImageDimension2D)
+			d.video = d.probeVideo(p, props.ApiVersion, have)
 			return nil
 		}
 	}
-	return fmt.Errorf("%s has no graphics queue", name)
+	return fmt.Errorf("%s has no graphics and compute queue", name)
 }
 
+// open creates the logical device: its graphics queue, and the video
+// encode queue with synchronization2 where the device encodes.
 func (d *Device) open() error {
 	prio := float32(1)
-	qci := vk.DeviceQueueCreateInfo{SType: vk.StructureTypeDeviceQueueCreateInfo, QueueFamilyIndex: d.family, QueueCount: 1, PQueuePriorities: &prio}
-	dci := vk.DeviceCreateInfo{SType: vk.StructureTypeDeviceCreateInfo, QueueCreateInfoCount: 1, PQueueCreateInfos: &qci}
-	ptrs, keep := cstrs(exportExtensions)
+	qcis := []vk.DeviceQueueCreateInfo{{SType: vk.StructureTypeDeviceQueueCreateInfo, QueueFamilyIndex: d.family, QueueCount: 1, PQueuePriorities: &prio}}
+	dci := vk.DeviceCreateInfo{SType: vk.StructureTypeDeviceCreateInfo}
+	var exts []string
 	if d.exports {
+		exts = append(exts, exportExtensions...)
+	}
+	f13 := vk.PhysicalDeviceVulkan13Features{SType: vk.StructureTypePhysicalDeviceVulkan13Features, Synchronization2: vk.True}
+	if d.video != nil {
+		if d.video.family != d.family {
+			qcis = append(qcis, vk.DeviceQueueCreateInfo{SType: vk.StructureTypeDeviceQueueCreateInfo, QueueFamilyIndex: d.video.family, QueueCount: 1, PQueuePriorities: &prio})
+		}
+		exts = append(exts, d.video.extensions()...)
+		dci.PNext = (*uintptr)(unsafe.Pointer(&f13))
+	}
+	dci.QueueCreateInfoCount, dci.PQueueCreateInfos = uint32(len(qcis)), &qcis[0]
+	ptrs, keep := cstrs(exts)
+	if len(ptrs) > 0 {
 		dci.EnabledExtensionCount, dci.PpEnabledExtensionNames = uint32(len(ptrs)), uintptr(unsafe.Pointer(&ptrs[0]))
 	}
 	r := d.cmds.CreateDevice(d.phys, &dci, nil, &d.device)
 	runtime.KeepAlive(keep)
+	runtime.KeepAlive(qcis)
+	runtime.KeepAlive(&f13)
 	if r != vk.Success {
 		return fmt.Errorf("%s: vkCreateDevice: %d", d.name, r)
 	}
@@ -208,6 +229,9 @@ func (d *Device) open() error {
 		return fmt.Errorf("%s: %w", d.name, err)
 	}
 	d.cmds.GetDeviceQueue(d.device, d.family, 0, &d.queue)
+	if d.video != nil {
+		d.cmds.GetDeviceQueue(d.device, d.video.family, 0, &d.video.queue)
+	}
 	d.cmds.GetPhysicalDeviceMemoryProperties(d.phys, &d.memProps)
 	pci := vk.CommandPoolCreateInfo{SType: vk.StructureTypeCommandPoolCreateInfo, QueueFamilyIndex: d.family}
 	if r := d.cmds.CreateCommandPool(d.device, &pci, nil, &d.pool); r != vk.Success {
@@ -252,14 +276,48 @@ func (d *Device) closeDevice() {
 	d.cmds.DestroyDevice(d.device, nil)
 }
 
+// errNoMemoryType reports memory requirements no memory type with the
+// flags asked for meets.
+var errNoMemoryType = errors.New("gpu: no memory type")
+
 // memoryType is the first memory type in bits with every flag in want.
-func (d *Device) memoryType(bits uint32, want vk.MemoryPropertyFlags) (uint32, error) {
+func (d *Device) memoryType(bits uint32, want vk.MemoryPropertyFlagBits) (uint32, error) {
 	for i := range d.memProps.MemoryTypeCount {
-		if bits&(1<<i) != 0 && d.memProps.MemoryTypes[i].PropertyFlags&want == want {
+		if bits&(1<<i) != 0 && d.memProps.MemoryTypes[i].PropertyFlags&vk.MemoryPropertyFlags(want) == vk.MemoryPropertyFlags(want) {
 			return i, nil
 		}
 	}
-	return 0, fmt.Errorf("gpu: no memory type with flags %#x in %#x", want, bits)
+	return 0, fmt.Errorf("%w with flags %#x in %#x", errNoMemoryType, want, bits)
+}
+
+// allocate allocates memory meeting req in the first type with every
+// flag in want, next chained onto the allocate info.
+func (d *Device) allocate(req vk.MemoryRequirements, want vk.MemoryPropertyFlagBits, next unsafe.Pointer) (vk.DeviceMemory, error) {
+	mem, _, err := d.allocateIn(req, want, next)
+	return mem, err
+}
+
+// allocateMapped is allocate for memory the CPU maps, and whether the
+// type it landed in is coherent.
+func (d *Device) allocateMapped(req vk.MemoryRequirements, want vk.MemoryPropertyFlagBits) (vk.DeviceMemory, bool, error) {
+	mem, mt, err := d.allocateIn(req, want, nil)
+	if err != nil {
+		return 0, false, err
+	}
+	return mem, d.memProps.MemoryTypes[mt].PropertyFlags&vk.MemoryPropertyFlags(vk.MemoryPropertyHostCoherentBit) != 0, nil
+}
+
+func (d *Device) allocateIn(req vk.MemoryRequirements, want vk.MemoryPropertyFlagBits, next unsafe.Pointer) (vk.DeviceMemory, uint32, error) {
+	mt, err := d.memoryType(req.MemoryTypeBits, want)
+	if err != nil {
+		return 0, 0, err
+	}
+	mai := vk.MemoryAllocateInfo{SType: vk.StructureTypeMemoryAllocateInfo, PNext: (*uintptr)(next), AllocationSize: req.Size, MemoryTypeIndex: mt}
+	var mem vk.DeviceMemory
+	if r := d.cmds.AllocateMemory(d.device, &mai, nil, &mem); r != vk.Success {
+		return 0, 0, fmt.Errorf("gpu: vkAllocateMemory %d bytes: %d", req.Size, r)
+	}
+	return mem, mt, nil
 }
 
 // submit records one command buffer with record, runs it and waits for
