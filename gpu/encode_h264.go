@@ -111,10 +111,6 @@ func newH264Params(profile vk.StdVideoH264ProfileIdc, level vk.StdVideoH264Level
 	return p
 }
 
-// evenUp rounds n up to even: 4:2:0 crops in pairs of pixels, so an odd
-// size shows its last row or column twice.
-func evenUp(n int) int { return n + n&1 }
-
 // h264Picture is one frame's picture state: its picture info, slice
 // header and reference lists, and the reference info of the picture
 // it reconstructs and of the one it predicts from.
@@ -169,49 +165,67 @@ func (p *h264Picture) fill(sinceIDR, idrID, prev, qp int) {
 	p.dpb[1] = vk.VideoEncodeH264DpbSlotInfoKHR{SType: vk.StructureTypeVideoEncodeH264DpbSlotInfoKhr, PStdReferenceInfo: &p.ref}
 }
 
-// rateControl is the rate control state the session codes at:
-// constant QP where the device has it, else variable bitrate around a
-// bitrate that matches QP 20 on desktop content. Every frame's GOP is
-// flat: an IDR every key interval, P frames between.
-type rateControl struct {
-	layer vk.VideoEncodeRateControlLayerInfoKHR
-	h264  vk.VideoEncodeH264RateControlInfoKHR
-	info  vk.VideoEncodeRateControlInfoKHR
+// h264Profiles are the profiles the encoder tries, best first.
+var h264Profiles = []vk.StdVideoH264ProfileIdc{vk.StdVideoH264ProfileIdcHigh, vk.StdVideoH264ProfileIdcMain}
+
+// h264Codec is H.264's part of an encoder.
+type h264Codec struct {
+	profileInfo vk.VideoEncodeH264ProfileInfoKHR
+	capsInfo    vk.VideoEncodeH264CapabilitiesKHR
+	params      *h264Params
+	add         vk.VideoEncodeH264SessionParametersAddInfoKHR
+	create      vk.VideoEncodeH264SessionParametersCreateInfoKHR
+	get         vk.VideoEncodeH264SessionParametersGetInfoKHR
+	rc          vk.VideoEncodeH264RateControlInfoKHR
+	pic         h264Picture
 }
 
-// desktopBitsPerPixel is the variable-bitrate target per pixel a frame:
-// what QP 20 averages on screen content.
-const desktopBitsPerPixel = 0.1
+func (c *h264Codec) profiles() int { return len(h264Profiles) }
 
-func newRateControl(cfg EncoderConfig, cqp bool, caps *videoCaps) *rateControl {
-	rc := &rateControl{}
-	rc.h264 = vk.VideoEncodeH264RateControlInfoKHR{
+func (c *h264Codec) profile(i int, next unsafe.Pointer) unsafe.Pointer {
+	c.profileInfo = vk.VideoEncodeH264ProfileInfoKHR{SType: vk.StructureTypeVideoEncodeH264ProfileInfoKhr, PNext: (*uintptr)(next), StdProfileIdc: h264Profiles[i]}
+	return unsafe.Pointer(&c.profileInfo)
+}
+
+func (c *h264Codec) caps() unsafe.Pointer {
+	c.capsInfo = vk.VideoEncodeH264CapabilitiesKHR{SType: vk.StructureTypeVideoEncodeH264CapabilitiesKhr}
+	return unsafe.Pointer(&c.capsInfo)
+}
+
+func (c *h264Codec) limits() codecLimits {
+	return codecLimits{minQP: int(c.capsInfo.MinQp), maxQP: int(c.capsInfo.MaxQp), pRefs: int(c.capsInfo.MaxPPictureL0ReferenceCount)}
+}
+
+func (c *h264Codec) align() int { return 16 }
+
+func (c *h264Codec) parameters(cfg EncoderConfig, coded [2]int) (create, get unsafe.Pointer, nals int, err error) {
+	level, err := h264Level(coded[0]/16*(coded[1]/16), cfg.FrameRate, c.capsInfo.MaxLevelIdc)
+	if err != nil {
+		return nil, nil, 0, err
+	}
+	c.params = newH264Params(c.profileInfo.StdProfileIdc, level, cfg.Width, cfg.Height, coded, cfg.KeyInterval, c.capsInfo.StdSyntaxFlags)
+	c.add = vk.VideoEncodeH264SessionParametersAddInfoKHR{
+		SType:       vk.StructureTypeVideoEncodeH264SessionParametersAddInfoKhr,
+		StdSPSCount: 1, PStdSPSs: &c.params.sps,
+		StdPPSCount: 1, PStdPPSs: &c.params.pps,
+	}
+	c.create = vk.VideoEncodeH264SessionParametersCreateInfoKHR{
+		SType: vk.StructureTypeVideoEncodeH264SessionParametersCreateInfoKhr, MaxStdSPSCount: 1, MaxStdPPSCount: 1, PParametersAddInfo: &c.add,
+	}
+	c.get = vk.VideoEncodeH264SessionParametersGetInfoKHR{SType: vk.StructureTypeVideoEncodeH264SessionParametersGetInfoKhr, WriteStdSPS: vk.True, WriteStdPPS: vk.True}
+	return unsafe.Pointer(&c.create), unsafe.Pointer(&c.get), 2, nil
+}
+
+func (c *h264Codec) rateControl(cfg EncoderConfig) unsafe.Pointer {
+	c.rc = vk.VideoEncodeH264RateControlInfoKHR{
 		SType:         vk.StructureTypeVideoEncodeH264RateControlInfoKhr,
 		Flags:         vk.VideoEncodeH264RateControlFlagsKHR(vk.VideoEncodeH264RateControlRegularGopBitKhr | vk.VideoEncodeH264RateControlReferencePatternFlatBitKhr),
 		GopFrameCount: uint32(cfg.KeyInterval), IdrPeriod: uint32(cfg.KeyInterval), TemporalLayerCount: 1,
 	}
-	rc.info = vk.VideoEncodeRateControlInfoKHR{SType: vk.StructureTypeVideoEncodeRateControlInfoKhr, PNext: (*uintptr)(unsafe.Pointer(&rc.h264))}
-	if cqp {
-		rc.info.RateControlMode = vk.VideoEncodeRateControlModeDisabledBitKhr
-		return rc
-	}
-	mode := vk.VideoEncodeRateControlModeVbrBitKhr
-	if caps.encode.RateControlModes&vk.VideoEncodeRateControlModeFlagsKHR(mode) == 0 {
-		mode = vk.VideoEncodeRateControlModeCbrBitKhr
-	}
-	bitrate := min(uint64(float32(cfg.Width*cfg.Height*cfg.FrameRate)*desktopBitsPerPixel), caps.encode.MaxBitrate)
-	maxRate := bitrate
-	if mode == vk.VideoEncodeRateControlModeVbrBitKhr {
-		maxRate = min(2*bitrate, caps.encode.MaxBitrate)
-	}
-	rc.layer = vk.VideoEncodeRateControlLayerInfoKHR{
-		SType: vk.StructureTypeVideoEncodeRateControlLayerInfoKhr, AverageBitrate: bitrate, MaxBitrate: maxRate,
-		FrameRateNumerator: uint32(cfg.FrameRate), FrameRateDenominator: 1,
-	}
-	rc.info.RateControlMode, rc.info.LayerCount, rc.info.PLayers = mode, 1, &rc.layer
-	rc.info.VirtualBufferSizeInMs, rc.info.InitialVirtualBufferSizeInMs = 1000, 500
-	return rc
+	return unsafe.Pointer(&c.rc)
 }
 
-// chain is the state as the pNext of a begin or control command.
-func (rc *rateControl) chain() *uintptr { return (*uintptr)(unsafe.Pointer(&rc.info)) }
+func (c *h264Codec) picture(sinceIDR, idrs, prev, qp int) (info, setup, ref unsafe.Pointer) {
+	c.pic.fill(sinceIDR, idrs, prev, qp)
+	return unsafe.Pointer(&c.pic.vkInfo), unsafe.Pointer(&c.pic.dpb[0]), unsafe.Pointer(&c.pic.dpb[1])
+}

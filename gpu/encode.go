@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"errors"
 	"fmt"
+	"image"
 	"runtime"
 	"slices"
 	"time"
@@ -29,8 +30,10 @@ func (d *Device) Codecs() []Codec {
 // EncoderConfig is a video stream's shape.
 type EncoderConfig struct {
 	Codec Codec
-	// Width and Height are the frame size; an odd one is coded one
-	// pixel larger, its last row or column repeated.
+	// Width and Height are the frame size. The stream is coded in the
+	// device's units and at least its smallest size, the padding's
+	// pixels the edge's repeated and cropped off on decode; an odd size
+	// decodes one pixel larger, its last row or column twice.
 	Width, Height int
 	// FrameRate is the frames a second the stream runs at, for its
 	// level; frames may come at any time.
@@ -81,16 +84,53 @@ const dpbSlots = 2
 // nv12 is the two-plane 4:2:0 format every picture is in.
 const nv12 = vk.FormatG8B8r82plane420Unorm
 
-// videoProfile is the codec profile chain every video object is made
-// with, kept on the heap for the pointers into it.
+// videoCodec is what an encoder does differently per codec: the
+// profile and capability structures it chains into the generic ones,
+// its parameter sets, its part of the rate control and each frame's
+// picture state. The structures live in it, for the pointers into them.
+type videoCodec interface {
+	// profiles is how many profiles the codec tries, best first.
+	profiles() int
+	// profile lays out profile i over next (the usage hints).
+	profile(i int, next unsafe.Pointer) unsafe.Pointer
+	// caps is the codec's capability structure, chained last.
+	caps() unsafe.Pointer
+	// limits reads the capabilities the query filled in.
+	limits() codecLimits
+	// align is the coded size's unit beyond the device's granularity.
+	align() int
+	// parameters lays out the parameter sets for cfg coded at coded:
+	// the session parameters' create and get chains, and how many NAL
+	// units the device writes for them.
+	parameters(cfg EncoderConfig, coded [2]int) (create, get unsafe.Pointer, nals int, err error)
+	// rateControl is the codec's rate control structure for cfg.
+	rateControl(cfg EncoderConfig) unsafe.Pointer
+	// picture lays out frame sinceIDR of its key interval, numbered
+	// idrs among IDRs, predicting from DPB slot prev: its picture info,
+	// and the DPB slot infos of the picture it reconstructs and the one
+	// it references.
+	picture(sinceIDR, idrs, prev, qp int) (info, setup, ref unsafe.Pointer)
+}
+
+// codecLimits are a codec's capabilities the encoder heeds.
+type codecLimits struct {
+	minQP, maxQP int
+	// pRefs is how many references a P frame may predict from.
+	pRefs int
+}
+
+func newVideoCodec(Codec) videoCodec { return &h264Codec{} }
+
+// videoProfile is the profile chain every video object is made with,
+// kept on the heap for the pointers into it.
 type videoProfile struct {
 	usage vk.VideoEncodeUsageInfoKHR
-	h264  vk.VideoEncodeH264ProfileInfoKHR
 	info  vk.VideoProfileInfoKHR
 	list  vk.VideoProfileListInfoKHR
 }
 
-func newVideoProfile(c Codec, idc vk.StdVideoH264ProfileIdc) *videoProfile {
+// newVideoProfile is codec's profile i.
+func newVideoProfile(c Codec, codec videoCodec, i int) *videoProfile {
 	p := &videoProfile{}
 	p.usage = vk.VideoEncodeUsageInfoKHR{
 		SType:             vk.StructureTypeVideoEncodeUsageInfoKhr,
@@ -98,9 +138,8 @@ func newVideoProfile(c Codec, idc vk.StdVideoH264ProfileIdc) *videoProfile {
 		VideoContentHints: vk.VideoEncodeContentFlagsKHR(vk.VideoEncodeContentDesktopBitKhr),
 		TuningMode:        vk.VideoEncodeTuningModeHighQualityKhr,
 	}
-	p.h264 = vk.VideoEncodeH264ProfileInfoKHR{SType: vk.StructureTypeVideoEncodeH264ProfileInfoKhr, PNext: (*uintptr)(unsafe.Pointer(&p.usage)), StdProfileIdc: idc}
 	p.info = vk.VideoProfileInfoKHR{
-		SType: vk.StructureTypeVideoProfileInfoKhr, PNext: (*uintptr)(unsafe.Pointer(&p.h264)), VideoCodecOperation: c.operation(),
+		SType: vk.StructureTypeVideoProfileInfoKhr, PNext: (*uintptr)(codec.profile(i, unsafe.Pointer(&p.usage))), VideoCodecOperation: c.operation(),
 		ChromaSubsampling: vk.VideoChromaSubsamplingFlagsKHR(vk.VideoChromaSubsampling420BitKhr),
 		LumaBitDepth:      vk.VideoComponentBitDepthFlagsKHR(vk.VideoComponentBitDepth8BitKhr),
 		ChromaBitDepth:    vk.VideoComponentBitDepthFlagsKHR(vk.VideoComponentBitDepth8BitKhr),
@@ -109,22 +148,26 @@ func newVideoProfile(c Codec, idc vk.StdVideoH264ProfileIdc) *videoProfile {
 	return p
 }
 
-// videoCaps are what the device encodes in a profile.
+// videoCaps are what the device encodes in a profile; the codec's own
+// part is in the codec.
 type videoCaps struct {
 	video  vk.VideoCapabilitiesKHR
 	encode vk.VideoEncodeCapabilitiesKHR
-	h264   vk.VideoEncodeH264CapabilitiesKHR
 }
 
-func (d *Device) videoCaps(p *videoProfile) (*videoCaps, vk.Result) {
+func (d *Device) videoCaps(p *videoProfile, codec videoCodec) (*videoCaps, vk.Result) {
 	c := &videoCaps{}
-	c.h264 = vk.VideoEncodeH264CapabilitiesKHR{SType: vk.StructureTypeVideoEncodeH264CapabilitiesKhr}
-	c.encode = vk.VideoEncodeCapabilitiesKHR{SType: vk.StructureTypeVideoEncodeCapabilitiesKhr, PNext: (*uintptr)(unsafe.Pointer(&c.h264))}
+	c.encode = vk.VideoEncodeCapabilitiesKHR{SType: vk.StructureTypeVideoEncodeCapabilitiesKhr, PNext: (*uintptr)(codec.caps())}
 	c.video = vk.VideoCapabilitiesKHR{SType: vk.StructureTypeVideoCapabilitiesKhr, PNext: (*uintptr)(unsafe.Pointer(&c.encode))}
 	r := d.cmds.GetPhysicalDeviceVideoCapabilitiesKHR(d.phys, &p.info, &c.video)
 	runtime.KeepAlive(p)
+	runtime.KeepAlive(codec)
 	return c, r
 }
+
+// evenUp rounds n up to even: 4:2:0 crops in pairs of pixels, so an odd
+// size shows its last row or column twice.
+func evenUp(n int) int { return n + n&1 }
 
 // encodeSlot is one frame in flight: its source picture, its share of
 // the bitstream buffer and its query, the video queue's command buffer
@@ -148,7 +191,8 @@ type videoImage struct {
 	views  []vk.ImageView
 }
 
-// Encoder encodes frames into H.264 on the device's video queue. A
+// Encoder encodes frames into H.264 or H.265 on the device's video
+// queue. A
 // frame's pixels come from a Buffer a compositor copied a screen into:
 // a compute pass converts them to NV12, and the video queue encodes
 // that while the next frame converts. Like the Device, it belongs to
@@ -157,11 +201,11 @@ type Encoder struct {
 	d         *Device
 	cfg       EncoderConfig
 	coded     [2]int
+	codec     videoCodec
 	profile   *videoProfile
 	caps      *videoCaps
 	cqp       bool
 	qp        int
-	params    *h264Params
 	paramSets [][]byte
 
 	session    vk.VideoSessionKHR
@@ -186,9 +230,15 @@ type Encoder struct {
 	videoPool vk.CommandPool
 	gfxCB     vk.CommandBuffer
 	gfxDone   vk.Fence
+	linear    vk.Sampler
+
+	// overlay is the picture SetOverlay draws over every frame, scaled
+	// to overlayDst; nil for none. overlayStaging carries its uploads.
+	overlay        *surface
+	overlayDst     image.Rectangle
+	overlayStaging *buffer
 
 	slots  [encodeSlots]encodeSlot
-	pic    h264Picture
 	frames int
 	idrs   int
 	closed bool
@@ -204,7 +254,7 @@ func (d *Device) NewEncoder(cfg EncoderConfig) (*Encoder, error) {
 	if d.video == nil || !slices.Contains(d.video.codecs, cfg.Codec) {
 		return nil, fmt.Errorf("%w: %s encodes no %s", ErrNoVideoEncoder, d.name, cfg.Codec)
 	}
-	e := &Encoder{d: d, cfg: cfg}
+	e := &Encoder{d: d, cfg: cfg, codec: newVideoCodec(cfg.Codec)}
 	steps := []func() error{e.pickProfile, e.createSession, e.createParameters, e.createImages, e.createBuffers, e.createPipeline, e.createCommands}
 	for _, step := range steps {
 		if err := step(); err != nil {
@@ -215,14 +265,14 @@ func (d *Device) NewEncoder(cfg EncoderConfig) (*Encoder, error) {
 	return e, nil
 }
 
-// pickProfile takes High, else Main, whichever the device encodes,
-// with its capabilities, and sizes the coded picture to them.
+// pickProfile takes the codec's best profile the device encodes, with
+// its capabilities, and sizes the coded picture to them.
 func (e *Encoder) pickProfile() error {
 	d := e.d
 	var last vk.Result
-	for _, idc := range []vk.StdVideoH264ProfileIdc{vk.StdVideoH264ProfileIdcHigh, vk.StdVideoH264ProfileIdcMain} {
-		p := newVideoProfile(e.cfg.Codec, idc)
-		caps, r := d.videoCaps(p)
+	for i := range e.codec.profiles() {
+		p := newVideoProfile(e.cfg.Codec, e.codec, i)
+		caps, r := d.videoCaps(p, e.codec)
 		if r != vk.Success {
 			last = r
 			continue
@@ -231,24 +281,28 @@ func (e *Encoder) pickProfile() error {
 		break
 	}
 	if e.profile == nil {
-		return fmt.Errorf("%w: %s encodes neither H.264 High nor Main: %d", ErrNoVideoEncoder, d.name, last)
+		return fmt.Errorf("%w: %s encodes none of the %s profiles: %d", ErrNoVideoEncoder, d.name, e.cfg.Codec, last)
 	}
-	c := e.caps
-	if c.video.MaxDpbSlots < dpbSlots || c.video.MaxActiveReferencePictures < 1 || c.h264.MaxPPictureL0ReferenceCount < 1 {
-		return fmt.Errorf("%w: %s codes no P frames (%d DPB slots, %d references)", ErrNoVideoEncoder, d.name, c.video.MaxDpbSlots, c.h264.MaxPPictureL0ReferenceCount)
+	c, lim := e.caps, e.codec.limits()
+	if c.video.MaxDpbSlots < dpbSlots || c.video.MaxActiveReferencePictures < 1 || lim.pRefs < 1 {
+		return fmt.Errorf("%w: %s codes no %s P frames (%d DPB slots, %d references)", ErrNoVideoEncoder, d.name, e.cfg.Codec, c.video.MaxDpbSlots, lim.pRefs)
 	}
-	gw := max(16, int(c.video.PictureAccessGranularity.Width), int(c.encode.EncodeInputPictureGranularity.Width))
-	gh := max(16, int(c.video.PictureAccessGranularity.Height), int(c.encode.EncodeInputPictureGranularity.Height))
-	e.coded = [2]int{alignUp(evenUp(e.cfg.Width), gw), alignUp(evenUp(e.cfg.Height), gh)}
+	unit := e.codec.align()
+	gw := max(unit, int(c.video.PictureAccessGranularity.Width), int(c.encode.EncodeInputPictureGranularity.Width))
+	gh := max(unit, int(c.video.PictureAccessGranularity.Height), int(c.encode.EncodeInputPictureGranularity.Height))
 	minE, maxE := c.video.MinCodedExtent, c.video.MaxCodedExtent
-	if e.coded[0] < int(minE.Width) || e.coded[1] < int(minE.Height) || e.coded[0] > int(maxE.Width) || e.coded[1] > int(maxE.Height) {
-		return fmt.Errorf("gpu: %s encodes %dx%d to %dx%d, not %dx%d", d.name, minE.Width, minE.Height, maxE.Width, maxE.Height, e.coded[0], e.coded[1])
+	e.coded = [2]int{
+		alignUp(max(evenUp(e.cfg.Width), int(minE.Width)), gw),
+		alignUp(max(evenUp(e.cfg.Height), int(minE.Height)), gh),
+	}
+	if e.coded[0] > int(maxE.Width) || e.coded[1] > int(maxE.Height) {
+		return fmt.Errorf("gpu: %s encodes up to %dx%d, not %dx%d", d.name, maxE.Width, maxE.Height, e.coded[0], e.coded[1])
 	}
 	e.cqp = c.encode.RateControlModes&vk.VideoEncodeRateControlModeFlagsKHR(vk.VideoEncodeRateControlModeDisabledBitKhr) != 0
 	if e.cqp {
-		e.qp = min(max(e.cfg.QP, int(c.h264.MinQp)), int(c.h264.MaxQp))
+		e.qp = min(max(e.cfg.QP, lim.minQP), lim.maxQP)
 	}
-	e.rc = newRateControl(e.cfg, e.cqp, c)
+	e.rc = newRateControl(e.cfg, e.cqp, c, e.codec.rateControl(e.cfg))
 	return nil
 }
 
@@ -303,36 +357,22 @@ func (e *Encoder) createSession() error {
 	return nil
 }
 
-// createParameters makes the session parameters (SPS and PPS) and
-// reads back the NAL units the device writes for them.
+// createParameters makes the session parameters and reads back the
+// NAL units the device writes for them.
 func (e *Encoder) createParameters() error {
 	d := e.d
-	mbs := e.coded[0] / 16 * (e.coded[1] / 16)
-	level, err := h264Level(mbs, e.cfg.FrameRate, e.caps.h264.MaxLevelIdc)
+	create, getNext, nals, err := e.codec.parameters(e.cfg, e.coded)
 	if err != nil {
 		return err
 	}
-	e.params = newH264Params(e.profile.h264.StdProfileIdc, level, e.cfg.Width, e.cfg.Height, e.coded, e.cfg.KeyInterval, e.caps.h264.StdSyntaxFlags)
-	add := vk.VideoEncodeH264SessionParametersAddInfoKHR{
-		SType:       vk.StructureTypeVideoEncodeH264SessionParametersAddInfoKhr,
-		StdSPSCount: 1, PStdSPSs: (*vk.StdVideoH264SequenceParameterSet)(unsafe.Pointer(&e.params.sps)),
-		StdPPSCount: 1, PStdPPSs: (*vk.StdVideoH264PictureParameterSet)(unsafe.Pointer(&e.params.pps)),
-	}
-	h264 := vk.VideoEncodeH264SessionParametersCreateInfoKHR{
-		SType: vk.StructureTypeVideoEncodeH264SessionParametersCreateInfoKhr, MaxStdSPSCount: 1, MaxStdPPSCount: 1, PParametersAddInfo: &add,
-	}
-	pci := vk.VideoSessionParametersCreateInfoKHR{SType: vk.StructureTypeVideoSessionParametersCreateInfoKhr, PNext: (*uintptr)(unsafe.Pointer(&h264)), VideoSession: e.session}
+	pci := vk.VideoSessionParametersCreateInfoKHR{SType: vk.StructureTypeVideoSessionParametersCreateInfoKhr, PNext: (*uintptr)(create), VideoSession: e.session}
 	r := d.cmds.CreateVideoSessionParametersKHR(d.device, &pci, nil, &e.sessionPar)
-	runtime.KeepAlive(&h264)
-	runtime.KeepAlive(&add)
-	runtime.KeepAlive(e.params)
+	runtime.KeepAlive(e.codec)
 	if r != vk.Success {
 		return fmt.Errorf("gpu: vkCreateVideoSessionParametersKHR: %d", r)
 	}
-	get264 := vk.VideoEncodeH264SessionParametersGetInfoKHR{SType: vk.StructureTypeVideoEncodeH264SessionParametersGetInfoKhr, WriteStdSPS: vk.True, WriteStdPPS: vk.True}
-	get := vk.VideoEncodeSessionParametersGetInfoKHR{SType: vk.StructureTypeVideoEncodeSessionParametersGetInfoKhr, PNext: (*uintptr)(unsafe.Pointer(&get264)), VideoSessionParameters: e.sessionPar}
-	fb264 := vk.VideoEncodeH264SessionParametersFeedbackInfoKHR{SType: vk.StructureTypeVideoEncodeH264SessionParametersFeedbackInfoKhr}
-	fb := vk.VideoEncodeSessionParametersFeedbackInfoKHR{SType: vk.StructureTypeVideoEncodeSessionParametersFeedbackInfoKhr, PNext: (*uintptr)(unsafe.Pointer(&fb264))}
+	get := vk.VideoEncodeSessionParametersGetInfoKHR{SType: vk.StructureTypeVideoEncodeSessionParametersGetInfoKhr, PNext: (*uintptr)(getNext), VideoSessionParameters: e.sessionPar}
+	fb := vk.VideoEncodeSessionParametersFeedbackInfoKHR{SType: vk.StructureTypeVideoEncodeSessionParametersFeedbackInfoKhr}
 	var size uintptr
 	if r := d.cmds.GetEncodedVideoSessionParametersKHR(d.device, &get, &fb, &size, nil); r != vk.Success {
 		return fmt.Errorf("gpu: vkGetEncodedVideoSessionParametersKHR (size): %d", r)
@@ -343,11 +383,10 @@ func (e *Encoder) createParameters() error {
 			return fmt.Errorf("gpu: vkGetEncodedVideoSessionParametersKHR: %d", r)
 		}
 	}
-	runtime.KeepAlive(&get264)
-	runtime.KeepAlive(&fb264)
+	runtime.KeepAlive(e.codec)
 	e.paramSets = nalUnits(data[:size])
-	if len(e.paramSets) != 2 {
-		return fmt.Errorf("gpu: the device wrote %d parameter set NAL units, want an SPS and a PPS", len(e.paramSets))
+	if len(e.paramSets) != nals {
+		return fmt.Errorf("gpu: the device wrote %d %s parameter set NAL units, want %d", len(e.paramSets), e.cfg.Codec, nals)
 	}
 	return nil
 }
@@ -376,7 +415,8 @@ func nalUnits(b []byte) [][]byte {
 }
 
 // ParameterSets are the stream's parameter sets as NAL units without
-// start codes: the SPS, then the PPS.
+// start codes: the SPS and the PPS for H.264, the VPS, SPS and PPS for
+// H.265.
 func (e *Encoder) ParameterSets() [][]byte {
 	out := make([][]byte, len(e.paramSets))
 	for i, p := range e.paramSets {
@@ -533,9 +573,11 @@ func (e *Encoder) createBuffers() error {
 	return nil
 }
 
-// nv12Constants is nv12.comp's push constant block.
+// nv12Constants is nv12.comp's push constant block: the source and
+// coded sizes and the overlay's rectangle, empty for none.
 type nv12Constants struct {
 	srcW, srcH, codedW, codedH int32
+	overlay                    [4]int32
 }
 
 // createPipeline makes the NV12 conversion's compute pipeline and the
@@ -543,11 +585,12 @@ type nv12Constants struct {
 func (e *Encoder) createPipeline() error {
 	d := e.d
 	comp := vk.ShaderStageFlags(vk.ShaderStageComputeBit)
-	b := [2]vk.DescriptorSetLayoutBinding{
+	b := [3]vk.DescriptorSetLayoutBinding{
 		{Binding: 0, DescriptorType: vk.DescriptorTypeCombinedImageSampler, DescriptorCount: 1, StageFlags: comp},
 		{Binding: 1, DescriptorType: vk.DescriptorTypeStorageBuffer, DescriptorCount: 1, StageFlags: comp},
+		{Binding: 2, DescriptorType: vk.DescriptorTypeCombinedImageSampler, DescriptorCount: 1, StageFlags: comp},
 	}
-	lci := vk.DescriptorSetLayoutCreateInfo{SType: vk.StructureTypeDescriptorSetLayoutCreateInfo, BindingCount: 2, PBindings: &b[0]}
+	lci := vk.DescriptorSetLayoutCreateInfo{SType: vk.StructureTypeDescriptorSetLayoutCreateInfo, BindingCount: 3, PBindings: &b[0]}
 	if r := d.cmds.CreateDescriptorSetLayout(d.device, &lci, nil, &e.setLayout); r != vk.Success {
 		return fmt.Errorf("gpu: vkCreateDescriptorSetLayout (NV12): %d", r)
 	}
@@ -572,7 +615,14 @@ func (e *Encoder) createPipeline() error {
 	if r != vk.Success {
 		return fmt.Errorf("gpu: vkCreateComputePipelines (NV12): %d", r)
 	}
-	sizes := [2]vk.DescriptorPoolSize{{Type: vk.DescriptorTypeCombinedImageSampler, DescriptorCount: 1}, {Type: vk.DescriptorTypeStorageBuffer, DescriptorCount: 1}}
+	sci := vk.SamplerCreateInfo{
+		SType: vk.StructureTypeSamplerCreateInfo, MagFilter: vk.FilterLinear, MinFilter: vk.FilterLinear, MipmapMode: vk.SamplerMipmapModeNearest,
+		AddressModeU: vk.SamplerAddressModeClampToEdge, AddressModeV: vk.SamplerAddressModeClampToEdge, AddressModeW: vk.SamplerAddressModeClampToEdge,
+	}
+	if r := d.cmds.CreateSampler(d.device, &sci, nil, &e.linear); r != vk.Success {
+		return fmt.Errorf("gpu: vkCreateSampler (overlay): %d", r)
+	}
+	sizes := [2]vk.DescriptorPoolSize{{Type: vk.DescriptorTypeCombinedImageSampler, DescriptorCount: 2}, {Type: vk.DescriptorTypeStorageBuffer, DescriptorCount: 1}}
 	dci := vk.DescriptorPoolCreateInfo{SType: vk.StructureTypeDescriptorPoolCreateInfo, MaxSets: 1, PoolSizeCount: 2, PPoolSizes: &sizes[0]}
 	if r := d.cmds.CreateDescriptorPool(d.device, &dci, nil, &e.descPool); r != vk.Success {
 		return fmt.Errorf("gpu: vkCreateDescriptorPool (NV12): %d", r)
@@ -661,6 +711,93 @@ func (e *Encoder) Encode(src *Buffer, pts time.Duration) ([]Packet, error) {
 	return out, nil
 }
 
+// maxOverlayCoord bounds an overlay rectangle's coordinates, which the
+// conversion takes as 32-bit integers.
+const maxOverlayCoord = 1 << 24
+
+// SetOverlay draws img over every following frame's pixels, scaled
+// (linear filtering) to fill dst in frame coordinates, opaque, before
+// the NV12 conversion; nil removes it. img is uploaded here, so the
+// caller may reuse it once SetOverlay returns. dst is clipped to the
+// frame; an empty dst, or one off the frame, is an error.
+func (e *Encoder) SetOverlay(img *image.RGBA, dst image.Rectangle) error {
+	if e.closed {
+		return errors.New("gpu: overlay on a closed encoder")
+	}
+	if img == nil {
+		e.overlayDst = image.Rectangle{}
+		if e.overlay != nil {
+			e.overlay.close()
+			e.overlay = nil
+		}
+		return nil
+	}
+	frame := image.Rect(0, 0, e.cfg.Width, e.cfg.Height)
+	bound := image.Rect(-maxOverlayCoord, -maxOverlayCoord, maxOverlayCoord, maxOverlayCoord)
+	switch {
+	case dst.Empty():
+		return fmt.Errorf("gpu: overlay into the empty rectangle %v", dst)
+	case !dst.Overlaps(frame):
+		return fmt.Errorf("gpu: overlay rectangle %v is off the %dx%d frame", dst, e.cfg.Width, e.cfg.Height)
+	case !dst.In(bound):
+		return fmt.Errorf("gpu: overlay rectangle %v reaches past %d", dst, maxOverlayCoord)
+	case img.Rect.Empty():
+		return fmt.Errorf("gpu: an empty overlay picture %v", img.Rect)
+	}
+	if err := e.uploadOverlay(img); err != nil {
+		return err
+	}
+	e.overlayDst = dst
+	return nil
+}
+
+// uploadOverlay copies img into the overlay surface, made anew when
+// its size changes.
+func (e *Encoder) uploadOverlay(img *image.RGBA) error {
+	d := e.d
+	w, h := img.Rect.Dx(), img.Rect.Dy()
+	if e.overlay != nil && (e.overlay.w != w || e.overlay.h != h) {
+		e.overlay.close()
+		e.overlay = nil
+	}
+	if e.overlay == nil {
+		s, err := d.newSurface(w, h)
+		if err != nil {
+			return fmt.Errorf("gpu: overlay %dx%d: %w", w, h, err)
+		}
+		if err := s.ready(); err != nil {
+			s.close()
+			return fmt.Errorf("gpu: overlay %dx%d: %w", w, h, err)
+		}
+		e.overlay = s
+	}
+	staging := e.overlayStaging
+	if staging == nil {
+		b, err := d.newBuffer(max(w*h*4, 1<<16), vk.BufferUsageTransferSrcBit)
+		if err != nil {
+			return err
+		}
+		staging = b
+	}
+	staging, err := staging.fit(w * h * 4)
+	e.overlayStaging = staging
+	if err != nil {
+		e.overlayStaging = nil
+		return err
+	}
+	for y := range h {
+		row := img.Pix[y*img.Stride : y*img.Stride+w*4]
+		out := staging.mapped[y*w*4 : (y+1)*w*4]
+		for i := 0; i < len(row); i += 4 {
+			out[i], out[i+1], out[i+2], out[i+3] = row[i+2], row[i+1], row[i], 0xff
+		}
+	}
+	return d.submit(func(cb vk.CommandBuffer) {
+		e.overlay.upload(cb, image.Rect(0, 0, w, h), staging, 0, w)
+		e.overlay.to(cb, vk.ImageLayoutShaderReadOnlyOptimal)
+	})
+}
+
 // Flush waits for the frames in flight and returns their packets,
 // oldest first.
 func (e *Encoder) Flush() ([]Packet, error) {
@@ -714,9 +851,21 @@ func (e *Encoder) convert(src *Buffer, slot *encodeSlot) error {
 	if err != nil {
 		return err
 	}
-	ii := vk.DescriptorImageInfo{Sampler: d.sampler, ImageView: view, ImageLayout: vk.ImageLayoutGeneral}
-	w := vk.WriteDescriptorSet{SType: vk.StructureTypeWriteDescriptorSet, DstSet: e.set, DstBinding: 0, DescriptorCount: 1, DescriptorType: vk.DescriptorTypeCombinedImageSampler, PImageInfo: &ii}
-	d.cmds.UpdateDescriptorSets(d.device, 1, &w, 0, nil)
+	ii := [2]vk.DescriptorImageInfo{
+		{Sampler: d.sampler, ImageView: view, ImageLayout: vk.ImageLayoutGeneral},
+		{Sampler: e.linear, ImageView: view, ImageLayout: vk.ImageLayoutGeneral},
+	}
+	var over [4]int32
+	if e.overlay != nil {
+		ii[1] = vk.DescriptorImageInfo{Sampler: e.linear, ImageView: e.overlay.view, ImageLayout: vk.ImageLayoutShaderReadOnlyOptimal}
+		r := e.overlayDst
+		over = [4]int32{int32(r.Min.X), int32(r.Min.Y), int32(r.Max.X), int32(r.Max.Y)}
+	}
+	w := [2]vk.WriteDescriptorSet{
+		{SType: vk.StructureTypeWriteDescriptorSet, DstSet: e.set, DstBinding: 0, DescriptorCount: 1, DescriptorType: vk.DescriptorTypeCombinedImageSampler, PImageInfo: &ii[0]},
+		{SType: vk.StructureTypeWriteDescriptorSet, DstSet: e.set, DstBinding: 2, DescriptorCount: 1, DescriptorType: vk.DescriptorTypeCombinedImageSampler, PImageInfo: &ii[1]},
+	}
+	d.cmds.UpdateDescriptorSets(d.device, 2, &w[0], 0, nil)
 	cb := e.gfxCB
 	if err := begin(d, cb); err != nil {
 		return err
@@ -727,7 +876,7 @@ func (e *Encoder) convert(src *Buffer, slot *encodeSlot) error {
 	barrier2(d, cb, nil, foreign)
 	d.cmds.CmdBindPipeline(cb, vk.PipelineBindPointCompute, e.pipeline)
 	d.cmds.CmdBindDescriptorSets(cb, vk.PipelineBindPointCompute, e.layout, 0, 1, &e.set, 0, nil)
-	pc := nv12Constants{int32(e.cfg.Width), int32(e.cfg.Height), int32(e.coded[0]), int32(e.coded[1])}
+	pc := nv12Constants{int32(e.cfg.Width), int32(e.cfg.Height), int32(e.coded[0]), int32(e.coded[1]), over}
 	d.cmds.CmdPushConstants(cb, e.layout, vk.ShaderStageFlags(vk.ShaderStageComputeBit), 0, uint32(unsafe.Sizeof(pc)), unsafe.Pointer(&pc))
 	d.cmds.CmdDispatch(cb, uint32((e.coded[0]/4+7)/8), uint32((e.coded[1]/2+7)/8), 1)
 	planes := vk.MemoryBarrier2{
@@ -785,7 +934,7 @@ func (e *Encoder) encode(slot *encodeSlot, sinceIDR int) error {
 		barrier2(d, cb, &m)
 	}
 	cur, prev := e.frames%dpbSlots, (e.frames+dpbSlots-1)%dpbSlots
-	e.pic.fill(sinceIDR, e.idrs, prev, e.qp)
+	picInfo, setupInfo, refInfo := e.codec.picture(sinceIDR, e.idrs, prev, e.qp)
 	extent := vk.Extent2D{Width: uint32(e.coded[0]), Height: uint32(e.coded[1])}
 	res := [3]vk.VideoPictureResourceInfoKHR{
 		{SType: vk.StructureTypeVideoPictureResourceInfoKhr, CodedExtent: extent, ImageViewBinding: slot.src.views[0]},
@@ -816,10 +965,10 @@ func (e *Encoder) encode(slot *encodeSlot, sinceIDR int) error {
 		d.cmds.CmdControlVideoCodingKHR(cb, &ctl)
 		e.rcSet = true
 	}
-	setup := vk.VideoReferenceSlotInfoKHR{SType: vk.StructureTypeVideoReferenceSlotInfoKhr, PNext: (*uintptr)(unsafe.Pointer(&e.pic.dpb[0])), SlotIndex: int32(cur), PPictureResource: &res[1]}
-	ref := vk.VideoReferenceSlotInfoKHR{SType: vk.StructureTypeVideoReferenceSlotInfoKhr, PNext: (*uintptr)(unsafe.Pointer(&e.pic.dpb[1])), SlotIndex: int32(prev), PPictureResource: &res[2]}
+	setup := vk.VideoReferenceSlotInfoKHR{SType: vk.StructureTypeVideoReferenceSlotInfoKhr, PNext: (*uintptr)(setupInfo), SlotIndex: int32(cur), PPictureResource: &res[1]}
+	ref := vk.VideoReferenceSlotInfoKHR{SType: vk.StructureTypeVideoReferenceSlotInfoKhr, PNext: (*uintptr)(refInfo), SlotIndex: int32(prev), PPictureResource: &res[2]}
 	ei := vk.VideoEncodeInfoKHR{
-		SType: vk.StructureTypeVideoEncodeInfoKhr, PNext: (*uintptr)(unsafe.Pointer(&e.pic.vkInfo)),
+		SType: vk.StructureTypeVideoEncodeInfoKhr, PNext: (*uintptr)(picInfo),
 		DstBuffer: e.bitstream.buf, DstBufferOffset: vk.DeviceSize(slot.offset), DstBufferRange: vk.DeviceSize(e.slotSize),
 		SrcPictureResource: res[0], PSetupReferenceSlot: &setup, ReferenceSlotCount: uint32(refs), PReferenceSlots: &ref,
 	}
@@ -828,7 +977,7 @@ func (e *Encoder) encode(slot *encodeSlot, sinceIDR int) error {
 	d.cmds.CmdEndQuery(cb, e.queries, q)
 	end := vk.VideoEndCodingInfoKHR{SType: vk.StructureTypeVideoEndCodingInfoKhr}
 	d.cmds.CmdEndVideoCodingKHR(cb, &end)
-	runtime.KeepAlive(&e.pic)
+	runtime.KeepAlive(e.codec)
 	runtime.KeepAlive(&res)
 	runtime.KeepAlive(&bound)
 	if r := d.cmds.EndCommandBuffer(cb); r != vk.Success {
@@ -861,6 +1010,15 @@ func (e *Encoder) Close() {
 		}
 	}
 	e.dpb.close(d)
+	if e.overlay != nil {
+		e.overlay.close()
+	}
+	if e.overlayStaging != nil {
+		e.overlayStaging.close()
+	}
+	if e.linear != 0 {
+		d.cmds.DestroySampler(d.device, e.linear, nil)
+	}
 	if e.gfxDone != 0 {
 		d.cmds.DestroyFence(d.device, e.gfxDone, nil)
 	}
@@ -903,3 +1061,45 @@ func (e *Encoder) Close() {
 		d.cmds.FreeMemory(d.device, m, nil)
 	}
 }
+
+// rateControl is the rate control state the session codes at:
+// constant QP where the device has it, else variable bitrate around a
+// bitrate that matches QP 20 on desktop content. The GOP is flat: an
+// IDR every key interval, P frames between.
+type rateControl struct {
+	layer vk.VideoEncodeRateControlLayerInfoKHR
+	info  vk.VideoEncodeRateControlInfoKHR
+}
+
+// desktopBitsPerPixel is the variable-bitrate target per pixel a frame:
+// what QP 20 averages on screen content.
+const desktopBitsPerPixel = 0.1
+
+// newRateControl is cfg's rate control with the codec's part, next.
+func newRateControl(cfg EncoderConfig, cqp bool, caps *videoCaps, next unsafe.Pointer) *rateControl {
+	rc := &rateControl{}
+	rc.info = vk.VideoEncodeRateControlInfoKHR{SType: vk.StructureTypeVideoEncodeRateControlInfoKhr, PNext: (*uintptr)(next)}
+	if cqp {
+		rc.info.RateControlMode = vk.VideoEncodeRateControlModeDisabledBitKhr
+		return rc
+	}
+	mode := vk.VideoEncodeRateControlModeVbrBitKhr
+	if caps.encode.RateControlModes&vk.VideoEncodeRateControlModeFlagsKHR(mode) == 0 {
+		mode = vk.VideoEncodeRateControlModeCbrBitKhr
+	}
+	bitrate := min(uint64(float32(cfg.Width*cfg.Height*cfg.FrameRate)*desktopBitsPerPixel), caps.encode.MaxBitrate)
+	maxRate := bitrate
+	if mode == vk.VideoEncodeRateControlModeVbrBitKhr {
+		maxRate = min(2*bitrate, caps.encode.MaxBitrate)
+	}
+	rc.layer = vk.VideoEncodeRateControlLayerInfoKHR{
+		SType: vk.StructureTypeVideoEncodeRateControlLayerInfoKhr, AverageBitrate: bitrate, MaxBitrate: maxRate,
+		FrameRateNumerator: uint32(cfg.FrameRate), FrameRateDenominator: 1,
+	}
+	rc.info.RateControlMode, rc.info.LayerCount, rc.info.PLayers = mode, 1, &rc.layer
+	rc.info.VirtualBufferSizeInMs, rc.info.InitialVirtualBufferSizeInMs = 1000, 500
+	return rc
+}
+
+// chain is the state as the pNext of a begin or control command.
+func (rc *rateControl) chain() *uintptr { return (*uintptr)(unsafe.Pointer(&rc.info)) }

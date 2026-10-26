@@ -3,16 +3,19 @@
 // One invocation converts a 4x2 block of the source into BT.709
 // limited-range NV12: two words of luma (a row of four each) and one
 // of interleaved chroma (two 2x2 averages). Past the source's edge the
-// edge pixels repeat into the coded size's padding.
+// edge pixels repeat into the coded size's padding. Inside the overlay
+// rectangle the overlay, scaled to fill it, stands in for the source.
 
 layout(local_size_x = 8, local_size_y = 8) in;
 
 layout(set = 0, binding = 0) uniform sampler2D src;
 layout(set = 0, binding = 1, std430) writeonly buffer Planes { uint words[]; };
+layout(set = 0, binding = 2) uniform sampler2D overlay;
 
 layout(push_constant) uniform Size {
     ivec2 src;
     ivec2 coded;
+    ivec4 overlay;
 } size;
 
 const vec3 kLuma = vec3(0.2126, 0.7152, 0.0722);
@@ -21,16 +24,25 @@ float luma(vec3 c) { return 16.0 + 219.0 * dot(c, kLuma); }
 
 uint byteOf(float v) { return uint(clamp(floor(v + 0.5), 0.0, 255.0)); }
 
+vec3 pixel(ivec2 p) {
+    ivec2 q = min(p, size.src - 1);
+    ivec4 o = size.overlay;
+    if (q.x >= o.x && q.y >= o.y && q.x < o.z && q.y < o.w) {
+        vec2 uv = (vec2(q - o.xy) + 0.5) / vec2(o.zw - o.xy);
+        return textureLod(overlay, uv, 0.0).rgb;
+    }
+    return texelFetch(src, q, 0).rgb;
+}
+
 void main() {
     ivec2 g = ivec2(gl_GlobalInvocationID.xy);
     ivec2 o = g * ivec2(4, 2);
     if (o.x >= size.coded.x || o.y >= size.coded.y) {
         return;
     }
-    ivec2 last = size.src - 1;
     vec3 c[8];
     for (int i = 0; i < 8; i++) {
-        c[i] = texelFetch(src, min(o + ivec2(i & 3, i >> 2), last), 0).rgb;
+        c[i] = pixel(o + ivec2(i & 3, i >> 2));
     }
     int rowWords = size.coded.x / 4;
     for (int row = 0; row < 2; row++) {
