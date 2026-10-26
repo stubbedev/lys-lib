@@ -5,8 +5,8 @@ import (
 	"image"
 	"unsafe"
 
-	"github.com/stubbedev/lys-ui/dmabuf"
-	"github.com/stubbedev/lys-ui/third_party/vk"
+	"github.com/stubbedev/lys-lib/dmabuf"
+	"github.com/stubbedev/lys-lib/third_party/vk"
 )
 
 // Target is an image the GPU renders into whose memory is a dmabuf: a

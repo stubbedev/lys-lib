@@ -8,8 +8,8 @@ import (
 	"github.com/neurlang/wayland/wl"
 	"github.com/neurlang/wayland/wlclient"
 
-	"github.com/stubbedev/lys-ui/internal/dmabufwl"
-	"github.com/stubbedev/lys-ui/wlr"
+	"github.com/stubbedev/lys-lib/dmabufwl"
+	"github.com/stubbedev/lys-lib/wlr"
 )
 
 // Global names the client binds. They double as the protocol names in

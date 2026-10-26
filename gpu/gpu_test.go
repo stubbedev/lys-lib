@@ -14,13 +14,13 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/stubbedev/lys-ui/dmabuf"
-	"github.com/stubbedev/lys-ui/internal/gputest"
-	"github.com/stubbedev/lys-ui/third_party/vk"
+	"github.com/stubbedev/lys-lib/dmabuf"
+	"github.com/stubbedev/lys-lib/gputest"
+	"github.com/stubbedev/lys-lib/third_party/vk"
 )
 
 // openDevice opens the test's device (internal/gputest picks the
-// driver); with none the test skips, unless LYS_UI_TEST_GPU asks for
+// driver); with none the test skips, unless LYS_TEST_GPU asks for
 // one.
 func openDevice(t testing.TB) *Device {
 	t.Helper()
@@ -31,7 +31,7 @@ func openDevice(t testing.TB) *Device {
 	d, err := Open()
 	if errors.Is(err, ErrNoVulkan) || errors.Is(err, ErrNoDevice) {
 		if required {
-			t.Fatalf("no GPU device for LYS_UI_TEST_GPU=%s: %v", os.Getenv("LYS_UI_TEST_GPU"), err)
+			t.Fatalf("no GPU device for LYS_TEST_GPU=%s: %v", os.Getenv("LYS_TEST_GPU"), err)
 		}
 		t.Skipf("no Vulkan device: %v", err)
 	}
@@ -269,7 +269,7 @@ func TestReadBuffersAreCached(t *testing.T) {
 }
 
 // exportProofEnv marks the child run of TestExportsIsProven.
-const exportProofEnv = "LYS_UI_TEST_EXPORT_PROOF"
+const exportProofEnv = "LYS_TEST_EXPORT_PROOF"
 
 // A driver that offers dmabuf export but cannot do it opens as a
 // device that does not export, so callers draw offscreen or on the CPU
@@ -284,7 +284,7 @@ func TestExportsIsProven(t *testing.T) {
 		}
 		return
 	}
-	lavapipe := os.Getenv("LYS_UI_TEST_LAVAPIPE")
+	lavapipe := os.Getenv("LYS_TEST_LAVAPIPE")
 	unshare, err := exec.LookPath("unshare")
 	if lavapipe == "" || err != nil {
 		t.Skip("needs the dev shell's lavapipe and unshare")
@@ -293,7 +293,7 @@ func TestExportsIsProven(t *testing.T) {
 		t.Skip("no /dev/udmabuf to hide")
 	}
 	cmd := exec.Command(unshare, "-rm", "sh", "-c", `mount --bind /dev/null /dev/udmabuf && exec "$0" -test.run '^TestExportsIsProven$' -test.v`, os.Args[0])
-	cmd.Env = append(os.Environ(), exportProofEnv+"=1", "LYS_UI_TEST_GPU=lavapipe")
+	cmd.Env = append(os.Environ(), exportProofEnv+"=1", "LYS_TEST_GPU=lavapipe")
 	out, err := cmd.CombinedOutput()
 	if err != nil && strings.Contains(string(out), "unshare:") {
 		t.Skipf("no user namespace: %s", strings.TrimSpace(string(out)))

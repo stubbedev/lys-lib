@@ -3,7 +3,7 @@ package capture
 import (
 	"fmt"
 
-	"github.com/stubbedev/lys-ui/wlr"
+	"github.com/stubbedev/lys-lib/wlr"
 )
 
 // hlEvents adapts copyState to the hyprland_toplevel_export_frame_v1

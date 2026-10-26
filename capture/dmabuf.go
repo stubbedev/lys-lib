@@ -7,9 +7,9 @@ import (
 
 	"github.com/neurlang/wayland/wl"
 
-	"github.com/stubbedev/lys-ui/dmabuf"
-	"github.com/stubbedev/lys-ui/internal/dmabufwl"
-	"github.com/stubbedev/lys-ui/wlr"
+	"github.com/stubbedev/lys-lib/dmabuf"
+	"github.com/stubbedev/lys-lib/dmabufwl"
+	"github.com/stubbedev/lys-lib/wlr"
 )
 
 // DmabufFormat is the dmabuf layout the compositor offers for an

@@ -3,7 +3,7 @@ package gpu
 import (
 	"fmt"
 
-	"github.com/stubbedev/lys-ui/third_party/vk"
+	"github.com/stubbedev/lys-lib/third_party/vk"
 )
 
 // commandPool makes a pool on family whose buffers reset one by one.

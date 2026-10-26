@@ -8,9 +8,9 @@ import (
 
 	"github.com/go-text/typesetting/font"
 
-	"github.com/stubbedev/lys-ui/internal/debug"
-	"github.com/stubbedev/lys-ui/render"
-	"github.com/stubbedev/lys-ui/third_party/vk"
+	"github.com/stubbedev/lys-lib/debug"
+	"github.com/stubbedev/lys-lib/render"
+	"github.com/stubbedev/lys-lib/third_party/vk"
 )
 
 // stepKind is what a recorded step does on the GPU.

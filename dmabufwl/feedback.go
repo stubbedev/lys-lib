@@ -7,8 +7,8 @@ import (
 	"slices"
 	"syscall"
 
-	"github.com/stubbedev/lys-ui/dmabuf"
-	"github.com/stubbedev/lys-ui/wlr"
+	"github.com/stubbedev/lys-lib/dmabuf"
+	"github.com/stubbedev/lys-lib/wlr"
 )
 
 // Feedback is a compositor's linux-dmabuf default feedback (version 4):

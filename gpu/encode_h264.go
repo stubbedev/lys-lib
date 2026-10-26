@@ -5,7 +5,7 @@ import (
 	"math/bits"
 	"unsafe"
 
-	"github.com/stubbedev/lys-ui/third_party/vk"
+	"github.com/stubbedev/lys-lib/third_party/vk"
 )
 
 // h264Levels are H.264's levels (Table A-1) in order, as the StdVideo

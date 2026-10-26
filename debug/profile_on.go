@@ -1,4 +1,4 @@
-//go:build lysuidebug
+//go:build lysdebug
 
 package debug
 
@@ -11,11 +11,11 @@ import (
 	"time"
 )
 
-// profileEnv is LYS_UI_CPUPROFILE=path:start-end: a debug build
+// profileEnv is LYS_CPUPROFILE=path:start-end: a debug build
 // profiles its CPU from start to end seconds after launch and writes
 // the profile to path, so a running application is profiled, past its
 // startup, without code of its own.
-const profileEnv = "LYS_UI_CPUPROFILE"
+const profileEnv = "LYS_CPUPROFILE"
 
 func init() {
 	spec := os.Getenv(profileEnv)
@@ -23,7 +23,7 @@ func init() {
 		return
 	}
 	if err := startProfile(spec); err != nil {
-		fmt.Fprintf(os.Stderr, "lys-ui: %s=%q: %v\n", profileEnv, spec, err)
+		fmt.Fprintf(os.Stderr, "lys: %s=%q: %v\n", profileEnv, spec, err)
 	}
 }
 
@@ -45,14 +45,14 @@ func startProfile(spec string) error {
 	seconds := func(s float64) time.Duration { return time.Duration(s * float64(time.Second)) }
 	time.AfterFunc(seconds(start), func() {
 		if err := pprof.StartCPUProfile(f); err != nil {
-			fmt.Fprintf(os.Stderr, "lys-ui: starting the CPU profile %s: %v\n", path, err)
+			fmt.Fprintf(os.Stderr, "lys: starting the CPU profile %s: %v\n", path, err)
 			_ = f.Close()
 			return
 		}
 		time.AfterFunc(seconds(end-start), func() {
 			pprof.StopCPUProfile()
 			if err := f.Close(); err != nil {
-				fmt.Fprintf(os.Stderr, "lys-ui: closing the CPU profile %s: %v\n", path, err)
+				fmt.Fprintf(os.Stderr, "lys: closing the CPU profile %s: %v\n", path, err)
 			}
 		})
 	})

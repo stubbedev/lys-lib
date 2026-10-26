@@ -5,7 +5,7 @@ import (
 	"runtime"
 	"unsafe"
 
-	"github.com/stubbedev/lys-ui/third_party/vk"
+	"github.com/stubbedev/lys-lib/third_party/vk"
 )
 
 // maxSurfaces bounds the surfaces sampled at once, one descriptor set

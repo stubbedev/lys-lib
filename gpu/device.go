@@ -21,8 +21,8 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/stubbedev/lys-ui/dmabuf"
-	"github.com/stubbedev/lys-ui/third_party/vk"
+	"github.com/stubbedev/lys-lib/dmabuf"
+	"github.com/stubbedev/lys-lib/third_party/vk"
 )
 
 // ErrNoVulkan reports that the Vulkan loader (libvulkan) is missing.
@@ -136,7 +136,7 @@ func open(node *drmNode) (*Device, error) {
 func (d *Device) createInstance() error {
 	var pin runtime.Pinner
 	defer pin.Unpin()
-	ai := vk.ApplicationInfo{SType: vk.StructureTypeApplicationInfo, PApplicationName: cstr(&pin, "lys-ui"), ApiVersion: vkVersion(1, 3)}
+	ai := vk.ApplicationInfo{SType: vk.StructureTypeApplicationInfo, PApplicationName: cstr(&pin, "lys"), ApiVersion: vkVersion(1, 3)}
 	ici := vk.InstanceCreateInfo{SType: vk.StructureTypeInstanceCreateInfo, PApplicationInfo: &ai}
 	if r := d.cmds.CreateInstance(&ici, nil, &d.instance); r != vk.Success {
 		return fmt.Errorf("%w: vkCreateInstance: %d", ErrNoDevice, r)

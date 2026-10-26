@@ -8,7 +8,7 @@ import (
 
 	"github.com/neurlang/wayland/wl"
 
-	"github.com/stubbedev/lys-ui/wlr"
+	"github.com/stubbedev/lys-lib/wlr"
 )
 
 func wlrDamage(x, y, w, h int32) wlr.ImageCopyCaptureFrameV1DamageEvent {

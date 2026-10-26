@@ -7,8 +7,8 @@ import (
 	"image/color"
 	"testing"
 
-	"github.com/stubbedev/lys-ui/dmabuf"
-	"github.com/stubbedev/lys-ui/render"
+	"github.com/stubbedev/lys-lib/dmabuf"
+	"github.com/stubbedev/lys-lib/render"
 )
 
 // newTarget is a w x h offscreen target on d.

@@ -1,6 +1,6 @@
 // Package gputest picks the Vulkan driver the GPU tests run on, from
-// the environment: LYS_UI_TEST_GPU=lavapipe runs them on Mesa's CPU
-// driver (CI, no GPU needed), whose ICD file LYS_UI_TEST_LAVAPIPE names
+// the environment: LYS_TEST_GPU=lavapipe runs them on Mesa's CPU
+// driver (CI, no GPU needed), whose ICD file LYS_TEST_LAVAPIPE names
 // (the dev shell sets it); any other value runs them on the host's
 // device; unset, they run where a device is found and skip elsewhere.
 package gputest
@@ -13,22 +13,22 @@ import (
 )
 
 // Setup points the Vulkan loader, through setenv, at the driver
-// LYS_UI_TEST_GPU asks for, and at the validation layer when
-// LYS_UI_TEST_VULKAN_LAYERS names the directory of its manifest (the
+// LYS_TEST_GPU asks for, and at the validation layer when
+// LYS_TEST_VULKAN_LAYERS names the directory of its manifest (the
 // dev shell does): any error the layer finds stops the test with a
 // SIGTRAP at the offending call, after logging it. required is whether
 // a missing device fails the test rather than skipping it.
 func Setup(setenv func(key, value string) error) (required bool, err error) {
-	mode := os.Getenv("LYS_UI_TEST_GPU")
+	mode := os.Getenv("LYS_TEST_GPU")
 	var env [][2]string
 	if mode == "lavapipe" {
-		icd := os.Getenv("LYS_UI_TEST_LAVAPIPE")
+		icd := os.Getenv("LYS_TEST_LAVAPIPE")
 		if icd == "" {
-			return true, errors.New("LYS_UI_TEST_GPU=lavapipe without LYS_UI_TEST_LAVAPIPE (the dev shell sets it)")
+			return true, errors.New("LYS_TEST_GPU=lavapipe without LYS_TEST_LAVAPIPE (the dev shell sets it)")
 		}
 		env = append(env, [2]string{"VK_DRIVER_FILES", icd})
 	}
-	if layers := os.Getenv("LYS_UI_TEST_VULKAN_LAYERS"); layers != "" {
+	if layers := os.Getenv("LYS_TEST_VULKAN_LAYERS"); layers != "" {
 		env = append(env,
 			[2]string{"VK_ADD_LAYER_PATH", layers},
 			[2]string{"VK_LOADER_LAYERS_ENABLE", "*validation"},
@@ -51,6 +51,6 @@ func SetupTest(t testing.TB) (required bool, err error) {
 	})
 }
 
-// Enabled reports whether LYS_UI_TEST_GPU asks for the GPU tests, which
+// Enabled reports whether LYS_TEST_GPU asks for the GPU tests, which
 // the suites outside package gpu run only then.
-func Enabled() bool { return os.Getenv("LYS_UI_TEST_GPU") != "" }
+func Enabled() bool { return os.Getenv("LYS_TEST_GPU") != "" }

@@ -6,8 +6,8 @@ import (
 
 	"github.com/neurlang/wayland/wl"
 
-	"github.com/stubbedev/lys-ui/internal/headlesstest"
-	"github.com/stubbedev/lys-ui/wlr"
+	"github.com/stubbedev/lys-lib/wlr"
+	"github.com/stubbedev/lys-lib/wltest"
 )
 
 type releases struct{ n int }
@@ -21,7 +21,7 @@ func (c *created) HandleZwpBufferParamsV1Created(ev wlr.ZwpBufferParamsV1Created
 }
 
 func TestServerCreatedBufferTakesReleaseHandlers(t *testing.T) {
-	ln, _ := headlesstest.LoopbackDisplay(t, "wayland-wlr-test")
+	ln, _ := wltest.LoopbackDisplay(t, "wayland-wlr-test")
 	t.Cleanup(func() { ln.Close() })
 	go func() {
 		if conn, err := ln.AcceptUnix(); err == nil {

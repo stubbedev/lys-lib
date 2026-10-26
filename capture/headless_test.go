@@ -3,42 +3,47 @@ package capture_test
 import (
 	"errors"
 	"image"
+	"image/color"
 	"testing"
 	"time"
 
-	"github.com/stubbedev/lys-ui/app"
-	"github.com/stubbedev/lys-ui/capture"
-	"github.com/stubbedev/lys-ui/internal/headlesstest/inproc"
-	"github.com/stubbedev/lys-ui/render"
-	"github.com/stubbedev/lys-ui/widget"
+	"github.com/stubbedev/lys-lib/capture"
+	"github.com/stubbedev/lys-lib/wltest"
 )
 
 // The compositor-in-the-loop capture tests: they attach to the private
-// headless sway the just headless recipe boots (LYS_UI_HEADLESS set),
-// paint known colors with lys-ui surfaces, and capture them back through
-// every protocol path sway offers. Without LYS_UI_HEADLESS they skip -
-// they must never capture a developer's real session.
+// headless sway the just headless recipe boots (LYS_TEST_HEADLESS set),
+// paint known colors with wltest's surfaces, and capture them back
+// through every protocol path sway offers. Without LYS_TEST_HEADLESS
+// they skip: they must never capture a developer's real session.
 
 // Test colors, opaque, distinct in every channel.
 var (
-	fillRed   = render.Color(0xffd02030)
-	fillGreen = render.Color(0xff20c040)
+	fillRed   = color.RGBA{R: 0xd0, G: 0x20, B: 0x30, A: 0xff}
+	fillGreen = color.RGBA{R: 0x20, G: 0xc0, B: 0x40, A: 0xff}
 )
 
+// captureClient connects a capture client to the test compositor,
+// closed at cleanup.
+func captureClient(t *testing.T) *capture.Client {
+	t.Helper()
+	c, err := capture.Connect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	if len(c.Outputs()) == 0 {
+		t.Fatal("no outputs")
+	}
+	return c
+}
+
 func TestHeadlessOutputCapture(t *testing.T) {
-	inproc.Require(t)
-	inproc.Show(t, func(a *app.Application, out *app.Output) error {
-		_, err := a.NewLayer(app.LayerConfig{
-			Output:     out,
-			Layer:      app.LayerOverlay,
-			Anchor:     app.AnchorTop | app.AnchorBottom | app.AnchorLeft | app.AnchorRight,
-			Namespace:  "lys-ui-capture-test",
-			Root:       widget.NewBox(widget.Row, 0, 0),
-			Background: fillRed,
-		})
-		return err
-	})
-	c := inproc.Capture(t)
+	wltest.Require(t)
+	p := wltest.NewPainter(t)
+	p.Layer(wltest.AnchorTop|wltest.AnchorBottom|wltest.AnchorLeft|wltest.AnchorRight, 0, 0, fillRed)
+	p.Run()
+	c := captureClient(t)
 	out := c.Outputs()[0]
 	if out.Name == "" || out.Width <= 0 || out.Height <= 0 {
 		t.Fatalf("output metadata incomplete: %+v", out)
@@ -48,7 +53,7 @@ func TestHeadlessOutputCapture(t *testing.T) {
 		if !c.HasScreencopy() {
 			t.Fatal("sway offers wlr-screencopy")
 		}
-		inproc.Eventually(t, "red output", func() error {
+		wltest.Eventually(t, "red output", func() error {
 			f, err := c.CaptureOutput(out, capture.Options{})
 			if err != nil {
 				return err
@@ -60,7 +65,7 @@ func TestHeadlessOutputCapture(t *testing.T) {
 			if err != nil {
 				return err
 			}
-			return inproc.WantColor(img, f.Width/2, f.Height/2, fillRed)
+			return wltest.WantColor(img, f.Width/2, f.Height/2, fillRed)
 		})
 	})
 	t.Run("screencopy region", func(t *testing.T) {
@@ -75,7 +80,7 @@ func TestHeadlessOutputCapture(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := inproc.WantColor(img, 50, 25, fillRed); err != nil {
+		if err := wltest.WantColor(img, 50, 25, fillRed); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -115,7 +120,7 @@ func TestHeadlessOutputCapture(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := inproc.WantColor(img, f.Width/2, f.Height/2, fillRed); err != nil {
+		if err := wltest.WantColor(img, f.Width/2, f.Height/2, fillRed); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -128,7 +133,7 @@ func TestHeadlessOutputCapture(t *testing.T) {
 		if info.Width != int(out.Width) || info.Stride != info.Width*info.Format.BytesPerPixel() {
 			t.Fatalf("stream info %+v", info)
 		}
-		inproc.Eventually(t, "first stream frame", func() error {
+		wltest.Eventually(t, "first stream frame", func() error {
 			if s.Latest() == nil {
 				return errors.New("no frame yet")
 			}
@@ -142,7 +147,7 @@ func TestHeadlessOutputCapture(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if err := inproc.WantColor(img, 5, 5, fillRed); err != nil {
+		if err := wltest.WantColor(img, 5, 5, fillRed); err != nil {
 			t.Fatal(err)
 		}
 		frame := s.Latest()
@@ -187,25 +192,17 @@ func TestHeadlessOutputCapture(t *testing.T) {
 }
 
 func TestHeadlessToplevelCapture(t *testing.T) {
-	inproc.Require(t)
+	wltest.Require(t)
 	const appID = "dev.stubbe.lys.ui.capturetest"
-	inproc.Show(t, func(a *app.Application, out *app.Output) error {
-		_, err := a.NewWindow(app.WindowConfig{
-			Title:      "capture target",
-			AppID:      appID,
-			Width:      320,
-			Height:     200,
-			Root:       widget.NewBox(widget.Row, 0, 0),
-			Background: fillGreen,
-		})
-		return err
-	})
-	c := inproc.Capture(t)
+	p := wltest.NewPainter(t)
+	p.Window(appID, "capture target", 320, 200, fillGreen)
+	p.Run()
+	c := captureClient(t)
 	if !c.HasToplevelCapture() {
 		t.Fatal("sway offers ext toplevel capture")
 	}
 	var target capture.Toplevel
-	inproc.Eventually(t, "toplevel listed", func() error {
+	wltest.Eventually(t, "toplevel listed", func() error {
 		tls, err := c.Toplevels()
 		if err != nil {
 			return err
@@ -221,7 +218,7 @@ func TestHeadlessToplevelCapture(t *testing.T) {
 	if target.Title != "capture target" || target.Identifier == "" {
 		t.Fatalf("toplevel metadata %+v", target)
 	}
-	inproc.Eventually(t, "green window", func() error {
+	wltest.Eventually(t, "green window", func() error {
 		f, err := c.CaptureToplevel(target, capture.Options{})
 		if err != nil {
 			return err
@@ -230,7 +227,7 @@ func TestHeadlessToplevelCapture(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		return inproc.WantColor(img, f.Width/2, f.Height/2, fillGreen)
+		return wltest.WantColor(img, f.Width/2, f.Height/2, fillGreen)
 	})
 	t.Run("a foreign toplevel value is refused", func(t *testing.T) {
 		if _, err := c.CaptureToplevel(capture.Toplevel{Title: "x"}, capture.Options{}); err == nil {

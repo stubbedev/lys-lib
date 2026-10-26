@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/stubbedev/lys-ui/wlr"
+	"github.com/stubbedev/lys-lib/wlr"
 )
 
 // Toplevel is one window as ext-foreign-toplevel-list reports it. The

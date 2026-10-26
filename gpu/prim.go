@@ -4,7 +4,7 @@ import (
 	"image"
 	"math"
 
-	"github.com/stubbedev/lys-ui/render"
+	"github.com/stubbedev/lys-lib/render"
 )
 
 // prim is one drawn primitive, prim.glsl's Prim: a device-pixel quad

@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/stubbedev/lys-ui/internal/text"
+	"github.com/stubbedev/lys-lib/text"
 )
 
 // benchText200 is a 200-rune line: an entry's worst realistic paste.

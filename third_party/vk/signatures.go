@@ -11,7 +11,7 @@
 package vk
 
 import (
-	"github.com/stubbedev/lys-ui/third_party/vk/internal/ffi"
+	"github.com/stubbedev/lys-lib/third_party/vk/internal/ffi"
 )
 
 // Signature templates - reused across functions with identical signatures.

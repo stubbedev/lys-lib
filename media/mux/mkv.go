@@ -61,7 +61,7 @@ const (
 	mkvTrackVideo  = 1
 	mkvTrackAudio  = 2
 	mkvKeyframe    = 0x80
-	mkvApp         = "lys-ui"
+	mkvApp         = "lys-lib"
 	mkvDurationLen = 2 + 1 + 8
 )
 

@@ -10,7 +10,7 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/stubbedev/lys-ui/third_party/vk"
+	"github.com/stubbedev/lys-lib/third_party/vk"
 )
 
 // ErrNoVideoEncoder reports a device that does not encode the codec

@@ -17,8 +17,8 @@ import (
 	"github.com/neurlang/wayland/wl"
 	"github.com/neurlang/wayland/wlclient"
 
-	"github.com/stubbedev/lys-ui/internal/keymapfd"
-	"github.com/stubbedev/lys-ui/wlr"
+	"github.com/stubbedev/lys-lib/keymapfd"
+	"github.com/stubbedev/lys-lib/wlr"
 )
 
 // Options tunes Dial.
@@ -155,7 +155,7 @@ func Dial(display string, opts Options) (*Device, error) {
 // upload arms the virtual keyboard with keymap text through a temp
 // file (format 1, xkb_v1).
 func (v *Device) upload(keymap []byte) error {
-	f, err := os.CreateTemp("", "lys-ui-vinput-keymap-*")
+	f, err := os.CreateTemp("", "lys-vinput-keymap-*")
 	if err != nil {
 		return err
 	}

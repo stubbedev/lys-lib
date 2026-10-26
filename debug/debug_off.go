@@ -1,8 +1,8 @@
-//go:build !lysuidebug
+//go:build !lysdebug
 
 package debug
 
-// Enabled is false without the lysuidebug build tag.
+// Enabled is false without the lysdebug build tag.
 const Enabled = false
 
 // Log is compiled out: an empty body the compiler inlines away,

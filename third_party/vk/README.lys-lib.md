@@ -1,19 +1,19 @@
-# github.com/gogpu/wgpu hal/vulkan/vk at 3e9824c, patched for lys-ui
+# github.com/gogpu/wgpu hal/vulkan/vk at 3e9824c, patched for lys-lib
 
 A copy of the `hal/vulkan/vk` package of github.com/gogpu/wgpu at
 3e9824c (MIT, LICENSE), its non-test sources only, carried as a package
-of the lys-ui module and imported as
-`github.com/stubbedev/lys-ui/third_party/vk`. These are pure-Go Vulkan
+of the lys-lib module and imported as
+`github.com/stubbedev/lys-lib/third_party/vk`. These are pure-Go Vulkan
 bindings generated from vk.xml, loading libvulkan at runtime through
-goffi, so lys-ui stays `CGO_ENABLED=0`. lys-ui's GPU renderer (#298)
+goffi, so lys-lib stays `CGO_ENABLED=0`. the GPU renderer (lys-ui#298)
 draws through it.
 
 ## Why it lives inside the module
 
 As with `third_party/oksvg`: Go ignores a dependency's `replace`
-directives, so a patched copy wired in through go.mod would reach lys-ui's
+directives, so a patched copy wired in through go.mod would reach lys-lib's
 own builds and none of its consumers' (lys-shell, lys-wm). As a package
-of the lys-ui module, the patches reach every application importing it.
+of the lys-lib module, the patches reach every application importing it.
 Only this package is carried: it depends on nothing of gogpu but goffi,
 which it no longer uses either (below).
 
@@ -33,9 +33,9 @@ shim (`internal/fakecgo`), so a cgo-free program holding both fails to
 link with a duplicated `_cgo_init`. lys-shell loads its other native
 libraries through purego. Vulkan's arguments and results are integers,
 handles and pointers; a float argument (vkCmdSetLineWidth and a few
-others, which lys-ui does not call) panics, since purego.SyscallN
+others, which lys-lib does not call) panics, since purego.SyscallN
 passes integer registers only. gpu's TestOneFakecgo keeps a second
-shim out. This is a lys-ui integration choice rather than an upstream
+shim out. This is a lys-lib integration choice rather than an upstream
 bug.
 
 ### C `int` is `int32`
@@ -94,7 +94,7 @@ Upstream: https://github.com/gogpu/wgpu/pull/375
 external-memory, dedicated-allocation and format-properties structure
 types, so the core names were missing. Upstream found the cause: vk-gen read
 enum values from the extensions section only and ignored `extnumber`,
-so about 60 other constants here carry wrong values too (lys-ui uses
+so about 60 other constants here carry wrong values too (lys-lib uses
 none of them).
 
 ### 64-bit flag types

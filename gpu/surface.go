@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"image"
 
-	"github.com/stubbedev/lys-ui/third_party/vk"
+	"github.com/stubbedev/lys-lib/third_party/vk"
 )
 
 // surfaceFormat is every surface's format: B8G8R8A8 in memory, the

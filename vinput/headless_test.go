@@ -7,10 +7,10 @@ import (
 )
 
 // The devices against the headless sway the just headless recipe
-// boots (LYS_UI_HEADLESS set); without it they skip.
+// boots (LYS_TEST_HEADLESS set); without it they skip.
 func TestDialArmsTheDevices(t *testing.T) {
-	if os.Getenv("LYS_UI_HEADLESS") == "" {
-		t.Skip("LYS_UI_HEADLESS is not set; vinput tests run under just check-headless")
+	if os.Getenv("LYS_TEST_HEADLESS") == "" {
+		t.Skip("LYS_TEST_HEADLESS is not set; vinput tests run under just check-headless")
 	}
 	fallback := []byte("xkb_keymap { xkb_keycodes { include \"evdev\" }; xkb_types { include \"complete\" }; xkb_compat { include \"complete\" }; xkb_symbols { include \"pc+us\" }; };\n")
 	d, err := Dial("", Options{Keyboard: true, FallbackKeymap: fallback})
@@ -57,8 +57,8 @@ func TestDialArmsTheDevices(t *testing.T) {
 // A closed device refuses pointer requests instead of writing to the
 // gone connection.
 func TestClosedDeviceRefusesInput(t *testing.T) {
-	if os.Getenv("LYS_UI_HEADLESS") == "" {
-		t.Skip("LYS_UI_HEADLESS is not set; vinput tests run under just check-headless")
+	if os.Getenv("LYS_TEST_HEADLESS") == "" {
+		t.Skip("LYS_TEST_HEADLESS is not set; vinput tests run under just check-headless")
 	}
 	d, err := Dial("", Options{})
 	if err != nil {

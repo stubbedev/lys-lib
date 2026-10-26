@@ -12,7 +12,7 @@ package vk
 import (
 	"unsafe"
 
-	"github.com/stubbedev/lys-ui/third_party/vk/internal/ffi"
+	"github.com/stubbedev/lys-lib/third_party/vk/internal/ffi"
 )
 
 // CmdWriteTimestamp wraps vkCmdWriteTimestamp.

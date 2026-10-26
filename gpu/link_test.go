@@ -7,13 +7,13 @@ import (
 	"testing"
 )
 
-// TestOneFakecgo pins what lets an application link lys-ui beside its
+// TestOneFakecgo pins what lets an application link lys-lib beside its
 // own native loading: cgo-free, a program links one runtime shim
 // (fakecgo), and two (goffi's beside purego's) fail at link time with
-// a duplicated _cgo_init. Built without cgo, every lys-ui package's
+// a duplicated _cgo_init. Built without cgo, every lys-lib package's
 // dependencies carry purego's fakecgo and no other.
 func TestOneFakecgo(t *testing.T) {
-	cmd := exec.Command("go", "list", "-deps", "github.com/stubbedev/lys-ui/...")
+	cmd := exec.Command("go", "list", "-deps", "github.com/stubbedev/lys-lib/...")
 	cmd.Env = append(os.Environ(), "CGO_ENABLED=0")
 	out, err := cmd.Output()
 	if err != nil {

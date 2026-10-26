@@ -1,4 +1,4 @@
-//go:build lysuidebug
+//go:build lysdebug
 
 package debug
 
@@ -10,11 +10,11 @@ import (
 	"time"
 )
 
-// Enabled is true in builds carrying the lysuidebug tag.
+// Enabled is true in builds carrying the lysdebug tag.
 const Enabled = true
 
 // categories selects which trace lines pass at runtime, parsed once
-// from LYS_UI_DEBUG (comma-separated names, "*" or "" for all, "-name"
+// from LYS_DEBUG (comma-separated names, "*" or "" for all, "-name"
 // excludes one).
 var (
 	parseOnce sync.Once
@@ -26,8 +26,8 @@ var (
 // offsets instead of wall-clock noise.
 var start = time.Now()
 
-// Log emits one trace line when the build has the lysuidebug tag and
-// LYS_UI_DEBUG admits the category: "<offset>s <category>: <message>"
+// Log emits one trace line when the build has the lysdebug tag and
+// LYS_DEBUG admits the category: "<offset>s <category>: <message>"
 // on stderr.
 func Log(category, format string, args ...any) {
 	parseOnce.Do(parseEnv)
@@ -38,10 +38,10 @@ func Log(category, format string, args ...any) {
 		time.Since(start).Seconds(), category, fmt.Sprintf(format, args...))
 }
 
-// parseEnv reads LYS_UI_DEBUG once per process.
+// parseEnv reads LYS_DEBUG once per process.
 func parseEnv() {
 	cats = make(map[string]bool)
-	for _, name := range strings.Split(os.Getenv("LYS_UI_DEBUG"), ",") {
+	for _, name := range strings.Split(os.Getenv("LYS_DEBUG"), ",") {
 		name = strings.TrimSpace(name)
 		switch {
 		case name == "":

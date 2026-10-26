@@ -5,8 +5,8 @@ package dmabufwl
 import (
 	"fmt"
 
-	"github.com/stubbedev/lys-ui/dmabuf"
-	"github.com/stubbedev/lys-ui/wlr"
+	"github.com/stubbedev/lys-lib/dmabuf"
+	"github.com/stubbedev/lys-lib/wlr"
 )
 
 // Params validates b and returns params carrying its planes, ready for

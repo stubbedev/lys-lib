@@ -1,6 +1,6 @@
-// Package opus is a pure-Go Opus encoder (RFC 6716) for lys-ui's
+// Package opus is a pure-Go Opus encoder (RFC 6716) for lys-shell's
 // recordings: CELT-only fullband 20 ms frames (configuration 31) at a
-// constant or constrained variable bitrate, from the media package's PCM
+// constant or constrained variable bitrate, from lys-ui's media PCM
 // layout (48 kHz, interleaved signed 16-bit samples, one or two
 // channels).
 //

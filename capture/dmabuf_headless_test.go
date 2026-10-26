@@ -11,13 +11,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stubbedev/lys-ui/app"
-	"github.com/stubbedev/lys-ui/capture"
-	"github.com/stubbedev/lys-ui/dmabuf"
-	"github.com/stubbedev/lys-ui/gpu"
-	"github.com/stubbedev/lys-ui/internal/headlesstest/inproc"
-	"github.com/stubbedev/lys-ui/internal/udmabuf"
-	"github.com/stubbedev/lys-ui/widget"
+	"github.com/stubbedev/lys-lib/capture"
+	"github.com/stubbedev/lys-lib/dmabuf"
+	"github.com/stubbedev/lys-lib/gpu"
+	"github.com/stubbedev/lys-lib/udmabuf"
+	"github.com/stubbedev/lys-lib/wltest"
 )
 
 func newUdmabuf(t *testing.T, size int) (int, []byte) {
@@ -40,22 +38,14 @@ func newUdmabuf(t *testing.T, size int) (int, []byte) {
 // a GPU-rendering compositor (sway's gles2 renderer); the pixman gate
 // skips it and covers the negative probe instead.
 func TestHeadlessDmabufCapture(t *testing.T) {
-	inproc.Require(t)
-	c := inproc.Capture(t)
+	wltest.Require(t)
+	c := captureClient(t)
 	if !c.HasDmabuf() {
 		t.Skip("compositor offers no linux-dmabuf (CPU renderer)")
 	}
-	inproc.Show(t, func(a *app.Application, out *app.Output) error {
-		_, err := a.NewLayer(app.LayerConfig{
-			Output:     out,
-			Layer:      app.LayerOverlay,
-			Anchor:     app.AnchorTop | app.AnchorBottom | app.AnchorLeft | app.AnchorRight,
-			Namespace:  "lys-ui-capture-test",
-			Root:       widget.NewBox(widget.Row, 0, 0),
-			Background: fillRed,
-		})
-		return err
-	})
+	p := wltest.NewPainter(t)
+	p.Layer(wltest.AnchorTop|wltest.AnchorBottom|wltest.AnchorLeft|wltest.AnchorRight, 0, 0, fillRed)
+	p.Run()
 	out := c.Outputs()[0]
 	format, err := c.DmabufFormat(out, false)
 	if errors.Is(err, capture.ErrUnsupported) {
@@ -85,7 +75,7 @@ func TestHeadlessDmabufCapture(t *testing.T) {
 		// connection - so it runs on a throwaway client. The verdict
 		// must surface from the import and from every later call,
 		// never as a hang.
-		bad := inproc.Capture(t)
+		bad := captureClient(t)
 		_, err := bad.ImportDmabuf(dmabuf.Buffer{
 			Width: format.Width, Height: format.Height * 4, Format: dmabuf.FormatXRGB8888,
 			Planes: []dmabuf.Plane{{FD: fd, Stride: uint32(stride)}},
@@ -115,7 +105,7 @@ func TestHeadlessDmabufCapture(t *testing.T) {
 	if _, err := c.CaptureOutputDmabuf(out, false, buf); errors.Is(err, capture.ErrFailed) {
 		t.Skip("compositor cannot render into a linear udmabuf on this GPU")
 	}
-	inproc.Eventually(t, "red frame in the dmabuf", func() error {
+	wltest.Eventually(t, "red frame in the dmabuf", func() error {
 		if _, err := c.CaptureOutputDmabuf(out, false, buf); err != nil {
 			return err
 		}
@@ -124,7 +114,7 @@ func TestHeadlessDmabufCapture(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		return inproc.WantColor(img, format.Width/2, format.Height/2, fillRed)
+		return wltest.WantColor(img, format.Width/2, format.Height/2, fillRed)
 	})
 }
 
@@ -133,8 +123,8 @@ func TestHeadlessDmabufCapture(t *testing.T) {
 // waits for a change, while CopyOutputDmabuf takes the next frame and
 // returns.
 func TestHeadlessDmabufCopyTakesAnIdleFrame(t *testing.T) {
-	inproc.Require(t)
-	c := inproc.Capture(t)
+	wltest.Require(t)
+	c := captureClient(t)
 	if !c.HasDmabuf() {
 		t.Skip("compositor offers no linux-dmabuf (CPU renderer)")
 	}
@@ -176,22 +166,14 @@ func TestHeadlessDmabufCopyTakesAnIdleFrame(t *testing.T) {
 // It needs a compositor rendering on a GPU (just gpu-host); the pixman
 // gate skips it.
 func TestHeadlessDmabufCaptureIntoGPUBuffer(t *testing.T) {
-	inproc.Require(t)
-	c := inproc.Capture(t)
+	wltest.Require(t)
+	c := captureClient(t)
 	if !c.HasDmabuf() {
 		t.Skip("compositor offers no linux-dmabuf (CPU renderer)")
 	}
-	inproc.Show(t, func(a *app.Application, out *app.Output) error {
-		_, err := a.NewLayer(app.LayerConfig{
-			Output:     out,
-			Layer:      app.LayerOverlay,
-			Anchor:     app.AnchorTop | app.AnchorBottom | app.AnchorLeft | app.AnchorRight,
-			Namespace:  "lys-ui-capture-gpu-test",
-			Root:       widget.NewBox(widget.Row, 0, 0),
-			Background: fillRed,
-		})
-		return err
-	})
+	p := wltest.NewPainter(t)
+	p.Layer(wltest.AnchorTop|wltest.AnchorBottom|wltest.AnchorLeft|wltest.AnchorRight, 0, 0, fillRed)
+	p.Run()
 	out := c.Outputs()[0]
 	format, err := c.DmabufFormat(out, false)
 	if errors.Is(err, capture.ErrUnsupported) {
@@ -219,7 +201,7 @@ func TestHeadlessDmabufCaptureIntoGPUBuffer(t *testing.T) {
 	}
 	defer imported.Destroy()
 	t.Logf("%s buffer in modifier %#x", d.Name(), buf.Dmabuf().Modifier)
-	inproc.Eventually(t, "red frame in the GPU buffer", func() error {
+	wltest.Eventually(t, "red frame in the GPU buffer", func() error {
 		if err := c.CopyOutputDmabuf(out, false, imported); err != nil {
 			return err
 		}
@@ -227,7 +209,7 @@ func TestHeadlessDmabufCaptureIntoGPUBuffer(t *testing.T) {
 		if err != nil {
 			return err
 		}
-		return inproc.WantColor(img, format.Width/2, format.Height/2, fillRed)
+		return wltest.WantColor(img, format.Width/2, format.Height/2, fillRed)
 	})
 }
 
@@ -239,8 +221,8 @@ func TestHeadlessDmabufCaptureIntoGPUBuffer(t *testing.T) {
 // hand for each of sway's eight transforms, and the output reports the
 // transform. It needs a compositor rendering on a GPU (just gpu-host).
 func TestHeadlessDmabufTransformedOutput(t *testing.T) {
-	inproc.Require(t)
-	c := inproc.Capture(t)
+	wltest.Require(t)
+	c := captureClient(t)
 	if !c.HasDmabuf() {
 		t.Skip("compositor offers no linux-dmabuf (CPU renderer)")
 	}
@@ -256,17 +238,9 @@ func TestHeadlessDmabufTransformedOutput(t *testing.T) {
 		}
 	}
 	t.Cleanup(func() { turn("normal") })
-	inproc.Show(t, func(a *app.Application, out *app.Output) error {
-		_, err := a.NewLayer(app.LayerConfig{
-			Output:     out,
-			Layer:      app.LayerOverlay,
-			Anchor:     app.AnchorTop | app.AnchorBottom | app.AnchorLeft,
-			Namespace:  "lys-ui-capture-transform-test",
-			Root:       widget.NewSpacer(48, 1),
-			Background: fillRed,
-		})
-		return err
-	})
+	p := wltest.NewPainter(t)
+	p.Layer(wltest.AnchorTop|wltest.AnchorBottom|wltest.AnchorLeft, 48, 0, fillRed)
+	p.Run()
 	// sway names its transforms turning clockwise, so its 90 is
 	// wl_output's 270 and the other way round.
 	for _, tc := range []struct {
@@ -285,7 +259,7 @@ func TestHeadlessDmabufTransformedOutput(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			turn(tc.name)
-			inproc.Eventually(t, "the band on the "+tc.edge+" edge", func() error {
+			wltest.Eventually(t, "the band on the "+tc.edge+" edge", func() error {
 				if err := c.Refresh(); err != nil {
 					return err
 				}
@@ -322,7 +296,7 @@ func TestHeadlessDmabufTransformedOutput(t *testing.T) {
 				w, h := format.Width, format.Height
 				edges := map[string]image.Point{"left": {10, h / 2}, "right": {w - 11, h / 2}, "top": {w / 2, 10}, "bottom": {w / 2, h - 11}}
 				for name, p := range edges {
-					err := inproc.WantColor(img, p.X, p.Y, fillRed)
+					err := wltest.WantColor(img, p.X, p.Y, fillRed)
 					if (name == tc.edge) != (err == nil) {
 						return fmt.Errorf("%dx%d buffer: %s edge at %v is %v, want the band only on the %s edge", w, h, name, p, img.RGBAAt(p.X, p.Y), tc.edge)
 					}

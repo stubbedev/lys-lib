@@ -3,7 +3,7 @@ package gpu
 import (
 	"image"
 
-	"github.com/stubbedev/lys-ui/render"
+	"github.com/stubbedev/lys-lib/render"
 )
 
 // atlasSize is a mask atlas page's width and height.
