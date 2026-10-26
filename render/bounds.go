@@ -35,7 +35,7 @@ func (c *Canvas) bounds(o *op) Rect {
 		_, _, _, _, full := c.boxShadowRaster(o.r, o.radii, o.sh)
 		return full
 	case opPath:
-		return o.path.bounds(float64(c.num) / float64(c.denom))
+		return o.path.bounds(devScale(c.num, c.denom))
 	case opGlyph:
 		return glyphBounds(o.face, o.gid, o.f[0], o.f[1], o.f[2], o.col)
 	case opComposite:

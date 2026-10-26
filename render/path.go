@@ -51,9 +51,9 @@ func (p *Path) Empty() bool { return len(p.ops) == 0 }
 
 // bounds is the device-pixel box holding every point (a cubic lies
 // inside its control points' hull), nil-sized for an empty path.
-func (p *Path) bounds(scale float64) Rect {
-	minX, minY := math.Inf(1), math.Inf(1)
-	maxX, maxY := math.Inf(-1), math.Inf(-1)
+func (p *Path) bounds(scale float32) Rect {
+	minX, minY := float32(math.Inf(1)), float32(math.Inf(1))
+	maxX, maxY := float32(math.Inf(-1)), float32(math.Inf(-1))
 	for _, op := range p.ops {
 		n := 1
 		switch op.kind {
@@ -63,15 +63,16 @@ func (p *Path) bounds(scale float64) Rect {
 			n = 3
 		}
 		for _, pt := range op.pts[:n] {
-			minX, maxX = math.Min(minX, pt[0]*scale), math.Max(maxX, pt[0]*scale)
-			minY, maxY = math.Min(minY, pt[1]*scale), math.Max(maxY, pt[1]*scale)
+			px, py := float32(pt[0])*scale, float32(pt[1])*scale
+			minX, maxX = min(minX, px), max(maxX, px)
+			minY, maxY = min(minY, py), max(maxY, py)
 		}
 	}
 	if minX > maxX {
 		return Rect{}
 	}
-	x, y := int(math.Floor(minX)), int(math.Floor(minY))
-	return Rect{X: x, Y: y, W: int(math.Ceil(maxX)) - x, H: int(math.Ceil(maxY)) - y}
+	x, y := int(math.Floor(float64(minX))), int(math.Floor(float64(minY)))
+	return Rect{X: x, Y: y, W: int(math.Ceil(float64(maxX))) - x, H: int(math.Ceil(float64(maxY))) - y}
 }
 
 // FillPath fills the path's subpaths with col, anti-aliased, under the

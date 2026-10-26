@@ -69,13 +69,13 @@ func EllipsePath(p *Path, cx, cy, rx, ry float64) {
 // PathCoverage rasterizes p's fill coverage over box (device pixels,
 // p scaled by the device scale) into a fresh alpha image; nil when
 // nothing covers.
-func PathCoverage(p *Path, box Rect, scale float64) *image.Alpha {
+func PathCoverage(p *Path, box Rect, scale float32) *image.Alpha {
 	if p == nil || p.Empty() || box.Empty() {
 		return nil
 	}
 	z := vector.NewRasterizer(box.W, box.H)
-	mx := func(x float64) float32 { return float32(x*scale - float64(box.X)) }
-	my := func(y float64) float32 { return float32(y*scale - float64(box.Y)) }
+	mx := func(x float64) float32 { return float32(float32(x)*scale) - float32(box.X) }
+	my := func(y float64) float32 { return float32(float32(y)*scale) - float32(box.Y) }
 	walkPath(p,
 		func(x, y float64) { z.MoveTo(mx(x), my(y)) },
 		func(x, y float64) { z.LineTo(mx(x), my(y)) },
@@ -122,7 +122,7 @@ func walkPath(p *Path, move func(float64, float64), line func(float64, float64),
 // of region is uncovered. FillPath blends its color by it, and
 // ApplyPathMask multiplies a layer's region by it.
 func PathMask(p *Path, region Rect, num, denom int) (*image.Alpha, Rect) {
-	scale := float64(num) / float64(denom)
+	scale := devScale(num, denom)
 	box := p.bounds(scale).Intersect(region)
 	if box.Empty() {
 		return nil, box

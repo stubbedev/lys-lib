@@ -36,13 +36,18 @@ type ArcGeometry struct {
 
 // ArcOf is the stroke Arc paints at device scale num/denom.
 func ArcOf(cx, cy, radius, width, start, sweep float64, num, denom int) ArcGeometry {
-	dev := float64(num) / float64(denom)
-	dcx, dcy, r := cx*dev, cy*dev, radius*dev
+	dev := devScale(num, denom)
+	dcx, dcy, r := float32(cx)*dev, float32(cy)*dev, float32(radius)*dev
+	s, w := float32(start), float32(sweep)
+	end := func(a float32) (float32, float32) {
+		return dcx + float32(r*float32(math.Cos(float64(a)))), dcy + float32(r*float32(math.Sin(float64(a))))
+	}
+	sx, sy := end(s)
+	ex, ey := end(s + w)
 	return ArcGeometry{
-		CX: float32(dcx), CY: float32(dcy), R: float32(r), Half: float32(width * dev / 2),
-		Start: float32(start), Sweep: float32(sweep), Full: sweep >= 2*math.Pi,
-		SX: float32(dcx + r*math.Cos(start)), SY: float32(dcy + r*math.Sin(start)),
-		EX: float32(dcx + r*math.Cos(start+sweep)), EY: float32(dcy + r*math.Sin(start+sweep)),
+		CX: dcx, CY: dcy, R: r, Half: float32(width) * dev / 2,
+		Start: s, Sweep: w, Full: w >= turn32,
+		SX: sx, SY: sy, EX: ex, EY: ey,
 	}
 }
 
@@ -70,11 +75,11 @@ func (g ArcGeometry) Coverage(x, y int) float32 {
 // arcSpan is the device rect Arc visits: the stroked circle's box and
 // a pixel.
 func (c *Canvas) arcSpan(cx, cy, radius, width float64) Rect {
-	dev := float64(c.num) / float64(c.denom)
-	dcx, dcy := cx*dev, cy*dev
-	outer := radius*dev + width*dev/2 + 1
+	dev := devScale(c.num, c.denom)
+	dcx, dcy := float32(cx)*dev, float32(cy)*dev
+	outer := float32(float32(radius)*dev) + float32(float32(width)*dev/2) + 1
 	return Rect{
-		X: int(math.Floor(dcx - outer)), Y: int(math.Floor(dcy - outer)),
-		W: int(math.Ceil(2 * outer)), H: int(math.Ceil(2 * outer)),
+		X: int(math.Floor(float64(dcx - outer))), Y: int(math.Floor(float64(dcy - outer))),
+		W: int(math.Ceil(float64(2 * outer))), H: int(math.Ceil(float64(2 * outer))),
 	}
 }
