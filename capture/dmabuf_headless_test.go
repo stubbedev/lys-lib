@@ -2,6 +2,7 @@ package capture_test
 
 import (
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -60,8 +61,12 @@ func TestHeadlessDmabufCapture(t *testing.T) {
 	if format.Width != int(out.Width) || format.Height != int(out.Height) {
 		t.Fatalf("dmabuf format %+v for a %dx%d output", format, out.Width, out.Height)
 	}
+	t.Logf("dmabuf format %#08x %dx%d on device %#x, modifiers %#x", format.Fourcc, format.Width, format.Height, format.Device, format.Modifiers)
+	if len(format.Modifiers) == 0 || format.Device == 0 {
+		t.Fatalf("dmabuf format %+v names no modifiers or device; the compositor's feedback should (#339)", format)
+	}
 	cached, err := c.DmabufFormat(out, false)
-	if err != nil || cached != format {
+	if err != nil || !reflect.DeepEqual(cached, format) {
 		t.Fatalf("second probe = %+v, %v; want the cached %+v", cached, err, format)
 	}
 	stride := format.Width * 4

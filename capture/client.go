@@ -8,6 +8,7 @@ import (
 	"github.com/neurlang/wayland/wl"
 	"github.com/neurlang/wayland/wlclient"
 
+	"github.com/stubbedev/lys-ui/internal/dmabufwl"
 	"github.com/stubbedev/lys-ui/wlr"
 )
 
@@ -60,15 +61,19 @@ type Client struct {
 	ctx     *wl.Context
 	reg     *wl.Registry
 
-	shm          *wl.Shm
-	screencopy   *wlr.ZwlrScreencopyManagerV1
-	scVersion    uint32
-	dmabuf       *wlr.ZwpDmabufV1
-	copyCapture  *wlr.ImageCopyCaptureManagerV1
-	outputSource *wlr.OutputImageCaptureSourceManagerV1
-	toplevelSrc  *wlr.ForeignToplevelImageCaptureSourceManagerV1
-	toplevelList *wlr.ForeignToplevelListV1
-	hyprland     *wlr.ToplevelExportManagerV1
+	shm        *wl.Shm
+	screencopy *wlr.ZwlrScreencopyManagerV1
+	scVersion  uint32
+	dmabuf     *wlr.ZwpDmabufV1
+	// dmabufVersion is the version dmabuf is bound at; feedback is its
+	// default feedback, read on first need.
+	dmabufVersion uint32
+	feedback      *dmabufwl.Feedback
+	copyCapture   *wlr.ImageCopyCaptureManagerV1
+	outputSource  *wlr.OutputImageCaptureSourceManagerV1
+	toplevelSrc   *wlr.ForeignToplevelImageCaptureSourceManagerV1
+	toplevelList  *wlr.ForeignToplevelListV1
+	hyprland      *wlr.ToplevelExportManagerV1
 
 	outputs   []*outputState
 	toplevels []*toplevelState
@@ -188,7 +193,7 @@ func (c *Client) HandleRegistryGlobal(ev wl.RegistryGlobalEvent) {
 	case ifaceDmabuf:
 		d := wlr.NewZwpDmabufV1(c.ctx)
 		if c.bind(ev, maxDmabufVersion, d) {
-			c.dmabuf = d
+			c.dmabuf, c.dmabufVersion = d, min(ev.Version, maxDmabufVersion)
 		}
 	case ifaceCopyCapture:
 		mgr := wlr.NewImageCopyCaptureManagerV1(c.ctx)

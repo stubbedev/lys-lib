@@ -399,7 +399,7 @@ func (p *ZwpDmabufFeedbackV1) Dispatch(event *Event) {
 	case 5:
 		if len(p.privateZwpDmabufFeedbackV1TrancheFormatss) > 0 {
 			ev := ZwpDmabufFeedbackV1TrancheFormatsEvent{}
-			ev.Indices = event.Array()
+			ev.Indices = uint16Array(event)
 			p.mu.RLock()
 			for h := range p.privateZwpDmabufFeedbackV1TrancheFormatss {
 				h.HandleZwpDmabufFeedbackV1TrancheFormats(ev)
@@ -453,7 +453,7 @@ type ZwpDmabufFeedbackV1TrancheTargetDeviceEvent struct {
 // ZwpDmabufFeedbackV1TrancheFormatsEvent is the supported buffer format modifier
 type ZwpDmabufFeedbackV1TrancheFormatsEvent struct {
 	// Indices is the array of 16-bit indexes
-	Indices []int32
+	Indices []uint16
 }
 
 // ZwpDmabufFeedbackV1TrancheFlagsEvent is the tranche flags

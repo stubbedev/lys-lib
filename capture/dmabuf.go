@@ -3,6 +3,7 @@ package capture
 import (
 	"errors"
 	"fmt"
+	"slices"
 
 	"github.com/neurlang/wayland/wl"
 
@@ -16,6 +17,12 @@ import (
 type DmabufFormat struct {
 	Fourcc        uint32
 	Width, Height int
+	// Modifiers are the explicit modifiers the compositor imports
+	// Fourcc in, in its preference order: allocate in one of them.
+	Modifiers []uint64
+	// Device is the dev_t of the DRM device the compositor wants the
+	// buffer allocated on (gpu.OpenNode).
+	Device uint64
 }
 
 // DmabufBuffer is an imported dmabuf, ready to receive screencopy
@@ -40,11 +47,13 @@ type dmabufProbe struct {
 }
 
 // DmabufFormat reports the dmabuf layout the compositor offers for the
-// output's screencopy frames, probing once per output with a frame
-// that is never copied and caching the answer (the format is stable
-// per output). ErrUnsupported means the compositor offers only shm
-// here, or lacks linux-dmabuf or screencopy v3 entirely - stay on the
-// shm path.
+// output's screencopy frames (wlr-screencopy v3's linux_dmabuf event),
+// with the modifiers and device its linux-dmabuf v4 default feedback
+// names, probing once per output with a frame that is never copied and
+// caching the answer (the format is stable per output). ErrUnsupported
+// means the compositor offers only shm here, lacks linux-dmabuf v4
+// feedback or screencopy v3, or imports the format in no explicit
+// modifier - stay on the shm path.
 func (c *Client) DmabufFormat(o Output, cursor bool) (DmabufFormat, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -73,12 +82,36 @@ func (c *Client) DmabufFormat(o Output, cursor bool) (DmabufFormat, error) {
 	p := dmabufProbe{offered: st.dmabuf != nil}
 	if p.offered {
 		p.format = *st.dmabuf
+		fb, err := c.dmabufFeedback()
+		if err != nil {
+			return DmabufFormat{}, err
+		}
+		p.format.Device = fb.Device
+		p.format.Modifiers = slices.Clone(fb.Modifiers[p.format.Fourcc])
+		if len(p.format.Modifiers) == 0 {
+			return DmabufFormat{}, fmt.Errorf("%w: the compositor imports DRM format %#08x in no explicit modifier", ErrUnsupported, p.format.Fourcc)
+		}
 	}
 	c.dmabufProbe[o.wl] = p
 	if !p.offered {
 		return DmabufFormat{}, fmt.Errorf("%w: no dmabuf format for output %q", ErrUnsupported, o.Name)
 	}
 	return p.format, nil
+}
+
+// dmabufFeedback is the compositor's linux-dmabuf default feedback,
+// read once: a compositor whose linux-dmabuf predates feedback (v4)
+// names no modifiers or device, which is ErrUnsupported, not a guess.
+func (c *Client) dmabufFeedback() (dmabufwl.Feedback, error) {
+	if c.feedback != nil {
+		return *c.feedback, nil
+	}
+	fb, err := dmabufwl.DefaultFeedback(c.dmabuf, c.dmabufVersion, c.roundtrip)
+	if err != nil {
+		return dmabufwl.Feedback{}, fmt.Errorf("%w: %w", ErrUnsupported, err)
+	}
+	c.feedback = &fb
+	return fb, nil
 }
 
 // paramsState records a zwp_linux_buffer_params_v1 import's verdict;
