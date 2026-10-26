@@ -1,6 +1,7 @@
 package capture
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"image"
@@ -87,7 +88,7 @@ func (f Format) hasAlpha() bool {
 
 func (f Format) String() string {
 	b := f.Fourcc()
-	s := []byte{byte(b), byte(b >> 8), byte(b >> 16), byte(b >> 24)}
+	s := binary.LittleEndian.AppendUint32(nil, b)
 	for _, c := range s {
 		if c < 0x20 || c > 0x7e {
 			return fmt.Sprintf("format(%#x)", uint32(f))
@@ -186,13 +187,13 @@ func (f *Frame) Image() (*image.RGBA, error) {
 func convertRow32(dst, src []byte, f Format) {
 	alpha := f.hasAlpha()
 	for i := 0; i+3 < len(src); i += 4 {
-		px := uint32(src[i]) | uint32(src[i+1])<<8 | uint32(src[i+2])<<16 | uint32(src[i+3])<<24
+		px := binary.LittleEndian.Uint32(src[i:])
 		var r, g, b, a uint8
 		switch f {
 		case FormatARGB8888, FormatXRGB8888:
-			r, g, b, a = uint8(px>>16), uint8(px>>8), uint8(px), uint8(px>>24)
+			r, g, b, a = src[i+2], src[i+1], src[i], src[i+3]
 		case FormatABGR8888, FormatXBGR8888:
-			r, g, b, a = uint8(px), uint8(px>>8), uint8(px>>16), uint8(px>>24)
+			r, g, b, a = src[i], src[i+1], src[i+2], src[i+3]
 		case FormatARGB2101010, FormatXRGB2101010:
 			r, g, b, a = ten(px>>20), ten(px>>10), ten(px), two(px>>30)
 		case FormatABGR2101010, FormatXBGR2101010:

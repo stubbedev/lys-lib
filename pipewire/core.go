@@ -3,6 +3,7 @@ package pipewire
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"slices"
@@ -12,6 +13,8 @@ import (
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/stubbedev/lys-lib/internal/intconv"
 )
 
 // The objects a connection talks to: the core and the client are the
@@ -204,17 +207,22 @@ func (k *core) hello(timeout time.Duration, application string) error {
 
 // newObject allocates the next object id and registers the handler
 // create returns for it.
-func (k *core) newObject(create func(id uint32) objectHandler) {
+func (k *core) newObject(create func(id uint32) objectHandler) error {
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	k.objects = append(k.objects, create(firstObjectID+uint32(len(k.objects))))
+	n := len(k.objects)
+	if n > math.MaxUint32-firstObjectID {
+		return fmt.Errorf("pipewire: object %d exceeds the protocol's id range", n)
+	}
+	k.objects = append(k.objects, create(firstObjectID+uint32(n)))
+	return nil
 }
 
 // object is the handler of id, nil for an id the client never created.
 func (k *core) object(id uint32) objectHandler {
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	if id < firstObjectID || id-firstObjectID >= uint32(len(k.objects)) {
+	if id < firstObjectID || int(id-firstObjectID) >= len(k.objects) {
 		return nil
 	}
 	return k.objects[id-firstObjectID]
@@ -222,7 +230,7 @@ func (k *core) object(id uint32) objectHandler {
 
 // createObject asks factory for a new object of iface at id.
 func (k *core) createObject(factory, iface string, version uint32, props []dictItem, id uint32) error {
-	body := podStruct(podString(factory), podString(iface), podInt(int32(version)), podDict(props), podInt(int32(id)))
+	body := podStruct(podString(factory), podString(iface), podUint(version), podDict(props), podUint(id))
 	_, err := k.c.send(coreID, coreMethodCreateObject, body.bytes(), nil)
 	return err
 }
@@ -241,7 +249,7 @@ func (k *core) roundtrip(timeout time.Duration) error {
 	done := make(chan struct{})
 	k.syncs[seq] = done
 	k.mu.Unlock()
-	if _, err := k.c.send(coreID, coreMethodSync, podStruct(podInt(coreID), podInt(int32(seq))).bytes(), nil); err != nil {
+	if _, err := k.c.send(coreID, coreMethodSync, podStruct(podUint(coreID), podUint(seq)).bytes(), nil); err != nil {
 		return err
 	}
 	timer := time.NewTimer(timeout)
@@ -259,8 +267,12 @@ func (k *core) roundtrip(timeout time.Duration) error {
 // reportError tells the server an event on object id failed (the
 // message with seq), as libpipewire's pw_proxy_error does.
 func (k *core) reportError(id, seq uint32, errno unix.Errno, msg string) error {
-	body := podStruct(podInt(int32(id)), podInt(int32(seq)), podInt(-int32(errno)), podString(msg))
-	_, err := k.c.send(coreID, coreMethodError, body.bytes(), nil)
+	res, err := intconv.To[int32](errno)
+	if err != nil {
+		return fmt.Errorf("pipewire: report error %d on object %d: %w", uintptr(errno), id, err)
+	}
+	body := podStruct(podUint(id), podUint(seq), podInt(-res), podString(msg))
+	_, err = k.c.send(coreID, coreMethodError, body.bytes(), nil)
 	return err
 }
 
@@ -353,7 +365,12 @@ func (k *core) coreEvent(m *message) error {
 	case coreEventError:
 		id, _, res, msg := f.uint(), f.int(), f.int(), f.string()
 		if f.err == nil {
-			err = &ServerError{Object: id, Errno: unix.Errno(-res), Message: msg}
+			errno, cerr := intconv.To[unix.Errno](-int64(res))
+			if cerr != nil {
+				err = fmt.Errorf("pipewire: error on object %d with result %d, not a negative errno: %s", id, res, msg)
+			} else {
+				err = &ServerError{Object: id, Errno: errno, Message: msg}
+			}
 		}
 	case coreEventRemoveID:
 		id := f.uint()

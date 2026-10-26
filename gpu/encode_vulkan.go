@@ -7,6 +7,7 @@ import (
 	"slices"
 	"unsafe"
 
+	"github.com/stubbedev/lys-lib/internal/intconv"
 	"github.com/stubbedev/lys-lib/third_party/vk"
 )
 
@@ -113,15 +114,18 @@ func (vb *vulkanBackend) collect(slot int) ([]byte, error) {
 	if r := d.cmds.WaitForFences(d.device, 1, &s.done, vk.True, ^uint64(0)); r != vk.Success {
 		return nil, fmt.Errorf("wait for an encode: %d", r)
 	}
-	var res [3]uint32
+	var res struct {
+		offset, bytes uint32
+		status        vk.QueryResultStatusKHR
+	}
 	flags := vk.QueryResultFlags(vk.QueryResultWithStatusBitKhr)
-	if r := d.cmds.GetQueryPoolResults(d.device, vb.queries, uint32(slot), 1, unsafe.Sizeof(res), unsafe.Pointer(&res[0]), vk.DeviceSize(unsafe.Sizeof(res)), flags); r != vk.Success {
+	if r := d.cmds.GetQueryPoolResults(d.device, vb.queries, intconv.Must[uint32](slot), 1, unsafe.Sizeof(res), unsafe.Pointer(&res), vk.DeviceSize(unsafe.Sizeof(res)), flags); r != vk.Success {
 		return nil, fmt.Errorf("vkGetQueryPoolResults (encode feedback): %d", r)
 	}
-	if status := vk.QueryResultStatusKHR(int32(res[2])); status != vk.QueryResultStatusCompleteKhr {
-		return nil, fmt.Errorf("did not encode: status %d", status)
+	if res.status != vk.QueryResultStatusCompleteKhr {
+		return nil, fmt.Errorf("did not encode: status %d", res.status)
 	}
-	offset, n := int(res[0]), int(res[1])
+	offset, n := int(res.offset), int(res.bytes)
 	if offset+n > vb.slotSize {
 		return nil, fmt.Errorf("the device wrote %d bytes at %d into a %d-byte bitstream slot", n, offset, vb.slotSize)
 	}
@@ -312,7 +316,7 @@ func (vb *vulkanBackend) createSession() error {
 	d := vb.d
 	sci := vk.VideoSessionCreateInfoKHR{
 		SType: vk.StructureTypeVideoSessionCreateInfoKhr, QueueFamilyIndex: d.video.family, PVideoProfile: &vb.profile.info,
-		PictureFormat: nv12, MaxCodedExtent: vk.Extent2D{Width: uint32(vb.coded[0]), Height: uint32(vb.coded[1])},
+		PictureFormat: nv12, MaxCodedExtent: extent2D(vb.coded[0], vb.coded[1]),
 		ReferencePictureFormat: nv12, MaxDpbSlots: dpbSlots, MaxActiveReferencePictures: 1,
 		PStdHeaderVersion: &vb.caps.video.StdHeaderVersion,
 	}
@@ -349,7 +353,7 @@ func (vb *vulkanBackend) createSession() error {
 		})
 	}
 	if len(binds) > 0 {
-		if r := d.cmds.BindVideoSessionMemoryKHR(d.device, vb.session, uint32(len(binds)), &binds[0]); r != vk.Success {
+		if r := d.cmds.BindVideoSessionMemoryKHR(d.device, vb.session, count(binds), &binds[0]); r != vk.Success {
 			return fmt.Errorf("gpu: vkBindVideoSessionMemoryKHR: %d", r)
 		}
 	}
@@ -449,8 +453,8 @@ func (vb *vulkanBackend) newVideoImage(vi *videoImage, format vk.VideoFormatProp
 	d := vb.d
 	ici := vk.ImageCreateInfo{
 		SType: vk.StructureTypeImageCreateInfo, PNext: (*uintptr)(unsafe.Pointer(&vb.profile.list)), Flags: format.ImageCreateFlags,
-		ImageType: vk.ImageType2d, Format: nv12, Extent: vk.Extent3D{Width: uint32(vb.coded[0]), Height: uint32(vb.coded[1]), Depth: 1},
-		MipLevels: 1, ArrayLayers: uint32(layers), Samples: vk.SampleCount1Bit, Tiling: format.ImageTiling,
+		ImageType: vk.ImageType2d, Format: nv12, Extent: extent3D(vb.coded[0], vb.coded[1]),
+		MipLevels: 1, ArrayLayers: intconv.Must[uint32](layers), Samples: vk.SampleCount1Bit, Tiling: format.ImageTiling,
 		Usage: usage, SharingMode: vk.SharingModeExclusive, InitialLayout: vk.ImageLayoutUndefined,
 	}
 	if len(families) == 2 && families[0] != families[1] {
@@ -506,7 +510,12 @@ func (vi *videoImage) close(d *Device) {
 func (vb *vulkanBackend) createBuffers() error {
 	d := vb.d
 	c := vb.caps.video
-	vb.slotSize = alignUp(alignUp(bitstreamBytes(vb.coded), int(max(c.MinBitstreamBufferSizeAlignment, 1))), int(max(c.MinBitstreamBufferOffsetAlignment, 1)))
+	sizeAlign, errSize := intconv.To[int](max(c.MinBitstreamBufferSizeAlignment, 1))
+	offsetAlign, errOffset := intconv.To[int](max(c.MinBitstreamBufferOffsetAlignment, 1))
+	if err := errors.Join(errSize, errOffset); err != nil {
+		return fmt.Errorf("gpu: %s's bitstream alignments %d and %d: %w", d.name, c.MinBitstreamBufferSizeAlignment, c.MinBitstreamBufferOffsetAlignment, err)
+	}
+	vb.slotSize = alignUp(alignUp(bitstreamBytes(vb.coded), sizeAlign), offsetAlign)
 	bs, err := d.newReadBuffer(vb.slotSize*encodeSlots, vk.BufferUsageVideoEncodeDstBitKhr, unsafe.Pointer(&vb.profile.list))
 	runtime.KeepAlive(vb.profile)
 	if err != nil {
@@ -538,7 +547,7 @@ func (vb *vulkanBackend) encode(slot, frame, sinceIDR, idrs int) error {
 	if err := begin(d, cb); err != nil {
 		return err
 	}
-	q := uint32(slot)
+	q := intconv.Must[uint32](slot)
 	d.cmds.CmdResetQueryPool(cb, vb.queries, q, 1)
 	dpbAll := vk.ImageSubresourceRange{AspectMask: vk.ImageAspectFlags(vk.ImageAspectColorBit), LevelCount: 1, LayerCount: dpbSlots}
 	coding := vk.PipelineStageFlags2(vk.PipelineStage2VideoEncodeBitKhr)
@@ -556,7 +565,7 @@ func (vb *vulkanBackend) encode(slot, frame, sinceIDR, idrs int) error {
 	}
 	cur, prev := frame%dpbSlots, (frame+dpbSlots-1)%dpbSlots
 	picInfo, setupInfo, refInfo := vb.codec.picture(sinceIDR, idrs, prev, vb.qp)
-	extent := vk.Extent2D{Width: uint32(vb.coded[0]), Height: uint32(vb.coded[1])}
+	extent := extent2D(vb.coded[0], vb.coded[1])
 	res := [3]vk.VideoPictureResourceInfoKHR{
 		{SType: vk.StructureTypeVideoPictureResourceInfoKhr, CodedExtent: extent, ImageViewBinding: s.src.views[0]},
 		{SType: vk.StructureTypeVideoPictureResourceInfoKhr, CodedExtent: extent, ImageViewBinding: vb.dpb.views[cur]},
@@ -590,7 +599,7 @@ func (vb *vulkanBackend) encode(slot, frame, sinceIDR, idrs int) error {
 	ref := vk.VideoReferenceSlotInfoKHR{SType: vk.StructureTypeVideoReferenceSlotInfoKhr, PNext: (*uintptr)(refInfo), SlotIndex: int32(prev), PPictureResource: &res[2]}
 	ei := vk.VideoEncodeInfoKHR{
 		SType: vk.StructureTypeVideoEncodeInfoKhr, PNext: (*uintptr)(picInfo),
-		DstBuffer: vb.bitstream.buf, DstBufferOffset: vk.DeviceSize(s.offset), DstBufferRange: vk.DeviceSize(vb.slotSize),
+		DstBuffer: vb.bitstream.buf, DstBufferOffset: intconv.Must[vk.DeviceSize](s.offset), DstBufferRange: intconv.Must[vk.DeviceSize](vb.slotSize),
 		SrcPictureResource: res[0], PSetupReferenceSlot: &setup, ReferenceSlotCount: uint32(refs), PReferenceSlots: &ref,
 	}
 	d.cmds.CmdBeginQuery(cb, vb.queries, q, 0)
@@ -639,7 +648,7 @@ func newRateControl(cfg EncoderConfig, cqp bool, caps *videoCaps, next unsafe.Po
 	}
 	rc.layer = vk.VideoEncodeRateControlLayerInfoKHR{
 		SType: vk.StructureTypeVideoEncodeRateControlLayerInfoKhr, AverageBitrate: bitrate, MaxBitrate: maxRate,
-		FrameRateNumerator: uint32(cfg.FrameRate), FrameRateDenominator: 1,
+		FrameRateNumerator: intconv.Must[uint32](cfg.FrameRate), FrameRateDenominator: 1,
 	}
 	rc.info.RateControlMode, rc.info.LayerCount, rc.info.PLayers = mode, 1, &rc.layer
 	rc.info.VirtualBufferSizeInMs, rc.info.InitialVirtualBufferSizeInMs = 1000, 500

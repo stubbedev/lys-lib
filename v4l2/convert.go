@@ -2,6 +2,7 @@ package v4l2
 
 import (
 	"bytes"
+	"encoding/binary"
 	"fmt"
 	"image"
 	"image/draw"
@@ -16,7 +17,7 @@ const (
 
 // fourccName spells a V4L2 fourcc.
 func fourccName(f uint32) string {
-	return string([]byte{byte(f), byte(f >> 8), byte(f >> 16), byte(f >> 24)})
+	return string(binary.LittleEndian.AppendUint32(nil, f))
 }
 
 // cameraFrame is the layout a camera delivers: size, pixel format, and

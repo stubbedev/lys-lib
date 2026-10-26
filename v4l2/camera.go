@@ -13,6 +13,8 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/stubbedev/lys-lib/internal/intconv"
 )
 
 // V4L2 streaming (videodev2.h): memory-mapped capture buffers.
@@ -95,6 +97,7 @@ type Camera struct {
 	device string
 	fd     int
 	wake   int
+	poll   []unix.PollFd
 	maps   [][]byte
 	format cameraFrame
 	maxFPS int
@@ -132,9 +135,14 @@ func Open(device string, frame image.Point, maxFPS int) (*Camera, error) {
 func (c *Camera) setup(frame image.Point) error {
 	w := max(frame.X, MinWidth)
 	h := w * frame.Y / frame.X
+	fw, errW := intconv.To[uint32](w)
+	fh, errH := intconv.To[uint32](h)
+	if err := errors.Join(errW, errH); err != nil {
+		return fmt.Errorf("format %dx%d: %w", w, h, err)
+	}
 	var f v4l2Format
 	for _, pix := range []uint32{pixYUYV, pixMJPG} {
-		f = v4l2Format{typ: v4l2BufTypeVideoCapture, pix: v4l2PixFormat{width: uint32(w), height: uint32(h), pixelformat: pix, field: v4l2FieldNone}}
+		f = v4l2Format{typ: v4l2BufTypeVideoCapture, pix: v4l2PixFormat{width: fw, height: fh, pixelformat: pix, field: v4l2FieldNone}}
 		if err := ioctl(c.fd, vidiocSFmt, &f); err != nil {
 			return fmt.Errorf("VIDIOC_S_FMT %s %dx%d: %w", fourccName(pix), w, h, err)
 		}
@@ -179,6 +187,12 @@ func (c *Camera) setup(frame image.Point) error {
 		return fmt.Errorf("eventfd: %w", err)
 	}
 	c.wake = wake
+	devFd, errDev := intconv.To[int32](c.fd)
+	wakeFd, errWake := intconv.To[int32](wake)
+	if err := errors.Join(errDev, errWake); err != nil {
+		return fmt.Errorf("poll fds %d, %d: %w", c.fd, wake, err)
+	}
+	c.poll = []unix.PollFd{{Fd: devFd, Events: unix.POLLIN}, {Fd: wakeFd, Events: unix.POLLIN}}
 	// One frame uploading, one waiting, one converting.
 	c.frames, c.free, c.done = make(chan *image.RGBA, 1), make(chan *image.RGBA, 3), make(chan struct{})
 	for range cap(c.free) {
@@ -213,7 +227,7 @@ func (c *Camera) run() {
 	defer close(c.done)
 	defer close(c.frames)
 	var last time.Time
-	fds := []unix.PollFd{{Fd: int32(c.fd), Events: unix.POLLIN}, {Fd: int32(c.wake), Events: unix.POLLIN}}
+	fds := c.poll
 	for {
 		if _, err := unix.Poll(fds, -1); err != nil {
 			if errors.Is(err, unix.EINTR) {

@@ -180,7 +180,7 @@ func runeLineHash(font Font, px float64, rs []rune, d text.Direction) uint64 {
 	mix(math.Float64bits(px))
 	mix(uint64(d))
 	for _, r := range rs {
-		mix(uint64(r))
+		mix(uint64(r & 0x7fffffff))
 	}
 	return h
 }

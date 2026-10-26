@@ -10,10 +10,13 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"sync"
 	"time"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/stubbedev/lys-lib/internal/intconv"
 )
 
 // Rect is a damaged region in buffer pixels.
@@ -136,7 +139,7 @@ func Start(cfg Config) (*Producer, error) {
 		portFlags = portFlagCanAlloc
 	}
 	p.k = k
-	p.n = newNode(k, p, directionOutput, []dictItem{
+	p.n, err = newNode(k, p, directionOutput, []dictItem{
 		{"media.type", "Video"},
 		{"media.category", "Capture"},
 		{"media.role", "Screen"},
@@ -147,6 +150,10 @@ func Start(cfg Config) (*Producer, error) {
 		{"node.want-driver", "true"},
 		{"stream.is-live", "true"},
 	}, portFlags)
+	if err != nil {
+		k.close()
+		return nil, fmt.Errorf("pipewire: create the stream node: %w", err)
+	}
 	if err := p.n.export(connectTimeout); err != nil {
 		p.Close()
 		return nil, fmt.Errorf("pipewire: export the stream node: %w", err)
@@ -299,7 +306,12 @@ func (p *Producer) allocData(b *buffer) error {
 		b.dmabuf, b.fd = d, d.Fd()
 		b.dataType, b.dataFlags = dataDmaBuf, dataFlagReadable
 		b.maxsize = d.Stride() * p.cfg.Height
-		b.chunk.offset, b.chunk.stride, b.chunk.size = d.Offset(), int32(d.Stride()), 0
+		stride, err := chunkStride(d.Stride())
+		if err != nil {
+			d.Release()
+			return err
+		}
+		b.chunk.offset, b.chunk.stride, b.chunk.size = d.Offset(), stride, 0
 		return nil
 	}
 	size := p.cfg.Stride * p.cfg.Height
@@ -371,11 +383,20 @@ func (p *Producer) fill(b *buffer, now time.Time) bool {
 	if b.chunk == nil {
 		return false
 	}
+	stride := p.cfg.Stride
+	if b.dmabuf != nil {
+		stride = b.dmabuf.Stride()
+	}
+	chunk, err := chunkStride(stride)
+	if err != nil {
+		p.k.abort(err)
+		return false
+	}
 	var damage []Rect
 	var ok bool
 	if b.dmabuf != nil {
 		damage, ok = p.dmabuf.FillDmabuf(b.dmabuf)
-		b.chunk.offset, b.chunk.stride = b.dmabuf.Offset(), int32(b.dmabuf.Stride())
+		b.chunk.offset, b.chunk.stride = b.dmabuf.Offset(), chunk
 		b.chunk.size = 0
 		if ok {
 			b.chunk.size = b.dmabuf.Stride() * p.cfg.Height
@@ -385,10 +406,10 @@ func (p *Producer) fill(b *buffer, now time.Time) bool {
 			return false
 		}
 		damage, ok = p.cfg.Source.Fill(b.data)
-		b.chunk.offset, b.chunk.stride = 0, int32(p.cfg.Stride)
+		b.chunk.offset, b.chunk.stride = 0, chunk
 		b.chunk.size = 0
 		if ok {
-			b.chunk.size = min(p.cfg.Stride*p.cfg.Height, uint32(len(b.data)))
+			b.chunk.size = min(p.cfg.Stride*p.cfg.Height, uint32(min(len(b.data), math.MaxUint32)))
 		}
 	}
 	if !ok {
@@ -450,7 +471,7 @@ func writeDamage(slots []cMetaRegion, rects []Rect) {
 	i := 0
 	for ; i < len(rects) && i+1 < len(slots); i++ {
 		r := rects[i]
-		slots[i] = cMetaRegion{int32(r.X), int32(r.Y), uint32(r.Width), uint32(r.Height)}
+		slots[i] = metaRegion(r)
 	}
 	slots[i] = cMetaRegion{}
 }
@@ -472,4 +493,21 @@ func memfd(name string, size int) (int, []byte, error) {
 		return -1, nil, fmt.Errorf("memfd: map %d bytes: %w", size, err)
 	}
 	return fd, mem, nil
+}
+
+func chunkStride(stride uint32) (int32, error) {
+	s, err := intconv.To[int32](stride)
+	if err != nil {
+		return 0, fmt.Errorf("pipewire: stride %d exceeds spa_chunk's int32: %w", stride, err)
+	}
+	return s, nil
+}
+
+func metaRegion(r Rect) cMetaRegion {
+	return cMetaRegion{
+		x:      int32(min(max(r.X, 0), math.MaxInt32)),
+		y:      int32(min(max(r.Y, 0), math.MaxInt32)),
+		width:  uint32(min(max(r.Width, 0), math.MaxUint32)),
+		height: uint32(min(max(r.Height, 0), math.MaxUint32)),
+	}
 }

@@ -235,6 +235,6 @@ func hexColor(c Color) string {
 	if a == 0 {
 		return "#00000000"
 	}
-	un := func(v uint8) uint8 { return uint8(min(255, (int(v)*255+int(a)/2)/int(a))) }
+	un := func(v uint8) uint8 { return uint8(min(255, (uint32(v)*255+uint32(a)/2)/uint32(a))) }
 	return fmt.Sprintf("#%02x%02x%02x%02x", un(c.R()), un(c.G()), un(c.B()), a)
 }

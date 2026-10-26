@@ -11,6 +11,8 @@ import (
 	"unsafe"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/stubbedev/lys-lib/internal/intconv"
 )
 
 type createRequest struct {
@@ -57,7 +59,15 @@ func (b *Buffer) init(dev *os.File, size int) error {
 	if _, err := unix.FcntlInt(uintptr(b.memfd), unix.F_ADD_SEALS, unix.F_SEAL_SHRINK); err != nil {
 		return fmt.Errorf("udmabuf: seal the memfd: %w", err)
 	}
-	req := createRequest{memfd: uint32(b.memfd), flags: unix.O_CLOEXEC, size: uint64(size)}
+	memfd, err := intconv.To[uint32](b.memfd)
+	if err != nil {
+		return fmt.Errorf("udmabuf: memfd %d: %w", b.memfd, err)
+	}
+	length, err := intconv.To[uint64](size)
+	if err != nil {
+		return fmt.Errorf("udmabuf: size %d: %w", size, err)
+	}
+	req := createRequest{memfd: memfd, flags: unix.O_CLOEXEC, size: length}
 	fd, _, errno := unix.Syscall(unix.SYS_IOCTL, dev.Fd(), ioctlCreate, uintptr(unsafe.Pointer(&req))) //nolint:gosec // UDMABUF_CREATE takes its request struct by pointer, and req outlives the syscall
 	if errno != 0 {
 		return fmt.Errorf("udmabuf: UDMABUF_CREATE: %w", errno)

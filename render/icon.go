@@ -163,10 +163,10 @@ func (i *Icon) Tint(tint Color) *Icon {
 		for x := range w {
 			a := uint32(src.RGBAAt(x, y).A)
 			o := out.PixOffset(x, y)
-			out.Pix[o+0] = uint8(tr * a / 255)
-			out.Pix[o+1] = uint8(tg * a / 255)
-			out.Pix[o+2] = uint8(tb * a / 255)
-			out.Pix[o+3] = uint8(ta * a / 255)
+			out.Pix[o+0] = uint8(min(tr*a/255, 255))
+			out.Pix[o+1] = uint8(min(tg*a/255, 255))
+			out.Pix[o+2] = uint8(min(tb*a/255, 255))
+			out.Pix[o+3] = uint8(min(ta*a/255, 255))
 		}
 	}
 	return &Icon{img: out}

@@ -33,3 +33,10 @@ func TestOpenListsEncoders(t *testing.T) {
 		d.Close()
 	}
 }
+
+func TestGenericValueIntegerIsTheUnionsInt(t *testing.T) {
+	v := GenericValue{Type: GenericValueTypeInteger, Value: 0xdeadbeef_fffffffb}
+	if got := v.integer(); got != -5 {
+		t.Fatalf("integer() = %d, want -5", got)
+	}
+}

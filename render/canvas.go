@@ -271,10 +271,10 @@ func (c *Canvas) blendRun(x0, x1, y int, src Color) {
 	sb, sg, sr, sa := uint32(src.B()), uint32(src.G()), uint32(src.R()), uint32(src.A())
 	for o := 0; o < len(row); o += 4 {
 		p := row[o : o+4 : o+4]
-		p[0] = uint8(sb + (uint32(p[0])*keep+127)/255)
-		p[1] = uint8(sg + (uint32(p[1])*keep+127)/255)
-		p[2] = uint8(sr + (uint32(p[2])*keep+127)/255)
-		p[3] = uint8(sa + (uint32(p[3])*keep+127)/255)
+		p[0] = uint8(min(sb+(uint32(p[0])*keep+127)/255, 255))
+		p[1] = uint8(min(sg+(uint32(p[1])*keep+127)/255, 255))
+		p[2] = uint8(min(sr+(uint32(p[2])*keep+127)/255, 255))
+		p[3] = uint8(min(sa+(uint32(p[3])*keep+127)/255, 255))
 	}
 }
 
@@ -317,10 +317,10 @@ func (c *Canvas) blendMask(x0, y int, mask []uint8, col Color) {
 		c.touched++
 		p := c.data[base+i*4 : base+i*4+4 : base+i*4+4]
 		keep := 255 - sa
-		p[0] = uint8(sb + (uint32(p[0])*keep+127)/255)
-		p[1] = uint8(sg + (uint32(p[1])*keep+127)/255)
-		p[2] = uint8(sr + (uint32(p[2])*keep+127)/255)
-		p[3] = uint8(sa + (uint32(p[3])*keep+127)/255)
+		p[0] = uint8(min(sb+(uint32(p[0])*keep+127)/255, 255))
+		p[1] = uint8(min(sg+(uint32(p[1])*keep+127)/255, 255))
+		p[2] = uint8(min(sr+(uint32(p[2])*keep+127)/255, 255))
+		p[3] = uint8(min(sa+(uint32(p[3])*keep+127)/255, 255))
 	}
 }
 

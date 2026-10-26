@@ -37,7 +37,7 @@ func (p *memPool) add(id uint32, fd int, flags uint32) error {
 		_ = unix.Close(fd)
 		return fmt.Errorf("pipewire: memory id %d exceeds %d", id, maxMemBlocks)
 	}
-	for uint32(len(p.blocks)) <= id {
+	for len(p.blocks) <= int(id) {
 		p.blocks = append(p.blocks, memBlock{fd: -1})
 	}
 	if p.blocks[id].fd >= 0 {
@@ -50,7 +50,7 @@ func (p *memPool) add(id uint32, fd int, flags uint32) error {
 
 // remove closes a block's fd; its mappings stay valid until unmapped.
 func (p *memPool) remove(id uint32) error {
-	if id >= uint32(len(p.blocks)) || p.blocks[id].fd < 0 {
+	if int(id) >= len(p.blocks) || p.blocks[id].fd < 0 {
 		return fmt.Errorf("pipewire: removing unknown memory id %d", id)
 	}
 	_ = unix.Close(p.blocks[id].fd)
@@ -60,7 +60,7 @@ func (p *memPool) remove(id uint32) error {
 
 // mapID maps size bytes at offset of block id read-write.
 func (p *memPool) mapID(id, offset, size uint32) (mapping, error) {
-	if id >= uint32(len(p.blocks)) || p.blocks[id].fd < 0 {
+	if int(id) >= len(p.blocks) || p.blocks[id].fd < 0 {
 		return mapping{}, fmt.Errorf("pipewire: map unknown memory id %d", id)
 	}
 	b := p.blocks[id]
@@ -118,8 +118,8 @@ func (m *mapping) unmap() {
 // view is a T laid over off in mem, which must hold it and align it.
 func view[T any](mem []byte, off uint32) (*T, error) {
 	var zero T
-	size, align := uint32(unsafe.Sizeof(zero)), unsafe.Alignof(zero)
-	if uint64(off)+uint64(size) > uint64(len(mem)) {
+	size, align := uint64(unsafe.Sizeof(zero)), unsafe.Alignof(zero)
+	if uint64(off)+size > uint64(len(mem)) {
 		return nil, fmt.Errorf("%d bytes at %d of a %d-byte area", size, off, len(mem))
 	}
 	p := unsafe.Pointer(&mem[off]) //nolint:gosec

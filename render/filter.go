@@ -2,7 +2,11 @@ package render
 
 import (
 	"encoding/binary"
+	"errors"
+	"fmt"
 	"math"
+
+	"github.com/stubbedev/lys-lib/internal/intconv"
 )
 
 // The CSS filter effects: the color-matrix family (brightness,
@@ -389,7 +393,7 @@ func (m colorMatrix) colorLinear() bool {
 func applyLinearRegion(c *Canvas, region Rect, k *[9]int32) {
 	ch := func(row int, r, g, b, a int64) uint32 {
 		v := (int64(k[row*3])*r + int64(k[row*3+1])*g + int64(k[row*3+2])*b + 32768) >> 16
-		return uint32(min(a, max(0, v)))
+		return uint32(max(0, min(a, v, 255)))
 	}
 	for y := range region.H {
 		px := c.data[(region.Y+y)*c.stride+region.X*4:]
@@ -399,7 +403,7 @@ func applyLinearRegion(c *Canvas, region Rect, k *[9]int32) {
 				continue
 			}
 			a, r, g, b := int64(col.A()), int64(col.R()), int64(col.G()), int64(col.B())
-			out := uint32(a)<<24 | ch(0, r, g, b, a)<<16 | ch(1, r, g, b, a)<<8 | ch(2, r, g, b, a)
+			out := uint32(col.A())<<24 | ch(0, r, g, b, a)<<16 | ch(1, r, g, b, a)<<8 | ch(2, r, g, b, a)
 			binary.LittleEndian.PutUint32(px[x*4:], out)
 		}
 	}
@@ -502,7 +506,12 @@ func BlurPlanOf(radius float64) (BlurPlan, bool) {
 // word (Recip fits 32 bits from n 2 on; n 1 divides by nothing).
 func BoxDivisor(n int) (half, recip uint32) {
 	d := newBoxDiv(n)
-	return uint32(d.half), uint32(d.recip)
+	h, errH := intconv.To[uint32](d.half)
+	r, errR := intconv.To[uint32](d.recip)
+	if err := errors.Join(errH, errR); err != nil {
+		panic(fmt.Sprintf("render: box divisor of %d sums: %v", n, err))
+	}
+	return h, r
 }
 
 // blurScale is the downsampling factor for a blur of sigma: 1 (exact)
@@ -593,7 +602,7 @@ func upSource(i, d int) (int, uint32) {
 	// source centers, in 1/256 fixed point: ((2i+1) - d) * 128 / d.
 	f := ((2*i+1)*128 - d*128) / d
 	i0 := f >> 8 // arithmetic: floors negative positions too
-	return i0, uint32(f - i0*256)
+	return i0, uint32(f & 0xff)
 }
 
 // lerp256 interpolates two premultiplied colors at t/256.
@@ -664,21 +673,23 @@ func refractRegion(l *Layer, region Rect, p RefractPlan) {
 	src := l.blurA[:n]
 	readRegion(l.cv, region, src)
 	at := func(x, y int32) Color {
-		if x < 0 || y < 0 || x >= int32(region.W) || y >= int32(region.H) {
+		if x < 0 || y < 0 || int(x) >= region.W || int(y) >= region.H {
 			return 0
 		}
 		return src[int(y)*region.W+int(x)]
 	}
-	for y := region.Y; y < region.Y+region.H; y++ {
+	for ry := int32(0); int(ry) < region.H; ry++ {
+		y := region.Y + int(ry)
 		out := l.cv.data[y*l.cv.stride:]
-		for x := region.X; x < region.X+region.W; x++ {
+		for rx := int32(0); int(rx) < region.W; rx++ {
+			x := region.X + int(rx)
 			dx, dy, ok := p.At(x, y)
 			if !ok {
 				continue
 			}
-			fx, fy := int32(x-region.X)*256+dx, int32(y-region.Y)*256+dy
+			fx, fy := rx*256+dx, ry*256+dy
 			x0, y0 := fx>>8, fy>>8 // arithmetic: floors negative positions too
-			tx, ty := uint32(fx-x0*256), uint32(fy-y0*256)
+			tx, ty := uint32(fx&0xff), uint32(fy&0xff)
 			top := lerp256(at(x0, y0), at(x0+1, y0), tx)
 			bot := lerp256(at(x0, y0+1), at(x0+1, y0+1), tx)
 			binary.LittleEndian.PutUint32(out[x*4:], uint32(lerp256(top, bot, ty)))
@@ -724,7 +735,10 @@ func writeRegion(c *Canvas, region Rect, src []Color) {
 type boxDiv struct{ half, recip uint64 }
 
 func newBoxDiv(den int) boxDiv {
-	return boxDiv{half: uint64(den / 2), recip: (1<<32)/uint64(den) + 1}
+	if den < 1 {
+		panic(fmt.Sprintf("render: a box divides by %d sums", den))
+	}
+	return boxDiv{half: uint64(den) / 2, recip: (1<<32)/uint64(den) + 1}
 }
 
 func (d boxDiv) q(v uint32) uint32 { return uint32(((uint64(v) + d.half) * d.recip) >> 32) }

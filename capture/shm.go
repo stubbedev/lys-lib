@@ -3,11 +3,12 @@ package capture
 import (
 	"errors"
 	"fmt"
-	"math"
 	"os"
 
 	wlos "github.com/neurlang/wayland/os"
 	"github.com/neurlang/wayland/wl"
+
+	"github.com/stubbedev/lys-lib/internal/intconv"
 )
 
 // shmBuffer is one memfd-backed wl_buffer the compositor copies a
@@ -21,6 +22,8 @@ type shmBuffer struct {
 	height int
 	stride int
 	format Format
+
+	wlWidth, wlHeight int32
 }
 
 // newShmBuffer allocates a width x height buffer of stride-byte rows.
@@ -35,8 +38,9 @@ func newShmBuffer(shm *wl.Shm, width, height, stride int, format Format) (*shmBu
 		return nil, fmt.Errorf("capture: bad buffer geometry %dx%d stride %d", width, height, stride)
 	}
 	size := stride * height
-	if size > math.MaxInt32 {
-		return nil, fmt.Errorf("capture: %dx%d buffer exceeds the wayland int32 range", width, height)
+	wire, err := int32s(width, height, stride, size)
+	if err != nil {
+		return nil, fmt.Errorf("capture: %dx%d stride %d buffer: %w", width, height, stride, err)
 	}
 	file, err := wlos.CreateAnonymousFile(int64(size))
 	if err != nil {
@@ -47,13 +51,13 @@ func newShmBuffer(shm *wl.Shm, width, height, stride int, format Format) (*shmBu
 		_ = file.Close()
 		return nil, fmt.Errorf("capture: mmap: %w", err)
 	}
-	b := &shmBuffer{file: file, data: data, width: width, height: height, stride: stride, format: format}
-	pool, err := shm.CreatePool(file.Fd(), int32(size))
+	b := &shmBuffer{file: file, data: data, width: width, height: height, stride: stride, format: format, wlWidth: wire[0], wlHeight: wire[1]}
+	pool, err := shm.CreatePool(file.Fd(), wire[3])
 	if err != nil {
 		b.unmap()
 		return nil, fmt.Errorf("capture: wl_shm.create_pool: %w", err)
 	}
-	buf, err := pool.CreateBuffer(0, int32(width), int32(height), int32(stride), uint32(format))
+	buf, err := pool.CreateBuffer(0, wire[0], wire[1], wire[2], uint32(format))
 	// The buffer keeps the pool's memory alive compositor-side; the
 	// pool object itself is not needed past this point.
 	_ = pool.Destroy()
@@ -110,3 +114,14 @@ func (b *shmBuffer) unmap() {
 // errNoBuffer reports a copy the compositor advertised no usable
 // buffer for.
 var errNoBuffer = errors.New("capture: the compositor advertised no shm buffer for the frame")
+
+func int32s(vs ...int) ([]int32, error) {
+	out := make([]int32, len(vs))
+	for i, v := range vs {
+		var err error
+		if out[i], err = intconv.To[int32](v); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}

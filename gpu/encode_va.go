@@ -11,6 +11,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/stubbedev/lys-lib/dmabuf"
+	"github.com/stubbedev/lys-lib/internal/intconv"
 	"github.com/stubbedev/lys-lib/internal/nal"
 	"github.com/stubbedev/lys-lib/internal/va"
 	"github.com/stubbedev/lys-lib/third_party/vk"
@@ -372,13 +373,18 @@ func (vb *vaBackend) importPicture(b dmabuf.Buffer) (uint32, error) {
 	if err != nil {
 		return va.InvalidID, fmt.Errorf("gpu: the encoder picture's dmabuf size: %w", err)
 	}
-	layer := va.DRMPRIMESurfaceDescriptorLayers{DrmFormat: va.FourccNV12, NumPlanes: uint32(len(b.Planes))}
+	bytes, errSize := intconv.To[uint32](size)
+	fd, errFD := intconv.To[int32](b.Planes[0].FD)
+	if err := errors.Join(errSize, errFD); err != nil {
+		return va.InvalidID, fmt.Errorf("gpu: the encoder picture's dmabuf (fd %d, %d bytes): %w", b.Planes[0].FD, size, err)
+	}
+	layer := va.DRMPRIMESurfaceDescriptorLayers{DrmFormat: va.FourccNV12, NumPlanes: count(b.Planes)}
 	for i, p := range b.Planes {
 		layer.Offset[i], layer.Pitch[i] = p.Offset, p.Stride
 	}
 	desc := va.DRMPRIMESurfaceDescriptor{
-		Fourcc: va.FourccNV12, Width: uint32(b.Width), Height: uint32(b.Height),
-		NumObjects: 1, Objects: [4]va.DRMPRIMESurfaceDescriptorObjects{{Fd: int32(b.Planes[0].FD), Size: uint32(size), DrmFormatModifier: b.Modifier}},
+		Fourcc: va.FourccNV12, Width: intconv.Must[uint32](b.Width), Height: intconv.Must[uint32](b.Height),
+		NumObjects: 1, Objects: [4]va.DRMPRIMESurfaceDescriptorObjects{{Fd: fd, Size: bytes, DrmFormatModifier: b.Modifier}},
 		NumLayers: 1, Layers: [4]va.DRMPRIMESurfaceDescriptorLayers{layer},
 	}
 	id, err := vb.dpy.ImportSurface(&desc)
@@ -442,7 +448,7 @@ func (vb *vaBackend) encode(slot, frame, sinceIDR, idrs int) error {
 	}
 	idr := sinceIDR == 0
 	packed := func(typ uint32, data []byte, bits int) error {
-		param := va.EncPackedHeaderParameterBuffer{Type: typ, BitLength: uint32(bits), HasEmulationBytes: 1}
+		param := va.EncPackedHeaderParameterBuffer{Type: typ, BitLength: intconv.Must[uint32](bits), HasEmulationBytes: 1}
 		if err := add(vaParam{va.EncPackedHeaderParameterBufferType, unsafe.Pointer(&param), int(unsafe.Sizeof(param))}); err != nil {
 			return err
 		}
@@ -452,7 +458,7 @@ func (vb *vaBackend) encode(slot, frame, sinceIDR, idrs int) error {
 		if err := add(seq); err != nil {
 			return err
 		}
-		fr := va.EncMiscParameterFrameRate{Framerate: uint32(vb.cfg.FrameRate)}
+		fr := va.EncMiscParameterFrameRate{Framerate: intconv.Must[uint32](vb.cfg.FrameRate)}
 		if err := misc(va.EncMiscParameterTypeFrameRate, unsafe.Pointer(&fr), int(unsafe.Sizeof(fr))); err != nil {
 			return err
 		}
@@ -560,23 +566,23 @@ type h264VA struct {
 // newH264VA lays out cfg's sequence coded at coded in prof's profile,
 // at the lowest level that carries it.
 func newH264VA(cfg EncoderConfig, coded [2]int, prof vaProfile, qp int, bitrate uint32) (*h264VA, error) {
-	level, err := h264Level(coded[0]/16*(coded[1]/16), cfg.FrameRate, vk.StdVideoH264LevelIdc(len(h264Levels)-1))
+	level, err := h264Level(coded[0]/16*(coded[1]/16), cfg.FrameRate, intconv.Must[vk.StdVideoH264LevelIdc](len(h264Levels)-1))
 	if err != nil {
 		return nil, err
 	}
 	c := &h264VA{header: h264Header(cfg, coded, prof.stdProfile, level, true, true, qp), qp: qp}
 	h := &c.header
 	c.seq = va.EncSequenceParameterBufferH264{
-		LevelIdc: h.LevelIdc, IntraPeriod: uint32(cfg.KeyInterval), IntraIdrPeriod: uint32(cfg.KeyInterval), IpPeriod: 1,
-		BitsPerSecond: bitrate, MaxNumRefFrames: uint32(h.MaxNumRefFrames),
-		PictureWidthInMbs: uint16(h.WidthMbs), PictureHeightInMbs: uint16(h.HeightMbs),
+		LevelIdc: h.LevelIdc, IntraPeriod: intconv.Must[uint32](cfg.KeyInterval), IntraIdrPeriod: intconv.Must[uint32](cfg.KeyInterval), IpPeriod: 1,
+		BitsPerSecond: bitrate, MaxNumRefFrames: intconv.Must[uint32](h.MaxNumRefFrames),
+		PictureWidthInMbs: intconv.Must[uint16](h.WidthMbs), PictureHeightInMbs: intconv.Must[uint16](h.HeightMbs),
 		SeqFields: va.H264SeqChromaFormatIdc.Put(1) | va.H264SeqFrameMbsOnlyFlag.Put(1) | va.H264SeqDirect8x8InferenceFlag.Put(1) |
-			va.H264SeqLog2MaxFrameNumMinus4.Put(uint32(h.Log2MaxFrameNum-4)) | va.H264SeqPicOrderCntType.Put(2),
-		FrameCropRightOffset: uint32(h.CropRight), FrameCropBottomOffset: uint32(h.CropBottom),
+			va.H264SeqLog2MaxFrameNumMinus4.Put(intconv.Must[uint32](h.Log2MaxFrameNum-4)) | va.H264SeqPicOrderCntType.Put(2),
+		FrameCropRightOffset: intconv.Must[uint32](h.CropRight), FrameCropBottomOffset: intconv.Must[uint32](h.CropBottom),
 		VuiParametersPresentFlag: 1,
 		VuiFields: va.H264VuiBitstreamRestrictionFlag.Put(1) | va.H264VuiMotionVectorsOverPicBoundariesFlag.Put(1) |
 			va.H264VuiLog2MaxMvLengthHorizontal.Put(15) | va.H264VuiLog2MaxMvLengthVertical.Put(15),
-		NumUnitsInTick: 1, TimeScale: uint32(2 * cfg.FrameRate),
+		NumUnitsInTick: 1, TimeScale: intconv.Must[uint32](2 * cfg.FrameRate),
 	}
 	if h.CropRight != 0 || h.CropBottom != 0 {
 		c.seq.FrameCroppingFlag = 1
@@ -597,8 +603,8 @@ func (c *h264VA) params(sinceIDR, idrs int, cur, prev, coded uint32) (seq, pic, 
 	idr := sinceIDR == 0
 	none := va.PictureH264{PictureID: va.InvalidID, Flags: va.PictureH264Invalid}
 	ref := va.PictureH264{
-		PictureID: prev, FrameIdx: uint32(sinceIDR - 1), Flags: va.PictureH264ShortTermReference,
-		TopFieldOrderCnt: int32(2 * (sinceIDR - 1)), BottomFieldOrderCnt: int32(2 * (sinceIDR - 1)),
+		PictureID: prev, FrameIdx: intconv.Must[uint32](sinceIDR - 1), Flags: va.PictureH264ShortTermReference,
+		TopFieldOrderCnt: intconv.Must[int32](2 * (sinceIDR - 1)), BottomFieldOrderCnt: intconv.Must[int32](2 * (sinceIDR - 1)),
 	}
 	var picFields uint32
 	if idr {
@@ -612,11 +618,11 @@ func (c *h264VA) params(sinceIDR, idrs int, cur, prev, coded uint32) (seq, pic, 
 		picFields |= va.H264PicTransform8x8ModeFlag.Put(1)
 	}
 	c.pic = va.EncPictureParameterBufferH264{
-		CurrPic:  va.PictureH264{PictureID: cur, FrameIdx: uint32(sinceIDR), TopFieldOrderCnt: int32(2 * sinceIDR), BottomFieldOrderCnt: int32(2 * sinceIDR)},
-		CodedBuf: coded, FrameNum: uint16(sinceIDR), PicInitQp: uint8(h.InitQP), PicFields: picFields,
+		CurrPic:  va.PictureH264{PictureID: cur, FrameIdx: intconv.Must[uint32](sinceIDR), TopFieldOrderCnt: intconv.Must[int32](2 * sinceIDR), BottomFieldOrderCnt: intconv.Must[int32](2 * sinceIDR)},
+		CodedBuf: coded, FrameNum: intconv.Must[uint16](sinceIDR), PicInitQp: intconv.Must[uint8](h.InitQP), PicFields: picFields,
 	}
 	c.slice = va.EncSliceParameterBufferH264{
-		MacroblockInfo: va.InvalidID, NumMacroblocks: uint32(h.WidthMbs * h.HeightMbs), SliceType: 0, IdrPicID: uint16(idrs), SliceQpDelta: int8(c.qp - h.InitQP),
+		MacroblockInfo: va.InvalidID, NumMacroblocks: intconv.Must[uint32](h.WidthMbs * h.HeightMbs), SliceType: 0, IdrPicID: uint16(idrs & 0xffff), SliceQpDelta: intconv.Must[int8](c.qp - h.InitQP),
 	}
 	for i := range c.pic.ReferenceFrames {
 		c.pic.ReferenceFrames[i] = none
@@ -679,7 +685,7 @@ func vaHEVCFeature(features uint32, feature va.Bits, want bool) bool {
 // newHEVCVA lays out cfg's sequence coded at coded in blocks and the
 // driver's features, at the lowest level that carries it.
 func newHEVCVA(cfg EncoderConfig, coded [2]int, blocks h265Blocks, prof vaProfile, cqp bool, qp int, bitrate uint32) (*hevcVA, error) {
-	level, err := h265Level(coded[0], coded[1], cfg.FrameRate, vk.StdVideoH265LevelIdc(len(h265Levels)-1))
+	level, err := h265Level(coded[0], coded[1], cfg.FrameRate, intconv.Must[vk.StdVideoH265LevelIdc](len(h265Levels)-1))
 	if err != nil {
 		return nil, err
 	}
@@ -705,18 +711,18 @@ func newHEVCVA(cfg EncoderConfig, coded [2]int, blocks h265Blocks, prof vaProfil
 	}
 	c.seq = va.EncSequenceParameterBufferHEVC{
 		GeneralProfileIdc: 1, GeneralLevelIdc: h.LevelIdc,
-		IntraPeriod: uint32(cfg.KeyInterval), IntraIdrPeriod: uint32(cfg.KeyInterval), IpPeriod: 1, BitsPerSecond: bitrate,
-		PicWidthInLumaSamples: uint16(h.Width), PicHeightInLumaSamples: uint16(h.Height), SeqFields: seqFields,
-		Log2MinLumaCodingBlockSizeMinus3:  uint8(h.Log2MinCb - 3),
-		Log2DiffMaxMinLumaCodingBlockSize: uint8(h.Log2Ctb - h.Log2MinCb),
-		Log2MinTransformBlockSizeMinus2:   uint8(h.Log2MinTb - 2),
-		Log2DiffMaxMinTransformBlockSize:  uint8(h.Log2MaxTb - h.Log2MinTb),
-		MaxTransformHierarchyDepthInter:   uint8(h.TransformDepth),
-		MaxTransformHierarchyDepthIntra:   uint8(h.TransformDepth),
+		IntraPeriod: intconv.Must[uint32](cfg.KeyInterval), IntraIdrPeriod: intconv.Must[uint32](cfg.KeyInterval), IpPeriod: 1, BitsPerSecond: bitrate,
+		PicWidthInLumaSamples: intconv.Must[uint16](h.Width), PicHeightInLumaSamples: intconv.Must[uint16](h.Height), SeqFields: seqFields,
+		Log2MinLumaCodingBlockSizeMinus3:  intconv.Must[uint8](h.Log2MinCb - 3),
+		Log2DiffMaxMinLumaCodingBlockSize: intconv.Must[uint8](h.Log2Ctb - h.Log2MinCb),
+		Log2MinTransformBlockSizeMinus2:   intconv.Must[uint8](h.Log2MinTb - 2),
+		Log2DiffMaxMinTransformBlockSize:  intconv.Must[uint8](h.Log2MaxTb - h.Log2MinTb),
+		MaxTransformHierarchyDepthInter:   intconv.Must[uint8](h.TransformDepth),
+		MaxTransformHierarchyDepthIntra:   intconv.Must[uint8](h.TransformDepth),
 		VuiParametersPresentFlag:          1,
 		VuiFields: va.HEVCVuiBitstreamRestrictionFlag.Put(1) | va.HEVCVuiMotionVectorsOverPicBoundariesFlag.Put(1) |
 			va.HEVCVuiRestrictedRefPicListsFlag.Put(1) | va.HEVCVuiLog2MaxMvLengthHorizontal.Put(15) | va.HEVCVuiLog2MaxMvLengthVertical.Put(15),
-		VuiNumUnitsInTick: 1, VuiTimeScale: uint32(cfg.FrameRate),
+		VuiNumUnitsInTick: 1, VuiTimeScale: intconv.Must[uint32](cfg.FrameRate),
 	}
 	return c, nil
 }
@@ -745,7 +751,7 @@ func (c *hevcVA) params(sinceIDR, _ int, cur, prev, coded uint32) (seq, pic, sli
 	h := &c.header
 	idr := sinceIDR == 0
 	none := va.PictureHEVC{PictureID: va.InvalidID, Flags: va.PictureHEVCInvalid}
-	ref := va.PictureHEVC{PictureID: prev, PicOrderCnt: int32(sinceIDR - 1), Flags: va.PictureHEVCRPSStCurrBefore}
+	ref := va.PictureHEVC{PictureID: prev, PicOrderCnt: intconv.Must[int32](sinceIDR - 1), Flags: va.PictureHEVCRPSStCurrBefore}
 	picFields := va.HEVCPicReferencePicFlag.Put(1) | va.HEVCPicPpsLoopFilterAcrossSlicesEnabledFlag.Put(1)
 	nalType, codingType, sliceType := uint8(hevcTrailR), uint32(2), uint8(hevcSliceP)
 	if idr {
@@ -768,11 +774,11 @@ func (c *hevcVA) params(sinceIDR, _ int, cur, prev, coded uint32) (seq, pic, sli
 		sliceFields |= va.HEVCSliceSliceTemporalMvpEnabledFlag.Put(1) | va.HEVCSliceCollocatedFromL0Flag.Put(1)
 	}
 	c.pic = va.EncPictureParameterBufferHEVC{
-		DecodedCurrPic: va.PictureHEVC{PictureID: cur, PicOrderCnt: int32(sinceIDR)},
-		CodedBuf:       coded, CollocatedRefPicIndex: collocated, PicInitQp: uint8(h.InitQP), NalUnitType: nalType, PicFields: picFields,
+		DecodedCurrPic: va.PictureHEVC{PictureID: cur, PicOrderCnt: intconv.Must[int32](sinceIDR)},
+		CodedBuf:       coded, CollocatedRefPicIndex: collocated, PicInitQp: intconv.Must[uint8](h.InitQP), NalUnitType: nalType, PicFields: picFields,
 	}
 	c.slice = va.EncSliceParameterBufferHEVC{
-		NumCtuInSlice: uint32(c.ctus), SliceType: sliceType, MaxNumMergeCand: 5, SliceQpDelta: int8(c.qp - h.InitQP), SliceFields: sliceFields,
+		NumCtuInSlice: intconv.Must[uint32](c.ctus), SliceType: sliceType, MaxNumMergeCand: 5, SliceQpDelta: intconv.Must[int8](c.qp - h.InitQP), SliceFields: sliceFields,
 	}
 	for i := range c.pic.ReferenceFrames {
 		c.pic.ReferenceFrames[i] = none

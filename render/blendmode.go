@@ -270,7 +270,7 @@ func blendPixel(m BlendMode, src, dst Color) Color {
 	var out [3]uint32
 	for i := range out {
 		x := sp[i]*(255-da) + dp[i]*(255-sa) + (sa*da*bl[i]+127)/255
-		out[i] = uint32(min((x+127)/255, ao))
+		out[i] = uint32(max(0, min((x+127)/255, ao)))
 	}
-	return Color(uint32(ao)<<24 | out[0]<<16 | out[1]<<8 | out[2])
+	return Color(uint32(max(0, ao))<<24 | out[0]<<16 | out[1]<<8 | out[2])
 }

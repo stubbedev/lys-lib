@@ -48,7 +48,7 @@ func boxReduce(src image.Image, r image.Rectangle, k int) rowSource {
 		return rowSource{w: r.Dx(), h: r.Dy(), row: read}
 	}
 	w, h := (r.Dx()+k-1)/k, (r.Dy()+k-1)/k
-	sums := make([]uint32, w*4)
+	sums := make([]uint64, w*4)
 	out := make([]uint8, w*4)
 	return rowSource{w: w, h: h, row: func(y int) []uint8 {
 		clear(sums)
@@ -57,16 +57,16 @@ func boxReduce(src image.Image, r image.Rectangle, k int) rowSource {
 			line := read(sy)
 			for x := range r.Dx() {
 				o := (x / k) * 4
-				sums[o] += uint32(line[x*4])
-				sums[o+1] += uint32(line[x*4+1])
-				sums[o+2] += uint32(line[x*4+2])
-				sums[o+3] += uint32(line[x*4+3])
+				sums[o] += uint64(line[x*4])
+				sums[o+1] += uint64(line[x*4+1])
+				sums[o+2] += uint64(line[x*4+2])
+				sums[o+3] += uint64(line[x*4+3])
 			}
 		}
 		for x := range w {
-			n := uint32((min((x+1)*k, r.Dx()) - x*k) * (y1 - y0))
+			n := uint64(max(1, (min((x+1)*k, r.Dx())-x*k)*(y1-y0)))
 			for c := range 4 {
-				out[x*4+c] = uint8((sums[x*4+c] + n/2) / n)
+				out[x*4+c] = uint8(min((sums[x*4+c]+n/2)/n, 255))
 			}
 		}
 		return out
@@ -90,9 +90,9 @@ func rowReader(src image.Image, r image.Rectangle) func(y int) []uint8 {
 			for x := range w {
 				p := s.Pix[o+x*4 : o+x*4+4]
 				a := uint32(p[3])
-				buf[x*4] = uint8((uint32(p[0])*a + 127) / 255)
-				buf[x*4+1] = uint8((uint32(p[1])*a + 127) / 255)
-				buf[x*4+2] = uint8((uint32(p[2])*a + 127) / 255)
+				buf[x*4] = uint8(min((uint32(p[0])*a+127)/255, 255))
+				buf[x*4+1] = uint8(min((uint32(p[1])*a+127)/255, 255))
+				buf[x*4+2] = uint8(min((uint32(p[2])*a+127)/255, 255))
 				buf[x*4+3] = p[3]
 			}
 			return buf
@@ -120,7 +120,7 @@ func rowReader(src image.Image, r image.Rectangle) func(y int) []uint8 {
 	return func(y int) []uint8 {
 		for x := range w {
 			cr, cg, cb, ca := src.At(r.Min.X+x, r.Min.Y+y).RGBA()
-			buf[x*4], buf[x*4+1], buf[x*4+2], buf[x*4+3] = uint8(cr>>8), uint8(cg>>8), uint8(cb>>8), uint8(ca>>8)
+			buf[x*4], buf[x*4+1], buf[x*4+2], buf[x*4+3] = uint8(cr>>8&0xff), uint8(cg>>8&0xff), uint8(cb>>8&0xff), uint8(ca>>8&0xff)
 		}
 		return buf
 	}
@@ -233,7 +233,7 @@ func cubicScale(dst *image.RGBA, rows rowSource) {
 }
 
 // byteOf rounds an accumulated channel into a byte.
-func byteOf(v float32) uint8 { return uint8(clamp8(math.Round(float64(v)))) }
+func byteOf(v float32) uint8 { return uint8(min(clamp8(math.Round(float64(v))), 255)) }
 
 // clamp8 bounds a channel to [0, 255].
 func clamp8(v float64) uint32 {

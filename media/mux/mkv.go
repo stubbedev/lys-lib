@@ -7,6 +7,8 @@ import (
 	"math"
 	"math/bits"
 	"time"
+
+	"github.com/stubbedev/lys-lib/internal/intconv"
 )
 
 const (
@@ -79,7 +81,7 @@ type ebml struct {
 func (e *ebml) id(id uint32) {
 	n := (bits.Len32(id) + 7) / 8
 	for i := n - 1; i >= 0; i-- {
-		e.b = append(e.b, byte(id>>(8*i)))
+		e.b = append(e.b, byte(id>>(8*i)&0xff))
 	}
 }
 
@@ -94,7 +96,7 @@ func (e *ebml) size(n uint64) {
 func (e *ebml) sizeN(n uint64, l int) {
 	v := n | 1<<(7*l)
 	for i := l - 1; i >= 0; i-- {
-		e.b = append(e.b, byte(v>>(8*i)))
+		e.b = append(e.b, byte(v>>(8*i)&0xff))
 	}
 }
 
@@ -107,14 +109,14 @@ func (e *ebml) begin(id uint32) {
 func (e *ebml) end() {
 	start := e.open[len(e.open)-1]
 	e.open = e.open[:len(e.open)-1]
-	binary.BigEndian.PutUint64(e.b[start:], uint64(len(e.b)-start-mkvSizeLen)|1<<(7*mkvSizeLen))
+	binary.BigEndian.PutUint64(e.b[start:], intconv.Must[uint64](len(e.b)-start-mkvSizeLen)|1<<(7*mkvSizeLen))
 }
 
 func (e *ebml) uintN(id uint32, v uint64, n int) {
 	e.id(id)
-	e.size(uint64(n))
+	e.size(intconv.Must[uint64](n))
 	for i := n - 1; i >= 0; i-- {
-		e.b = append(e.b, byte(v>>(8*i)))
+		e.b = append(e.b, byte(v>>(8*i)&0xff))
 	}
 }
 
@@ -130,7 +132,7 @@ func (e *ebml) float(id uint32, v float64) { e.uintN(id, math.Float64bits(v), 8)
 
 func (e *ebml) void(total int) {
 	e.id(idVoid)
-	e.size(uint64(total - 2))
+	e.size(intconv.Must[uint64](total - 2))
 	e.b = append(e.b, make([]byte, total-2)...)
 }
 
@@ -152,10 +154,10 @@ type MKV struct {
 	w        io.Writer
 	ws       io.WriteSeeker
 	origin   int64
-	segData  int64
+	segData  int
 	pos      uint64
 	seekLen  int
-	tracksAt uint64
+	tracksAt int
 	cluster  ebml
 	clusterT int64
 	cues     []mkvCue
@@ -190,15 +192,15 @@ func NewMKV(w io.Writer, tracks ...Track) (*MKV, error) {
 	e.end()
 	e.id(idSegment)
 	e.sizeN(mkvUnknownSize, mkvSizeLen)
-	m.segData = int64(len(e.b))
+	m.segData = len(e.b)
 	m.seekLen = len(seekHead(0, 0, 0, true))
 	info := m.info()
-	m.tracksAt = uint64(m.seekLen + len(info))
-	e.b = append(e.b, seekHead(uint64(m.seekLen), m.tracksAt, 0, false)...)
-	e.void(m.seekLen - (len(e.b) - int(m.segData)))
+	m.tracksAt = m.seekLen + len(info)
+	e.b = append(e.b, seekHead(intconv.Must[uint64](m.seekLen), intconv.Must[uint64](m.tracksAt), 0, false)...)
+	e.void(m.seekLen - (len(e.b) - m.segData))
 	e.b = append(e.b, info...)
 	e.b = append(e.b, m.tracksElement()...)
-	m.pos = uint64(len(e.b)) - uint64(m.segData)
+	m.pos = intconv.Must[uint64](len(e.b) - m.segData)
 	if _, err := w.Write(e.b); err != nil {
 		return nil, fmt.Errorf("mux: write the Matroska header: %w", err)
 	}
@@ -285,9 +287,9 @@ func (m *MKV) WriteSample(s Sample) error {
 	if len(m.cluster.b) == 0 {
 		m.clusterT = ms
 		m.cluster.begin(idCluster)
-		m.cluster.uint(idTimestamp, uint64(ms))
+		m.cluster.uint(idTimestamp, intconv.Must[uint64](ms))
 		if u.key && (u.t.video() || !m.video) {
-			m.cues = append(m.cues, mkvCue{ms: uint64(ms), track: s.Track + 1, pos: m.pos})
+			m.cues = append(m.cues, mkvCue{ms: intconv.Must[uint64](ms), track: s.Track + 1, pos: m.pos})
 		}
 	}
 	rel := ms - m.clusterT
@@ -297,10 +299,10 @@ func (m *MKV) WriteSample(s Sample) error {
 	c := &m.cluster
 	c.id(idSimpleBlock)
 	var head ebml
-	head.size(uint64(s.Track + 1))
+	head.size(intconv.Must[uint64](s.Track + 1))
 	c.size(uint64(len(head.b) + 3 + len(u.data)))
 	c.b = append(c.b, head.b...)
-	c.b = binary.BigEndian.AppendUint16(c.b, uint16(int16(rel)))
+	c.b = append(c.b, byte(rel>>8&0xff), byte(rel&0xff))
 	flags := byte(0)
 	if u.key {
 		flags = mkvKeyframe
@@ -344,7 +346,7 @@ func (m *MKV) Close() error {
 		e.begin(idCuePoint)
 		e.uint(idCueTime, c.ms)
 		e.begin(idCueTrackPositions)
-		e.uint(idCueTrack, uint64(c.track))
+		e.uint(idCueTrack, intconv.Must[uint64](c.track))
 		e.uint(idCueClusterPosition, c.pos)
 		e.end()
 		e.end()
@@ -376,9 +378,9 @@ func (m *MKV) patch(cuesAt uint64) error {
 		at   int64
 		b    []byte
 	}{
-		{"segment size", m.segData - mkvSizeLen, size.b},
-		{"seek head", m.segData, seekHead(uint64(m.seekLen), m.tracksAt, cuesAt, true)},
-		{"duration", m.segData + int64(m.tracksAt) - mkvDurationLen, dur.b},
+		{"segment size", int64(m.segData - mkvSizeLen), size.b},
+		{"seek head", int64(m.segData), seekHead(intconv.Must[uint64](m.seekLen), intconv.Must[uint64](m.tracksAt), cuesAt, true)},
+		{"duration", int64(m.segData + m.tracksAt - mkvDurationLen), dur.b},
 	} {
 		if _, err := m.ws.Seek(m.origin+p.at, io.SeekStart); err != nil {
 			return fmt.Errorf("mux: seek to the Matroska %s: %w", p.what, err)
@@ -387,7 +389,11 @@ func (m *MKV) patch(cuesAt uint64) error {
 			return fmt.Errorf("mux: patch the Matroska %s: %w", p.what, err)
 		}
 	}
-	if _, err := m.ws.Seek(m.origin+m.segData+int64(m.pos), io.SeekStart); err != nil {
+	pos, err := intconv.To[int64](m.pos)
+	if err != nil {
+		return fmt.Errorf("mux: the Matroska file's end: %w", err)
+	}
+	if _, err := m.ws.Seek(m.origin+int64(m.segData)+pos, io.SeekStart); err != nil {
 		return fmt.Errorf("mux: seek to the Matroska file's end: %w", err)
 	}
 	return nil

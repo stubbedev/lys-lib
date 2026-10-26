@@ -1,6 +1,7 @@
 package eis
 
 import (
+	"cmp"
 	"encoding/binary"
 	"errors"
 	"fmt"
@@ -44,7 +45,10 @@ func (r *reader) take(n int) []byte {
 }
 
 func (r *reader) u32() uint32 { return order.Uint32(r.take(4)) }
-func (r *reader) i32() int32  { return int32(r.u32()) }
+func (r *reader) i32() int32 {
+	b := r.take(4)
+	return int32(b[0]) | int32(b[1])<<8 | int32(b[2])<<16 | int32(b[3])<<24
+}
 func (r *reader) u64() uint64 { return order.Uint64(r.take(8)) }
 func (r *reader) f32() float32 {
 	return math.Float32frombits(r.u32())
@@ -64,7 +68,10 @@ func (r *reader) str() string {
 }
 
 // writer builds one message.
-type writer struct{ b []byte }
+type writer struct {
+	b   []byte
+	err error
+}
 
 func newMessage(object uint64, opcode uint32) *writer {
 	w := &writer{b: make([]byte, headerSize, 64)}
@@ -77,7 +84,12 @@ func (w *writer) u32(v uint32) *writer { w.b = order.AppendUint32(w.b, v); retur
 func (w *writer) u64(v uint64) *writer { w.b = order.AppendUint64(w.b, v); return w }
 
 func (w *writer) str(s string) *writer {
-	w.u32(uint32(len(s) + 1))
+	n := len(s) + 1
+	if n > math.MaxUint32 {
+		w.err = cmp.Or(w.err, fmt.Errorf("eis: string of %d bytes exceeds the wire's u32 length", len(s)))
+		return w
+	}
+	w.u32(uint32(n))
 	w.b = append(w.b, s...)
 	w.b = append(w.b, 0)
 	for len(w.b)%4 != 0 {
@@ -88,7 +100,12 @@ func (w *writer) str(s string) *writer {
 
 // bytes is the finished message with its length filled in.
 func (w *writer) bytes() []byte {
-	order.PutUint32(w.b[8:], uint32(len(w.b)))
+	n := len(w.b)
+	if n > math.MaxUint32 {
+		w.err = cmp.Or(w.err, fmt.Errorf("eis: message of %d bytes exceeds the wire's u32 length", n))
+		return nil
+	}
+	order.PutUint32(w.b[8:], uint32(n))
 	return w.b
 }
 
@@ -100,7 +117,7 @@ func split(buf []byte) (msgs []message, rest []byte, err error) {
 		if n < headerSize {
 			return nil, nil, fmt.Errorf("eis: message length %d below the header", n)
 		}
-		if uint32(len(buf)) < n {
+		if len(buf) < int(n) {
 			break
 		}
 		msgs = append(msgs, message{object: order.Uint64(buf), opcode: order.Uint32(buf[12:]), args: buf[headerSize:n]})

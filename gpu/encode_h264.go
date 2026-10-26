@@ -5,6 +5,7 @@ import (
 	"math/bits"
 	"unsafe"
 
+	"github.com/stubbedev/lys-lib/internal/intconv"
 	"github.com/stubbedev/lys-lib/internal/nal"
 	"github.com/stubbedev/lys-lib/third_party/vk"
 )
@@ -62,7 +63,7 @@ func h264Level(mbs, fps int, limit vk.StdVideoH264LevelIdc) (vk.StdVideoH264Leve
 // initQP the pictures' initial quantiser. Both backends build from it.
 func h264Header(cfg EncoderConfig, coded [2]int, profile vk.StdVideoH264ProfileIdc, level vk.StdVideoH264LevelIdc, cabac, transform8x8 bool, initQP int) nal.H264 {
 	return nal.H264{
-		ProfileIdc: uint8(profile), LevelIdc: uint8(h264Levels[level].idc),
+		ProfileIdc: intconv.Must[uint8](profile), LevelIdc: intconv.Must[uint8](h264Levels[level].idc),
 		WidthMbs: coded[0] / 16, HeightMbs: coded[1] / 16,
 		CropRight: (coded[0] - evenUp(cfg.Width)) / 2, CropBottom: (coded[1] - evenUp(cfg.Height)) / 2,
 		Log2MaxFrameNum: log2MaxFrameNum(cfg.KeyInterval), MaxNumRefFrames: 1,
@@ -92,7 +93,7 @@ func newH264Params(h nal.H264, level vk.StdVideoH264LevelIdc) *h264Params {
 		ColourPrimaries:         1,
 		TransferCharacteristics: 1,
 		MatrixCoefficients:      1,
-		MaxDecFrameBuffering:    uint8(h.MaxNumRefFrames),
+		MaxDecFrameBuffering:    intconv.Must[uint8](h.MaxNumRefFrames),
 	}
 	flags := vk.StdVideoH264SpsDirect8x8Inference | vk.StdVideoH264SpsFrameMbsOnly | vk.StdVideoH264SpsVuiParametersPresent
 	if h.CropRight != 0 || h.CropBottom != 0 {
@@ -103,13 +104,13 @@ func newH264Params(h nal.H264, level vk.StdVideoH264LevelIdc) *h264Params {
 		ProfileIdc:                vk.StdVideoH264ProfileIdc(h.ProfileIdc),
 		LevelIdc:                  level,
 		ChromaFormatIdc:           vk.StdVideoH264ChromaFormatIdc420,
-		Log2MaxFrameNumMinus4:     uint8(h.Log2MaxFrameNum - 4),
+		Log2MaxFrameNumMinus4:     intconv.Must[uint8](h.Log2MaxFrameNum - 4),
 		PicOrderCntType:           vk.StdVideoH264PocType2,
-		MaxNumRefFrames:           uint8(h.MaxNumRefFrames),
-		PicWidthInMbsMinus1:       uint32(h.WidthMbs - 1),
-		PicHeightInMapUnitsMinus1: uint32(h.HeightMbs - 1),
-		FrameCropRightOffset:      uint32(h.CropRight),
-		FrameCropBottomOffset:     uint32(h.CropBottom),
+		MaxNumRefFrames:           intconv.Must[uint8](h.MaxNumRefFrames),
+		PicWidthInMbsMinus1:       intconv.Must[uint32](h.WidthMbs - 1),
+		PicHeightInMapUnitsMinus1: intconv.Must[uint32](h.HeightMbs - 1),
+		FrameCropRightOffset:      intconv.Must[uint32](h.CropRight),
+		FrameCropBottomOffset:     intconv.Must[uint32](h.CropBottom),
 		PSequenceParameterSetVui:  &p.vui,
 	}
 	var ppsFlags uint32
@@ -119,7 +120,7 @@ func newH264Params(h nal.H264, level vk.StdVideoH264LevelIdc) *h264Params {
 	if h.Transform8x8 {
 		ppsFlags |= vk.StdVideoH264PpsTransform8x8Mode
 	}
-	p.pps = vk.StdVideoH264PictureParameterSet{Flags: ppsFlags, PicInitQpMinus26: int8(h.InitQP - 26)}
+	p.pps = vk.StdVideoH264PictureParameterSet{Flags: ppsFlags, PicInitQpMinus26: intconv.Must[int8](h.InitQP - 26)}
 	return p
 }
 
@@ -155,21 +156,21 @@ func (p *h264Picture) fill(sinceIDR, idrID, prev, qp int) {
 		p.lists.RefPicList1[i] = vk.StdVideoH264NoReferencePicture
 	}
 	if !idr {
-		p.lists.RefPicList0[0] = uint8(prev)
+		p.lists.RefPicList0[0] = intconv.Must[uint8](prev)
 	}
 	p.info = vk.StdVideoEncodeH264PictureInfo{
-		Flags: flags, IdrPicID: uint16(idrID), PrimaryPicType: picType,
-		FrameNum: uint32(sinceIDR), PicOrderCnt: int32(2 * sinceIDR), PRefLists: &p.lists,
+		Flags: flags, IdrPicID: uint16(idrID & 0xffff), PrimaryPicType: picType,
+		FrameNum: intconv.Must[uint32](sinceIDR), PicOrderCnt: intconv.Must[int32](2 * sinceIDR), PRefLists: &p.lists,
 	}
 	p.slice = vk.StdVideoEncodeH264SliceHeader{SliceType: sliceType}
 	p.ref = vk.StdVideoEncodeH264ReferenceInfo{
-		PrimaryPicType: vk.StdVideoH264PictureTypeP, FrameNum: uint32(sinceIDR - 1), PicOrderCnt: int32(2 * (sinceIDR - 1)),
+		PrimaryPicType: vk.StdVideoH264PictureTypeP, FrameNum: intconv.Must[uint32](sinceIDR - 1), PicOrderCnt: intconv.Must[int32](2 * (sinceIDR - 1)),
 	}
 	if sinceIDR == 1 {
 		p.ref.PrimaryPicType = vk.StdVideoH264PictureTypeIdr
 	}
-	p.setup = vk.StdVideoEncodeH264ReferenceInfo{PrimaryPicType: picType, FrameNum: uint32(sinceIDR), PicOrderCnt: int32(2 * sinceIDR)}
-	p.nalu = vk.VideoEncodeH264NaluSliceInfoKHR{SType: vk.StructureTypeVideoEncodeH264NaluSliceInfoKhr, ConstantQp: int32(qp), PStdSliceHeader: &p.slice}
+	p.setup = vk.StdVideoEncodeH264ReferenceInfo{PrimaryPicType: picType, FrameNum: intconv.Must[uint32](sinceIDR), PicOrderCnt: intconv.Must[int32](2 * sinceIDR)}
+	p.nalu = vk.VideoEncodeH264NaluSliceInfoKHR{SType: vk.StructureTypeVideoEncodeH264NaluSliceInfoKhr, ConstantQp: intconv.Must[int32](qp), PStdSliceHeader: &p.slice}
 	p.vkInfo = vk.VideoEncodeH264PictureInfoKHR{
 		SType: vk.StructureTypeVideoEncodeH264PictureInfoKhr, NaluSliceEntryCount: 1, PNaluSliceEntries: &p.nalu, PStdPictureInfo: &p.info,
 	}
@@ -237,7 +238,7 @@ func (c *h264Codec) rateControl(cfg EncoderConfig) unsafe.Pointer {
 	c.rc = vk.VideoEncodeH264RateControlInfoKHR{
 		SType:         vk.StructureTypeVideoEncodeH264RateControlInfoKhr,
 		Flags:         vk.VideoEncodeH264RateControlFlagsKHR(vk.VideoEncodeH264RateControlRegularGopBitKhr | vk.VideoEncodeH264RateControlReferencePatternFlatBitKhr),
-		GopFrameCount: uint32(cfg.KeyInterval), IdrPeriod: uint32(cfg.KeyInterval), TemporalLayerCount: 1,
+		GopFrameCount: intconv.Must[uint32](cfg.KeyInterval), IdrPeriod: intconv.Must[uint32](cfg.KeyInterval), TemporalLayerCount: 1,
 	}
 	return unsafe.Pointer(&c.rc)
 }

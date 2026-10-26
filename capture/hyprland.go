@@ -2,6 +2,7 @@ package capture
 
 import (
 	"fmt"
+	"math"
 
 	"github.com/stubbedev/lys-lib/wlr"
 )
@@ -68,7 +69,7 @@ func (c *Client) CaptureHyprlandWindow(address uint64, opts Options) (*Frame, er
 	}
 	// The protocol carries the address's low 32 bits, which is what
 	// Hyprland matches windows by.
-	frame, err := c.hyprland.CaptureToplevel(overlay, uint32(address))
+	frame, err := c.hyprland.CaptureToplevel(overlay, uint32(address&math.MaxUint32))
 	if err != nil {
 		return nil, fmt.Errorf("capture: toplevel export request: %w", err)
 	}

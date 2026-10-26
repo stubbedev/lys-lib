@@ -165,8 +165,11 @@ func (c *Client) startScreencopy(o Output, region *image.Rectangle, cursor bool)
 	var frame *wlr.ZwlrScreencopyFrameV1
 	var err error
 	if region != nil {
-		frame, err = c.screencopy.CaptureOutputRegion(overlay, o.wl,
-			int32(region.Min.X), int32(region.Min.Y), int32(region.Dx()), int32(region.Dy()))
+		r, rerr := int32s(region.Min.X, region.Min.Y, region.Dx(), region.Dy())
+		if rerr != nil {
+			return nil, nil, fmt.Errorf("capture: screencopy region %v: %w", *region, rerr)
+		}
+		frame, err = c.screencopy.CaptureOutputRegion(overlay, o.wl, r[0], r[1], r[2], r[3])
 	} else {
 		frame, err = c.screencopy.CaptureOutput(overlay, o.wl)
 	}

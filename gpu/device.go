@@ -237,10 +237,10 @@ func (d *Device) open() error {
 		}
 		exts = append(exts, d.video.extensions()...)
 	}
-	dci.QueueCreateInfoCount, dci.PQueueCreateInfos = uint32(len(qcis)), &qcis[0]
+	dci.QueueCreateInfoCount, dci.PQueueCreateInfos = count(qcis), &qcis[0]
 	var pin runtime.Pinner
 	defer pin.Unpin()
-	dci.EnabledExtensionCount, dci.PpEnabledExtensionNames = uint32(len(exts)), cstrs(&pin, exts)
+	dci.EnabledExtensionCount, dci.PpEnabledExtensionNames = count(exts), cstrs(&pin, exts)
 	r := d.cmds.CreateDevice(d.phys, &dci, nil, &d.device)
 	runtime.KeepAlive(qcis)
 	runtime.KeepAlive(&f13)
@@ -325,7 +325,7 @@ var errNoMemoryType = errors.New("gpu: no memory type")
 // memoryType is the first memory type in bits with every flag in want.
 func (d *Device) memoryType(bits uint32, want vk.MemoryPropertyFlagBits) (uint32, error) {
 	for i := range d.memProps.MemoryTypeCount {
-		if bits&(1<<i) != 0 && d.memProps.MemoryTypes[i].PropertyFlags&vk.MemoryPropertyFlags(want) == vk.MemoryPropertyFlags(want) {
+		if bits&(1<<i) != 0 && d.memProps.MemoryTypes[i].PropertyFlags&flags[vk.MemoryPropertyFlags](want) == flags[vk.MemoryPropertyFlags](want) {
 			return i, nil
 		}
 	}

@@ -49,7 +49,11 @@ func TestAVCConfigMatchesFFmpeg(t *testing.T) {
 			if s.width != c.w || s.height != c.h {
 				t.Errorf("size %dx%d, want %dx%d", s.width, s.height, c.w, c.h)
 			}
-			if got := hex.EncodeToString(avcC(s, sps, pps)); got != c.avcC {
+			config, err := avcC(s, sps, pps)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := hex.EncodeToString(config); got != c.avcC {
 				t.Errorf("avcC\n got %s\nwant %s", got, c.avcC)
 			}
 		})
@@ -68,7 +72,11 @@ func TestHEVCConfigMatchesFFmpeg(t *testing.T) {
 		t.Errorf("size %dx%d, want 318x238", s.width, s.height)
 	}
 	want := "0101600000009000000000003ff000fcfdf8f800000f03a00001001840010c01ffff01600000030090000003000003003f959809a10001002b42010101600000030090000003000003003fa00a080f1d565959a4932bc05a020000030002000003007810a2000100074401c172b46240"
-	if got := hex.EncodeToString(hvcC(s, vps, sps, pps)); got != want {
+	config, err := hvcC(s, vps, sps, pps)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := hex.EncodeToString(config); got != want {
 		t.Errorf("hvcC\n got %s\nwant %s", got, want)
 	}
 }

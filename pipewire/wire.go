@@ -133,11 +133,12 @@ func newConn(fd int) *conn {
 // the fds, which stay the caller's. It returns the message's sequence
 // number.
 func (c *conn) send(id uint32, opcode uint8, body []byte, fds []int) (uint32, error) {
-	if len(body) > maxBodySize {
-		return 0, fmt.Errorf("pipewire: message %d to object %d: body of %d bytes exceeds %d", opcode, id, len(body), maxBodySize)
+	size, nfds := len(body), len(fds)
+	if size > maxBodySize {
+		return 0, fmt.Errorf("pipewire: message %d to object %d: body of %d bytes exceeds %d", opcode, id, size, maxBodySize)
 	}
-	if len(fds) > maxFdsPerMessage {
-		return 0, fmt.Errorf("pipewire: message %d to object %d carries %d fds, more than %d", opcode, id, len(fds), maxFdsPerMessage)
+	if nfds > maxFdsPerMessage {
+		return 0, fmt.Errorf("pipewire: message %d to object %d carries %d fds, more than %d", opcode, id, nfds, maxFdsPerMessage)
 	}
 	c.wmu.Lock()
 	defer c.wmu.Unlock()
@@ -145,9 +146,9 @@ func (c *conn) send(id uint32, opcode uint8, body []byte, fds []int) (uint32, er
 	c.seq++
 	buf := make([]byte, headerSize, headerSize+len(body))
 	binary.LittleEndian.PutUint32(buf[0:], id)
-	binary.LittleEndian.PutUint32(buf[4:], uint32(opcode)<<24|uint32(len(body)))
+	binary.LittleEndian.PutUint32(buf[4:], uint32(opcode)<<24|uint32(size))
 	binary.LittleEndian.PutUint32(buf[8:], seq)
-	binary.LittleEndian.PutUint32(buf[12:], uint32(len(fds)))
+	binary.LittleEndian.PutUint32(buf[12:], uint32(nfds))
 	buf = append(buf, body...)
 	var oob []byte
 	if len(fds) > 0 {

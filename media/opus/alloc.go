@@ -1,5 +1,9 @@
 package opus
 
+import (
+	"github.com/stubbedev/lys-lib/internal/intconv"
+)
+
 // allocation is the outcome of the bit allocation: per band the PVQ
 // budget in 1/8 bits, the fine energy bits and whether a band takes a
 // leftover energy bit first, plus the coded band count, the overflow
@@ -242,7 +246,7 @@ func interpBits2Pulses(rc *rangeEncoder, channels, skipStart int, bits1, bits2, 
 	a.codedBands = codedBands
 	if intensityRsv > 0 {
 		a.intensity = min(intensity, codedBands)
-		rc.uint(uint32(a.intensity), uint32(codedBands+1))
+		rc.uint(sym(a.intensity), sym(codedBands+1))
 	}
 	if a.intensity <= 0 {
 		total += dualRsv
@@ -323,3 +327,12 @@ func b2i(b bool) int {
 	}
 	return 0
 }
+
+func b2u(b bool) uint32 {
+	if b {
+		return 1
+	}
+	return 0
+}
+
+func sym(v int) uint32 { return intconv.Must[uint32](v) }

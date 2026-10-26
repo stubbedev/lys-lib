@@ -153,7 +153,11 @@ func (c *Client) ImportDmabuf(d dmabuf.Buffer) (*DmabufBuffer, error) {
 	st := &paramsState{}
 	params.AddCreatedHandler(st)
 	params.AddFailedHandler(st)
-	if err := params.Create(int32(d.Width), int32(d.Height), d.Format, 0); err != nil {
+	size, err := int32s(d.Width, d.Height)
+	if err != nil {
+		return nil, fmt.Errorf("capture: dmabuf %dx%d: %w", d.Width, d.Height, err)
+	}
+	if err := params.Create(size[0], size[1], d.Format, 0); err != nil {
 		return nil, fmt.Errorf("capture: dmabuf create: %w", err)
 	}
 	if err := c.roundtrip(); err != nil {

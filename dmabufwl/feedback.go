@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 	"syscall"
 
@@ -91,7 +92,7 @@ func (s *feedbackState) HandleZwpDmabufFeedbackV1MainDevice(ev wlr.ZwpDmabufFeed
 		s.err = fmt.Errorf("dmabuf: main_device of %d bytes, want a dev_t's 8", 4*len(ev.Device))
 		return
 	}
-	s.device, s.devSeen = uint64(uint32(ev.Device[0]))|uint64(uint32(ev.Device[1]))<<32, true
+	s.device, s.devSeen = uint64(int64(ev.Device[0])&math.MaxUint32)|uint64(int64(ev.Device[1])&math.MaxUint32)<<32, true
 }
 
 // HandleZwpDmabufFeedbackV1TrancheFormats appends a tranche's table

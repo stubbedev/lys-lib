@@ -22,6 +22,8 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+
+	"github.com/stubbedev/lys-lib/internal/intconv"
 )
 
 // The stream geometry the encoder produces.
@@ -173,7 +175,7 @@ func (e *Encoder) MaxPacketBytes() int { return e.maxBytes }
 // Ogg's first packet and Matroska's CodecPrivate.
 func (e *Encoder) AppendHead(dst []byte) []byte {
 	dst = append(dst, "OpusHead"...)
-	dst = append(dst, 1, byte(e.channels))
+	dst = append(dst, 1, intconv.Must[byte](e.channels))
 	dst = binary.LittleEndian.AppendUint16(dst, PreSkip)
 	dst = binary.LittleEndian.AppendUint32(dst, SampleRate)
 	return append(dst, 0, 0, 0)
@@ -248,10 +250,10 @@ func (e *Encoder) encodeFrame(out []byte, pcm []int16) (int, error) {
 	case pfOn:
 		rc.bitLogp(true, 1)
 		period := pf.period + 1
-		octave := ilog(uint32(period)) - 5
-		rc.uint(uint32(octave), 6)
-		rc.bits(uint32(period-16<<octave), uint(4+octave))
-		rc.bits(uint32(qg), 3)
+		octave := ilog(sym(period)) - 5
+		rc.uint(sym(octave), 6)
+		rc.bits(sym(period-16<<octave), uint(4+octave))
+		rc.bits(sym(qg), 3)
 		rc.icdf(pf.tapset, tapsetICDF, 2)
 	case tell+16 <= totalBits:
 		rc.bitLogp(false, 1)
@@ -394,7 +396,7 @@ func (e *Encoder) encodeFrame(out []byte, pcm []int16) (int, error) {
 	bc.quantAll(e.norm[0][:], y, &a, &tfRes, bytes*8<<bitRes-antiCollapseRsv)
 
 	if antiCollapseRsv > 0 {
-		rc.bits(uint32(b2i(e.consecTransient < 2)), 1)
+		rc.bits(b2u(e.consecTransient < 2), 1)
 	}
 	finaliseEnergy(rc, c, &e.oldE, &e.errs, &a.fine, &a.priority, bytes*8-rc.tell())
 	for ch := range c {

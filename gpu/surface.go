@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image"
 
+	"github.com/stubbedev/lys-lib/internal/intconv"
 	"github.com/stubbedev/lys-lib/third_party/vk"
 )
 
@@ -29,10 +30,13 @@ type surface struct {
 
 // newSurface allocates a w x h device-local surface.
 func (d *Device) newSurface(w, h int) (*surface, error) {
+	if err := d.checkSize(w, h); err != nil {
+		return nil, err
+	}
 	s := &surface{d: d, w: w, h: h, layout: vk.ImageLayoutUndefined}
 	ici := vk.ImageCreateInfo{
 		SType: vk.StructureTypeImageCreateInfo, ImageType: vk.ImageType2d, Format: surfaceFormat,
-		Extent: vk.Extent3D{Width: uint32(w), Height: uint32(h), Depth: 1}, MipLevels: 1, ArrayLayers: 1,
+		Extent: extent3D(w, h), MipLevels: 1, ArrayLayers: 1,
 		Samples: vk.SampleCount1Bit, Tiling: vk.ImageTilingOptimal,
 		Usage:       vk.ImageUsageFlags(vk.ImageUsageTransferDstBit | vk.ImageUsageTransferSrcBit | vk.ImageUsageColorAttachmentBit | vk.ImageUsageSampledBit),
 		SharingMode: vk.SharingModeExclusive, InitialLayout: vk.ImageLayoutUndefined,
@@ -71,7 +75,7 @@ func (s *surface) ready() error {
 	}
 	fci := vk.FramebufferCreateInfo{
 		SType: vk.StructureTypeFramebufferCreateInfo, RenderPass: d.pass, AttachmentCount: 1, PAttachments: &s.view,
-		Width: uint32(s.w), Height: uint32(s.h), Layers: 1,
+		Width: intconv.Must[uint32](s.w), Height: intconv.Must[uint32](s.h), Layers: 1,
 	}
 	if r := d.cmds.CreateFramebuffer(d.device, &fci, nil, &s.fb); r != vk.Success {
 		return fmt.Errorf("gpu: vkCreateFramebuffer %dx%d: %d", s.w, s.h, r)
@@ -123,10 +127,10 @@ func fullBarrier(d *Device, cb vk.CommandBuffer, img vk.Image, from, to vk.Image
 func (s *surface) download(cb vk.CommandBuffer, r image.Rectangle, b *buffer, offset int) {
 	s.to(cb, vk.ImageLayoutTransferSrcOptimal)
 	region := vk.BufferImageCopy{
-		BufferOffset:     vk.DeviceSize(offset),
+		BufferOffset:     intconv.Must[vk.DeviceSize](offset),
 		ImageSubresource: vk.ImageSubresourceLayers{AspectMask: vk.ImageAspectFlags(vk.ImageAspectColorBit), LayerCount: 1},
-		ImageOffset:      vk.Offset3D{X: int32(r.Min.X), Y: int32(r.Min.Y)},
-		ImageExtent:      vk.Extent3D{Width: uint32(r.Dx()), Height: uint32(r.Dy()), Depth: 1},
+		ImageOffset:      offset3D(r.Min),
+		ImageExtent:      extent3D(r.Dx(), r.Dy()),
 	}
 	s.d.cmds.CmdCopyImageToBuffer(cb, s.image, vk.ImageLayoutTransferSrcOptimal, b.buf, 1, &region)
 }
@@ -136,10 +140,10 @@ func (s *surface) download(cb vk.CommandBuffer, r image.Rectangle, b *buffer, of
 func (s *surface) upload(cb vk.CommandBuffer, r image.Rectangle, b *buffer, offset, rowLength int) {
 	s.to(cb, vk.ImageLayoutTransferDstOptimal)
 	region := vk.BufferImageCopy{
-		BufferOffset: vk.DeviceSize(offset), BufferRowLength: uint32(rowLength),
+		BufferOffset: intconv.Must[vk.DeviceSize](offset), BufferRowLength: intconv.Must[uint32](rowLength),
 		ImageSubresource: vk.ImageSubresourceLayers{AspectMask: vk.ImageAspectFlags(vk.ImageAspectColorBit), LayerCount: 1},
-		ImageOffset:      vk.Offset3D{X: int32(r.Min.X), Y: int32(r.Min.Y)},
-		ImageExtent:      vk.Extent3D{Width: uint32(r.Dx()), Height: uint32(r.Dy()), Depth: 1},
+		ImageOffset:      offset3D(r.Min),
+		ImageExtent:      extent3D(r.Dx(), r.Dy()),
 	}
 	s.d.cmds.CmdCopyBufferToImage(cb, b.buf, s.image, vk.ImageLayoutTransferDstOptimal, 1, &region)
 }

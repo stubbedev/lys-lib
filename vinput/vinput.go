@@ -9,6 +9,7 @@ package vinput
 import (
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"sync"
 	"syscall"
@@ -17,6 +18,7 @@ import (
 	"github.com/neurlang/wayland/wl"
 	"github.com/neurlang/wayland/wlclient"
 
+	"github.com/stubbedev/lys-lib/internal/intconv"
 	"github.com/stubbedev/lys-lib/keymapfd"
 	"github.com/stubbedev/lys-lib/wlr"
 )
@@ -169,7 +171,11 @@ func (v *Device) upload(keymap []byte) error {
 	if _, err := f.Seek(0, 0); err != nil {
 		return err
 	}
-	return v.vk.Keymap(1, f.Fd(), uint32(len(keymap)))
+	size, err := intconv.To[uint32](len(keymap))
+	if err != nil {
+		return fmt.Errorf("vinput: keymap of %d bytes: %w", len(keymap), err)
+	}
+	return v.vk.Keymap(1, f.Fd(), size)
 }
 
 // Keymap is the xkb_v1 text the virtual keyboard carries (the seat's,
@@ -187,7 +193,7 @@ func (v *Device) OutputSize() (width, height int32) {
 	return v.outW, v.outH
 }
 
-func (v *Device) now() uint32 { return uint32(time.Since(v.start).Milliseconds()) }
+func (v *Device) now() uint32 { return uint32(time.Since(v.start).Milliseconds() & math.MaxUint32) }
 
 // ScrollAxis is a wl_pointer axis.
 type ScrollAxis uint32

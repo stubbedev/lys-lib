@@ -665,7 +665,7 @@ func buildBoxShadow(w, h int, radii Corners, s BoxShadow, num, denom int) *Shado
 	ras.cov = make([]uint8, max(0, ras.w*ras.h))
 	put := func(x, y int, cov float32) {
 		if cov > 0 {
-			ras.cov[(y-y0)*ras.w+(x-x0)] = uint8(cov255(min(cov, 1)))
+			ras.cov[(y-y0)*ras.w+(x-x0)] = uint8(min(cov255(cov), 255))
 		}
 	}
 	if !s.Inset {
@@ -841,7 +841,7 @@ func GrainStrength(opacity float64) uint32 {
 // a texture to store, the same for the same offset everywhere. The
 // shader's grainNoise repeats it.
 func grainNoise(x, y int) uint32 {
-	h := uint32(x)*0x27d4eb2d ^ uint32(y)*0x165667b1
+	h := uint32(x&0xffffffff)*0x27d4eb2d ^ uint32(y&0xffffffff)*0x165667b1
 	h ^= h >> 15
 	h *= 0x85ebca6b
 	h ^= h >> 13

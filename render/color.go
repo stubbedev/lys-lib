@@ -25,13 +25,13 @@ func RGBA(r, g, b, a uint8) Color {
 func (c Color) A() uint8 { return uint8(c >> 24) }
 
 // R returns the premultiplied red channel.
-func (c Color) R() uint8 { return uint8(c >> 16) }
+func (c Color) R() uint8 { return uint8(c >> 16 & 0xff) }
 
 // G returns the premultiplied green channel.
-func (c Color) G() uint8 { return uint8(c >> 8) }
+func (c Color) G() uint8 { return uint8(c >> 8 & 0xff) }
 
 // B returns the premultiplied blue channel.
-func (c Color) B() uint8 { return uint8(c) }
+func (c Color) B() uint8 { return uint8(c & 0xff) }
 
 // ColorFromBytes decodes a premultiplied color from the wl_shm byte
 // order: little-endian ARGB8888, that is bytes B, G, R, A.
@@ -47,9 +47,9 @@ func (c Color) Straight() [4]byte {
 		return [4]byte{}
 	}
 	unpremul := func(p uint8) uint8 {
-		return uint8((uint32(p)*255 + a/2) / a)
+		return uint8(min((uint32(p)*255+a/2)/a, 255))
 	}
-	return [4]byte{unpremul(c.R()), unpremul(c.G()), unpremul(c.B()), uint8(a)}
+	return [4]byte{unpremul(c.R()), unpremul(c.G()), unpremul(c.B()), c.A()}
 }
 
 // over returns the source-over composition of src onto dst. Both colors

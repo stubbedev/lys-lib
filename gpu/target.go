@@ -29,9 +29,6 @@ type Target struct {
 // other process imports: a frame rendered for its pixels (ReadPixels),
 // a screenshot or a test.
 func (d *Device) NewOffscreen(width, height int) (*Target, error) {
-	if width <= 0 || height <= 0 {
-		return nil, fmt.Errorf("gpu: target size %dx%d is not positive", width, height)
-	}
 	s, err := d.newSurface(width, height)
 	if err != nil {
 		return nil, err

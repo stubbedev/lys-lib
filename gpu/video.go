@@ -110,7 +110,7 @@ func (d *Device) probeVideo(p vk.PhysicalDevice, sync2 bool, have map[string]boo
 		families = append(families, fmt.Sprintf("%d (operations %#x)", i, ops))
 		var cs []Codec
 		for _, c := range codecs {
-			if have[c.extension] && ops&vk.VideoCodecOperationFlagsKHR(c.operation) != 0 {
+			if have[c.extension] && ops&flags[vk.VideoCodecOperationFlagsKHR](c.operation) != 0 {
 				cs = append(cs, c.codec)
 			}
 		}

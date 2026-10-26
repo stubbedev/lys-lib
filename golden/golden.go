@@ -40,6 +40,7 @@ import (
 	"image/color"
 	"image/png"
 	"io/fs"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -179,7 +180,7 @@ func premultiply(img *image.NRGBA) []byte {
 	for i := 0; i < len(img.Pix); i += 4 {
 		a := uint32(img.Pix[i+3])
 		for c := range 3 {
-			out[i+c] = uint8((uint32(img.Pix[i+c])*a + 127) / 255)
+			out[i+c] = uint8(min((uint32(img.Pix[i+c])*a+127)/255, math.MaxUint8))
 		}
 		out[i+3] = img.Pix[i+3]
 	}

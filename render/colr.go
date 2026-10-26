@@ -75,7 +75,7 @@ func renderCOLR(t *Typeface, gid font.GID, scale, fx, fy float64, fg Color) (*im
 func colrBounds(t *Typeface, gid font.GID, root tables.PaintTable, base Affine) (Rect, bool) {
 	var fr [4]float64 // xmin ymin xmax ymax in font units
 	found := false
-	if colr := t.face.COLR; colr != nil {
+	if colr := t.face.COLR; colr != nil && gid <= math.MaxUint16 {
 		if cb, ok := colr.ClipList.Search(tables.GlyphID(gid)); ok {
 			switch c := cb.(type) {
 			case tables.ClipBoxFormat1:
@@ -200,18 +200,21 @@ func colrChild(node tables.PaintTable) tables.PaintTable {
 
 // delta is the variation delta for varIndexBase+k at the face's
 // coordinates, 0 for a static face or no variation.
-func (p *colrPainter) delta(base uint32, k int) float64 {
+func (p *colrPainter) delta(base, k uint32) float64 {
 	colr := p.face.face.COLR
 	coords := p.face.face.Coords()
 	if base == 0xFFFFFFFF || colr == nil || colr.ItemVariationStore == nil || len(coords) == 0 {
 		return 0
 	}
-	idx := base + uint32(k)
+	idx := base + k
 	var vi tables.VariationStoreIndex
-	if colr.VarIndexMap != nil {
-		vi = colr.VarIndexMap.Index(tables.GlyphID(idx))
+	if m := colr.VarIndexMap; m != nil && len(m.Map) > 0 {
+		vi = m.Map[len(m.Map)-1]
+		if int(idx) < len(m.Map) {
+			vi = m.Map[idx]
+		}
 	} else {
-		vi = tables.VariationStoreIndex{DeltaSetOuter: uint16(idx >> 16), DeltaSetInner: uint16(idx)}
+		vi = tables.VariationStoreIndex{DeltaSetOuter: uint16(idx >> 16), DeltaSetInner: uint16(idx & 0xffff)}
 	}
 	return float64(colr.ItemVariationStore.GetDelta(vi, coords))
 }
@@ -220,12 +223,12 @@ func (p *colrPainter) delta(base uint32, k int) float64 {
 func f214(v tables.Fixed214) float64 { return float64(v) / 16384 }
 
 // varF214 is a 2.14 field plus its delta (deltas are 2.14 units too).
-func (p *colrPainter) varF214(v tables.Fixed214, base uint32, k int) float64 {
+func (p *colrPainter) varF214(v tables.Fixed214, base, k uint32) float64 {
 	return f214(v) + p.delta(base, k)/16384
 }
 
 // varFU is a font-unit field plus its delta.
-func (p *colrPainter) varFU(v int16, base uint32, k int) float64 {
+func (p *colrPainter) varFU(v int16, base, k uint32) float64 {
 	return float64(v) + p.delta(base, k)
 }
 
@@ -321,7 +324,7 @@ func (p *colrPainter) transform(node tables.PaintTable) (Affine, bool) {
 		return Affine{A: float64(a.Xx), B: float64(a.Yx), C: float64(a.Xy), D: float64(a.Yy), E: float64(a.Dx), F: float64(a.Dy)}, true
 	case tables.PaintVarTransform:
 		a, b := n.Transform, n.Transform.VarIndexBase
-		d := func(v float32, k int) float64 { return float64(v) + p.delta(b, k)/65536 }
+		d := func(v float32, k uint32) float64 { return float64(v) + p.delta(b, k)/65536 }
 		return Affine{A: d(a.Xx, 0), B: d(a.Yx, 1), C: d(a.Xy, 2), D: d(a.Yy, 3), E: d(a.Dx, 4), F: d(a.Dy, 5)}, true
 	case tables.PaintTranslate:
 		return Translate(float64(n.Dx), float64(n.Dy)), true

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"io"
 	"math"
+
+	"github.com/stubbedev/lys-lib/internal/intconv"
 )
 
 const (
@@ -37,7 +39,7 @@ func (x *boxes) full(typ string, version uint8, flags uint32) {
 func (x *boxes) end() {
 	start := x.open[len(x.open)-1]
 	x.open = x.open[:len(x.open)-1]
-	binary.BigEndian.PutUint32(x.b[start:], uint32(len(x.b)-start))
+	binary.BigEndian.PutUint32(x.b[start:], intconv.Must[uint32](len(x.b)-start))
 }
 
 func (x *boxes) u8(v ...uint8) { x.b = append(x.b, v...) }
@@ -114,7 +116,7 @@ func (m *MP4) header() {
 	x.zeros(10)
 	x.matrix()
 	x.zeros(24)
-	x.u32(uint32(len(m.tracks) + 1))
+	x.u32(intconv.Must[uint32](len(m.tracks) + 1))
 	x.end()
 	for i := range m.tracks {
 		m.trak(uint32(i+1), &m.tracks[i])
@@ -228,8 +230,8 @@ func (m *MP4) sampleEntry(t *track) {
 		x.zeros(6)
 		x.u16(1)
 		x.zeros(16)
-		x.u16(uint16(t.width))
-		x.u16(uint16(t.height))
+		x.u16(t.width)
+		x.u16(t.height)
 		x.u32(0x00480000)
 		x.u32(0x00480000)
 		x.u32(0)
@@ -282,7 +284,11 @@ func (m *MP4) WriteSample(s Sample) error {
 			return err
 		}
 	}
-	r.samples = append(r.samples, mp4Sample{size: uint32(len(u.data)), key: u.key})
+	size, err := intconv.To[uint32](len(u.data))
+	if err != nil {
+		return m.fail(fmt.Errorf("mux: track %d sample at %v of %d bytes is past MP4's 32-bit sample size: %w", s.Track, t.last, len(u.data), err))
+	}
+	r.samples = append(r.samples, mp4Sample{size: size, key: u.key})
 	r.data = append(r.data, u.data...)
 	return nil
 }
@@ -296,7 +302,7 @@ func (m *MP4) Close() error {
 	for i := range m.runs {
 		r, t := &m.runs[i], &m.tracks[i]
 		if n := len(r.samples); n > 0 && t.n > 1 {
-			r.samples[n-1].dur = uint32(t.tickGap())
+			r.samples[n-1].dur = intconv.Must[uint32](t.tickGap())
 		}
 	}
 	if err := m.flush(true); err != nil {
@@ -337,7 +343,7 @@ func (m *MP4) flush(all bool) error {
 		x.u64(r.base)
 		x.end()
 		x.full("trun", 0, mp4RunFlags)
-		x.u32(uint32(n))
+		x.u32(intconv.Must[uint32](n))
 		offsets = append(offsets, len(x.b))
 		x.u32(uint32(data))
 		for _, s := range r.samples[:n] {
@@ -363,7 +369,7 @@ func (m *MP4) flush(all bool) error {
 		return m.fail(fmt.Errorf("mux: MP4 fragment %d holds %d bytes, more than a fragment's offsets reach", m.seq, data))
 	}
 	for _, at := range offsets {
-		binary.BigEndian.PutUint32(x.b[at:], binary.BigEndian.Uint32(x.b[at:])+uint32(moof+8))
+		binary.BigEndian.PutUint32(x.b[at:], binary.BigEndian.Uint32(x.b[at:])+intconv.Must[uint32](moof+8))
 	}
 	x.u32(uint32(8 + data))
 	x.b = append(x.b, "mdat"...)

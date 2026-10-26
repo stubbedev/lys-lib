@@ -9,6 +9,7 @@ import (
 	"github.com/go-text/typesetting/font"
 
 	"github.com/stubbedev/lys-lib/debug"
+	"github.com/stubbedev/lys-lib/internal/intconv"
 	"github.com/stubbedev/lys-lib/render"
 	"github.com/stubbedev/lys-lib/third_party/vk"
 )
@@ -21,7 +22,8 @@ const (
 	stepDraw stepKind = iota
 	// stepCopy copies src's region into dst at the same place.
 	stepCopy
-	// stepDownload copies dst's region into the readback buffer.
+	// stepDownload copies dst's region into the readback buffer at
+	// offset.
 	stepDownload
 )
 
@@ -32,6 +34,7 @@ type step struct {
 	tex, tex2    *surface
 	pipe         pipe
 	first, count uint32
+	offset       int
 	region       image.Rectangle
 }
 
@@ -171,7 +174,7 @@ func (f *frame) draw2(dst, tex, tex2 *surface, pp pipe, p prim) {
 			return
 		}
 	}
-	f.steps = append(f.steps, step{kind: stepDraw, dst: dst, tex: tex, tex2: tex2, pipe: pp, first: uint32(len(f.prims) - 1), count: 1})
+	f.steps = append(f.steps, step{kind: stepDraw, dst: dst, tex: tex, tex2: tex2, pipe: pp, first: count(f.prims) - 1, count: 1})
 }
 
 // sprite rasterizes one call on the CPU, within s's bounds, and draws
@@ -240,7 +243,7 @@ func (f *frame) cpu(region render.Rect, surfaces []*surface, fn func(cvs []*rend
 	offsets := make([]int, len(surfaces))
 	for i, s := range surfaces {
 		offsets[i] = f.downloads
-		f.steps = append(f.steps, step{kind: stepDownload, dst: s, region: r, first: uint32(f.downloads)})
+		f.steps = append(f.steps, step{kind: stepDownload, dst: s, region: r, offset: f.downloads})
 		f.downloads += r.Dx() * r.Dy() * 4
 	}
 	f.stats.readbacks++
@@ -323,15 +326,15 @@ func (f *frame) record(cb vk.CommandBuffer, final bool) {
 			st.src.to(cb, vk.ImageLayoutTransferSrcOptimal)
 			st.dst.to(cb, vk.ImageLayoutTransferDstOptimal)
 			layers := vk.ImageSubresourceLayers{AspectMask: vk.ImageAspectFlags(vk.ImageAspectColorBit), LayerCount: 1}
-			at := vk.Offset3D{X: int32(st.region.Min.X), Y: int32(st.region.Min.Y)}
+			at := offset3D(st.region.Min)
 			ic := vk.ImageCopy{
 				SrcSubresource: layers, SrcOffset: at, DstSubresource: layers, DstOffset: at,
-				Extent: vk.Extent3D{Width: uint32(st.region.Dx()), Height: uint32(st.region.Dy()), Depth: 1},
+				Extent: extent3D(st.region.Dx(), st.region.Dy()),
 			}
 			d.cmds.CmdCopyImage(cb, st.src.image, vk.ImageLayoutTransferSrcOptimal, st.dst.image, vk.ImageLayoutTransferDstOptimal, 1, &ic)
 		case stepDownload:
 			end()
-			st.dst.download(cb, st.region, d.readback, int(st.first))
+			st.dst.download(cb, st.region, d.readback, st.offset)
 		case stepDraw:
 			sampled, sampled2 := st.tex, st.tex2
 			if sampled == nil {
@@ -378,7 +381,7 @@ func (f *frame) record(cb vk.CommandBuffer, final bool) {
 func (f *frame) begin(cb vk.CommandBuffer, s *surface) {
 	d := f.d
 	s.to(cb, vk.ImageLayoutColorAttachmentOptimal)
-	area := vk.Rect2D{Extent: vk.Extent2D{Width: uint32(s.w), Height: uint32(s.h)}}
+	area := vk.Rect2D{Extent: extent2D(s.w, s.h)}
 	bi := vk.RenderPassBeginInfo{SType: vk.StructureTypeRenderPassBeginInfo, RenderPass: d.pass, Framebuffer: s.fb, RenderArea: area}
 	d.cmds.CmdBeginRenderPass(cb, &bi, vk.SubpassContentsInline)
 	vp := vk.Viewport{Width: float32(s.w), Height: float32(s.h), MaxDepth: 1}
@@ -578,7 +581,7 @@ func (f *frame) PaintGrain(s render.State, r render.Rect, radii render.Corners, 
 	o := render.MapRect(render.Rect{X: ox, Y: oy}, f.num, f.denom)
 	p := shaded(kindGrain, s, 0)
 	p.quad, p.box, p.radii = quadOf(s.Bounds), box, rc
-	p.cols = [4]uint32{render.GrainStrength(opacity), uint32(int32(o.X)), uint32(int32(o.Y))}
+	p.cols = [4]uint32{render.GrainStrength(opacity), intconv.Bits32(intconv.Must[int32](o.X)), intconv.Bits32(intconv.Must[int32](o.Y))}
 	f.draw(f.on(s), nil, pipeOver, p)
 }
 
@@ -687,7 +690,7 @@ func (f *frame) PaintImageTiles(s render.State, img image.Image, t render.Tile, 
 	}
 	p := tiled(kindImageTiles, s, tg)
 	p.widths[2], p.widths[3] = render.TexelScale(ib.Dx(), tg.W), render.TexelScale(ib.Dy(), tg.H)
-	p.cols[0], p.cols[1] = uint32(ib.Dx()), uint32(ib.Dy())
+	p.cols[0], p.cols[1] = intconv.Must[uint32](ib.Dx()), intconv.Must[uint32](ib.Dy())
 	f.draw(f.on(s), tex, pipeOver, p)
 }
 
@@ -858,9 +861,9 @@ func (f *frame) blendLayer(s render.State, l *render.Layer, src render.Rect, mod
 	var p prim
 	p.cols[0], p.cols[2] = uint32(mode), a
 	if mode == render.BlendSoftLight {
-		p.cols[1] = uint32(len(f.words))
+		p.cols[1] = count(f.words)
 		for _, v := range render.SoftLightTable {
-			f.words = append(f.words, uint32(v))
+			f.words = append(f.words, intconv.Bits32(v))
 		}
 	}
 	f.inPlace(dst, r, ls, kindBlend, p)

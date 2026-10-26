@@ -130,7 +130,7 @@ func clipMask(regions []*oksvg.SvgIcon, m rasterx.Matrix2D, rect image.Rectangle
 	copy(out.Pix, region(regions[0]).Pix)
 	for _, r := range regions[1:] {
 		for i, a := range region(r).Pix {
-			out.Pix[i] = uint8((uint32(out.Pix[i])*uint32(a) + 127) / 255)
+			out.Pix[i] = uint8(min((uint32(out.Pix[i])*uint32(a)+127)/255, 255))
 		}
 	}
 	return out

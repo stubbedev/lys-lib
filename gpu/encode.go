@@ -10,6 +10,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/stubbedev/lys-lib/internal/intconv"
 	"github.com/stubbedev/lys-lib/third_party/vk"
 )
 
@@ -373,7 +374,7 @@ func (e *Encoder) createPipeline() error {
 	if r := d.cmds.AllocateDescriptorSets(d.device, &ai, &e.set); r != vk.Success {
 		return fmt.Errorf("gpu: vkAllocateDescriptorSets (NV12): %d", r)
 	}
-	bi := vk.DescriptorBufferInfo{Buffer: e.planes.buf, Range: vk.DeviceSize(nv12Bytes(e.coded))}
+	bi := vk.DescriptorBufferInfo{Buffer: e.planes.buf, Range: intconv.Must[vk.DeviceSize](nv12Bytes(e.coded))}
 	w := vk.WriteDescriptorSet{SType: vk.StructureTypeWriteDescriptorSet, DstSet: e.set, DstBinding: 1, DescriptorCount: 1, DescriptorType: vk.DescriptorTypeStorageBuffer, PBufferInfo: &bi}
 	d.cmds.UpdateDescriptorSets(d.device, 1, &w, 0, nil)
 	return nil
@@ -408,7 +409,7 @@ func copyPlanes(d *Device, cb vk.CommandBuffer, planes vk.Buffer, dst vk.Image, 
 		toDst.SrcQueueFamilyIndex, toDst.DstQueueFamilyIndex = from, d.family
 	}
 	barrier2(d, cb, &written, toDst)
-	cw, ch := uint32(coded[0]), uint32(coded[1])
+	cw, ch := intconv.Must[uint32](coded[0]), intconv.Must[uint32](coded[1])
 	regions := [2]vk.BufferImageCopy{
 		{BufferRowLength: cw, BufferImageHeight: ch, ImageSubresource: vk.ImageSubresourceLayers{AspectMask: vk.ImageAspectFlags(vk.ImageAspectPlane0Bit), LayerCount: 1}, ImageExtent: vk.Extent3D{Width: cw, Height: ch, Depth: 1}},
 		{BufferOffset: vk.DeviceSize(cw * ch), BufferRowLength: cw / 2, BufferImageHeight: ch / 2, ImageSubresource: vk.ImageSubresourceLayers{AspectMask: vk.ImageAspectFlags(vk.ImageAspectPlane1Bit), LayerCount: 1}, ImageExtent: vk.Extent3D{Width: cw / 2, Height: ch / 2, Depth: 1}},
@@ -612,7 +613,7 @@ func (e *Encoder) convert(src *Buffer, origin image.Point, slot int) error {
 	if e.overlay != nil {
 		ii[1] = vk.DescriptorImageInfo{Sampler: e.linear, ImageView: e.overlay.view, ImageLayout: vk.ImageLayoutShaderReadOnlyOptimal}
 		r := e.overlayDst
-		over = [4]int32{int32(r.Min.X), int32(r.Min.Y), int32(r.Max.X), int32(r.Max.Y)}
+		over = [4]int32{intconv.Must[int32](r.Min.X), intconv.Must[int32](r.Min.Y), intconv.Must[int32](r.Max.X), intconv.Must[int32](r.Max.Y)}
 	}
 	w := [2]vk.WriteDescriptorSet{
 		{SType: vk.StructureTypeWriteDescriptorSet, DstSet: e.set, DstBinding: 0, DescriptorCount: 1, DescriptorType: vk.DescriptorTypeCombinedImageSampler, PImageInfo: &ii[0]},
@@ -630,11 +631,11 @@ func (e *Encoder) convert(src *Buffer, origin image.Point, slot int) error {
 	d.cmds.CmdBindPipeline(cb, vk.PipelineBindPointCompute, e.pipeline)
 	d.cmds.CmdBindDescriptorSets(cb, vk.PipelineBindPointCompute, e.layout, 0, 1, &e.set, 0, nil)
 	pc := nv12Constants{
-		frameW: int32(e.cfg.Width), frameH: int32(e.cfg.Height), codedW: int32(e.coded[0]), codedH: int32(e.coded[1]), overlay: over,
-		originX: int32(origin.X), originY: int32(origin.Y), transform: int32(e.cfg.Transform),
+		frameW: intconv.Must[int32](e.cfg.Width), frameH: intconv.Must[int32](e.cfg.Height), codedW: intconv.Must[int32](e.coded[0]), codedH: intconv.Must[int32](e.coded[1]), overlay: over,
+		originX: intconv.Must[int32](origin.X), originY: intconv.Must[int32](origin.Y), transform: intconv.Must[int32](e.cfg.Transform),
 	}
 	d.cmds.CmdPushConstants(cb, e.layout, vk.ShaderStageFlags(vk.ShaderStageComputeBit), 0, uint32(unsafe.Sizeof(pc)), unsafe.Pointer(&pc))
-	d.cmds.CmdDispatch(cb, uint32((e.coded[0]/4+7)/8), uint32((e.coded[1]/2+7)/8), 1)
+	d.cmds.CmdDispatch(cb, intconv.Must[uint32]((e.coded[0]/4+7)/8), intconv.Must[uint32]((e.coded[1]/2+7)/8), 1)
 	release := imageBarrier(src.e.image, colorRange, vk.ImageLayoutGeneral, vk.ImageLayoutGeneral)
 	release.SrcQueueFamilyIndex, release.DstQueueFamilyIndex = d.family, vk.QueueFamilyForeignExt
 	release.SrcStageMask, release.SrcAccessMask = vk.PipelineStageFlags2(vk.PipelineStage2ComputeShaderBit), vk.AccessFlags2(vk.Access2ShaderSampledReadBit)

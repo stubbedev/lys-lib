@@ -4,7 +4,6 @@
 package audiomix
 
 import (
-	"encoding/binary"
 	"math"
 )
 
@@ -39,12 +38,12 @@ func New(sources, channels, backlog int) *Mixer {
 func (m *Mixer) Push(source int, chunk []byte) {
 	q := m.queues[source]
 	if p := m.partial[source]; len(p) > 0 && len(chunk) > 0 {
-		q = append(q, int16(binary.LittleEndian.Uint16([]byte{p[0], chunk[0]})))
+		q = append(q, sample(p[0], chunk[0]))
 		chunk = chunk[1:]
 		m.partial[source] = p[:0]
 	}
 	for len(chunk) >= sampleBytes {
-		q = append(q, int16(binary.LittleEndian.Uint16(chunk)))
+		q = append(q, sample(chunk[0], chunk[1]))
 		chunk = chunk[sampleBytes:]
 	}
 	m.partial[source] = append(m.partial[source], chunk...)
@@ -75,4 +74,8 @@ func (m *Mixer) Mix(frame []int16) {
 	for i, v := range sum {
 		frame[i] = int16(min(max(v, math.MinInt16), math.MaxInt16))
 	}
+}
+
+func sample(lo, hi byte) int16 {
+	return int16(lo) | int16(hi)<<8
 }

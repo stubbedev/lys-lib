@@ -142,7 +142,7 @@ func captureSessionFrame(dispatch func(func() bool) error, session *wlr.ImageCop
 	if err := frame.AttachBuffer(buf.wl); err != nil {
 		return nil, err
 	}
-	if err := frame.DamageBuffer(0, 0, int32(buf.width), int32(buf.height)); err != nil {
+	if err := frame.DamageBuffer(0, 0, buf.wlWidth, buf.wlHeight); err != nil {
 		return nil, err
 	}
 	if err := frame.Capture(); err != nil {

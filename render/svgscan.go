@@ -145,7 +145,7 @@ func (s *svgScanner) lineTo(bx, by float32) {
 	x := ax
 	y := float32(math.Floor(float64(ay)))
 	yMax := min(by, float32(s.h))
-	width := int32(s.w)
+	width := int32(max(0, min(s.w, math.MaxInt32)))
 	for ; y < yMax; y++ {
 		dy := min(y+1, yMax) - max(y, ay)
 		xNext := x + float32(dy*dxdy)
@@ -208,5 +208,5 @@ func clampIndex(i, width int32) uint {
 	if i < width {
 		return uint(i)
 	}
-	return uint(width)
+	return uint(max(width, 0))
 }

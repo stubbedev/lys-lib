@@ -3,6 +3,9 @@ package pipewire
 import (
 	"encoding/binary"
 	"fmt"
+	"math"
+
+	"github.com/stubbedev/lys-lib/internal/intconv"
 )
 
 // SPA pod types (spa/utils/type.h).
@@ -124,9 +127,21 @@ type pod struct {
 
 func le32(v uint32) []byte { return binary.LittleEndian.AppendUint32(nil, v) }
 
-func podID(v uint32) pod  { return pod{typeID, le32(v)} }
-func podInt(v int32) pod  { return pod{typeInt, le32(uint32(v))} }
-func podLong(v int64) pod { return pod{typeLong, binary.LittleEndian.AppendUint64(nil, uint64(v))} }
+func signed32(b []byte) int32 {
+	return int32(b[0]) | int32(b[1])<<8 | int32(b[2])<<16 | int32(b[3])<<24
+}
+
+func signed64(b []byte) int64 {
+	return int64(binary.LittleEndian.Uint32(b)) | int64(signed32(b[4:]))<<32
+}
+
+func podCount(n int) pod { return podInt(int32(min(max(n, 0), math.MaxInt32))) }
+
+func podID(v uint32) pod    { return pod{typeID, le32(v)} }
+func podInt(v int32) pod    { return podUint(intconv.Bits32(v)) }
+func podUint(v uint32) pod  { return pod{typeInt, le32(v)} }
+func podLong(v int64) pod   { return podULong(intconv.Bits64(v)) }
+func podULong(v uint64) pod { return pod{typeLong, binary.LittleEndian.AppendUint64(nil, v)} }
 
 func podBool(v bool) pod {
 	if v {
@@ -136,7 +151,9 @@ func podBool(v bool) pod {
 }
 
 // podFd is an Fd pod: the index of the fd in the message's fd array.
-func podFd(index int) pod { return pod{typeFd, binary.LittleEndian.AppendUint64(nil, uint64(index))} }
+func podFd(index uint32) pod {
+	return pod{typeFd, binary.LittleEndian.AppendUint64(nil, uint64(index))}
+}
 
 func podNone() pod { return pod{typ: typeNone} }
 
@@ -168,7 +185,7 @@ type dictItem struct{ key, value string }
 // each key and value.
 func podDict(items []dictItem) pod {
 	fields := make([]pod, 0, 1+2*len(items))
-	fields = append(fields, podInt(int32(len(items))))
+	fields = append(fields, podCount(len(items)))
 	for _, it := range items {
 		fields = append(fields, podString(it.key), podString(it.value))
 	}
@@ -180,7 +197,7 @@ func podIntRange(def, lo, hi int32) pod {
 	body := append(le32(choiceRange), le32(0)...)             // choice type, flags
 	body = append(body, append(le32(4), le32(typeInt)...)...) // child pod: size, type
 	for _, v := range []int32{def, lo, hi} {
-		body = append(body, le32(uint32(v))...)
+		body = append(body, le32(intconv.Bits32(v))...)
 	}
 	return pod{typeChoice, body}
 }
@@ -188,7 +205,7 @@ func podIntRange(def, lo, hi int32) pod {
 // bytes is the pod with its header, padded to 8 bytes as pods are laid
 // out.
 func (p pod) bytes() []byte {
-	out := append(le32(uint32(len(p.body))), le32(p.typ)...)
+	out := append(le32(uint32(min(len(p.body), math.MaxUint32))), le32(p.typ)...)
 	out = append(out, p.body...)
 	for len(out)%8 != 0 {
 		out = append(out, 0)
@@ -227,7 +244,7 @@ func formatObject(id, width, height, fps uint32, format VideoFormat, modifier *u
 		{key: formatVideoFormat, value: podID(uint32(format))},
 	}
 	if modifier != nil {
-		props = append(props, prop{key: formatVideoModifier, flags: propFlagMandatory, value: podLong(int64(*modifier))})
+		props = append(props, prop{key: formatVideoModifier, flags: propFlagMandatory, value: podULong(*modifier)})
 	}
 	props = append(props,
 		prop{key: formatVideoSize, value: podRectangle(width, height)},
@@ -254,10 +271,10 @@ func bufferPodsOf(stride, height, dataTypes uint32) [][]byte {
 		object(objectParamBuffers, paramBuffers,
 			prop{key: buffersBuffers, value: podIntRange(4, 2, 16)},
 			prop{key: buffersBlocks, value: podInt(1)},
-			prop{key: buffersSize, value: podInt(int32(stride * height))},
-			prop{key: buffersStride, value: podInt(int32(stride))},
+			prop{key: buffersSize, value: podUint(stride * height)},
+			prop{key: buffersStride, value: podUint(stride)},
 			prop{key: buffersAlign, value: podInt(16)},
-			prop{key: buffersDataType, value: podInt(int32(dataTypes))},
+			prop{key: buffersDataType, value: podUint(dataTypes)},
 		),
 		object(objectParamMeta, paramMeta,
 			prop{key: metaKeyType, value: podID(metaHeader)},
@@ -397,12 +414,17 @@ func (it *podIter) fixed(want uint32, size int) []byte {
 
 func (it *podIter) int() int32 {
 	if b := it.fixed(typeInt, 4); b != nil {
-		return int32(binary.LittleEndian.Uint32(b))
+		return signed32(b)
 	}
 	return 0
 }
 
-func (it *podIter) uint() uint32 { return uint32(it.int()) }
+func (it *podIter) uint() uint32 {
+	if b := it.fixed(typeInt, 4); b != nil {
+		return binary.LittleEndian.Uint32(b)
+	}
+	return 0
+}
 
 func (it *podIter) id() uint32 {
 	if b := it.fixed(typeID, 4); b != nil {
@@ -413,7 +435,7 @@ func (it *podIter) id() uint32 {
 
 func (it *podIter) long() int64 {
 	if b := it.fixed(typeLong, 8); b != nil {
-		return int64(binary.LittleEndian.Uint64(b))
+		return signed64(b)
 	}
 	return 0
 }
@@ -428,7 +450,7 @@ func (it *podIter) bool() bool {
 // fd is an Fd field: the index into the message's fds, -1 for none.
 func (it *podIter) fd() int64 {
 	if b := it.fixed(typeFd, 8); b != nil {
-		return int64(binary.LittleEndian.Uint64(b))
+		return signed64(b)
 	}
 	return -1
 }

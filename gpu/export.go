@@ -10,6 +10,7 @@ import (
 	"unsafe"
 
 	"github.com/stubbedev/lys-lib/dmabuf"
+	"github.com/stubbedev/lys-lib/internal/intconv"
 	"github.com/stubbedev/lys-lib/third_party/vk"
 )
 
@@ -120,8 +121,8 @@ type exported struct {
 // layout the driver picks among the offered modifiers the device has
 // for use; none in common is an error naming both lists.
 func (d *Device) export(width, height int, format uint32, offered []uint64, use exportUse) (exported, error) {
-	if width <= 0 || height <= 0 {
-		return exported{}, fmt.Errorf("gpu: image size %dx%d is not positive", width, height)
+	if err := d.checkSize(width, height); err != nil {
+		return exported{}, err
 	}
 	if !d.exports {
 		return exported{}, ErrNoDmabuf
@@ -160,7 +161,7 @@ func (d *Device) export(width, height int, format uint32, offered []uint64, use 
 // dmabuf describing its planes, each plane with an fd of its own.
 func (e *exported) create(d *Device, width, height int, vf vk.Format, planes int, mods []uint64, usage vk.ImageUsageFlags) error {
 	modList := vk.ImageDrmFormatModifierListCreateInfoEXT{
-		SType: vk.StructureTypeImageDrmFormatModifierListCreateInfoExt, DrmFormatModifierCount: uint32(len(mods)), PDrmFormatModifiers: &mods[0],
+		SType: vk.StructureTypeImageDrmFormatModifierListCreateInfoExt, DrmFormatModifierCount: count(mods), PDrmFormatModifiers: &mods[0],
 	}
 	ext := vk.ExternalMemoryImageCreateInfo{
 		SType: vk.StructureTypeExternalMemoryImageCreateInfo, PNext: (*uintptr)(unsafe.Pointer(&modList)),
@@ -169,7 +170,7 @@ func (e *exported) create(d *Device, width, height int, vf vk.Format, planes int
 	ici := vk.ImageCreateInfo{
 		SType: vk.StructureTypeImageCreateInfo, PNext: (*uintptr)(unsafe.Pointer(&ext)),
 		ImageType: vk.ImageType2d, Format: vf,
-		Extent: vk.Extent3D{Width: uint32(width), Height: uint32(height), Depth: 1}, MipLevels: 1, ArrayLayers: 1,
+		Extent: extent3D(width, height), MipLevels: 1, ArrayLayers: 1,
 		Samples: vk.SampleCount1Bit, Tiling: vk.ImageTilingDrmFormatModifierExt,
 		Usage: usage, SharingMode: vk.SharingModeExclusive, InitialLayout: vk.ImageLayoutUndefined,
 	}
@@ -217,6 +218,14 @@ func (e *exported) create(d *Device, width, height int, vf vk.Format, planes int
 			return fmt.Errorf("%w: %s lays memory plane %d of a modifier %#x image at %d, inside the plane before (to %d)", errPlanesOverlap, d.name, i, mod.DrmFormatModifier, lay.Offset, end)
 		}
 		end = lay.Offset + lay.Size
+		offset, errOffset := intconv.To[uint32](lay.Offset)
+		stride, errStride := intconv.To[uint32](lay.RowPitch)
+		if err := errors.Join(errOffset, errStride); err != nil {
+			if i == 0 {
+				_ = syscall.Close(int(fd))
+			}
+			return fmt.Errorf("gpu: %s lays memory plane %d at offset %d, stride %d, past a dmabuf plane's 32 bits: %w", d.name, i, lay.Offset, lay.RowPitch, err)
+		}
 		planeFD := int(fd)
 		if i > 0 {
 			dup, err := syscall.Dup(int(fd))
@@ -225,7 +234,7 @@ func (e *exported) create(d *Device, width, height int, vf vk.Format, planes int
 			}
 			planeFD = dup
 		}
-		e.buf.Planes = append(e.buf.Planes, dmabuf.Plane{FD: planeFD, Offset: uint32(lay.Offset), Stride: uint32(lay.RowPitch)})
+		e.buf.Planes = append(e.buf.Planes, dmabuf.Plane{FD: planeFD, Offset: offset, Stride: stride})
 	}
 	return nil
 }
@@ -305,7 +314,7 @@ func (b *Buffer) ReadPixels() (*image.RGBA, error) {
 		fullBarrier(d, cb, b.e.image, vk.ImageLayoutGeneral, vk.ImageLayoutTransferSrcOptimal, vk.QueueFamilyForeignExt, d.family)
 		region := vk.BufferImageCopy{
 			ImageSubresource: vk.ImageSubresourceLayers{AspectMask: vk.ImageAspectFlags(vk.ImageAspectColorBit), LayerCount: 1},
-			ImageExtent:      vk.Extent3D{Width: uint32(w), Height: uint32(h), Depth: 1},
+			ImageExtent:      extent3D(w, h),
 		}
 		d.cmds.CmdCopyImageToBuffer(cb, b.e.image, vk.ImageLayoutTransferSrcOptimal, staging.buf, 1, &region)
 		fullBarrier(d, cb, b.e.image, vk.ImageLayoutTransferSrcOptimal, vk.ImageLayoutGeneral, d.family, vk.QueueFamilyForeignExt)

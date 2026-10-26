@@ -71,7 +71,7 @@ func barrier2(d *Device, cb vk.CommandBuffer, mem *vk.MemoryBarrier2, images ...
 		di.MemoryBarrierCount, di.PMemoryBarriers = 1, mem
 	}
 	if len(images) > 0 {
-		di.ImageMemoryBarrierCount, di.PImageMemoryBarriers = uint32(len(images)), &images[0]
+		di.ImageMemoryBarrierCount, di.PImageMemoryBarriers = count(images), &images[0]
 	}
 	d.cmds.CmdPipelineBarrier2(cb, &di)
 }

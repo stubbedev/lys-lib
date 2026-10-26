@@ -181,17 +181,19 @@ type node struct {
 }
 
 // newNode registers a node on k; export creates it on the server.
-func newNode(k *core, h nodeHandler, direction uint32, props []dictItem, portFlags uint64) *node {
+func newNode(k *core, h nodeHandler, direction uint32, props []dictItem, portFlags uint64) (*node, error) {
 	k.mu.Lock()
 	abi := k.abi
 	k.mu.Unlock()
 	n := &node{k: k, h: h, abi: abi, direction: direction, props: props, portFlags: portFlags, exported: make(chan struct{}), writeFd: -1}
 	n.wake[0] = 1
-	k.newObject(func(id uint32) objectHandler {
+	if err := k.newObject(func(id uint32) objectHandler {
 		n.id = id
 		return n
-	})
-	return n
+	}); err != nil {
+		return nil, err
+	}
+	return n, nil
 }
 
 // export creates the node on the server and waits until the server has
@@ -242,7 +244,7 @@ func (n *node) update() error {
 // appendInlineDict is a dict as the node and port infos carry it: the
 // count and the items inline, not in a Struct of their own.
 func appendInlineDict(fields []pod, items []dictItem) []pod {
-	fields = append(fields, podInt(int32(len(items))))
+	fields = append(fields, podCount(len(items)))
 	for _, it := range items {
 		fields = append(fields, podString(it.key), podString(it.value))
 	}
@@ -263,24 +265,24 @@ func (n *node) updatePort() error {
 	n.infos = params
 	n.mu.Unlock()
 
-	fields := []pod{podInt(int32(n.direction)), podInt(0), podInt(nodeUpdateParams | nodeUpdateInfo)}
+	fields := []pod{podUint(n.direction), podInt(0), podInt(nodeUpdateParams | nodeUpdateInfo)}
 	var pods []pod
 	for _, p := range params {
 		for _, b := range p.pods {
 			pods = append(pods, podRaw(b))
 		}
 	}
-	fields = append(fields, podInt(int32(len(pods))))
+	fields = append(fields, podCount(len(pods)))
 	fields = append(fields, pods...)
 	info := []pod{
 		podLong(portChangeMaskFlags | portChangeMaskRate | portChangeMaskParams),
-		podLong(int64(n.portFlags)),
+		podULong(n.portFlags),
 		podInt(0), podInt(1),
 	}
 	info = appendInlineDict(info, nil)
-	info = append(info, podInt(int32(len(params))))
+	info = append(info, podCount(len(params)))
 	for _, p := range params {
-		info = append(info, podID(p.id), podInt(int32(p.flags)))
+		info = append(info, podID(p.id), podUint(p.flags))
 	}
 	fields = append(fields, podStruct(info...))
 	_, err := n.k.c.send(n.id, nodeMethodPortUpdate, podStruct(fields...).bytes(), nil)
@@ -692,11 +694,14 @@ func (b *buffer) layMeta(typ, at, size uint32) error {
 // portBuffers announces the data the handler allocated, one fd per
 // buffer.
 func (n *node) portBuffers() error {
-	fields := []pod{podInt(int32(n.direction)), podInt(0), podInt(-1), podInt(int32(len(n.buffers)))}
+	if len(n.buffers) > maxFdsPerMessage {
+		return fmt.Errorf("pipewire: %d buffers, one fd each, exceed the %d fds a message carries", len(n.buffers), maxFdsPerMessage)
+	}
+	fields := []pod{podUint(n.direction), podInt(0), podInt(-1), podCount(len(n.buffers))}
 	fds := make([]int, 0, len(n.buffers))
 	for i := range n.buffers {
 		b := &n.buffers[i]
-		fields = append(fields, podInt(1), podID(b.dataType), podFd(len(fds)), podInt(int32(b.dataFlags)), podInt(0), podInt(int32(b.maxsize)))
+		fields = append(fields, podInt(1), podID(b.dataType), podFd(uint32(i)), podUint(b.dataFlags), podInt(0), podUint(b.maxsize))
 		fds = append(fds, b.fd)
 	}
 	_, err := n.k.c.send(n.id, nodeMethodPortBuffers, podStruct(fields...).bytes(), fds)
@@ -878,7 +883,7 @@ func (n *node) cycle() error {
 // times in.
 func (n *node) now() uint64 {
 	_ = unix.ClockGettime(unix.CLOCK_MONOTONIC, &n.ts)
-	return uint64(n.ts.Nano())
+	return uint64(max(n.ts.Nano(), 0))
 }
 
 // triggerTargets counts the node off each target's pending dependencies

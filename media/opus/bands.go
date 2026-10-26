@@ -141,7 +141,7 @@ func (q *bandCoder) stereoBand(i int, x, y []float32, b int) {
 			x2, y2 = y, x
 		}
 		if sbits != 0 {
-			q.rc.bits(uint32(b2i(x2[0]*y2[1]-x2[1]*y2[0] < 0)), 1)
+			q.rc.bits(b2u(x2[0]*y2[1]-x2[1]*y2[0] < 0), 1)
 		}
 		q.band(i, x2, mbits)
 		return
@@ -251,7 +251,7 @@ func (q *bandCoder) signBit(x []float32) {
 	if q.remaining < 1<<bitRes {
 		return
 	}
-	q.rc.bits(uint32(b2i(x[0] < 0)), 1)
+	q.rc.bits(b2u(x[0] < 0), 1)
 	q.remaining -= 1 << bitRes
 }
 
@@ -282,13 +282,13 @@ func (q *bandCoder) codeTheta(itheta, qn, n, b0 int, stereo bool) {
 		x0 := qn / 2
 		ft := p0*(x0+1) + x0
 		if itheta <= x0 {
-			q.rc.encode(uint32(p0*itheta), uint32(p0*(itheta+1)), uint32(ft))
+			q.rc.encode(sym(p0*itheta), sym(p0*(itheta+1)), sym(ft))
 		} else {
 			fl := (itheta - 1 - x0) + (x0+1)*p0
-			q.rc.encode(uint32(fl), uint32(fl+1), uint32(ft))
+			q.rc.encode(sym(fl), sym(fl+1), sym(ft))
 		}
 	case stereo || b0 > 1:
-		q.rc.uint(uint32(itheta), uint32(qn+1))
+		q.rc.uint(sym(itheta), sym(qn+1))
 	default:
 		ft := ((qn >> 1) + 1) * ((qn >> 1) + 1)
 		fs := qn + 1 - itheta
@@ -297,7 +297,7 @@ func (q *bandCoder) codeTheta(itheta, qn, n, b0 int, stereo bool) {
 			fs = itheta + 1
 			fl = itheta * (itheta + 1) >> 1
 		}
-		q.rc.encode(uint32(fl), uint32(fl+fs), uint32(ft))
+		q.rc.encode(sym(fl), sym(fl+fs), sym(ft))
 	}
 }
 
@@ -398,8 +398,12 @@ func computeQN(n, b, offset, pulseCap int, stereo bool) int {
 
 // fracMul16 is the reference's Q15 product of two 16-bit values.
 func fracMul16(a, b int) int {
-	return (16384 + int(int32(int16(a))*int32(int16(b)))) >> 15
+	return (16384 + sext16(a)*sext16(b)) >> 15
 }
+
+// sext16 is v's low 16 bits read as a signed 16-bit value, the
+// reference's opus_int16 cast.
+func sext16(v int) int { return (v&0xffff ^ 0x8000) - 0x8000 }
 
 // bitexactCos is the integer cosine both ends compute bit-exactly, as
 // it steers the allocation.
@@ -411,8 +415,8 @@ func bitexactCos(x int) int {
 
 // bitexactLog2Tan is log2(isin/icos) in Q11, bit-exactly.
 func bitexactLog2Tan(isin, icos int) int {
-	lc := ilog(uint32(icos))
-	ls := ilog(uint32(isin))
+	lc := ilog(sym(icos))
+	ls := ilog(sym(isin))
 	icos <<= 15 - lc
 	isin <<= 15 - ls
 	return (ls-lc)*(1<<11) + fracMul16(isin, fracMul16(isin, -2597)+7932) - fracMul16(icos, fracMul16(icos, -2597)+7932)

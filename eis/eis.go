@@ -186,7 +186,11 @@ func closeFds(oob []byte) {
 }
 
 func (s *server) send(w *writer) error {
-	_, err := s.conn.Write(w.bytes())
+	b := w.bytes()
+	if w.err != nil {
+		return w.err
+	}
+	_, err := s.conn.Write(b)
 	return err
 }
 

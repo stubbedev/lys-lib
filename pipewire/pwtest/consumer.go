@@ -2,6 +2,7 @@ package pwtest
 
 import (
 	"encoding/binary"
+	"math"
 	"os/exec"
 	"runtime"
 	"sync"
@@ -181,11 +182,12 @@ func anyBGRx() []byte {
 		mediaVideo, subtypeRaw, videoFormatBGRx = 2, 1, 8
 	)
 	le := binary.LittleEndian
+	size := func(b []byte) uint32 { return uint32(min(len(b), math.MaxUint32)) }
 	var body []byte
 	prop := func(key uint32, typ uint32, value []byte) {
 		body = le.AppendUint32(body, key)
 		body = le.AppendUint32(body, 0)
-		body = le.AppendUint32(body, uint32(len(value)))
+		body = le.AppendUint32(body, size(value))
 		body = le.AppendUint32(body, typ)
 		body = append(body, value...)
 		for len(body)%8 != 0 {
@@ -208,5 +210,5 @@ func anyBGRx() []byte {
 	prop(keyFormat, typeID, pairs(videoFormatBGRx))
 	prop(keySize, typeChoice, rangeOf(typeRectangle, 640, 480, 1, 1, 8192, 8192))
 	prop(keyRate, typeChoice, rangeOf(typeFraction, 30, 1, 0, 1, 1000, 1))
-	return append(pairs(uint32(len(body)), typeObject), body...)
+	return append(pairs(size(body), typeObject), body...)
 }

@@ -53,7 +53,7 @@ func laplaceEncode(rc *rangeEncoder, value *int, fs uint32, decay uint32) {
 			}
 			ndiMax = (ndiMax + sign) >> 1
 			di := min(val-i, ndiMax-1)
-			fl += uint32(2*di + 1 - sign)
+			fl += sym(2*di + 1 - sign)
 			fs = min(minP, 32768-fl)
 			*value = i + di
 			if neg {
@@ -142,7 +142,7 @@ func fineEnergy(rc *rangeEncoder, channels int, old, errs *[2][nbBands]float32, 
 		for c := range channels {
 			q2 := int(math.Floor(float64((errs[c][i] + 0.5) * float32(frac))))
 			q2 = max(0, min(q2, frac-1))
-			rc.bits(uint32(q2), uint(fine[i]))
+			rc.bits(sym(q2), uint(fine[i]))
 			offset := (float32(q2)+0.5)*float32(int(1)<<(14-fine[i]))/16384 - 0.5
 			old[c][i] += offset
 			errs[c][i] -= offset

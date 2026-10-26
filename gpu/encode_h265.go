@@ -5,6 +5,7 @@ import (
 	"math/bits"
 	"unsafe"
 
+	"github.com/stubbedev/lys-lib/internal/intconv"
 	"github.com/stubbedev/lys-lib/internal/nal"
 	"github.com/stubbedev/lys-lib/third_party/vk"
 )
@@ -90,7 +91,7 @@ func newH265Blocks(ctbs vk.VideoEncodeH265CtbSizeFlagsKHR, tbs vk.VideoEncodeH26
 // initQP the pictures' initial quantiser. Both backends build from it.
 func h265Header(cfg EncoderConfig, coded [2]int, level vk.StdVideoH265LevelIdc, blocks h265Blocks, amp, sao, temporalMVP, cuQPDelta bool, initQP int) nal.HEVC {
 	return nal.HEVC{
-		LevelIdc: uint8(h265Levels[level].idc), Width: coded[0], Height: coded[1],
+		LevelIdc: intconv.Must[uint8](h265Levels[level].idc), Width: coded[0], Height: coded[1],
 		ConfRight: (coded[0] - evenUp(cfg.Width)) / 2, ConfBottom: (coded[1] - evenUp(cfg.Height)) / 2,
 		Log2MaxPocLsb: min(max(4, bits.Len(uint(cfg.KeyInterval))+1), 16),
 		Log2MinCb:     blocks.minCB, Log2Ctb: blocks.ctb, Log2MinTb: blocks.minTB, Log2MaxTb: blocks.maxTB, TransformDepth: blocks.depth,
@@ -134,18 +135,18 @@ func newH265Params(h nal.HEVC, level vk.StdVideoH265LevelIdc) *h265Params {
 	p.sps = vk.StdVideoH265SequenceParameterSet{
 		Flags:                                flags,
 		ChromaFormatIdc:                      vk.StdVideoH265ChromaFormatIdc420,
-		PicWidthInLumaSamples:                uint32(h.Width),
-		PicHeightInLumaSamples:               uint32(h.Height),
-		Log2MaxPicOrderCntLsbMinus4:          uint8(h.Log2MaxPocLsb - 4),
-		Log2MinLumaCodingBlockSizeMinus3:     uint8(h.Log2MinCb - 3),
-		Log2DiffMaxMinLumaCodingBlockSize:    uint8(h.Log2Ctb - h.Log2MinCb),
-		Log2MinLumaTransformBlockSizeMinus2:  uint8(h.Log2MinTb - 2),
-		Log2DiffMaxMinLumaTransformBlockSize: uint8(h.Log2MaxTb - h.Log2MinTb),
-		MaxTransformHierarchyDepthInter:      uint8(h.TransformDepth),
-		MaxTransformHierarchyDepthIntra:      uint8(h.TransformDepth),
+		PicWidthInLumaSamples:                intconv.Must[uint32](h.Width),
+		PicHeightInLumaSamples:               intconv.Must[uint32](h.Height),
+		Log2MaxPicOrderCntLsbMinus4:          intconv.Must[uint8](h.Log2MaxPocLsb - 4),
+		Log2MinLumaCodingBlockSizeMinus3:     intconv.Must[uint8](h.Log2MinCb - 3),
+		Log2DiffMaxMinLumaCodingBlockSize:    intconv.Must[uint8](h.Log2Ctb - h.Log2MinCb),
+		Log2MinLumaTransformBlockSizeMinus2:  intconv.Must[uint8](h.Log2MinTb - 2),
+		Log2DiffMaxMinLumaTransformBlockSize: intconv.Must[uint8](h.Log2MaxTb - h.Log2MinTb),
+		MaxTransformHierarchyDepthInter:      intconv.Must[uint8](h.TransformDepth),
+		MaxTransformHierarchyDepthIntra:      intconv.Must[uint8](h.TransformDepth),
 		NumShortTermRefPicSets:               1,
-		ConfWinRightOffset:                   uint32(h.ConfRight),
-		ConfWinBottomOffset:                  uint32(h.ConfBottom),
+		ConfWinRightOffset:                   intconv.Must[uint32](h.ConfRight),
+		ConfWinBottomOffset:                  intconv.Must[uint32](h.ConfBottom),
 		PProfileTierLevel:                    &p.ptl,
 		PDecPicBufMgr:                        &p.dpb,
 		PShortTermRefPicSet:                  &p.rps,
@@ -155,7 +156,7 @@ func newH265Params(h nal.HEVC, level vk.StdVideoH265LevelIdc) *h265Params {
 	if h.CuQPDelta {
 		ppsFlags |= vk.StdVideoH265PpsCuQpDeltaEnabled
 	}
-	p.pps = vk.StdVideoH265PictureParameterSet{Flags: ppsFlags, InitQpMinus26: int8(h.InitQP - 26)}
+	p.pps = vk.StdVideoH265PictureParameterSet{Flags: ppsFlags, InitQpMinus26: intconv.Must[int8](h.InitQP - 26)}
 	return p
 }
 
@@ -190,22 +191,22 @@ func (p *h265Picture) fill(sinceIDR, prev, qp int, rps *vk.StdVideoH265ShortTerm
 		p.lists.RefPicList1[i] = vk.StdVideoH265NoReferencePicture
 	}
 	if !idr {
-		p.lists.RefPicList0[0] = uint8(prev)
+		p.lists.RefPicList0[0] = intconv.Must[uint8](prev)
 	}
 	p.info = vk.StdVideoEncodeH265PictureInfo{
-		Flags: flags, PicType: picType, PicOrderCntVal: int32(sinceIDR), PRefLists: &p.lists, PShortTermRefPicSet: rps,
+		Flags: flags, PicType: picType, PicOrderCntVal: intconv.Must[int32](sinceIDR), PRefLists: &p.lists, PShortTermRefPicSet: rps,
 	}
 	sliceFlags := vk.StdVideoEncodeH265SliceFirstInPic | vk.StdVideoEncodeH265SliceLoopFilterAcross
 	if sao {
 		sliceFlags |= vk.StdVideoEncodeH265SliceSaoLuma | vk.StdVideoEncodeH265SliceSaoChroma
 	}
 	p.slice = vk.StdVideoEncodeH265SliceSegmentHeader{Flags: sliceFlags, SliceType: sliceType, MaxNumMergeCand: 5}
-	p.ref = vk.StdVideoEncodeH265ReferenceInfo{PicType: vk.StdVideoH265PictureTypeP, PicOrderCntVal: int32(sinceIDR - 1)}
+	p.ref = vk.StdVideoEncodeH265ReferenceInfo{PicType: vk.StdVideoH265PictureTypeP, PicOrderCntVal: intconv.Must[int32](sinceIDR - 1)}
 	if sinceIDR == 1 {
 		p.ref.PicType = vk.StdVideoH265PictureTypeIdr
 	}
-	p.setup = vk.StdVideoEncodeH265ReferenceInfo{PicType: picType, PicOrderCntVal: int32(sinceIDR)}
-	p.nalu = vk.VideoEncodeH265NaluSliceSegmentInfoKHR{SType: vk.StructureTypeVideoEncodeH265NaluSliceSegmentInfoKhr, ConstantQp: int32(qp), PStdSliceSegmentHeader: &p.slice}
+	p.setup = vk.StdVideoEncodeH265ReferenceInfo{PicType: picType, PicOrderCntVal: intconv.Must[int32](sinceIDR)}
+	p.nalu = vk.VideoEncodeH265NaluSliceSegmentInfoKHR{SType: vk.StructureTypeVideoEncodeH265NaluSliceSegmentInfoKhr, ConstantQp: intconv.Must[int32](qp), PStdSliceSegmentHeader: &p.slice}
 	p.vkInfo = vk.VideoEncodeH265PictureInfoKHR{
 		SType: vk.StructureTypeVideoEncodeH265PictureInfoKhr, NaluSliceSegmentEntryCount: 1, PNaluSliceSegmentEntries: &p.nalu, PStdPictureInfo: &p.info,
 	}
@@ -277,7 +278,7 @@ func (c *h265Codec) rateControl(cfg EncoderConfig) unsafe.Pointer {
 	c.rc = vk.VideoEncodeH265RateControlInfoKHR{
 		SType:         vk.StructureTypeVideoEncodeH265RateControlInfoKhr,
 		Flags:         vk.VideoEncodeH265RateControlFlagsKHR(vk.VideoEncodeH265RateControlRegularGopBitKhr | vk.VideoEncodeH265RateControlReferencePatternFlatBitKhr),
-		GopFrameCount: uint32(cfg.KeyInterval), IdrPeriod: uint32(cfg.KeyInterval), SubLayerCount: 1,
+		GopFrameCount: intconv.Must[uint32](cfg.KeyInterval), IdrPeriod: intconv.Must[uint32](cfg.KeyInterval), SubLayerCount: 1,
 	}
 	return unsafe.Pointer(&c.rc)
 }

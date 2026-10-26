@@ -4,6 +4,13 @@
 // own (VA-API's, given packed headers) puts in the stream.
 package nal
 
+import (
+	"fmt"
+	"math"
+
+	"github.com/stubbedev/lys-lib/internal/intconv"
+)
+
 // Writer collects a NAL unit's RBSP bits, most significant first.
 type Writer struct {
 	buf  []byte
@@ -17,7 +24,7 @@ func (w *Writer) U(n uint, v uint32) {
 	w.bits += n
 	for w.bits >= 8 {
 		w.bits -= 8
-		w.buf = append(w.buf, byte(w.cur>>w.bits))
+		w.buf = append(w.buf, byte(w.cur>>w.bits&0xff))
 	}
 }
 
@@ -38,7 +45,35 @@ func (w *Writer) UE(v uint32) {
 		n++
 	}
 	w.U(n, 0)
-	w.U(n+1, uint32(x))
+	w.U(n+1, uint32(x&math.MaxUint32))
+}
+
+// UEInt writes v as ue(v) where the syntax element is held as a Go
+// int; a v below 0 or above 2^32-2 is a caller bug, and panics.
+func (w *Writer) UEInt(v int) {
+	if v < 0 || int64(v) >= math.MaxUint32 {
+		panic(fmt.Sprintf("nal: %d does not fit ue(v)", v))
+	}
+	w.UE(uint32(v))
+}
+
+// SEInt writes v as se(v) where the syntax element is held as a Go
+// int; a v outside int32 is a caller bug, and panics.
+func (w *Writer) SEInt(v int) {
+	if v < math.MinInt32 || v > math.MaxInt32 {
+		panic(fmt.Sprintf("nal: %d does not fit se(v)", v))
+	}
+	w.SE(int32(v))
+}
+
+// UInt writes v as u(n) where the syntax element is held as a Go int;
+// a v outside what n bits hold is a caller bug, and panics.
+func (w *Writer) UInt(n uint, v int) {
+	u, err := intconv.To[uint32](v)
+	if err != nil || n > 32 || uint64(u) >= 1<<n {
+		panic(fmt.Sprintf("nal: %d does not fit u(%d)", v, n))
+	}
+	w.U(n, u)
 }
 
 // SE writes v as a signed Exp-Golomb code, se(v).

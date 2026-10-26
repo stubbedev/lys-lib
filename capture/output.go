@@ -1,7 +1,11 @@
 package capture
 
 import (
+	"fmt"
+
 	"github.com/neurlang/wayland/wl"
+
+	"github.com/stubbedev/lys-lib/internal/intconv"
 )
 
 // Output is one wl_output as the capture connection sees it: the
@@ -35,12 +39,13 @@ type Output struct {
 
 // outputState tracks one bound wl_output as its events arrive.
 type outputState struct {
+	c      *Client
 	out    Output
 	global uint32
 }
 
 func (c *Client) addOutput(o *wl.Output, global uint32) {
-	st := &outputState{out: Output{Scale: 1, wl: o}, global: global}
+	st := &outputState{c: c, out: Output{Scale: 1, wl: o}, global: global}
 	c.outputs = append(c.outputs, st)
 	o.AddGeometryHandler(st)
 	o.AddModeHandler(st)
@@ -52,7 +57,14 @@ func (c *Client) addOutput(o *wl.Output, global uint32) {
 // HandleOutputGeometry implements wl.OutputGeometryHandler.
 func (s *outputState) HandleOutputGeometry(ev wl.OutputGeometryEvent) {
 	s.out.X, s.out.Y = ev.X, ev.Y
-	s.out.Transform = Transform(ev.Transform)
+	t, err := intconv.To[Transform](ev.Transform)
+	if err != nil {
+		if s.c.protoErr == nil {
+			s.c.protoErr = fmt.Errorf("capture: wl_output %d geometry transform: %w", s.global, err)
+		}
+		return
+	}
+	s.out.Transform = t
 }
 
 // HandleOutputMode implements wl.OutputModeHandler: only the current

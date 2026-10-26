@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+
+	"github.com/stubbedev/lys-lib/internal/intconv"
 )
 
 type bitReader struct {
@@ -45,10 +47,11 @@ func (r *bitReader) ue() uint32 {
 
 func (r *bitReader) se() int32 {
 	k := r.ue()
+	half := int32(k >> 1)
 	if k&1 == 1 {
-		return int32(k/2 + 1)
+		return half + 1
 	}
-	return -int32(k / 2)
+	return -half
 }
 
 func unescapeRBSP(nal []byte) []byte {
@@ -83,7 +86,7 @@ func parseAVCSPS(nal []byte) (avcSPS, error) {
 		return avcSPS{}, errors.New("mux: H.264 SPS is not an SPS NAL unit")
 	}
 	r := bitReader{b: unescapeRBSP(nal[1:])}
-	s := avcSPS{profile: uint8(r.u(8)), compat: uint8(r.u(8)), level: uint8(r.u(8)), chroma: 1}
+	s := avcSPS{profile: uint8(r.u(8) & 0xff), compat: uint8(r.u(8) & 0xff), level: uint8(r.u(8) & 0xff), chroma: 1}
 	r.ue()
 	separate := false
 	if avcHighProfiles[s.profile] {
@@ -137,6 +140,9 @@ func parseAVCSPS(nal []byte) (avcSPS, error) {
 	if r.short {
 		return avcSPS{}, errors.New("mux: H.264 SPS ends before the frame size")
 	}
+	if err := checkFormat(s.chroma, s.depthLuma, s.depthChroma); err != nil {
+		return avcSPS{}, fmt.Errorf("mux: H.264 SPS %w", err)
+	}
 	cropX, cropY := 1, 2-frameMbsOnly
 	if !separate && s.chroma != 0 {
 		subW, subH := 2, 2
@@ -168,20 +174,44 @@ func skipScalingList(r *bitReader, size int) {
 	}
 }
 
-func avcC(s avcSPS, sps, pps []byte) []byte {
-	b := []byte{1, s.profile, s.compat, s.level, 0xfc | (nalLenSize - 1), 0xe0 | 1}
-	b = appendNAL16(b, sps)
-	b = append(b, 1)
-	b = appendNAL16(b, pps)
-	if avcHighProfiles[s.profile] {
-		b = append(b, 0xfc|uint8(s.chroma), 0xf8|uint8(s.depthLuma), 0xf8|uint8(s.depthChroma), 0)
+func checkFormat(chroma, depthLuma, depthChroma uint32) error {
+	if chroma > 3 {
+		return fmt.Errorf("chroma_format_idc %d is past 3", chroma)
 	}
-	return b
+	if depthLuma > 8 || depthChroma > 8 {
+		return fmt.Errorf("bit depths %d and %d (minus 8) are past 8", depthLuma, depthChroma)
+	}
+	return nil
 }
 
-func appendNAL16(b, nal []byte) []byte {
-	b = binary.BigEndian.AppendUint16(b, uint16(len(nal)))
-	return append(b, nal...)
+func formatBytes(chroma, depthLuma, depthChroma uint32) (byte, byte, byte) {
+	return 0xfc | uint8(chroma&3), 0xf8 | uint8(depthLuma&7), 0xf8 | uint8(depthChroma&7)
+}
+
+func avcC(s avcSPS, sps, pps []byte) ([]byte, error) {
+	b := []byte{1, s.profile, s.compat, s.level, 0xfc | (nalLenSize - 1), 0xe0 | 1}
+	b, err := appendNAL16(b, sps)
+	if err != nil {
+		return nil, fmt.Errorf("mux: H.264 SPS: %w", err)
+	}
+	b = append(b, 1)
+	if b, err = appendNAL16(b, pps); err != nil {
+		return nil, fmt.Errorf("mux: H.264 PPS: %w", err)
+	}
+	if avcHighProfiles[s.profile] {
+		chroma, luma, depthChroma := formatBytes(s.chroma, s.depthLuma, s.depthChroma)
+		b = append(b, chroma, luma, depthChroma, 0)
+	}
+	return b, nil
+}
+
+func appendNAL16(b, nal []byte) ([]byte, error) {
+	size, err := intconv.To[uint16](len(nal))
+	if err != nil {
+		return nil, fmt.Errorf("%d bytes is past the 16-bit parameter set length: %w", len(nal), err)
+	}
+	b = binary.BigEndian.AppendUint16(b, size)
+	return append(b, nal...), nil
 }
 
 const hevcPTLGeneral = 12
@@ -239,6 +269,9 @@ func parseHEVCSPS(nal []byte) (hevcSPS, error) {
 	if r.short {
 		return hevcSPS{}, errors.New("mux: H.265 SPS ends before the bit depths")
 	}
+	if err := checkFormat(s.chroma, s.depthLuma, s.depthChroma); err != nil {
+		return hevcSPS{}, fmt.Errorf("mux: H.265 SPS %w", err)
+	}
 	subW, subH := 1, 1
 	if !separate {
 		switch s.chroma {
@@ -256,9 +289,10 @@ func parseHEVCSPS(nal []byte) (hevcSPS, error) {
 	return s, nil
 }
 
-func hvcC(s hevcSPS, vps, sps, pps []byte) []byte {
+func hvcC(s hevcSPS, vps, sps, pps []byte) ([]byte, error) {
 	b := append([]byte{1}, s.ptl[:]...)
-	b = append(b, 0xf0, 0, 0xfc, 0xfc|uint8(s.chroma), 0xf8|uint8(s.depthLuma), 0xf8|uint8(s.depthChroma), 0, 0)
+	chroma, luma, depthChroma := formatBytes(s.chroma, s.depthLuma, s.depthChroma)
+	b = append(b, 0xf0, 0, 0xfc, chroma, luma, depthChroma, 0, 0)
 	nested := uint8(0)
 	if s.temporalNested {
 		nested = 1
@@ -266,7 +300,10 @@ func hvcC(s hevcSPS, vps, sps, pps []byte) []byte {
 	b = append(b, s.temporalLayers<<3|nested<<2|(nalLenSize-1), 3)
 	for _, ps := range [][]byte{vps, sps, pps} {
 		b = append(b, 0x80|nalTypeH265(ps), 0, 1)
-		b = appendNAL16(b, ps)
+		var err error
+		if b, err = appendNAL16(b, ps); err != nil {
+			return nil, fmt.Errorf("mux: H.265 parameter set: %w", err)
+		}
 	}
-	return b
+	return b, nil
 }

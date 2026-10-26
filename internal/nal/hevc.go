@@ -81,26 +81,26 @@ func (h *HEVC) SPS() []byte {
 	h.profileTierLevel(&w)
 	w.UE(0)
 	w.UE(1)
-	w.UE(uint32(h.Width))
-	w.UE(uint32(h.Height))
+	w.UEInt(h.Width)
+	w.UEInt(h.Height)
 	conf := h.ConfRight != 0 || h.ConfBottom != 0
 	w.Flag(conf)
 	if conf {
 		w.UE(0)
-		w.UE(uint32(h.ConfRight))
+		w.UEInt(h.ConfRight)
 		w.UE(0)
-		w.UE(uint32(h.ConfBottom))
+		w.UEInt(h.ConfBottom)
 	}
 	w.UE(0)
 	w.UE(0)
-	w.UE(uint32(h.Log2MaxPocLsb - 4))
+	w.UEInt(h.Log2MaxPocLsb - 4)
 	subLayerOrdering(&w)
-	w.UE(uint32(h.Log2MinCb - 3))
-	w.UE(uint32(h.Log2Ctb - h.Log2MinCb))
-	w.UE(uint32(h.Log2MinTb - 2))
-	w.UE(uint32(h.Log2MaxTb - h.Log2MinTb))
-	w.UE(uint32(h.TransformDepth))
-	w.UE(uint32(h.TransformDepth))
+	w.UEInt(h.Log2MinCb - 3)
+	w.UEInt(h.Log2Ctb - h.Log2MinCb)
+	w.UEInt(h.Log2MinTb - 2)
+	w.UEInt(h.Log2MaxTb - h.Log2MinTb)
+	w.UEInt(h.TransformDepth)
+	w.UEInt(h.TransformDepth)
 	w.Flag(false)
 	w.Flag(h.AMP)
 	w.Flag(h.SAO)
@@ -172,7 +172,7 @@ func (h *HEVC) SliceHeader(sinceIDR int, gpb bool, qp int) (unit []byte, bits in
 		w.UE(1)
 	}
 	if !idr {
-		w.U(uint(h.Log2MaxPocLsb), uint32(sinceIDR%(1<<h.Log2MaxPocLsb)))
+		w.UInt(uint(h.Log2MaxPocLsb), sinceIDR%(1<<h.Log2MaxPocLsb))
 		w.Flag(true)
 		if h.TemporalMVP {
 			w.Flag(true)
@@ -192,7 +192,7 @@ func (h *HEVC) SliceHeader(sinceIDR int, gpb bool, qp int) (unit []byte, bits in
 		}
 		w.UE(0)
 	}
-	w.SE(int32(qp - h.InitQP))
+	w.SEInt(qp - h.InitQP)
 	w.Flag(false)
 	w.Trailing()
 	if idr {
@@ -213,7 +213,7 @@ func (h *HEVC) PPS() []byte {
 	w.Flag(false)
 	w.UE(0)
 	w.UE(0)
-	w.SE(int32(h.InitQP - 26))
+	w.SEInt(h.InitQP - 26)
 	w.Flag(false)
 	w.Flag(false)
 	w.Flag(h.CuQPDelta)

@@ -4,6 +4,7 @@ package dmabufwl
 
 import (
 	"fmt"
+	"math"
 
 	"github.com/stubbedev/lys-lib/dmabuf"
 	"github.com/stubbedev/lys-lib/wlr"
@@ -19,7 +20,7 @@ func Params(mgr *wlr.ZwpDmabufV1, b dmabuf.Buffer) (*wlr.ZwpBufferParamsV1, erro
 	if err != nil {
 		return nil, fmt.Errorf("dmabuf: create params: %w", err)
 	}
-	hi, lo := uint32(b.Modifier>>32), uint32(b.Modifier)
+	hi, lo := uint32(b.Modifier>>32), uint32(b.Modifier&math.MaxUint32)
 	for i, p := range b.Planes {
 		if err := params.Add(uintptr(p.FD), uint32(i), p.Offset, p.Stride, hi, lo); err != nil {
 			_ = params.Destroy()

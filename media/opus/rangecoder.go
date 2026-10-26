@@ -51,7 +51,7 @@ func (e *rangeEncoder) writeByte(v int) {
 		e.failed = true
 		return
 	}
-	e.buf[e.offs] = byte(v)
+	e.buf[e.offs] = byte(v & 0xff)
 	e.offs++
 }
 
@@ -61,7 +61,7 @@ func (e *rangeEncoder) writeByteAtEnd(v uint32) {
 		return
 	}
 	e.endOffs++
-	e.buf[len(e.buf)-e.endOffs] = byte(v)
+	e.buf[len(e.buf)-e.endOffs] = byte(v & 0xff)
 }
 
 // carryOut emits a symbol, holding back runs of 0xFF until a carry

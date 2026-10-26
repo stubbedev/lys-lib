@@ -8,12 +8,15 @@ package va
 import (
 	"errors"
 	"fmt"
+	"math"
 	"runtime"
 	"sync"
 	"unsafe"
 
 	"github.com/ebitengine/purego"
 	"golang.org/x/sys/unix"
+
+	"github.com/stubbedev/lys-lib/internal/intconv"
 )
 
 // ErrNoLibrary reports that libva or libva-drm is not installed.
@@ -147,7 +150,12 @@ func Open(path string) (*Display, error) {
 	if err != nil {
 		return nil, fmt.Errorf("va: open %s: %w", path, err)
 	}
-	dpy := lib.getDisplayDRM(int32(fd))
+	cfd, err := intconv.To[int32](fd)
+	if err != nil {
+		_ = unix.Close(fd)
+		return nil, fmt.Errorf("va: fd of %s: %w", path, err)
+	}
+	dpy := lib.getDisplayDRM(cfd)
 	if dpy == 0 {
 		_ = unix.Close(fd)
 		return nil, fmt.Errorf("va: no display on %s", path)
@@ -187,7 +195,11 @@ func (d *Display) Entrypoints(profile int32) []int32 {
 // ConfigAttributes reads the driver's value for each of attribs'
 // types, in place: AttribNotSupported where it has none.
 func (d *Display) ConfigAttributes(profile, entrypoint int32, attribs []ConfigAttrib) error {
-	return check("vaGetConfigAttributes", lib.getConfigAttribs(d.dpy, profile, entrypoint, &attribs[0], int32(len(attribs))))
+	n, err := intconv.To[int32](len(attribs))
+	if err != nil {
+		return fmt.Errorf("va: %d config attributes: %w", len(attribs), err)
+	}
+	return check("vaGetConfigAttributes", lib.getConfigAttribs(d.dpy, profile, entrypoint, &attribs[0], n))
 }
 
 // CreateConfig makes an encode configuration.
@@ -197,7 +209,11 @@ func (d *Display) CreateConfig(profile, entrypoint int32, attribs []ConfigAttrib
 	if len(attribs) > 0 {
 		p = &attribs[0]
 	}
-	return id, check("vaCreateConfig", lib.createConfig(d.dpy, profile, entrypoint, p, int32(len(attribs)), &id))
+	n, err := intconv.To[int32](len(attribs))
+	if err != nil {
+		return 0, fmt.Errorf("va: %d config attributes: %w", len(attribs), err)
+	}
+	return id, check("vaCreateConfig", lib.createConfig(d.dpy, profile, entrypoint, p, n, &id))
 }
 
 // DestroyConfig releases a configuration.
@@ -205,8 +221,16 @@ func (d *Display) DestroyConfig(id uint32) { _ = lib.destroyConfig(d.dpy, id) }
 
 // CreateSurfaces makes n driver-allocated surfaces of format.
 func (d *Display) CreateSurfaces(format uint32, width, height, n int) ([]uint32, error) {
+	w, h, err := size[uint32](width, height)
+	if err != nil {
+		return nil, err
+	}
+	count, err := intconv.To[uint32](n)
+	if err != nil {
+		return nil, fmt.Errorf("va: %d surfaces: %w", n, err)
+	}
 	ids := make([]uint32, n)
-	return ids, check("vaCreateSurfaces", lib.createSurfaces(d.dpy, format, uint32(width), uint32(height), &ids[0], uint32(n), nil, 0))
+	return ids, check("vaCreateSurfaces", lib.createSurfaces(d.dpy, format, w, h, &ids[0], count, nil, 0))
 }
 
 // ImportSurface wraps a dmabuf desc describes as a surface, with no
@@ -236,7 +260,7 @@ func (d *Display) SurfaceSizes(config uint32) (minW, minH, maxW, maxH int, err e
 		return 0, 0, 0, 0, err
 	}
 	for _, a := range attribs[:n] {
-		v := int(int32(a.Value.Value))
+		v := int(a.Value.integer())
 		switch a.Type {
 		case SurfaceAttribMinWidth:
 			minW = v
@@ -267,8 +291,12 @@ func (d *Display) ExportSurface(id uint32) (DRMPRIMESurfaceDescriptor, error) {
 // CPU; the caller unmaps img.Buf and destroys the image.
 func (d *Display) nv12Image(width, height int) (Image, []byte, error) {
 	format := ImageFormat{Fourcc: FourccNV12, ByteOrder: 1, BitsPerPixel: 12}
+	w, h, err := size[int32](width, height)
+	if err != nil {
+		return Image{}, nil, err
+	}
 	var img Image
-	if err := check("vaCreateImage", lib.createImage(d.dpy, &format, int32(width), int32(height), &img)); err != nil {
+	if err := check("vaCreateImage", lib.createImage(d.dpy, &format, w, h, &img)); err != nil {
 		return Image{}, nil, err
 	}
 	p, err := d.MapBuffer(img.Buf)
@@ -300,7 +328,12 @@ func (d *Display) ReadNV12(id uint32, width, height int) ([]byte, error) {
 		return nil, err
 	}
 	defer lib.destroyImage(d.dpy, img.ImageID)
-	if err := check("vaGetImage", lib.getImage(d.dpy, id, 0, 0, uint32(width), uint32(height), img.ImageID)); err != nil {
+	w, h, err := size[uint32](width, height)
+	if err != nil {
+		_ = d.UnmapBuffer(img.Buf)
+		return nil, err
+	}
+	if err := check("vaGetImage", lib.getImage(d.dpy, id, 0, 0, w, h, img.ImageID)); err != nil {
 		_ = d.UnmapBuffer(img.Buf)
 		return nil, err
 	}
@@ -325,20 +358,35 @@ func (d *Display) WriteNV12(id uint32, width, height int, pix []byte) error {
 	if err := d.UnmapBuffer(img.Buf); err != nil {
 		return err
 	}
-	return check("vaPutImage", lib.putImage(d.dpy, id, img.ImageID, 0, 0, uint32(width), uint32(height), 0, 0, uint32(width), uint32(height)))
+	w, h, err := size[uint32](width, height)
+	if err != nil {
+		return err
+	}
+	return check("vaPutImage", lib.putImage(d.dpy, id, img.ImageID, 0, 0, w, h, 0, 0, w, h))
 }
 
-// DestroySurfaces releases surfaces.
+// DestroySurfaces releases surfaces, as many a call as vaDestroySurfaces
+// counts.
 func (d *Display) DestroySurfaces(ids []uint32) {
-	if len(ids) > 0 {
-		_ = lib.destroySurfaces(d.dpy, &ids[0], int32(len(ids)))
+	for len(ids) > 0 {
+		n := min(len(ids), math.MaxInt32)
+		_ = lib.destroySurfaces(d.dpy, &ids[0], int32(n))
+		ids = ids[n:]
 	}
 }
 
 // CreateContext makes an encode context for config over targets.
 func (d *Display) CreateContext(config uint32, width, height int, targets []uint32) (uint32, error) {
+	w, h, err := size[int32](width, height)
+	if err != nil {
+		return 0, err
+	}
+	n, err := intconv.To[int32](len(targets))
+	if err != nil {
+		return 0, fmt.Errorf("va: a context over %d surfaces: %w", len(targets), err)
+	}
 	var id uint32
-	return id, check("vaCreateContext", lib.createContext(d.dpy, config, int32(width), int32(height), 1, &targets[0], int32(len(targets)), &id))
+	return id, check("vaCreateContext", lib.createContext(d.dpy, config, w, h, 1, &targets[0], n, &id))
 }
 
 // DestroyContext releases a context.
@@ -347,8 +395,12 @@ func (d *Display) DestroyContext(id uint32) { _ = lib.destroyContext(d.dpy, id) 
 // CreateBuffer makes a buffer of typ for context holding size bytes,
 // copied from data unless nil.
 func (d *Display) CreateBuffer(context uint32, typ int32, size int, data unsafe.Pointer) (uint32, error) {
+	n, err := intconv.To[uint32](size)
+	if err != nil {
+		return 0, fmt.Errorf("va: a %d-byte buffer: %w", size, err)
+	}
 	var id uint32
-	return id, check("vaCreateBuffer", lib.createBuffer(d.dpy, context, typ, uint32(size), 1, data, &id))
+	return id, check("vaCreateBuffer", lib.createBuffer(d.dpy, context, typ, n, 1, data, &id))
 }
 
 // CreateMiscBuffer makes a miscellaneous encode parameter buffer for
@@ -400,7 +452,11 @@ func (d *Display) Encode(context, target uint32, bufs []uint32) error {
 	if err := check("vaBeginPicture", lib.beginPicture(d.dpy, context, target)); err != nil {
 		return err
 	}
-	if err := check("vaRenderPicture", lib.renderPicture(d.dpy, context, &bufs[0], int32(len(bufs)))); err != nil {
+	n, err := intconv.To[int32](len(bufs))
+	if err != nil {
+		return fmt.Errorf("va: render %d buffers: %w", len(bufs), err)
+	}
+	if err := check("vaRenderPicture", lib.renderPicture(d.dpy, context, &bufs[0], n)); err != nil {
 		return err
 	}
 	return check("vaEndPicture", lib.endPicture(d.dpy, context))
@@ -410,3 +466,18 @@ func (d *Display) Encode(context, target uint32, bufs []uint32) error {
 func (d *Display) SyncSurface(id uint32) error {
 	return check("vaSyncSurface", lib.syncSurface(d.dpy, id))
 }
+
+// size is a width x height size in the integer type a libva call takes
+// it in, or an error naming it when the type cannot hold it.
+func size[T int32 | uint32](width, height int) (w, h T, err error) {
+	w, errW := intconv.To[T](width)
+	h, errH := intconv.To[T](height)
+	if err := errors.Join(errW, errH); err != nil {
+		return 0, 0, fmt.Errorf("va: size %dx%d: %w", width, height, err)
+	}
+	return w, h, nil
+}
+
+// integer is the value's integer member: the union's first four bytes,
+// where VAGenericValue keeps its int i.
+func (v *GenericValue) integer() int32 { return *(*int32)(unsafe.Pointer(&v.Value)) }

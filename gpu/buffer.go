@@ -5,6 +5,7 @@ import (
 	"runtime"
 	"unsafe"
 
+	"github.com/stubbedev/lys-lib/internal/intconv"
 	"github.com/stubbedev/lys-lib/third_party/vk"
 )
 
@@ -50,8 +51,12 @@ func (d *Device) newReadBuffer(size int, usage vk.BufferUsageFlagBits, next unsa
 // newMappedBuffer allocates size bytes for usage in memory with every
 // flag in want, mapped.
 func (d *Device) newMappedBuffer(size int, usage vk.BufferUsageFlagBits, next unsafe.Pointer, want vk.MemoryPropertyFlagBits) (*buffer, error) {
+	bytes, err := deviceSize(size)
+	if err != nil {
+		return nil, err
+	}
 	b := &buffer{d: d, usage: usage}
-	bci := vk.BufferCreateInfo{SType: vk.StructureTypeBufferCreateInfo, PNext: (*uintptr)(next), Size: vk.DeviceSize(size), Usage: vk.BufferUsageFlags(usage), SharingMode: vk.SharingModeExclusive}
+	bci := vk.BufferCreateInfo{SType: vk.StructureTypeBufferCreateInfo, PNext: (*uintptr)(next), Size: bytes, Usage: flags[vk.BufferUsageFlags](usage), SharingMode: vk.SharingModeExclusive}
 	if r := d.cmds.CreateBuffer(d.device, &bci, nil, &b.buf); r != vk.Success {
 		return nil, fmt.Errorf("gpu: vkCreateBuffer %d bytes: %d", size, r)
 	}
@@ -73,7 +78,7 @@ func (d *Device) newMappedBuffer(size int, usage vk.BufferUsageFlagBits, next un
 	defer pin.Unpin()
 	ptr := new(unsafe.Pointer)
 	pin.Pin(ptr)
-	if r := d.cmds.MapMemory(d.device, b.memory, 0, vk.DeviceSize(size), 0, uintptr(unsafe.Pointer(ptr))); r != vk.Success {
+	if r := d.cmds.MapMemory(d.device, b.memory, 0, bytes, 0, uintptr(unsafe.Pointer(ptr))); r != vk.Success {
 		b.close()
 		return nil, fmt.Errorf("gpu: vkMapMemory %d bytes: %d", size, r)
 	}
@@ -134,8 +139,12 @@ type deviceBuffer struct {
 
 // newDeviceBuffer allocates size device-local bytes for usage.
 func (d *Device) newDeviceBuffer(size int, usage vk.BufferUsageFlagBits) (*deviceBuffer, error) {
+	bytes, err := deviceSize(size)
+	if err != nil {
+		return nil, err
+	}
 	b := &deviceBuffer{d: d}
-	bci := vk.BufferCreateInfo{SType: vk.StructureTypeBufferCreateInfo, Size: vk.DeviceSize(size), Usage: vk.BufferUsageFlags(usage), SharingMode: vk.SharingModeExclusive}
+	bci := vk.BufferCreateInfo{SType: vk.StructureTypeBufferCreateInfo, Size: bytes, Usage: flags[vk.BufferUsageFlags](usage), SharingMode: vk.SharingModeExclusive}
 	if r := d.cmds.CreateBuffer(d.device, &bci, nil, &b.buf); r != vk.Success {
 		return nil, fmt.Errorf("gpu: vkCreateBuffer %d bytes: %d", size, r)
 	}
@@ -164,4 +173,14 @@ func (b *deviceBuffer) close() {
 		d.cmds.FreeMemory(d.device, b.memory, nil)
 		b.memory = 0
 	}
+}
+
+// deviceSize is a buffer's size in bytes as Vulkan takes it, or an
+// error naming it when it is negative.
+func deviceSize(size int) (vk.DeviceSize, error) {
+	n, err := intconv.To[vk.DeviceSize](size)
+	if err != nil {
+		return 0, fmt.Errorf("gpu: buffer of %d bytes: %w", size, err)
+	}
+	return n, nil
 }

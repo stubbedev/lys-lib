@@ -44,21 +44,21 @@ func (h *H264) SPS() []byte {
 		w.Flag(false)
 		w.Flag(false)
 	}
-	w.UE(uint32(h.Log2MaxFrameNum - 4))
+	w.UEInt(h.Log2MaxFrameNum - 4)
 	w.UE(2)
-	w.UE(uint32(h.MaxNumRefFrames))
+	w.UEInt(h.MaxNumRefFrames)
 	w.Flag(false)
-	w.UE(uint32(h.WidthMbs - 1))
-	w.UE(uint32(h.HeightMbs - 1))
+	w.UEInt(h.WidthMbs - 1)
+	w.UEInt(h.HeightMbs - 1)
 	w.Flag(true)
 	w.Flag(true)
 	crop := h.CropRight != 0 || h.CropBottom != 0
 	w.Flag(crop)
 	if crop {
 		w.UE(0)
-		w.UE(uint32(h.CropRight))
+		w.UEInt(h.CropRight)
 		w.UE(0)
-		w.UE(uint32(h.CropBottom))
+		w.UEInt(h.CropBottom)
 	}
 	w.Flag(true)
 	h.vui(&w)
@@ -90,7 +90,7 @@ func (h *H264) vui(w *Writer) {
 	w.UE(15)
 	w.UE(15)
 	w.UE(0)
-	w.UE(uint32(h.MaxNumRefFrames))
+	w.UEInt(h.MaxNumRefFrames)
 }
 
 // SliceHeader is the slice header (7.3.3) of the picture sinceIDR
@@ -109,9 +109,9 @@ func (h *H264) SliceHeader(sinceIDR, idrPicID, qp int) (unit []byte, bits int) {
 		w.UE(5)
 	}
 	w.UE(0)
-	w.U(uint(h.Log2MaxFrameNum), uint32(sinceIDR))
+	w.UInt(uint(h.Log2MaxFrameNum), sinceIDR)
 	if idr {
-		w.UE(uint32(idrPicID))
+		w.UEInt(idrPicID)
 		w.Flag(false)
 		w.Flag(false)
 	} else {
@@ -122,7 +122,7 @@ func (h *H264) SliceHeader(sinceIDR, idrPicID, qp int) (unit []byte, bits int) {
 			w.UE(0)
 		}
 	}
-	w.SE(int32(qp - h.InitQP))
+	w.SEInt(qp - h.InitQP)
 	if idr {
 		return w.Packed(0x65)
 	}
@@ -141,7 +141,7 @@ func (h *H264) PPS() []byte {
 	w.UE(0)
 	w.Flag(false)
 	w.U(2, 0)
-	w.SE(int32(h.InitQP - 26))
+	w.SEInt(h.InitQP - 26)
 	w.SE(0)
 	w.SE(0)
 	w.Flag(false)

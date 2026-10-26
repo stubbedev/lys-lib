@@ -20,6 +20,8 @@ import (
 	"fmt"
 	"math/bits"
 	"time"
+
+	"github.com/stubbedev/lys-lib/internal/intconv"
 )
 
 // Track describes one stream of a file: H264, H265 or Opus.
@@ -75,7 +77,7 @@ const (
 
 type track struct {
 	codec         codec
-	width, height int
+	width, height uint16
 	config        []byte
 	params        [][]byte
 	channels      uint8
@@ -112,9 +114,17 @@ func (h H264) describe() (track, error) {
 	if len(h.PPS) == 0 || nalTypeH264(h.PPS) != nalH264PPS {
 		return track{}, errors.New("mux: H.264 PPS is not a PPS NAL unit")
 	}
+	width, height, err := frameSize(sps.width, sps.height)
+	if err != nil {
+		return track{}, fmt.Errorf("mux: H.264 %w", err)
+	}
+	config, err := avcC(sps, h.SPS, h.PPS)
+	if err != nil {
+		return track{}, err
+	}
 	return track{
-		codec: codecH264, width: sps.width, height: sps.height,
-		config: avcC(sps, h.SPS, h.PPS), params: [][]byte{h.SPS, h.PPS},
+		codec: codecH264, width: width, height: height,
+		config: config, params: [][]byte{h.SPS, h.PPS},
 	}, nil
 }
 
@@ -129,10 +139,27 @@ func (h H265) describe() (track, error) {
 	if len(h.PPS) < 2 || nalTypeH265(h.PPS) != nalH265PPS {
 		return track{}, errors.New("mux: H.265 PPS is not a PPS NAL unit")
 	}
+	width, height, err := frameSize(sps.width, sps.height)
+	if err != nil {
+		return track{}, fmt.Errorf("mux: H.265 %w", err)
+	}
+	config, err := hvcC(sps, h.VPS, h.SPS, h.PPS)
+	if err != nil {
+		return track{}, err
+	}
 	return track{
-		codec: codecH265, width: sps.width, height: sps.height,
-		config: hvcC(sps, h.VPS, h.SPS, h.PPS), params: [][]byte{h.VPS, h.SPS, h.PPS},
+		codec: codecH265, width: width, height: height,
+		config: config, params: [][]byte{h.VPS, h.SPS, h.PPS},
 	}, nil
+}
+
+func frameSize(w, h int) (width, height uint16, err error) {
+	width, errW := intconv.To[uint16](w)
+	height, errH := intconv.To[uint16](h)
+	if err := errors.Join(errW, errH); err != nil {
+		return 0, 0, fmt.Errorf("frame size %dx%d is past MP4's 16-bit sample entry: %w", w, h, err)
+	}
+	return width, height, nil
 }
 
 func (o Opus) describe() (track, error) {
@@ -243,7 +270,11 @@ func (t *track) payload(dst, data []byte) ([]byte, bool, error) {
 		case typ == nalKey:
 			key = true
 		}
-		dst = binary.BigEndian.AppendUint32(dst, uint32(len(nal)))
+		size, err := intconv.To[uint32](len(nal))
+		if err != nil {
+			return fmt.Errorf("NAL unit of %d bytes: %w", len(nal), err)
+		}
+		dst = binary.BigEndian.AppendUint32(dst, size)
 		dst = append(dst, nal...)
 		return nil
 	})
@@ -333,7 +364,7 @@ func annexB(au []byte, each func(nal []byte) error) error {
 }
 
 func ticks(d time.Duration, hz uint32) uint64 {
-	hi, lo := bits.Mul64(uint64(d), uint64(hz))
+	hi, lo := bits.Mul64(intconv.Must[uint64](d), uint64(hz))
 	q, _ := bits.Div64(hi, lo, uint64(time.Second))
 	return q
 }

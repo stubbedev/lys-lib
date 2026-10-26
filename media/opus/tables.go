@@ -119,7 +119,7 @@ const (
 
 // eProbModel is the Laplace model (probability of zero, decay; Q8) per
 // band for 20 ms frames, inter then intra.
-var eProbModel = [2][42]int{
+var eProbModel = [2][42]uint8{
 	{
 		42, 121, 96, 66, 108, 43, 111, 40, 117, 44, 123, 32, 120, 36,
 		119, 33, 127, 33, 134, 34, 139, 21, 147, 23, 152, 20, 158, 25,

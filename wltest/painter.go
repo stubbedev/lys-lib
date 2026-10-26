@@ -2,6 +2,7 @@ package wltest
 
 import (
 	"encoding/binary"
+	"errors"
 	"fmt"
 	"image/color"
 	"sync"
@@ -12,6 +13,7 @@ import (
 	"github.com/neurlang/wayland/xdg"
 	"golang.org/x/sys/unix"
 
+	"github.com/stubbedev/lys-lib/internal/intconv"
 	"github.com/stubbedev/lys-lib/wlr"
 )
 
@@ -140,7 +142,12 @@ func (p *Painter) Layer(anchor uint32, w, h int32, c color.RGBA) {
 	}
 	s.layer = ls
 	ls.AddConfigureHandler(s)
-	if err := ls.SetSize(uint32(w), uint32(h)); err != nil {
+	sw, errW := intconv.To[uint32](w)
+	sh, errH := intconv.To[uint32](h)
+	if err := errors.Join(errW, errH); err != nil {
+		p.t.Fatalf("wltest: layer size %dx%d: %v", w, h, err)
+	}
+	if err := ls.SetSize(sw, sh); err != nil {
 		p.t.Fatal(err)
 	}
 	if err := ls.SetAnchor(anchor); err != nil {
@@ -221,7 +228,13 @@ func (p *Painter) Run() {
 // HandleZwlrLayerSurfaceV1Configure paints the layer at its size.
 func (s *painted) HandleZwlrLayerSurfaceV1Configure(ev wlr.ZwlrLayerSurfaceV1ConfigureEvent) {
 	s.p.fail(s.layer.AckConfigure(ev.Serial))
-	s.w, s.h = int32(ev.Width), int32(ev.Height)
+	w, errW := intconv.To[int32](ev.Width)
+	h, errH := intconv.To[int32](ev.Height)
+	if err := errors.Join(errW, errH); err != nil {
+		s.p.fail(fmt.Errorf("wltest: layer configure %dx%d: %w", ev.Width, ev.Height, err))
+		return
+	}
+	s.w, s.h = w, h
 	s.p.fail(s.paint())
 }
 
