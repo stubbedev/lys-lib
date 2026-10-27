@@ -675,3 +675,58 @@ func TestRenderRefract(t *testing.T) {
 		}
 	}
 }
+
+// CopyRects brings a target up to date from another: the rects copied
+// take the source's pixels, everything else keeps its own, for exported
+// targets (the source read in place, as if on screen) and offscreen
+// ones alike (#14).
+func TestCopyRectsBetweenTargets(t *testing.T) {
+	d := openDevice(t)
+	newTarget := map[string]func() (*Target, error){
+		"offscreen": func() (*Target, error) { return d.NewOffscreen(32, 16) },
+	}
+	if d.Exports() {
+		mods, err := d.Modifiers(dmabuf.FormatARGB8888)
+		if err != nil {
+			t.Fatal(err)
+		}
+		newTarget["exported"] = func() (*Target, error) { return d.NewTarget(32, 16, dmabuf.FormatARGB8888, mods) }
+	}
+	for name, open := range newTarget {
+		t.Run(name, func(t *testing.T) {
+			fill := func(col render.Color) *Target {
+				tg, err := open()
+				if err != nil {
+					t.Fatal(err)
+				}
+				t.Cleanup(tg.Close)
+				rec := render.NewRecorder(32, 16, 1, 1)
+				rec.Clear(rec.Rect(), col)
+				if err := d.Render(rec.Recording(), tg); err != nil {
+					t.Fatal(err)
+				}
+				return tg
+			}
+			src, dst := fill(render.RGBA(200, 0, 0, 255)), fill(render.RGBA(0, 0, 200, 255))
+			if err := d.CopyRects(dst, src, []image.Rectangle{image.Rect(0, 0, 8, 16), image.Rect(24, 4, 40, 8)}); err != nil {
+				t.Fatal(err)
+			}
+			img, err := dst.ReadPixels()
+			if err != nil {
+				t.Fatal(err)
+			}
+			red, blue := color.RGBA{200, 0, 0, 255}, color.RGBA{0, 0, 200, 255}
+			for _, c := range []struct {
+				x, y int
+				want color.RGBA
+			}{{2, 8, red}, {28, 6, red}, {16, 8, blue}, {28, 12, blue}} {
+				if got := img.RGBAAt(c.x, c.y); got != c.want {
+					t.Errorf("(%d,%d) = %v, want %v", c.x, c.y, got, c.want)
+				}
+			}
+			if err := d.CopyRects(dst, dst, []image.Rectangle{image.Rect(0, 0, 4, 4)}); err == nil {
+				t.Error("a copy onto its own source went through")
+			}
+		})
+	}
+}

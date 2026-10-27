@@ -1,8 +1,10 @@
 package gpu
 
 import (
+	"errors"
 	"fmt"
 	"image"
+	"runtime"
 	"unsafe"
 
 	"github.com/stubbedev/lys-lib/dmabuf"
@@ -140,6 +142,58 @@ func (t *Target) clear(rgba [4]float32) error {
 		t.s.d.cmds.CmdClearColorImage(cb, t.s.image, vk.ImageLayoutTransferDstOptimal, &col, 1, &colorRange)
 		t.release(cb)
 	})
+}
+
+// CopyRects copies rects of src into the same rects of dst, two
+// targets of one size on this device: a consumer rotating through
+// targets brings the one it reuses up to date by copying in what
+// changed since it was last shown from the target shown since, instead
+// of drawing it again. src is read where it stands, since it may still
+// be on screen, and both go back to their consumer.
+func (d *Device) CopyRects(dst, src *Target, rects []image.Rectangle) error {
+	switch {
+	case dst == src:
+		return errors.New("gpu: CopyRects onto its own source")
+	case dst.closed || src.closed:
+		return errors.New("gpu: CopyRects with a closed target")
+	case dst.s.d != d || src.s.d != d:
+		return errors.New("gpu: CopyRects across devices")
+	case dst.Size() != src.Size():
+		return fmt.Errorf("gpu: CopyRects from %v onto %v", src.Size(), dst.Size())
+	case src.s.layout == vk.ImageLayoutUndefined:
+		return errors.New("gpu: CopyRects from a target never drawn")
+	}
+	bounds := image.Rectangle{Max: dst.Size()}
+	layers := vk.ImageSubresourceLayers{AspectMask: vk.ImageAspectFlags(vk.ImageAspectColorBit), LayerCount: 1}
+	copies := make([]vk.ImageCopy, 0, len(rects))
+	for _, r := range rects {
+		if r = r.Intersect(bounds); r.Empty() {
+			continue
+		}
+		at := offset3D(r.Min)
+		copies = append(copies, vk.ImageCopy{
+			SrcSubresource: layers, SrcOffset: at, DstSubresource: layers, DstOffset: at,
+			Extent: extent3D(r.Dx(), r.Dy()),
+		})
+	}
+	if len(copies) == 0 {
+		return nil
+	}
+	err := d.submit(func(cb vk.CommandBuffer) {
+		src.acquire(cb)
+		dst.acquire(cb)
+		srcLayout := vk.ImageLayoutGeneral
+		if src.offscreen {
+			src.s.to(cb, vk.ImageLayoutTransferSrcOptimal)
+			srcLayout = vk.ImageLayoutTransferSrcOptimal
+		}
+		dst.s.to(cb, vk.ImageLayoutTransferDstOptimal)
+		d.cmds.CmdCopyImage(cb, src.s.image, srcLayout, dst.s.image, vk.ImageLayoutTransferDstOptimal, count(copies), &copies[0])
+		dst.release(cb)
+		src.release(cb)
+	})
+	runtime.KeepAlive(copies)
+	return err
 }
 
 // ReadPixels copies the target back into memory as premultiplied
