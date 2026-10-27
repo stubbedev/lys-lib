@@ -38,6 +38,14 @@ var withoutAlpha = map[Format]Format{
 	ABGR2101010: XBGR2101010,
 }
 
+func (f Format) YUV() bool {
+	switch f {
+	case NV12, NV21, NV16, P010, YUV420, YVU420:
+		return true
+	}
+	return false
+}
+
 func (f Format) HasAlpha() bool {
 	_, ok := withoutAlpha[f]
 	return ok
