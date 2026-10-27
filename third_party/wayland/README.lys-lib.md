@@ -63,6 +63,8 @@ read, the payload is read with the same fd-collecting read, and `Close`
 closes the fds no event took (lys-lib#24). `wl/fd_batch_test.go` is
 the test.
 
+Upstream: https://github.com/neurlang/wayland/pull/48
+
 An fd no handler took stayed queued and went to the next fd-carrying
 event, another object's, as did one sent to an object the client had
 already destroyed. As in libwayland, each event now owns the fds its
@@ -73,6 +75,8 @@ destroyed object as a zombie until `wl_display.delete_id` or its id is
 reused (lys-lib#25).
 
 ### One read per burst of events
+
+Upstream: https://github.com/neurlang/wayland/pull/49
 
 `wl/event.go`, `readEvent`: every event cost two `recvmsg` calls, one
 for its header and one for its payload, and pooled header, payload and
