@@ -47,6 +47,20 @@ the send lock held and deadlocked every later request. `PutProxy`
 already writes a nil proxy as 0; the scan now skips it (lys-lib#13).
 `wl/nil_argument_test.go` is the upstream pull request's test.
 
+### Every received fd reaches its event
+
+`wl/event.go`, `readEvent` and `Event.FD`: libwayland sends the fds of
+every event in one flush together, in one SCM_RIGHTS message, but the
+reader kept control messages and `FD` took only the first fd of each,
+so the second of two `wl_data_source.send` events flushed together got
+`ErrNoControlMsgs` and its fd leaked; its 24-byte control buffer also
+truncated anything past two fds. Received fds now queue in order per
+connection and each fd argument takes the next one; the buffer fits
+libwayland's MAX_FDS_OUT (28), a truncated control message fails the
+read, the payload is read with the same fd-collecting read, and `Close`
+closes the fds no event took (lys-lib#24). `wl/fd_batch_test.go` is
+the test.
+
 ### Byte order comes from encoding/binary
 
 `wl/event.go`, `wl/request.go`: the wire's native byte order is
