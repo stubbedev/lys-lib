@@ -151,35 +151,66 @@ type Frame struct {
 	Damage []Rect
 }
 
-// Image converts the frame to an RGBA image in presentation row order
-// (YInvert undone; the Transform is left to the caller, who knows
+// Image converts the frame to a new RGBA image in presentation row
+// order (YInvert undone; the Transform is left to the caller, who knows
 // whether it wants buffer or presentation orientation). Formats
 // without alpha convert fully opaque; alpha formats are premultiplied
 // already, which is what image.RGBA stores.
 func (f *Frame) Image() (*image.RGBA, error) {
-	bpp := f.Format.BytesPerPixel()
-	if bpp == 0 {
-		return nil, fmt.Errorf("%w: %s", ErrFormat, f.Format)
-	}
-	row := f.Width * bpp
-	if f.Width <= 0 || f.Height <= 0 || f.Stride < row || len(f.Data) < f.Stride*(f.Height-1)+row {
-		return nil, fmt.Errorf("capture: frame %dx%d stride %d does not fit %d bytes", f.Width, f.Height, f.Stride, len(f.Data))
+	if err := f.check(); err != nil {
+		return nil, err
 	}
 	img := image.NewRGBA(image.Rect(0, 0, f.Width, f.Height))
+	f.convert(img)
+	return img, nil
+}
+
+// ImageInto converts the frame into dst as Image does, for a caller
+// that owns the pixels' memory (reused across frames, or off the Go
+// heap). dst must be exactly the frame's size; its stride and origin
+// are its own.
+func (f *Frame) ImageInto(dst *image.RGBA) error {
+	if err := f.check(); err != nil {
+		return err
+	}
+	if dst.Rect.Dx() != f.Width || dst.Rect.Dy() != f.Height {
+		return fmt.Errorf("capture: converting a %dx%d frame into a %dx%d image", f.Width, f.Height, dst.Rect.Dx(), dst.Rect.Dy())
+	}
+	f.convert(dst)
+	return nil
+}
+
+// convert writes a checked frame's pixels into dst, which is its size.
+func (f *Frame) convert(dst *image.RGBA) {
+	bpp := f.Format.BytesPerPixel()
+	row := f.Width * bpp
 	for y := range f.Height {
 		srcY := y
 		if f.YInvert {
 			srcY = f.Height - 1 - y
 		}
 		src := f.Data[srcY*f.Stride : srcY*f.Stride+row]
-		dst := img.Pix[y*img.Stride : y*img.Stride+f.Width*4]
+		at := dst.PixOffset(dst.Rect.Min.X, dst.Rect.Min.Y+y)
+		out := dst.Pix[at : at+f.Width*4]
 		if bpp == 3 {
-			convertRow24(dst, src, f.Format)
+			convertRow24(out, src, f.Format)
 		} else {
-			convertRow32(dst, src, f.Format)
+			convertRow32(out, src, f.Format)
 		}
 	}
-	return img, nil
+}
+
+// check reports a frame whose format or geometry its data cannot hold.
+func (f *Frame) check() error {
+	bpp := f.Format.BytesPerPixel()
+	if bpp == 0 {
+		return fmt.Errorf("%w: %s", ErrFormat, f.Format)
+	}
+	row := f.Width * bpp
+	if f.Width <= 0 || f.Height <= 0 || f.Stride < row || len(f.Data) < f.Stride*(f.Height-1)+row {
+		return fmt.Errorf("capture: frame %dx%d stride %d does not fit %d bytes", f.Width, f.Height, f.Stride, len(f.Data))
+	}
+	return nil
 }
 
 // convertRow32 unpacks one row of 32-bit little-endian pixels into

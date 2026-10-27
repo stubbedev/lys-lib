@@ -2,6 +2,7 @@ package capture
 
 import (
 	"errors"
+	"image"
 	"image/color"
 	"strings"
 	"testing"
@@ -67,6 +68,31 @@ func TestFrameImageRowsAndStride(t *testing.T) {
 	}
 	if img.RGBAAt(0, 0).B != 0xff || img.RGBAAt(0, 1).R != 0xff {
 		t.Fatalf("y-inverted rows not flipped back: %v %v", img.RGBAAt(0, 0), img.RGBAAt(0, 1))
+	}
+}
+
+// ImageInto converts into an image the caller owns, at its own stride
+// and origin (a sub-image of a larger raster), as Image would, and
+// refuses one of another size.
+func TestFrameImageInto(t *testing.T) {
+	top, bottom := pixel32(0x00ff0000), pixel32(0x000000ff)
+	f := &Frame{Width: 1, Height: 2, Stride: 4, Format: FormatXRGB8888, Data: append(append([]byte{}, top...), bottom...), YInvert: true}
+	big := image.NewRGBA(image.Rect(0, 0, 3, 4))
+	dst, ok := big.SubImage(image.Rect(1, 1, 2, 3)).(*image.RGBA)
+	if !ok {
+		t.Fatal("an RGBA sub-image is not an RGBA")
+	}
+	if err := f.ImageInto(dst); err != nil {
+		t.Fatal(err)
+	}
+	if big.RGBAAt(1, 1).B != 0xff || big.RGBAAt(1, 2).R != 0xff {
+		t.Errorf("converted rows %v %v, want the y-inverted frame", big.RGBAAt(1, 1), big.RGBAAt(1, 2))
+	}
+	if big.RGBAAt(0, 1).A != 0 || big.RGBAAt(2, 2).A != 0 {
+		t.Error("the conversion wrote outside the destination")
+	}
+	if err := f.ImageInto(image.NewRGBA(image.Rect(0, 0, 2, 2))); err == nil {
+		t.Error("a frame converted into an image of another size")
 	}
 }
 
