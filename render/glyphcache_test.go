@@ -209,3 +209,30 @@ func TestGlyphRasterSpaceGlyphBlitsNothing(t *testing.T) {
 		t.Errorf("space draw touched a pixel: %v", px)
 	}
 }
+
+// A face keeps what its bitmap glyphs are, never their pixels: placing
+// one, as measuring text does, decodes and scales nothing, and drawing
+// one leaves only the scaled strike behind, in the budgeted scale cache
+// (#18).
+func TestBitmapGlyphsKeepNoPixels(t *testing.T) {
+	tf := loadColor(t, "twemoji_smiley-sbix.ttf")
+	gid, ok := tf.face.NominalGlyph('\U0001F601')
+	if !ok {
+		t.Fatal("the sbix fixture has no smiley")
+	}
+	bitmapScales.dropAll()
+	scale := 32 / tf.upem
+	if _, at, ok := bitmapPlacement(tf, gid, scale, 4, 40); !ok || at.Empty() {
+		t.Fatalf("the smiley's bitmap has no placement (%v, %v)", at, ok)
+	}
+	if n := bitmapScales.len(); n != 0 {
+		t.Errorf("placing a bitmap glyph scaled %d strikes, want none", n)
+	}
+	scaled, _, at, ok := bitmapStrikeOf(tf, gid, scale, 4, 40)
+	if !ok || scaled.Rect.Dx() != at.W || scaled.Rect.Dy() != at.H {
+		t.Fatalf("the drawn strike is %v for a %v placement", scaled.Rect, at)
+	}
+	if n := bitmapScales.len(); n != 1 {
+		t.Errorf("drawing a bitmap glyph cached %d scaled strikes, want 1", n)
+	}
+}

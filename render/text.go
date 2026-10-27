@@ -80,9 +80,10 @@ type Typeface struct {
 	oblique *Typeface
 
 	// strikePpem is the pixels-per-em of the largest embedded bitmap
-	// strike (0 when the face has none), and bitmaps caches decoded
-	// bitmap glyphs. Both fill lazily; color emoji faces hit them on
-	// every draw.
+	// strike (0 when the face has none), and bitmaps caches what each
+	// bitmap glyph is (its size, never its pixels: those decode only to
+	// scale, and bitmapScales keeps the scaled result). Both fill
+	// lazily; color emoji faces hit them on every draw.
 	strikePpem float64
 	strikeRead bool
 	bitmaps    map[font.GID]bitmapGlyph
@@ -720,7 +721,7 @@ func glyphBounds(t *Typeface, gid font.GID, scale, penX, penY float64, col Color
 	if g, ok := cachedOutlineRaster(t, gid, scale, penX, penY); ok {
 		return g.bounds(penX, penY)
 	}
-	if _, _, at, ok := bitmapStrikeOf(t, gid, scale, penX, penY); ok {
+	if _, at, ok := bitmapPlacement(t, gid, scale, penX, penY); ok {
 		return at
 	}
 	return Rect{}
@@ -743,40 +744,56 @@ func blitMask(cv *Canvas, clip Rect, g *GlyphMask, ox, oy int, col Color) {
 	}
 }
 
-// bitmapGlyph is a decoded embedded bitmap. mono marks a
-// black-and-white strike: a mask that tints with the text color.
-// Color bitmaps (emoji) paint their own pixels.
+// bitmapGlyph is what a face knows of a glyph's embedded bitmap
+// without holding its pixels: its size in strike pixels, zero for a
+// glyph with none in a supported format. mono marks a black-and-white
+// strike: a mask that tints with the text color. Color bitmaps (emoji)
+// paint their own pixels.
 type bitmapGlyph struct {
-	img  image.Image
+	w, h int
 	mono bool
 }
 
-// bitmapStrikeOf is gid's embedded bitmap scaled to the device em
-// and the device rect it covers with its origin box at the baseline
-// pen, left edge at the pen. The scaled strike comes from the atlas
-// (the CatmullRom resample is the expensive half; see
-// cachedScaledBitmap), preserving the device-scale rasterization
-// contract; PNG and black-and-white formats decode, others report
-// false.
-func bitmapStrikeOf(t *Typeface, gid font.GID, scale, penX, penY float64) (*image.RGBA, bool, Rect, bool) {
+// bitmapPlacement is the device rect gid's embedded bitmap covers,
+// scaled to the device em, with its origin box at the baseline pen and
+// its left edge at the pen; false when the glyph has no bitmap the
+// face can draw. It needs the glyph's size alone, never its pixels.
+func bitmapPlacement(t *Typeface, gid font.GID, scale, penX, penY float64) (bitmapGlyph, Rect, bool) {
 	bg, ok := t.bitmap(gid)
 	if !ok {
-		return nil, false, Rect{}, false
+		return bitmapGlyph{}, Rect{}, false
 	}
 	ppem := t.bitmapPpem()
 	if ppem <= 0 {
-		return nil, false, Rect{}, false
+		return bitmapGlyph{}, Rect{}, false
 	}
 	// Device pixels per bitmap pixel: the strike renders one em at
 	// ppem, the glyph's device em is scale*upem.
 	f := scale * t.upem / ppem
-	w := int(math.Ceil(float64(bg.img.Bounds().Dx()) * f))
-	h := int(math.Ceil(float64(bg.img.Bounds().Dy()) * f))
+	w := int(math.Ceil(float64(bg.w) * f))
+	h := int(math.Ceil(float64(bg.h) * f))
 	if w <= 0 || h <= 0 {
+		return bitmapGlyph{}, Rect{}, false
+	}
+	return bg, Rect{X: int(math.Floor(penX)), Y: int(math.Ceil(penY)) - h, W: w, H: h}, true
+}
+
+// bitmapStrikeOf is gid's embedded bitmap scaled to the device em and
+// its bitmapPlacement. The scaled strike comes from the scale cache
+// (the PNG decode and CatmullRom resample are the expensive half; see
+// cachedScaledBitmap), preserving the device-scale rasterization
+// contract; PNG and black-and-white formats decode, others report
+// false.
+func bitmapStrikeOf(t *Typeface, gid font.GID, scale, penX, penY float64) (*image.RGBA, bool, Rect, bool) {
+	bg, at, ok := bitmapPlacement(t, gid, scale, penX, penY)
+	if !ok {
 		return nil, false, Rect{}, false
 	}
-	at := Rect{X: int(math.Floor(penX)), Y: int(math.Ceil(penY)) - h, W: w, H: h}
-	return cachedScaledBitmap(t, gid, bg, w, h), bg.mono, at, true
+	scaled := cachedScaledBitmap(t, gid, at.W, at.H)
+	if scaled == nil {
+		return nil, false, Rect{}, false
+	}
+	return scaled, bg.mono, at, true
 }
 
 // drawBitmapGlyph blits an embedded bitmap glyph - a CBDT/sbix color
@@ -813,33 +830,54 @@ func drawBitmapGlyph(cv *Canvas, clip Rect, t *Typeface, gid font.GID, scale, pe
 	}
 }
 
-// bitmap returns the decoded embedded bitmap for gid; ok is false when
-// the face has none in a supported format. Decodes cache per glyph.
+// bitmap returns what gid's embedded bitmap is; ok is false when the
+// face has none in a supported format. The answer caches per glyph: a
+// PNG's header is read, never its pixels.
 func (t *Typeface) bitmap(gid font.GID) (bitmapGlyph, bool) {
 	if t.bitmaps == nil {
 		t.bitmaps = make(map[font.GID]bitmapGlyph)
 	}
-	if bg, ok := t.bitmaps[gid]; ok {
-		return bg, bg.img != nil
+	bg, ok := t.bitmaps[gid]
+	if !ok {
+		bg = bitmapInfo(t.face, gid)
+		t.bitmaps[gid] = bg
 	}
-	bg := decodeBitmap(t.face, gid)
-	t.bitmaps[gid] = bg
-	return bg, bg.img != nil
+	return bg, bg.w > 0 && bg.h > 0
 }
 
-// decodeBitmap extracts the bitmap glyph data for gid.
-func decodeBitmap(f *font.Face, gid font.GID) bitmapGlyph {
+// bitmapInfo reads gid's embedded bitmap's size and kind.
+func bitmapInfo(f *font.Face, gid font.GID) bitmapGlyph {
 	bm, ok := f.GlyphDataBitmap(gid)
 	if !ok {
 		return bitmapGlyph{}
 	}
 	switch bm.Format {
 	case font.PNG:
-		img, err := png.Decode(bytes.NewReader(bm.Data))
+		cfg, err := png.DecodeConfig(bytes.NewReader(bm.Data))
 		if err != nil {
 			return bitmapGlyph{}
 		}
-		return bitmapGlyph{img: img}
+		return bitmapGlyph{w: cfg.Width, h: cfg.Height}
+	case font.BlackAndWhite, font.BlackAndWhiteByteAligned:
+		return bitmapGlyph{w: bm.Width, h: bm.Height, mono: true}
+	}
+	return bitmapGlyph{}
+}
+
+// bitmapPixels decodes gid's embedded bitmap, nil when it has none in a
+// supported format or its data is corrupt.
+func bitmapPixels(f *font.Face, gid font.GID) image.Image {
+	bm, ok := f.GlyphDataBitmap(gid)
+	if !ok {
+		return nil
+	}
+	switch bm.Format {
+	case font.PNG:
+		img, err := png.Decode(bytes.NewReader(bm.Data))
+		if err != nil {
+			return nil
+		}
+		return img
 	case font.BlackAndWhite, font.BlackAndWhiteByteAligned:
 		img := image.NewAlpha(image.Rect(0, 0, bm.Width, bm.Height))
 		stride := 8 // bits per byte; byte-aligned rows pad per row
@@ -854,9 +892,9 @@ func decodeBitmap(f *font.Face, gid font.GID) bitmapGlyph {
 				}
 			}
 		}
-		return bitmapGlyph{img: img, mono: true}
+		return img
 	}
-	return bitmapGlyph{}
+	return nil
 }
 
 // bitmapPpem returns the pixels-per-em of the largest embedded bitmap

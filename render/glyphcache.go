@@ -193,18 +193,21 @@ func rasterOutlineXform(outline font.GlyphOutline, m Affine) *GlyphMask {
 	return &GlyphMask{mask: mask.Pix, w: w, h: h, ox: ox, oy: oy}
 }
 
-// cachedScaledBitmap returns the embedded bitmap strike scaled to the
-// device size w×h, scaling and caching on a miss. The caller has
-// already resolved bg from t.bitmap (which skips faces with no
-// decodable strike), so the cache stores the scaled result, the half
-// that costs (CatmullRom over a PNG-sized source).
-func cachedScaledBitmap(t *Typeface, gid font.GID, bg bitmapGlyph, w, h int) *image.RGBA {
+// cachedScaledBitmap returns gid's embedded bitmap strike scaled to
+// the device size w×h, decoding and scaling on a miss; nil when the
+// strike's data does not decode. The cache stores only the scaled
+// result: the PNG-sized source is decoded for the scale and dropped.
+func cachedScaledBitmap(t *Typeface, gid font.GID, w, h int) *image.RGBA {
 	key := bitmapKey{face: t, gid: gid, w: w, h: h}
 	if img, ok := bitmapScales.get(key); ok {
 		return img
 	}
+	src := bitmapPixels(t.face, gid)
+	if src == nil {
+		return nil
+	}
 	scaled := image.NewRGBA(image.Rect(0, 0, w, h))
-	draw.CatmullRom.Scale(scaled, scaled.Bounds(), bg.img, bg.img.Bounds(), draw.Over, nil)
+	draw.CatmullRom.Scale(scaled, scaled.Bounds(), src, src.Bounds(), draw.Over, nil)
 	bitmapScales.put(key, scaled, w*h*4)
 	return scaled
 }
