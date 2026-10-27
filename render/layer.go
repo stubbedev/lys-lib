@@ -1,6 +1,12 @@
 package render
 
-import "math"
+import (
+	"fmt"
+	"math"
+	"runtime"
+
+	memory "github.com/stubbedev/memory-go"
+)
 
 // Affine is a 2-D affine map in device pixels: (x, y) goes to
 // (A·x + C·y + E, B·x + D·y + F). The zero value maps everything to the
@@ -99,6 +105,9 @@ func (m Affine) isTranslate() (dx, dy int, ok bool) {
 // would onto the canvas, to be drawn back transformed by Composite.
 type Layer struct {
 	buf []byte
+	// mem holds buf off the Go heap for a layer that allocated it;
+	// zero for one over a canvas's own pixels (LayerOf) or a recording.
+	mem layerMem
 	cv  *Canvas
 	// blurA and blurB are the blur passes' ping-pong buffers, blurS
 	// the downsampled copy a heavy blur runs on, and blurAcc the
@@ -126,7 +135,10 @@ func (c *Canvas) Layer(old *Layer, region Rect) *Layer {
 	l := old
 	switch {
 	case l == nil || cap(l.buf) < n:
-		l = &Layer{buf: make([]byte, n)}
+		if l != nil {
+			l.Free()
+		}
+		l = newLayer(n)
 		l.cv = NewScaled(l.buf, c.stride, c.w, c.h, c.num, c.denom)
 	case len(l.buf) != n || l.cv.stride != c.stride || l.cv.w != c.w || l.cv.h != c.h || l.cv.num != c.num || l.cv.denom != c.denom:
 		l.buf = l.buf[:n]
@@ -138,6 +150,52 @@ func (c *Canvas) Layer(old *Layer, region Rect) *Layer {
 	l.cv.ClearDevice(region, 0)
 	l.cv.clip = l.cv.Rect().Intersect(region)
 	return l
+}
+
+// layerPixels holds the CPU layers' buffers off the Go heap: a layer is
+// a whole canvas (33 MB at 1080p 2x), and its pages go back to the
+// system when it is freed, rather than raising the GC's heap goal while
+// it lives and lingering until a collection after.
+var layerPixels memory.Shared
+
+// layerMem is a layer buffer's memory and the cleanup that frees it
+// should the layer be dropped without Free.
+type layerMem struct {
+	s       memory.Slice[byte]
+	cleanup runtime.Cleanup
+}
+
+// newLayer is a layer over n fresh, zeroed bytes off the Go heap. Like
+// make, it panics when the system has no memory left.
+func newLayer(n int) *Layer {
+	s, err := memory.MakeSlice[byte](&layerPixels, n)
+	if err != nil {
+		panic(fmt.Sprintf("render: a layer of %d bytes: %v", n, err))
+	}
+	l := &Layer{buf: s.Elems()}
+	l.mem = layerMem{s: s, cleanup: runtime.AddCleanup(l, freeLayerPixels, s)}
+	return l
+}
+
+// freeLayerPixels hands a layer buffer's pages back.
+func freeLayerPixels(s memory.Slice[byte]) {
+	if err := memory.FreeSlice(&layerPixels, s); err != nil {
+		panic(fmt.Sprintf("render: free a layer: %v", err))
+	}
+}
+
+// Free hands l's buffer back now, for a layer its owner is done with
+// (a transition that landed): l must not be used after. Off the Go heap
+// a dropped layer's buffer otherwise waits for a collection, which its
+// own size no longer brings on. A layer over a canvas's pixels or a
+// recording has none to free.
+func (l *Layer) Free() {
+	if l.mem.s.Len() == 0 {
+		return
+	}
+	l.mem.cleanup.Stop()
+	freeLayerPixels(l.mem.s)
+	l.mem, l.buf = layerMem{}, nil
 }
 
 // LayerOf is a layer whose pixels are c's own, for the layer

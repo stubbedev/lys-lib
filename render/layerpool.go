@@ -1,6 +1,7 @@
 package render
 
 import (
+	"fmt"
 	"slices"
 	"sync"
 )
@@ -76,6 +77,24 @@ func (l *Layer) Release() {
 				smallest = i
 			}
 		}
+		scratchLayers.free[smallest].Free()
 		scratchLayers.free = slices.Delete(scratchLayers.free, smallest, smallest+1)
 	}
+}
+
+// TrimLayers frees the pooled scratch layers and hands their pages
+// back: a whole canvas each, kept so the next effect allocates none. An
+// application calls it once it has been idle a while; the next
+// ScratchLayer allocates again.
+func TrimLayers() error {
+	scratchLayers.mu.Lock()
+	defer scratchLayers.mu.Unlock()
+	for _, l := range scratchLayers.free {
+		l.Free()
+	}
+	scratchLayers.free = nil
+	if err := layerPixels.Trim(); err != nil {
+		return fmt.Errorf("render: trim the layer pages: %w", err)
+	}
+	return nil
 }
