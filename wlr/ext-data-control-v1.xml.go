@@ -317,6 +317,15 @@ func (p *DataControlSourceV1) Dispatch(event *Event) {
 	}
 }
 
+// EventFDs returns how many fds the event with opcode carries
+func (p *DataControlSourceV1) EventFDs(opcode uint32) int {
+	switch opcode {
+	case 0:
+		return 1
+	}
+	return 0
+}
+
 // DataControlSourceV1SendEvent is the send the data
 type DataControlSourceV1SendEvent struct {
 	// MimeType is the MIME type for the data

@@ -63,6 +63,15 @@ read, the payload is read with the same fd-collecting read, and `Close`
 closes the fds no event took (lys-lib#24). `wl/fd_batch_test.go` is
 the test.
 
+An fd no handler took stayed queued and went to the next fd-carrying
+event, another object's, as did one sent to an object the client had
+already destroyed. As in libwayland, each event now owns the fds its
+signature declares: `cmd/wayland-scanner` emits `EventFDs(opcode)` for
+interfaces with fd events, `Context.run` claims that many before
+dispatch and closes the ones no handler took, and `Unregister` keeps a
+destroyed object as a zombie until `wl_display.delete_id` or its id is
+reused (lys-lib#25).
+
 ### Byte order comes from encoding/binary
 
 `wl/event.go`, `wl/request.go`: the wire's native byte order is

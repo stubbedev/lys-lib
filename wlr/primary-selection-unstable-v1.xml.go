@@ -305,6 +305,15 @@ func (p *ZwpPrimarySelectionSourceV1) Dispatch(event *Event) {
 	}
 }
 
+// EventFDs returns how many fds the event with opcode carries
+func (p *ZwpPrimarySelectionSourceV1) EventFDs(opcode uint32) int {
+	switch opcode {
+	case 0:
+		return 1
+	}
+	return 0
+}
+
 // ZwpPrimarySelectionSourceV1SendEvent is the send the primary selection contents
 type ZwpPrimarySelectionSourceV1SendEvent struct {
 	// MimeType is the
