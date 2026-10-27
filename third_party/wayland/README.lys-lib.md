@@ -63,11 +63,6 @@ read, the payload is read with the same fd-collecting read, and `Close`
 closes the fds no event took (lys-lib#24). `wl/fd_batch_test.go` is
 the test.
 
-The upstream pull request carries only the fd queue, the buffer size
-and `Close`. Once it merges, keep the rest here: the MSG_CTRUNC check,
-the fd-collecting payload read, the queue's locking and closing fds
-that arrive after `Close`.
-
 ### Byte order comes from encoding/binary
 
 `wl/event.go`, `wl/request.go`: the wire's native byte order is
