@@ -72,6 +72,16 @@ dispatch and closes the ones no handler took, and `Unregister` keeps a
 destroyed object as a zombie until `wl_display.delete_id` or its id is
 reused (lys-lib#25).
 
+### One read per burst of events
+
+`wl/event.go`, `readEvent`: every event cost two `recvmsg` calls, one
+for its header and one for its payload, and pooled header, payload and
+control buffers. As libwayland does, the reader now fills a
+per-connection buffer with one `recvmsg` and parses events from it;
+`Event.Data` aliases that buffer until the next read. A header whose
+size is below the header length is `ErrInvalidMsgSize` instead of a
+panic (lys-lib#26). `wl/read_test.go` holds its tests and benchmark.
+
 ### Byte order comes from encoding/binary
 
 `wl/event.go`, `wl/request.go`: the wire's native byte order is
