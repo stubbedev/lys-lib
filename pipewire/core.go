@@ -299,8 +299,10 @@ func (k *core) read() {
 	for _, h := range objects {
 		h.stop()
 	}
-	close(k.stopped)
+	// The owner hears first: close waits on stopped, so whoever
+	// closed the core finds the owner's end already recorded.
 	k.onStop(err)
+	close(k.stopped)
 }
 
 // abort ends the connection from outside the event loop, which stops

@@ -3,6 +3,7 @@ package pipewire
 import (
 	"errors"
 	"runtime"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -150,4 +151,23 @@ func TestClosingAStreamLeavesNothingRunning(t *testing.T) {
 	}
 	settlesTo(t, before)
 	p.Close()
+}
+
+// Closing a core returns only once its owner heard the loop end: an
+// owner slow to record it still has it recorded when close returns, so
+// a closed Producer is done the moment Close returns.
+func TestCoreCloseWaitsForTheOwnersStop(t *testing.T) {
+	pwtest.Start(t)
+	var heard atomic.Bool
+	k, err := connectCore(connectTimeout, "lys-test", func(error) {
+		time.Sleep(50 * time.Millisecond)
+		heard.Store(true)
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	k.close()
+	if !heard.Load() {
+		t.Error("the core closed before its owner heard the loop end")
+	}
 }
