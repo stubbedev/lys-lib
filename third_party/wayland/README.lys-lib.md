@@ -49,6 +49,8 @@ already writes a nil proxy as 0; the scan now skips it (lys-lib#13).
 
 ### Every received fd reaches its event
 
+Upstream: https://github.com/neurlang/wayland/pull/47
+
 `wl/event.go`, `readEvent` and `Event.FD`: libwayland sends the fds of
 every event in one flush together, in one SCM_RIGHTS message, but the
 reader kept control messages and `FD` took only the first fd of each,
