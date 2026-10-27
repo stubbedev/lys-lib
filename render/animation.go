@@ -19,9 +19,12 @@ import (
 // composited over the canvas, how long each shows, and how many times
 // the sequence plays (0: forever). It is an image.Image as its first
 // frame, so every still-image path - sizing, a static paint, a cache -
-// takes it unchanged; an animating painter steps through Frames.
+// takes it unchanged; an animating painter steps through Frames. Each
+// frame is a still image with its own identity, shared by every
+// painter of the animation, so a GPU renderer keeps one texture per
+// frame however many widgets show it.
 type Animation struct {
-	Frames []*image.RGBA
+	Frames []StillImage
 	Delays []time.Duration
 	Loops  int
 }
@@ -91,7 +94,7 @@ func decodeGIF(data []byte) (*Animation, error) {
 			restore = cloneRGBA(canvas)
 		}
 		draw.Draw(canvas, fr.Bounds(), fr, fr.Bounds().Min, draw.Over)
-		a.Frames = append(a.Frames, cloneRGBA(canvas))
+		a.Frames = append(a.Frames, NewStillImage(cloneRGBA(canvas)))
 		d := gifZeroDelay
 		if i < len(g.Delay) && g.Delay[i] > 0 {
 			d = max(time.Duration(g.Delay[i])*10*time.Millisecond, gifMinDelay)
@@ -147,7 +150,7 @@ func decodeAPNG(data []byte) (*Animation, error) {
 			op = draw.Src
 		}
 		draw.Draw(canvas, r, fr.Image, fr.Image.Bounds().Min, op)
-		a.Frames = append(a.Frames, cloneRGBA(canvas))
+		a.Frames = append(a.Frames, NewStillImage(cloneRGBA(canvas)))
 		a.Delays = append(a.Delays, max(time.Duration(fr.GetDelay()*float64(time.Second)), apngMinDelay))
 		switch fr.DisposeOp {
 		case apng.DISPOSE_OP_BACKGROUND:

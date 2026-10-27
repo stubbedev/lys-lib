@@ -30,7 +30,7 @@ func paletted(x, y, w, h int, c color.Color) *image.Paletted {
 }
 
 // at is the RGBA of frame f at (x, y).
-func at(f *image.RGBA, x, y int) color.RGBA { return f.RGBAAt(x, y) }
+func at(f StillImage, x, y int) color.RGBA { return f.RGBAAt(x, y) }
 
 // A GIF's frames composite over the canvas through each disposal
 // method, with delays floored and the loop count mapped.
@@ -60,6 +60,13 @@ func TestDecodeAnimatedGIF(t *testing.T) {
 		t.Fatalf("decoded %T with %v frames", img, a)
 	}
 	f := a.Frames
+	seen := map[ImageID]bool{}
+	for i, fr := range f {
+		if fr.ID == 0 || seen[fr.ID] {
+			t.Errorf("frame %d has identity %d: every frame needs its own", i, fr.ID)
+		}
+		seen[fr.ID] = true
+	}
 	if at(f[0], 3, 3) != red || at(f[1], 0, 0) != green || at(f[1], 3, 3) != red {
 		t.Error("frames 0-1 composite wrong")
 	}
