@@ -23,3 +23,17 @@ func TestModifiersPrintByName(t *testing.T) {
 		}
 	}
 }
+
+func TestAlphaAndItsOpaqueTwin(t *testing.T) {
+	for f, want := range map[Format]Format{
+		ARGB8888: XRGB8888, ABGR8888: XBGR8888, ARGB2101010: XRGB2101010, ABGR2101010: XBGR2101010,
+		XRGB8888: XRGB8888, XRGB2101010: XRGB2101010, NV12: NV12,
+	} {
+		if got := f.Opaque(); got != want {
+			t.Errorf("%v.Opaque() = %v, want %v", f, got, want)
+		}
+		if f.HasAlpha() != (f != want) {
+			t.Errorf("%v.HasAlpha() = %v", f, f.HasAlpha())
+		}
+	}
+}
