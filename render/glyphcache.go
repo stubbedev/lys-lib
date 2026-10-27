@@ -43,10 +43,11 @@ type bitmapKey struct {
 }
 
 // GlyphMask is one cached 8bpp coverage mask, immutable once made: a
-// GPU renderer keys its atlas by it. ox, oy locate the mask's origin
+// GPU renderer keys its atlas by its ID. ox, oy locate the mask's origin
 // relative to the glyph's integer pen position: the blit's target
 // pixel is (penX + ox, penY + oy).
 type GlyphMask struct {
+	identity
 	mask []uint8
 	w, h int
 	ox   int

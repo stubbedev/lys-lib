@@ -397,7 +397,7 @@ func TestStillHoldsThePixelsDrawnFrom(t *testing.T) {
 	if s := Still(rgba); &s.Pix[0] == &rgba.Pix[0] {
 		t.Error("Still shares an *image.RGBA's pixels")
 	}
-	if s := (StillImage{rgba}); Still(s) != s {
+	if s := NewStillImage(rgba); Still(s) != s {
 		t.Error("Still changed a still image")
 	}
 }

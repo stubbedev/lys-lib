@@ -4,6 +4,7 @@ import (
 	"image"
 	"image/draw"
 	"math"
+	"sync/atomic"
 
 	xdraw "golang.org/x/image/draw"
 )
@@ -249,24 +250,70 @@ func (c *Canvas) DrawImageRect(img image.Image, r Rect) {
 	}
 }
 
+// ImageID is a raster's identity, independent of the memory its pixels
+// live in: NewImageID never hands out the same one twice in a process.
+// A GPU renderer keys the texture or atlas slot it keeps for a raster
+// by it, so memory freed and handed out again for other pixels, at the
+// same address, rect and stride, gets a new ID and never matches the
+// old texture. Zero is no identity.
+type ImageID uint64
+
+var lastImageID atomic.Uint64
+
+// NewImageID is a fresh identity for a new raster.
+func NewImageID() ImageID { return ImageID(lastImageID.Add(1)) }
+
+// identity is a raster's ImageID, allocated on first use, so a raster
+// type that embeds it has one however it was made. Its raster is
+// shared across goroutines, so the allocation is atomic.
+type identity struct{ id atomic.Uint64 }
+
+// ID is the raster's identity.
+func (i *identity) ID() ImageID {
+	if id := i.id.Load(); id != 0 {
+		return ImageID(id)
+	}
+	i.id.CompareAndSwap(0, uint64(NewImageID()))
+	return ImageID(i.id.Load())
+}
+
 // StillImage is an *image.RGBA its owner never changes once wrapped: a
 // decoded picture, a cached raster, an icon. A GPU renderer uploads it
 // once and keeps the texture while it is drawn; a VersionedImage it
 // uploads again when its version moves, and any other image it draws
 // from its visible pixels each time. Its sub-images are still too.
-type StillImage struct{ *image.RGBA }
+//
+// ID is the raster's identity (NewStillImage), shared by its sub-images
+// and kept by its owner with the raster. A still image without one is
+// identified by its pixels' address, which is sound only for pixels the
+// Go heap owns: the renderer's key keeps them reachable, so the address
+// cannot carry other pixels while the texture lives. Pixels freed
+// deterministically (off the heap, back to a pool) need an ID, and
+// their owner frees them through Retire.
+type StillImage struct {
+	*image.RGBA
+	ID ImageID
+}
 
-// SubImage is the still image's part within r.
+// NewStillImage wraps rgba, which its owner never changes again, as a
+// still image with a fresh identity. The owner keeps the result and
+// draws it, rather than wrapping the raster anew for every draw.
+func NewStillImage(rgba *image.RGBA) StillImage {
+	return StillImage{RGBA: rgba, ID: NewImageID()}
+}
+
+// SubImage is the still image's part within r, of the same identity.
 func (s StillImage) SubImage(r image.Rectangle) image.Image {
 	sub, ok := s.RGBA.SubImage(r).(*image.RGBA)
 	if !ok {
 		panic("render: an *image.RGBA's SubImage is not an *image.RGBA")
 	}
-	return StillImage{sub}
+	return StillImage{RGBA: sub, ID: s.ID}
 }
 
 // Still is img's pixels as they are now as a still image: img itself
-// when it is one, otherwise a copy, so changes to img never reach it.
+// when it is one, otherwise a copy with a fresh identity, so changes to
+// img never reach it.
 func Still(img image.Image) StillImage {
 	if s, ok := img.(StillImage); ok {
 		return s
@@ -274,15 +321,21 @@ func Still(img image.Image) StillImage {
 	b := img.Bounds()
 	dst := image.NewRGBA(b)
 	draw.Draw(dst, b, img, b.Min, draw.Src)
-	return StillImage{dst}
+	return NewStillImage(dst)
 }
 
 // VersionedImage is an *image.RGBA whose owner changes its pixels and
 // bumps Version with every change: a video frame resampled into the
 // same raster. A GPU renderer keeps its texture and uploads the pixels
-// again only when the version moves. Its sub-images carry the version.
+// again only when the version moves. Its sub-images carry the version
+// and the identity.
+//
+// ID is the raster's identity, allocated once with NewImageID and kept
+// with the raster; without one the raster is identified by its pixels'
+// address, as a StillImage without one is.
 type VersionedImage struct {
 	*image.RGBA
+	ID      ImageID
 	Version uint64
 }
 
@@ -292,7 +345,7 @@ func (v VersionedImage) SubImage(r image.Rectangle) image.Image {
 	if !ok {
 		panic("render: an *image.RGBA's SubImage is not an *image.RGBA")
 	}
-	return VersionedImage{sub, v.Version}
+	return VersionedImage{RGBA: sub, ID: v.ID, Version: v.Version}
 }
 
 // rgbaOf is img's pixels as an *image.RGBA when it holds them so: the

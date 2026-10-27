@@ -77,6 +77,10 @@ type scratch struct {
 	frame  frame
 	deadMu sync.Mutex
 	dead   []*layerSurface
+	// forgotten are the raster identities Forget named, dropped at the
+	// next frame's start.
+	forgetMu  sync.Mutex
+	forgotten []render.ImageID
 }
 
 // ensureScratch sizes the working set for a w x h target.

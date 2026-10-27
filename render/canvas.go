@@ -780,7 +780,7 @@ func (c *Canvas) DrawImageCoverImage(ic *Icon, r Rect, radii Corners) {
 	if ic == nil {
 		return
 	}
-	c.DrawImageCover(StillImage{ic.img}, r, radii)
+	c.DrawImageCover(ic.img, r, radii)
 }
 
 // BeginOverlays arms the frame's top layer: until FlushOverlays,

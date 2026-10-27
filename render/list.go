@@ -27,6 +27,10 @@ type List struct {
 	free []*Layer
 	// num/denom is the recording canvas's device scale.
 	num, denom int
+	// pending is the List's place among the open recordings Retire
+	// waits for; ended marks a List End ended.
+	pending *recording
+	ended   bool
 }
 
 // State is the canvas state a recorded call ran under. Layer is the
@@ -162,21 +166,36 @@ type op struct {
 // of painting: a width x height device canvas at scale num/denom, as
 // NewScaled's. Its layers record into the same List.
 func NewRecorder(width, height, num, denom int) *Canvas {
-	c := &Canvas{rec: &List{}}
-	return c.ResetRecorder(width, height, num, denom)
+	return recordings.newRecorder(width, height, num, denom)
+}
+
+// newRecorder is NewRecorder with its List open in f.
+func (f *fence) newRecorder(width, height, num, denom int) *Canvas {
+	l := &List{}
+	l.pending = f.newRecording(l)
+	c := &Canvas{rec: l}
+	c.resetRecording(width, height, num, denom)
+	return c
 }
 
 // ResetRecorder readies a recording canvas for the next frame, as
-// Reset does a raster one: its List empties and the canvas takes the
-// given size and scale.
+// Reset does a raster one: its List ends, then empties and opens again
+// (Retire), and the canvas takes the given size and scale.
 func (c *Canvas) ResetRecorder(width, height, num, denom int) *Canvas {
 	if c.rec == nil {
 		panic("render: ResetRecorder of a raster canvas")
 	}
+	c.resetRecording(width, height, num, denom)
+	c.rec.pending.restart()
+	return c
+}
+
+// resetRecording empties c's List and gives c the size and scale.
+func (c *Canvas) resetRecording(width, height, num, denom int) {
+	c.rec.ended = false
 	c.rec.ops, c.rec.stops = c.rec.ops[:0], c.rec.stops[:0]
 	c.rec.num, c.rec.denom = num, denom
 	c.resetFrame(width, height, num, denom)
-	return c
 }
 
 // Scale is the recording's device scale: num device pixels per denom
@@ -199,6 +218,9 @@ func (l *List) Len() int { return len(l.ops) }
 // record appends o under c's state; c must be recording. A drawing
 // call whose bounds miss the clip is dropped: it would paint nothing.
 func (c *Canvas) record(o op) {
+	if c.rec.ended {
+		panic("render: recording into an ended List")
+	}
 	o.state = State{Layer: c.owner, Clip: c.clip, Alpha: c.alpha, Bright: c.bright}
 	o.state.Bounds = c.clip.Intersect(c.bounds(&o))
 	if o.kind < opLayer && o.state.Bounds.Empty() {
@@ -254,6 +276,9 @@ func (l *Layer) SetBacking(b any) { l.backing = b }
 
 // Play hands l's calls to p in recorded order.
 func (l *List) Play(p Player) {
+	if l.ended {
+		panic("render: Play of an ended List")
+	}
 	for i := range l.ops {
 		o := &l.ops[i]
 		s := o.state

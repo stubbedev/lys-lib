@@ -18,7 +18,7 @@ import (
 // are logical pixels unless AtScale says they were rasterized at a
 // device scale.
 type Icon struct {
-	img *image.RGBA
+	img StillImage
 	// num and denom are the device scale the raster was made at, num
 	// device pixels per denom logical ones; zero for logical pixels.
 	num, denom int
@@ -80,7 +80,7 @@ func LoadSVG(data []byte, w, h int) (*Icon, error) {
 
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
 	doc.draw(img, fitViewBox(vb.X, vb.Y, vb.W, vb.H, offX, offY, fitW, fitH))
-	return &Icon{img: img}, nil
+	return &Icon{img: NewStillImage(img)}, nil
 }
 
 // rasterSVG draws doc's region (rx, ry, rw, rh in its user units)
@@ -149,7 +149,7 @@ func IconFromImage(src image.Image, w, h int) (*Icon, error) {
 	}
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
 	xdraw.CatmullRom.Scale(img, img.Bounds(), src, src.Bounds(), xdraw.Over, nil)
-	return &Icon{img: img}, nil
+	return &Icon{img: NewStillImage(img)}, nil
 }
 
 // IconFromARGB32 decodes a width x height raster of 32-bit ARGB pixels
@@ -205,12 +205,16 @@ func (i *Icon) Tint(tint Color) *Icon {
 			out.Pix[o+3] = uint8(min(ta*a/255, 255))
 		}
 	}
-	return &Icon{img: out, num: i.num, denom: i.denom}
+	return &Icon{img: NewStillImage(out), num: i.num, denom: i.denom}
 }
 
 // Image is the icon's raster, premultiplied, shared by every draw:
 // read-only.
-func (i *Icon) Image() *image.RGBA { return i.img }
+func (i *Icon) Image() *image.RGBA { return i.img.RGBA }
+
+// Still is the icon's raster as the still image its own draws use, of
+// the icon's identity: a GPU renderer keeps one texture for both.
+func (i *Icon) Still() StillImage { return i.img }
 
 // At returns the pixel at (x, y) in icon coordinates.
 func (i *Icon) At(x, y int) color.Color { return i.img.At(x, y) }
@@ -222,12 +226,12 @@ func (i *Icon) At(x, y int) color.Color { return i.img.At(x, y) }
 func (i *Icon) Draw(cv *Canvas, x, y int) {
 	switch {
 	case i.num == 0:
-		cv.DrawImage(StillImage{i.img}, x, y)
+		cv.DrawImage(i.img, x, y)
 	case i.native(cv.num, cv.denom):
-		cv.DrawImageDevice(StillImage{i.img}, divFloor(x*cv.num, cv.denom), divFloor(y*cv.num, cv.denom))
+		cv.DrawImageDevice(i.img, divFloor(x*cv.num, cv.denom), divFloor(y*cv.num, cv.denom))
 	default:
 		w, h := i.LogicalSize()
-		cv.DrawImageRect(StillImage{i.img}, Rect{X: x, Y: y, W: w, H: h})
+		cv.DrawImageRect(i.img, Rect{X: x, Y: y, W: w, H: h})
 	}
 }
 

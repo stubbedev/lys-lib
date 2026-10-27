@@ -580,7 +580,7 @@ type boxShadowKey struct {
 
 // ShadowMask is a box-shadow's coverage field over its core box's
 // span, whose top-left sits at (x0, y0) from the box's, immutable once
-// made: a GPU renderer keys its atlas by it.
+// made: a GPU renderer keys its atlas by its ID.
 type ShadowMask struct {
 	covRaster
 	x0, y0 int

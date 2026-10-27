@@ -11,13 +11,13 @@ const atlasSize = 2048
 
 // maskAtlas is the page of coverage masks the device keeps across
 // frames: each mask is uploaded once and drawn from where it was
-// placed. A full page empties and refills.
+// placed, keyed by its ID. A full page empties and refills.
 type maskAtlas struct {
 	// size is the page's width and height, atlasSize unless a test
 	// shrinks it before the first glyph.
 	size          int
 	page          *surface
-	slots         map[render.CoverageMask]image.Point
+	slots         map[render.ImageID]image.Point
 	px, py, shelf int
 }
 
@@ -57,9 +57,10 @@ func (f *frame) maskSlot(m render.CoverageMask) (image.Point, bool) {
 			f.fail(err)
 			return image.Point{}, false
 		}
-		a.page, a.slots = s, map[render.CoverageMask]image.Point{}
+		a.page, a.slots = s, map[render.ImageID]image.Point{}
 	}
-	if at, ok := a.slots[m]; ok {
+	id := m.ID()
+	if at, ok := a.slots[id]; ok {
 		return at, true
 	}
 	w, h := m.Size()
@@ -74,7 +75,8 @@ func (f *frame) maskSlot(m render.CoverageMask) (image.Point, bool) {
 		a.reset()
 		at, _ = a.place(w, h)
 	}
-	a.slots[m] = at
+	a.slots[id] = at
+	f.stats.textureUploads++
 	f.uploads = append(f.uploads, upload{dst: a.page, region: image.Rect(at.X, at.Y, at.X+w, at.Y+h), offset: len(f.staging), rowLength: w})
 	for _, c := range m.Pix() {
 		f.staging = append(f.staging, c, c, c, c)

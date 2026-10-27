@@ -423,7 +423,7 @@ func TestLoadSVGTransforms(t *testing.T) {
 		if err != nil {
 			t.Fatalf("load %s: %v", body, err)
 		}
-		return ic.img
+		return ic.img.RGBA
 	}
 	for name, tc := range map[string]struct{ transformed, applied string }{
 		"uniform scale":        {`<rect transform='scale(2)' x='1' y='1' width='6' height='5'/>`, `<rect x='2' y='2' width='12' height='10'/>`},
@@ -589,7 +589,7 @@ func solidIcon(px int) *Icon {
 	for i := range img.Pix {
 		img.Pix[i] = 0xff
 	}
-	return &Icon{img: img}
+	return &Icon{img: NewStillImage(img)}
 }
 
 // An icon rasterized at a device scale covers its logical size on a

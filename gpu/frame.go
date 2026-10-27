@@ -77,6 +77,7 @@ type frame struct {
 func (d *Device) Render(l *render.List, t *Target) error {
 	d.freeDeadLayers()
 	d.retireImages()
+	defer d.forgetImages()
 	if err := d.ensureScratch(t.s.w, t.s.h); err != nil {
 		return err
 	}
@@ -95,16 +96,17 @@ func (d *Device) Render(l *render.List, t *Target) error {
 	f.stats.prims += len(f.prims)
 	err := f.flush(true)
 	if debug.Enabled {
-		debug.Log("gpu", "frame %dx%d: %d prims, %d segments, %d readbacks, sprite pixels %v", t.s.w, t.s.h, f.stats.prims, f.stats.segments, f.stats.readbacks, f.stats.sprites)
+		debug.Log("gpu", "frame %dx%d: %d prims, %d segments, %d readbacks, %d texture uploads, sprite pixels %v", t.s.w, t.s.h, f.stats.prims, f.stats.segments, f.stats.readbacks, f.stats.textureUploads, f.stats.sprites)
 	}
 	return err
 }
 
 // frameStats is what a frame drew how: its primitives, the segments it
-// submitted in, its readbacks, and the pixels of CPU sprites per call.
+// submitted in, its readbacks, the image textures and atlas masks it
+// uploaded, and the pixels of CPU sprites per call.
 type frameStats struct {
-	prims, segments, readbacks int
-	sprites                    map[string]int
+	prims, segments, readbacks, textureUploads int
+	sprites                                    map[string]int
 }
 
 // reset empties the stats for a new frame, keeping the map.
@@ -465,9 +467,9 @@ func (f *frame) texture(img image.Image) (*surface, bool) {
 	}
 	switch v := img.(type) {
 	case render.StillImage:
-		return f.imageTexture(v.RGBA, 0)
+		return f.imageTexture(v.RGBA, v.ID, 0)
 	case render.VersionedImage:
-		return f.imageTexture(v.RGBA, v.Version)
+		return f.imageTexture(v.RGBA, v.ID, v.Version)
 	}
 	return nil, false
 }
@@ -522,10 +524,10 @@ func (f *frame) DrawImageRect(s render.State, img image.Image, r render.Rect) {
 
 func (f *frame) DrawIcon(s render.State, ic *render.Icon, x, y int, m render.Affine) {
 	mp, invertible := render.MappedOf(ic.Xform(x, y, m, f.num, f.denom))
-	img := ic.Image()
+	img := ic.Still()
 	tex, ok := (*surface)(nil), invertible && f.err == nil
 	if ok {
-		tex, ok = f.imageTexture(img, 0)
+		tex, ok = f.imageTexture(img.RGBA, img.ID, 0)
 	}
 	if !ok {
 		f.sprite(s, "DrawIcon", func(cv *render.Canvas) { ic.DrawXformed(cv, x, y, m) })

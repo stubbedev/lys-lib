@@ -34,6 +34,7 @@ const (
 // w x h, row-major. Its owner records where it sits relative to the
 // box it shades.
 type covRaster struct {
+	identity
 	w, h int
 	cov  []uint8
 }
@@ -47,8 +48,10 @@ func (r *covRaster) Size() (w, h int) { return r.w, r.h }
 // CoverageMask is an immutable 8bpp coverage mask render caches and
 // blends a color through: a glyph's (GlyphMask), a box-shadow core's
 // (ShadowMask), a rect shadow's (RectShadow). A GPU renderer keys its
-// mask atlas by it.
+// mask atlas by its ID, which no other mask shares, whatever memory
+// either lives in.
 type CoverageMask interface {
+	ID() ImageID
 	Pix() []uint8
 	Size() (w, h int)
 }
