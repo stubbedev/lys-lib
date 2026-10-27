@@ -15,6 +15,7 @@ package gpu
 import (
 	"errors"
 	"fmt"
+	"os"
 	"runtime"
 	"slices"
 	"sync"
@@ -22,6 +23,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/stubbedev/lys-lib/debug"
 	"github.com/stubbedev/lys-lib/dmabuf"
 	"github.com/stubbedev/lys-lib/third_party/vk"
 )
@@ -108,9 +110,11 @@ var vulkan struct {
 }
 
 // processInstance returns the process's instance and a copy of its
-// commands, making the instance on first use. A failure is not kept: a
-// later Open tries again.
-func processInstance() (vk.Instance, *vk.Commands, error) {
+// commands, making the instance on first use. A first use naming node
+// loads only the Vulkan drivers for its kernel driver (driverGlob);
+// one that then finds no device loads them all instead. A failure is
+// not kept: a later Open tries again.
+func processInstance(node *drmNode) (vk.Instance, *vk.Commands, error) {
 	vulkan.mu.Lock()
 	defer vulkan.mu.Unlock()
 	if vulkan.instance == 0 {
@@ -121,9 +125,17 @@ func processInstance() (vk.Instance, *vk.Commands, error) {
 		if err := cmds.LoadGlobal(); err != nil {
 			return 0, nil, fmt.Errorf("%w: %w", ErrNoVulkan, err)
 		}
-		instance, err := createInstance(cmds)
+		glob := driverGlob(sysDevChar, node, os.Getenv)
+		instance, err := createSelected(cmds, glob)
 		if err != nil {
 			return 0, nil, err
+		}
+		if glob != "" && physicalDeviceCount(cmds, instance) == 0 {
+			debug.Log("gpu", "no Vulkan device under %s=%s: loading every driver", driversSelect, glob)
+			cmds.DestroyInstance(instance, nil)
+			if instance, err = createInstance(cmds); err != nil {
+				return 0, nil, err
+			}
 		}
 		vulkan.instance, vulkan.cmds = instance, *cmds
 	}
@@ -131,17 +143,35 @@ func processInstance() (vk.Instance, *vk.Commands, error) {
 	return vulkan.instance, &cmds, nil
 }
 
+// createSelected makes an instance loading only glob's drivers, all
+// of them for "".
+func createSelected(cmds *vk.Commands, glob string) (vk.Instance, error) {
+	var instance vk.Instance
+	err := selectDrivers(glob, func() error {
+		var err error
+		instance, err = createInstance(cmds)
+		return err
+	})
+	return instance, err
+}
+
+// physicalDeviceCount is how many devices instance enumerates.
+func physicalDeviceCount(cmds *vk.Commands, instance vk.Instance) uint32 {
+	var n uint32
+	cmds.EnumeratePhysicalDevices(instance, &n, nil)
+	return n
+}
+
 // open picks the first device node names (any, nil) with a graphics
 // queue that exports dmabufs, else, with no node named, the first with
 // a graphics queue.
 func open(node *drmNode) (*Device, error) {
-	instance, cmds, err := processInstance()
+	instance, cmds, err := processInstance(node)
 	if err != nil {
 		return nil, err
 	}
 	d := &Device{cmds: cmds, instance: instance, targets: map[*Target]struct{}{}, buffers: map[*Buffer]struct{}{}}
-	var n uint32
-	d.cmds.EnumeratePhysicalDevices(d.instance, &n, nil)
+	n := physicalDeviceCount(d.cmds, d.instance)
 	phys := make([]vk.PhysicalDevice, n)
 	if n > 0 {
 		d.cmds.EnumeratePhysicalDevices(d.instance, &n, &phys[0])
