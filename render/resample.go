@@ -1,6 +1,7 @@
 package render
 
 import (
+	"fmt"
 	"image"
 	"image/color"
 	"math"
@@ -23,13 +24,40 @@ func Resample(src image.Image, srcRect image.Rectangle, dstW, dstH int) *image.R
 		return image.NewRGBA(image.Rectangle{})
 	}
 	dst := image.NewRGBA(image.Rect(0, 0, dstW, dstH))
+	resample(dst, src, srcRect)
+	return dst
+}
+
+// ResampleTo is Resample into an image the caller owns, pixels its
+// memory holds (reused, or off the Go heap): srcRect of src scaled
+// over all of dst, at dst's own stride and origin, so a sub-image
+// takes it too. It writes every pixel of dst, the same bytes Resample
+// would, and refuses an empty dst or one its pixels cannot hold.
+func ResampleTo(dst *image.RGBA, src image.Image, srcRect image.Rectangle) error {
+	r := dst.Rect
+	if r.Empty() {
+		return fmt.Errorf("render: resampling into an empty image %v", r)
+	}
+	if dst.Stride < 4*r.Dx() || len(dst.Pix) < dst.PixOffset(r.Max.X-1, r.Max.Y-1)+4 {
+		return fmt.Errorf("render: a %v image of stride %d does not fit its %d pixel bytes", r, dst.Stride, len(dst.Pix))
+	}
+	resample(dst, src, srcRect)
+	return nil
+}
+
+// resample scales srcRect of src over all of dst, a fully transparent
+// dst when the two do not overlap.
+func resample(dst *image.RGBA, src image.Image, srcRect image.Rectangle) {
 	r := srcRect.Intersect(src.Bounds())
 	if r.Empty() {
-		return dst // a fully transparent raster of the requested size
+		for y := dst.Rect.Min.Y; y < dst.Rect.Max.Y; y++ {
+			at := dst.PixOffset(dst.Rect.Min.X, y)
+			clear(dst.Pix[at : at+4*dst.Rect.Dx()])
+		}
+		return
 	}
-	rows := boxReduce(src, r, max(1, min(r.Dx()/dstW, r.Dy()/dstH)))
+	rows := boxReduce(src, r, max(1, min(r.Dx()/dst.Rect.Dx(), r.Dy()/dst.Rect.Dy())))
 	cubicScale(dst, rows)
-	return dst
 }
 
 // rowSource yields a source's premultiplied RGBA rows, w pixels wide
@@ -214,7 +242,8 @@ func cubicScale(dst *image.RGBA, rows rowSource) {
 	}
 	sums := make([]float32, dw*4)
 	for dy, t := range yt {
-		row := dst.Pix[dy*dst.Stride : dy*dst.Stride+dw*4]
+		at := dst.PixOffset(dst.Rect.Min.X, dst.Rect.Min.Y+dy)
+		row := dst.Pix[at : at+dw*4]
 		clear(sums)
 		for i, wgt := range t.w {
 			line := filtered(clampRow(t.first + i))

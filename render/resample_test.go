@@ -108,3 +108,68 @@ func TestDrawImageClipsWithoutSquashing(t *testing.T) {
 		t.Error("the image painted outside its own or the clip's bounds")
 	}
 }
+
+// ResampleTo writes the bytes Resample would, for every source model,
+// into the caller's image at its own stride and origin: a sub-image of
+// a larger raster, whose pixels around it stay as they were. A source
+// rect off the source clears it, and a destination its pixels cannot
+// hold is refused.
+func TestResampleToMatchesResample(t *testing.T) {
+	const sw, sh, dw, dh = 37, 23, 15, 11
+	rgba := image.NewRGBA(image.Rect(0, 0, sw, sh))
+	for i := range rgba.Pix {
+		rgba.Pix[i] = uint8(i * 7)
+	}
+	nrgba := image.NewNRGBA(rgba.Rect)
+	copy(nrgba.Pix, rgba.Pix)
+	gray := image.NewGray(rgba.Rect)
+	for i := range gray.Pix {
+		gray.Pix[i] = uint8(i * 3)
+	}
+	ycc := image.NewYCbCr(rgba.Rect, image.YCbCrSubsampleRatio420)
+	for i := range ycc.Y {
+		ycc.Y[i] = uint8(i * 5)
+	}
+	pal := image.NewPaletted(rgba.Rect, color.Palette{color.RGBA{255, 0, 0, 255}, color.RGBA{0, 0, 255, 128}})
+	for i := range pal.Pix {
+		pal.Pix[i] = uint8(i % 2)
+	}
+	for _, src := range []image.Image{rgba, nrgba, gray, ycc, pal} {
+		srcRect := image.Rect(2, 3, 33, 21)
+		want := Resample(src, srcRect, dw, dh)
+		big := image.NewRGBA(image.Rect(0, 0, dw+4, dh+4))
+		for i := range big.Pix {
+			big.Pix[i] = 0xaa
+		}
+		dst, ok := big.SubImage(image.Rect(2, 2, 2+dw, 2+dh)).(*image.RGBA)
+		if !ok {
+			t.Fatal("an RGBA sub-image is not an RGBA")
+		}
+		if err := ResampleTo(dst, src, srcRect); err != nil {
+			t.Fatalf("%T: %v", src, err)
+		}
+		for y := range dh {
+			for x := range dw {
+				if got, w := dst.RGBAAt(2+x, 2+y), want.RGBAAt(x, y); got != w {
+					t.Fatalf("%T: pixel (%d,%d) = %v, Resample's %v", src, x, y, got, w)
+				}
+			}
+		}
+		if big.RGBAAt(1, 1) != (color.RGBA{0xaa, 0xaa, 0xaa, 0xaa}) || big.RGBAAt(2+dw, 2+dh) != (color.RGBA{0xaa, 0xaa, 0xaa, 0xaa}) {
+			t.Errorf("%T: ResampleTo wrote outside its destination", src)
+		}
+	}
+	dst := image.NewRGBA(image.Rect(0, 0, 4, 4))
+	for i := range dst.Pix {
+		dst.Pix[i] = 0xff
+	}
+	if err := ResampleTo(dst, rgba, image.Rect(100, 100, 120, 120)); err != nil || dst.RGBAAt(3, 3).A != 0 {
+		t.Errorf("a source rect off the source left %v (%v), want a cleared destination", dst.RGBAAt(3, 3), err)
+	}
+	if err := ResampleTo(&image.RGBA{}, rgba, rgba.Rect); err == nil {
+		t.Error("resampled into an empty image")
+	}
+	if err := ResampleTo(&image.RGBA{Pix: make([]byte, 8), Stride: 16, Rect: image.Rect(0, 0, 4, 4)}, rgba, rgba.Rect); err == nil {
+		t.Error("resampled into an image its pixels cannot hold")
+	}
+}
