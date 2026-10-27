@@ -104,11 +104,17 @@ func (f *frame) imageTexture(img *image.RGBA, id render.ImageID, version uint64)
 func (f *frame) stageImage(s *surface, img *image.RGBA) {
 	b := img.Rect
 	f.stats.textureUploads++
-	f.uploads = append(f.uploads, upload{dst: s, region: image.Rect(0, 0, b.Dx(), b.Dy()), offset: len(f.staging), rowLength: b.Dx()})
+	out, off := f.stage(b.Dx() * b.Dy() * 4)
+	if out == nil {
+		return
+	}
+	f.uploads = append(f.uploads, upload{dst: s, region: image.Rect(0, 0, b.Dx(), b.Dy()), offset: off, rowLength: b.Dx()})
+	o := 0
 	for y := b.Min.Y; y < b.Max.Y; y++ {
 		row := img.Pix[img.PixOffset(b.Min.X, y):img.PixOffset(b.Max.X, y)]
 		for x := 0; x < len(row); x += 4 {
-			f.staging = append(f.staging, row[x+2], row[x+1], row[x], row[x+3])
+			out[o], out[o+1], out[o+2], out[o+3] = row[x+2], row[x+1], row[x], row[x+3]
+			o += 4
 		}
 	}
 }

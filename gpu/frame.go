@@ -61,7 +61,10 @@ type frame struct {
 	words   []uint32
 	steps   []step
 	uploads []upload
-	staging []byte
+	// staged is how many bytes of the device's staging buffer the
+	// segment's uploads fill, and peakStaged the most any segment of
+	// the frame filled.
+	staged, peakStaged int
 	// downloads is how many bytes the segment's downloads take.
 	downloads int
 	// stats counts what the frame drew how, for the gpu debug line.
@@ -88,6 +91,7 @@ func (d *Device) Render(l *render.List, t *Target) error {
 	f := &d.frame
 	f.d, f.target, f.num, f.denom, f.err = d, t, num, denom, nil
 	f.clear()
+	f.peakStaged = 0
 	f.stats.reset()
 	l.Play(f)
 	if f.err != nil {
@@ -95,6 +99,9 @@ func (d *Device) Render(l *render.List, t *Target) error {
 	}
 	f.stats.prims += len(f.prims)
 	err := f.flush(true)
+	if err == nil {
+		err = d.fitStaging(f.peakStaged)
+	}
 	if debug.Enabled {
 		debug.Log("gpu", "frame %dx%d: %d prims, %d segments, %d readbacks, %d texture uploads, sprite pixels %v", t.s.w, t.s.h, f.stats.prims, f.stats.segments, f.stats.readbacks, f.stats.textureUploads, f.stats.sprites)
 	}
@@ -124,6 +131,29 @@ func (f *frame) fail(err error) {
 	if f.err == nil {
 		f.err = err
 	}
+}
+
+// stage reserves the next n bytes of the device's staging buffer for
+// an upload this segment, returning them and their offset; nil after
+// an error. Uploads write straight into the buffer the GPU copies
+// from: no work is in flight while a segment records (submit waits for
+// it), so growing the buffer copies only what this segment staged.
+func (f *frame) stage(n int) ([]byte, int) {
+	d := f.d
+	at, need := f.staged, f.staged+n
+	if len(d.staging.mapped) < need {
+		grown, err := d.newBuffer(max(2*need, stagingMin), vk.BufferUsageTransferSrcBit)
+		if err != nil {
+			f.fail(fmt.Errorf("gpu: staging buffer of %d bytes: %w", need, err))
+			return nil, 0
+		}
+		copy(grown.mapped, d.staging.mapped[:at])
+		d.staging.close()
+		d.staging = grown
+	}
+	f.staged = need
+	f.peakStaged = max(f.peakStaged, need)
+	return d.staging.mapped[at:need], at
 }
 
 // on is the surface s names: the target, or a layer's.
@@ -193,11 +223,19 @@ func (f *frame) sprite(s render.State, call string, paint func(cv *render.Canvas
 	if !ok {
 		return
 	}
-	sc := f.d.scratchCanvas(0, f.target.s.w, f.target.s.h, f.num, f.denom)
+	sc, err := f.d.scratchCanvas(0, f.target.s.w, f.target.s.h, f.num, f.denom)
+	if err != nil {
+		f.fail(err)
+		return
+	}
 	sc.cv.ApplyState(render.State{Clip: b, Alpha: s.Alpha, Bright: s.Bright})
 	paint(sc.cv)
-	f.uploads = append(f.uploads, upload{dst: f.d.page, region: image.Rect(at.X, at.Y, at.X+b.W, at.Y+b.H), offset: len(f.staging), rowLength: b.W})
-	f.staging = sc.take(f.staging, b)
+	out, off := f.stage(b.W * b.H * 4)
+	if out == nil {
+		return
+	}
+	f.uploads = append(f.uploads, upload{dst: f.d.page, region: image.Rect(at.X, at.Y, at.X+b.W, at.Y+b.H), offset: off, rowLength: b.W})
+	sc.take(out, b)
 	p := prim{quad: quadOf(b), inner: [4]float32{float32(b.X - at.X), float32(b.Y - at.Y)}, info: [4]uint32{kindTexture, 255, 0, flagRaw}}
 	f.draw(f.on(s), f.d.page, pipeOver, p)
 }
@@ -258,13 +296,21 @@ func (f *frame) cpu(region render.Rect, surfaces []*surface, fn func(cvs []*rend
 	}
 	cvs := make([]*render.Canvas, len(surfaces))
 	for i := range surfaces {
-		sc := f.d.scratchCanvas(i, f.target.s.w, f.target.s.h, f.num, f.denom)
+		sc, err := f.d.scratchCanvas(i, f.target.s.w, f.target.s.h, f.num, f.denom)
+		if err != nil {
+			f.fail(err)
+			return
+		}
 		sc.put(region, f.d.readback.mapped[offsets[i]:])
 		cvs[i] = sc.cv
 	}
 	fn(cvs)
-	f.uploads = append(f.uploads, upload{dst: surfaces[0], region: r, offset: len(f.staging), rowLength: r.Dx()})
-	f.staging = f.d.scratches[0].take(f.staging, region)
+	out, off := f.stage(r.Dx() * r.Dy() * 4)
+	if out == nil {
+		return
+	}
+	f.uploads = append(f.uploads, upload{dst: surfaces[0], region: r, offset: off, rowLength: r.Dx()})
+	f.d.scratches[0].take(out, region)
 	for _, sc := range f.d.scratches[1:len(surfaces)] {
 		sc.clear(region)
 	}
@@ -284,10 +330,6 @@ func (f *frame) flush(final bool) error {
 	}
 	copy(d.words.mapped, unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(f.words))), len(f.words)*4))
 	d.bindPrims(d.prims, d.words)
-	if d.staging, err = d.staging.fit(len(f.staging)); err != nil {
-		return err
-	}
-	copy(d.staging.mapped, f.staging)
 	if d.readback, err = d.readback.fit(f.downloads); err != nil {
 		return err
 	}
@@ -299,7 +341,7 @@ func (f *frame) flush(final bool) error {
 
 // clear empties the recorded segment, keeping its slices' capacity.
 func (f *frame) clear() {
-	f.prims, f.words, f.steps, f.uploads, f.staging = f.prims[:0], f.words[:0], f.steps[:0], f.uploads[:0], f.staging[:0]
+	f.prims, f.words, f.steps, f.uploads, f.staged = f.prims[:0], f.words[:0], f.steps[:0], f.uploads[:0], 0
 	f.px, f.py, f.shelf, f.downloads = 0, 0, 0, 0
 }
 
@@ -716,10 +758,16 @@ func (f *frame) maskUpload(mask *image.Alpha, box render.Rect) (image.Point, boo
 	if !ok {
 		return image.Point{}, false
 	}
-	f.uploads = append(f.uploads, upload{dst: f.d.page, region: image.Rect(at.X, at.Y, at.X+box.W, at.Y+box.H), offset: len(f.staging), rowLength: box.W})
+	out, off := f.stage(box.W * box.H * 4)
+	if out == nil {
+		return image.Point{}, false
+	}
+	f.uploads = append(f.uploads, upload{dst: f.d.page, region: image.Rect(at.X, at.Y, at.X+box.W, at.Y+box.H), offset: off, rowLength: box.W})
+	o := 0
 	for y := range box.H {
 		for _, c := range mask.Pix[y*mask.Stride : y*mask.Stride+box.W] {
-			f.staging = append(f.staging, c, c, c, c)
+			out[o], out[o+1], out[o+2], out[o+3] = c, c, c, c
+			o += 4
 		}
 	}
 	return at, true

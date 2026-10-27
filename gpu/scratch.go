@@ -6,6 +6,8 @@ import (
 	"slices"
 	"sync"
 
+	memory "github.com/stubbedev/memory-go"
+
 	"github.com/stubbedev/lys-lib/render"
 	"github.com/stubbedev/lys-lib/third_party/vk"
 )
@@ -14,24 +16,30 @@ import (
 // into: a sprite, or a layer's pixels read back. Outside a call it is
 // transparent throughout, so a call's pixels are its own.
 type scratchCanvas struct {
+	// mem holds buf, off the Go heap in the device's pixels.
+	mem memory.Slice[byte]
 	buf []byte
 	cv  *render.Canvas
 }
 
-func newScratchCanvas(w, h, num, denom int) *scratchCanvas {
-	buf := make([]byte, render.Stride(w)*h)
-	return &scratchCanvas{buf: buf, cv: render.NewScaled(buf, render.Stride(w), w, h, num, denom)}
+// newScratchCanvas allocates a w x h scratch canvas in pixels.
+func newScratchCanvas(pixels memory.Allocator, w, h, num, denom int) (*scratchCanvas, error) {
+	mem, err := memory.MakeSlice[byte](pixels, render.Stride(w)*h)
+	if err != nil {
+		return nil, fmt.Errorf("gpu: a %dx%d scratch canvas: %w", w, h, err)
+	}
+	buf := mem.Elems()
+	return &scratchCanvas{mem: mem, buf: buf, cv: render.NewScaled(buf, render.Stride(w), w, h, num, denom)}, nil
 }
 
-// take appends r's rows to dst, tight, and clears them.
-func (sc *scratchCanvas) take(dst []byte, r render.Rect) []byte {
+// take copies r's rows into dst, tight, and clears them.
+func (sc *scratchCanvas) take(dst []byte, r render.Rect) {
 	stride := render.Stride(sc.cv.Rect().W)
 	for y := r.Y; y < r.Y+r.H; y++ {
 		row := sc.buf[y*stride+r.X*4 : y*stride+(r.X+r.W)*4]
-		dst = append(dst, row...)
+		copy(dst[(y-r.Y)*r.W*4:], row)
 		clear(row)
 	}
-	return dst
 }
 
 // put copies tight rows of src into r.
@@ -121,8 +129,65 @@ func (d *Device) ensureScratch(w, h int) error {
 	if err := d.fitFilters(w, h); err != nil {
 		return err
 	}
-	d.scratches = nil
+	if err := d.dropScratches(); err != nil {
+		return err
+	}
 	return d.page.ready()
+}
+
+// stagingMin is the staging buffer a device starts with and shrinks
+// back to.
+const stagingMin = 1 << 16
+
+// fitStaging shrinks the staging buffer back to twice what a frame
+// needed, at least stagingMin, once it is more than four times that:
+// one large upload (a wallpaper, a 4K sprite) must not keep its
+// buffer for good, while a steady stream of them keeps one.
+func (d *Device) fitStaging(needed int) error {
+	keep := max(2*needed, stagingMin)
+	if len(d.staging.mapped) <= 2*keep {
+		return nil
+	}
+	shrunk, err := d.newBuffer(keep, vk.BufferUsageTransferSrcBit)
+	if err != nil {
+		return fmt.Errorf("gpu: staging buffer of %d bytes: %w", keep, err)
+	}
+	d.staging.close()
+	d.staging = shrunk
+	return nil
+}
+
+// dropScratches frees the scratch canvases; the next frame that needs
+// one allocates it again.
+func (d *Device) dropScratches() error {
+	for _, sc := range d.scratches {
+		if sc == nil {
+			continue
+		}
+		if err := memory.FreeSlice(&d.pixels, sc.mem); err != nil {
+			return fmt.Errorf("gpu: free a scratch canvas: %w", err)
+		}
+	}
+	d.scratches = nil
+	return nil
+}
+
+// Trim hands back what the device keeps only for speed: the CPU
+// scratch canvases, freed off the Go heap and unmapped, and a staging
+// buffer above its minimum. A device that draws again allocates them
+// anew. Call it when the device has been idle a while, between frames,
+// on the device's goroutine.
+func (d *Device) Trim() error {
+	if err := d.dropScratches(); err != nil {
+		return err
+	}
+	if err := d.pixels.Trim(); err != nil {
+		return fmt.Errorf("gpu: trim the scratch canvases: %w", err)
+	}
+	if d.staging == nil {
+		return nil
+	}
+	return d.fitStaging(0)
 }
 
 // fitFilters grows the filter surfaces to hold w x h. Nothing pending
@@ -150,7 +215,7 @@ func (d *Device) fitFilters(w, h int) error {
 // scratchCanvas is scratch canvas i for a w x h canvas at num/denom.
 // Its buffer is kept by capacity: transparent between calls, a bigger
 // one serves any size, so a resize allocates only when it grows.
-func (d *Device) scratchCanvas(i, w, h, num, denom int) *scratchCanvas {
+func (d *Device) scratchCanvas(i, w, h, num, denom int) (*scratchCanvas, error) {
 	for len(d.scratches) <= i {
 		d.scratches = append(d.scratches, nil)
 	}
@@ -158,7 +223,17 @@ func (d *Device) scratchCanvas(i, w, h, num, denom int) *scratchCanvas {
 	need := render.Stride(w) * h
 	switch {
 	case sc == nil || cap(sc.buf) < need:
-		sc = newScratchCanvas(w, h, num, denom)
+		if sc != nil {
+			if err := memory.FreeSlice(&d.pixels, sc.mem); err != nil {
+				return nil, fmt.Errorf("gpu: free a scratch canvas: %w", err)
+			}
+		}
+		grown, err := newScratchCanvas(&d.pixels, w, h, num, denom)
+		if err != nil {
+			d.scratches[i] = nil
+			return nil, err
+		}
+		sc = grown
 		d.scratches[i] = sc
 	case len(sc.buf) != need || sc.cv.Rect().W != w || sc.cv.Rect().H != h:
 		sc.buf = sc.buf[:need]
@@ -167,7 +242,7 @@ func (d *Device) scratchCanvas(i, w, h, num, denom int) *scratchCanvas {
 	if n, dn := sc.cv.DeviceScale(); n != num || dn != denom {
 		sc.cv.Reset(sc.buf, render.Stride(w), w, h, num, denom)
 	}
-	return sc
+	return sc, nil
 }
 
 // layerSurface is a recorded layer's GPU surface. A kept layer's is
@@ -261,4 +336,7 @@ func (d *Device) closeScratch() {
 		}
 	}
 	d.scratch = scratch{}
+	if err := d.pixels.Close(); err != nil {
+		panic(fmt.Sprintf("gpu: unmap the scratch canvases: %v", err))
+	}
 }

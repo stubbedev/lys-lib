@@ -14,4 +14,9 @@ require (
 	golang.org/x/text v0.43.0
 )
 
+require (
+	github.com/stubbedev/memory-go v0.2.0 // indirect
+	modernc.org/memory v1.12.1 // indirect
+)
+
 tool github.com/stubbedev/lys-lib/third_party/wayland/cmd/wayland-scanner

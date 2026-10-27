@@ -77,9 +77,13 @@ func (f *frame) maskSlot(m render.CoverageMask) (image.Point, bool) {
 	}
 	a.slots[id] = at
 	f.stats.textureUploads++
-	f.uploads = append(f.uploads, upload{dst: a.page, region: image.Rect(at.X, at.Y, at.X+w, at.Y+h), offset: len(f.staging), rowLength: w})
-	for _, c := range m.Pix() {
-		f.staging = append(f.staging, c, c, c, c)
+	out, off := f.stage(w * h * 4)
+	if out == nil {
+		return image.Point{}, false
+	}
+	f.uploads = append(f.uploads, upload{dst: a.page, region: image.Rect(at.X, at.Y, at.X+w, at.Y+h), offset: off, rowLength: w})
+	for i, c := range m.Pix() {
+		out[4*i], out[4*i+1], out[4*i+2], out[4*i+3] = c, c, c, c
 	}
 	return at, true
 }

@@ -21,6 +21,7 @@ import (
 	"sync"
 	"unsafe"
 
+	memory "github.com/stubbedev/memory-go"
 	"golang.org/x/sys/unix"
 
 	"github.com/stubbedev/lys-lib/debug"
@@ -77,6 +78,10 @@ type Device struct {
 	buffers map[*Buffer]struct{}
 	// closed marks a device Close released.
 	closed bool
+	// pixels holds the CPU scratch canvases off the Go heap: the
+	// largest target ever drawn sizes them, and Trim hands their pages
+	// back instead of leaving them to raise the GC's heap goal.
+	pixels memory.Local
 	pipelines
 	scratch
 }
