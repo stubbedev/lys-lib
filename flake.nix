@@ -17,6 +17,7 @@
         "aarch64-darwin"
       ];
       imports = [
+        ./nix/checks.nix
         ./nix/shell.nix
         ./nix/toolchain.nix
       ];

@@ -84,8 +84,12 @@ func (d *Device) Path() string {
 }
 
 func (d *Device) ioctl(name string, nr uintptr, arg unsafe.Pointer, size uintptr) error {
+	return d.call(name, iowr(nr, size), arg)
+}
+
+func (d *Device) call(name string, request uintptr, arg unsafe.Pointer) error {
 	for {
-		_, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(d.fd), iowr(nr, size), uintptr(arg))
+		_, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(d.fd), request, uintptr(arg))
 		switch errno {
 		case 0:
 			return nil

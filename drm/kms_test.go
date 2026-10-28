@@ -8,7 +8,10 @@ import (
 	"slices"
 	"testing"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/stubbedev/lys-lib/drm"
+	"github.com/stubbedev/lys-lib/fourcc"
 )
 
 func card(t *testing.T) *drm.Device {
@@ -155,25 +158,73 @@ func TestAtomicRequestsGroupByObject(t *testing.T) {
 	}
 }
 
-func TestDumbBuffersScanOutLinearARGB(t *testing.T) {
-	d := card(t)
+func framebuffer(t *testing.T, d *drm.Device) (drm.Dumb, uint32) {
+	t.Helper()
 	b, err := d.CreateDumb(image.Pt(64, 32))
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() {
+		if err := d.DestroyDumb(b); err != nil {
+			t.Error(err)
+		}
+	})
+	id, err := d.AddFB2(drm.FB{Width: 64, Height: 32, Format: fourcc.ARGB8888, Handles: [4]uint32{b.Handle}, Pitches: [4]uint32{b.Pitch}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return b, id
+}
+
+func TestDumbBuffersScanOutLinearARGB(t *testing.T) {
+	d := card(t)
+	b, id := framebuffer(t, d)
 	if b.Pitch < 64*4 || len(b.Pix) < int(b.Pitch)*32 {
 		t.Fatalf("pitch %d for %d mapped bytes", b.Pitch, len(b.Pix))
 	}
 	b.Pix[len(b.Pix)-1] = 0xff
-	id, err := d.AddFB2(drm.FB{Width: 64, Height: 32, Format: 'A' | 'R'<<8 | '2'<<16 | '4'<<24, Handles: [4]uint32{b.Handle}, Pitches: [4]uint32{b.Pitch}})
-	if err != nil {
-		t.Fatal(errors.Join(err, d.DestroyDumb(b)))
-	}
-	if err := errors.Join(d.RemoveFB(id), d.DestroyDumb(b)); err != nil {
+	if err := d.RemoveFB(id); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := d.CreateDumb(image.Point{}); err == nil {
 		t.Fatal("an empty dumb buffer was made")
+	}
+}
+
+func TestCloseFBReleasesTheFramebuffer(t *testing.T) {
+	d := card(t)
+	_, id := framebuffer(t, d)
+	err := d.CloseFB(id)
+	if errors.Is(err, drm.ErrNoCloseFB) {
+		t.Logf("this kernel predates CLOSEFB: %v", err)
+		if err := d.RemoveFB(id); err != nil {
+			t.Fatal(err)
+		}
+		return
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.RemoveFB(id); !errors.Is(err, unix.ENOENT) {
+		t.Fatalf("framebuffer %d outlived CloseFB: RemoveFB gave %v", id, err)
+	}
+}
+
+func TestMasterDropsAndComesBack(t *testing.T) {
+	d := card(t)
+	if err := d.SetMaster(); errors.Is(err, unix.EBUSY) || errors.Is(err, unix.EACCES) {
+		t.Skipf("another process masters %s: %v", d.Path(), err)
+	} else if err != nil {
+		t.Fatal(err)
+	}
+	if err := d.DropMaster(); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.DropMaster(); !errors.Is(err, unix.EINVAL) {
+		t.Fatalf("a second DropMaster gave %v, so the first kept master", err)
+	}
+	if err := d.SetMaster(); err != nil {
+		t.Fatal(err)
 	}
 }
 

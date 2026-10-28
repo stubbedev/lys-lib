@@ -80,6 +80,8 @@ const EventFlipComplete = 0x02
 const (
 	ioctlWrite             = 1
 	ioctlSetClientCap      = 0x0d
+	ioctlSetMaster         = 0x1e
+	ioctlDropMaster        = 0x1f
 	ioctlGEMClose          = 0x09
 	ioctlPrimeFDToHandle   = 0x2e
 	ioctlGetResources      = 0xa0
@@ -98,25 +100,25 @@ const (
 	ioctlDestroyDumb       = 0xb4
 	ioctlCreatePropBlob    = 0xbd
 	ioctlDestroyPropBlob   = 0xbe
+	ioctlCloseFB           = 0xd0
 	modeInfoSize           = 68
 	propertyEnumSize       = 40
 )
+
+// ErrNoCloseFB is what CloseFB wraps on a kernel without
+// DRM_IOCTL_MODE_CLOSEFB, one older than Linux 6.8.
+var ErrNoCloseFB = errors.New("drm: no DRM_IOCTL_MODE_CLOSEFB before Linux 6.8")
+
+func ioNone(nr uintptr) uintptr {
+	return ioctlTypeDRM<<ioctlTypeShift | nr
+}
 
 func iow(nr, size uintptr) uintptr {
 	return ioctlWrite<<ioctlDirShift | size<<ioctlSizeShift | ioctlTypeDRM<<ioctlTypeShift | nr
 }
 
 func (d *Device) ioctlW(name string, nr uintptr, arg unsafe.Pointer, size uintptr) error {
-	for {
-		_, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(d.fd), iow(nr, size), uintptr(arg))
-		switch errno {
-		case 0:
-			return nil
-		case unix.EINTR, unix.EAGAIN:
-			continue
-		}
-		return fmt.Errorf("drm: %s on %s: %w", name, d.path, errno)
-	}
+	return d.call(name, iow(nr, size), arg)
 }
 
 func addr[T any](p *runtime.Pinner, s []T) uint64 {
@@ -148,6 +150,23 @@ func (d *Device) Number() (uint64, error) {
 func (d *Device) SetClientCap(capability, value uint64) error {
 	arg := struct{ capability, value uint64 }{capability, value}
 	return d.ioctlW("DRM_IOCTL_SET_CLIENT_CAP", ioctlSetClientCap, unsafe.Pointer(&arg), unsafe.Sizeof(arg)) //nolint:gosec // the kernel reads this struct during the call
+}
+
+// SetMaster makes this open file the card's DRM master with
+// DRM_IOCTL_SET_MASTER, the right to change modes and commit, for a
+// process that opens the card without logind. The first opener of a
+// card nobody masters is master already. It fails with EBUSY while
+// another file is master, and with EACCES unless the process has
+// CAP_SYS_ADMIN or this file was master before.
+func (d *Device) SetMaster() error {
+	return d.call("DRM_IOCTL_SET_MASTER", ioNone(ioctlSetMaster), nil)
+}
+
+// DropMaster gives up this file's DRM master with
+// DRM_IOCTL_DROP_MASTER, so another process can take the card. It fails
+// with EINVAL when the file is not master.
+func (d *Device) DropMaster() error {
+	return d.call("DRM_IOCTL_DROP_MASTER", ioNone(ioctlDropMaster), nil)
 }
 
 // Resources are a card's KMS objects, as DRM_IOCTL_MODE_GETRESOURCES
@@ -626,6 +645,22 @@ func (d *Device) AddFB2(fb FB) (uint32, error) {
 func (d *Device) RemoveFB(id uint32) error {
 	arg := id
 	return released(d.ioctl("DRM_IOCTL_MODE_RMFB", ioctlRmFB, unsafe.Pointer(&arg), unsafe.Sizeof(arg))) //nolint:gosec // the kernel reads this value during the call
+}
+
+// CloseFB releases framebuffer id with DRM_IOCTL_MODE_CLOSEFB, which,
+// unlike RemoveFB, leaves the planes showing it on screen until a
+// commit replaces it or turns them off, so a picture outlives this
+// process for the next master to take over. Before Linux 6.8 the
+// kernel lacks the ioctl and CloseFB fails with ErrNoCloseFB wrapping
+// its EINVAL or ENOTTY; it never falls back to RemoveFB. On an
+// unplugged device (ENODEV) it succeeds.
+func (d *Device) CloseFB(id uint32) error {
+	arg := struct{ id, pad uint32 }{id: id}
+	err := d.ioctl("DRM_IOCTL_MODE_CLOSEFB", ioctlCloseFB, unsafe.Pointer(&arg), unsafe.Sizeof(arg)) //nolint:gosec // the kernel reads this struct during the call
+	if errors.Is(err, unix.EINVAL) || errors.Is(err, unix.ENOTTY) {
+		return fmt.Errorf("%w: %w", ErrNoCloseFB, err)
+	}
+	return released(err)
 }
 
 // Dumb is a dumb buffer: its GEM handle, its pitch in bytes and its
