@@ -122,7 +122,7 @@ func launch(dir, sock string) (*Bus, error) {
 	}
 	_ = cmd.Process.Kill()
 	waitErr := cmd.Wait()
-	return nil, fmt.Errorf("dbus-daemon on %s %s (%v): %s", sock, failure, waitErr, strings.TrimSpace(stderr.String()))
+	return nil, fmt.Errorf("dbus-daemon on %s %s (%w): %s", sock, failure, waitErr, strings.TrimSpace(stderr.String()))
 }
 
 // Stop terminates the daemon and waits for it to exit, so a bus started
