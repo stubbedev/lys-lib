@@ -71,7 +71,7 @@ func (enc *encoder) encodeArray(depth, elemAlign int, fill func(*encoder)) {
 	var buf bytes.Buffer
 	bufenc := newEncoderAtOffset(&buf, offset, enc.order, enc.fds)
 	fill(bufenc)
-	if buf.Len() > 1<<26 {
+	if buf.Len() > maxArrayLen {
 		panic(FormatError("input exceeds array size limitation"))
 	}
 	enc.fds = bufenc.fds

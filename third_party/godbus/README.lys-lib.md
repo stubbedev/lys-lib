@@ -1,7 +1,8 @@
-# github.com/godbus/dbus/v5 v5.2.2, patched for lys-lib
+# github.com/godbus/dbus/v5 v5.2.4, patched for lys-lib
 
-A copy of github.com/godbus/dbus/v5 v5.2.2 (BSD 2-Clause, LICENSE; the
-fd-array bug is also unfixed on master 6fea989, 2026-09-24), its
+A copy of github.com/godbus/dbus/v5 v5.2.4 (4e46d5e, BSD 2-Clause,
+LICENSE; the fd-array bug is unfixed there and on master, which is
+v5.2.4 as of 2026-10-28), its
 non-test sources and lys-lib's own tests, carried as packages of the
 lys-lib module and imported as
 `github.com/stubbedev/lys-lib/third_party/godbus` (package `dbus`),
@@ -22,10 +23,11 @@ application importing lys-lib, with no `replace`.
 Drop the copy once upstream carries every fix below.
 
 - `decoder.go`, case `'a'`: an `ah` decoded with the message's fds made a
-  `[]UnixFDIndex` and appended `UnixFD` values to it. The reflect panic was
-  a string, which `Decode`'s recover does not turn into an error, so every
-  message carrying an fd array (xdg-desktop-portal's Email
-  `attachment_fds`) arrived with an empty body. The slice is now
+  `[]UnixFDIndex` and appended `UnixFD` values to it. The reflect panic is
+  a string, which `Decode`'s recover does not turn into an error: up to
+  v5.2.2 every message carrying an fd array (xdg-desktop-portal's Email
+  `attachment_fds`) arrived with an empty body, and since v5.2.3, which
+  re-panics what is not an error, it crashes the read loop. The slice is now
   `[]UnixFD`, and an index past the fds is an InvalidMessageError.
   Pinned by `lys_fd_array_test.go`.
 - `encoder.go`, case `variantType`, and `lys_encode_as.go`: a Variant's
@@ -71,8 +73,9 @@ Drop the copy once upstream carries every fix below.
   (`lys_bus_test.go`) on a private bus from `dbustest`.
 
 The copy follows lys-lib's Go version, with golangci-lint's modernize fixes
-applied throughout: `reflect.TypeFor` and `TypeAssert`, `strings.SplitSeq`
-and `CutLast`, range over ints and over `Fields`/`Methods`,
-`slices.Backward` and `strings.Builder` where upstream predates them. No
-behaviour changes; upstream's tests passed under -race on a private
-session bus when they were applied, in lys-shell.
+applied to the v5.2.2 sources: `reflect.TypeFor` and `TypeAssert`,
+`strings.SplitSeq` and `CutLast`, range over ints and over
+`Fields`/`Methods`, `slices.Backward` and `strings.Builder` where upstream
+predates them. No behaviour changes; upstream's tests passed under -race
+on a private session bus when they were applied, in lys-shell. The
+v5.2.2..v5.2.4 changes are carried as upstream wrote them.

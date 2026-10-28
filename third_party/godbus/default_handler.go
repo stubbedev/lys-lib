@@ -134,18 +134,18 @@ func (h *defaultHandler) deleteInterface(path ObjectPath, name string) {
 }
 
 type exportedMethod struct {
-	reflect.Value
+	fn reflect.Value
 }
 
 func (m exportedMethod) Call(args ...any) ([]any, error) {
-	t := m.Type()
+	t := m.fn.Type()
 
 	params := make([]reflect.Value, len(args))
 	for i := range args {
 		params[i] = reflect.ValueOf(args[i]).Elem()
 	}
 
-	ret := m.Value.Call(params)
+	ret := m.fn.Call(params)
 	var err error
 	nilErr := false // The reflection will find almost-nils, let's only pass back clean ones!
 	if t.NumOut() > 0 {
@@ -175,19 +175,19 @@ func (m exportedMethod) Call(args ...any) ([]any, error) {
 }
 
 func (m exportedMethod) NumArguments() int {
-	return m.Value.Type().NumIn()
+	return m.fn.Type().NumIn()
 }
 
 func (m exportedMethod) ArgumentValue(i int) any {
-	return reflect.Zero(m.Type().In(i)).Interface()
+	return reflect.Zero(m.fn.Type().In(i)).Interface()
 }
 
 func (m exportedMethod) NumReturns() int {
-	return m.Value.Type().NumOut()
+	return m.fn.Type().NumOut()
 }
 
 func (m exportedMethod) ReturnValue(i int) any {
-	return reflect.Zero(m.Type().Out(i)).Interface()
+	return reflect.Zero(m.fn.Type().Out(i)).Interface()
 }
 
 func newExportedObject() *exportedObj {
