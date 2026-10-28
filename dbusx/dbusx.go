@@ -213,13 +213,23 @@ func unexportAll(conn *dbus.Conn, path dbus.ObjectPath, objects []exported) {
 }
 
 // Serve exports s on conn and takes its well-known name; the returned
-// release drops the name. A name already owned is an error, as zbus's
-// request_name with DoNotQueue.
+// release drops the name and unexports s. A name already owned is an
+// error, as zbus's request_name with DoNotQueue, and leaves nothing
+// exported.
 func Serve(conn *dbus.Conn, s Service) (func(), error) {
-	if _, err := Export(conn, s.Path, Interface{Name: s.Interface, Methods: s.Methods, Properties: s.Properties, Signals: s.Signals}); err != nil {
+	unexport, err := Export(conn, s.Path, Interface{Name: s.Interface, Methods: s.Methods, Properties: s.Properties, Signals: s.Signals})
+	if err != nil {
 		return nil, err
 	}
-	return Own(conn, s.Name)
+	release, err := Own(conn, s.Name)
+	if err != nil {
+		unexport()
+		return nil, err
+	}
+	return func() {
+		release()
+		unexport()
+	}, nil
 }
 
 // Own takes a well-known name; the returned release drops it. A name

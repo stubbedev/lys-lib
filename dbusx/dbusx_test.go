@@ -88,11 +88,33 @@ func TestServeRefusesAnOwnedName(t *testing.T) {
 	dbustest.Session(t)
 	var count dbustest.Var[uint32]
 	defer serve(t, dbustest.SessionConn(t), &count)()
-	_, err := dbusx.Serve(dbustest.SessionConn(t), dbusx.Service{
+	second, client := dbustest.SessionConn(t), dbustest.SessionConn(t)
+	_, err := dbusx.Serve(second, dbusx.Service{
 		Name: name, Path: path, Interface: iface, Methods: echo{}, Properties: dbusx.Getters{},
 	})
 	if err == nil {
 		t.Fatal("a second owner was accepted")
+	}
+	if err := client.Object(second.Names()[0], path).Call(iface+".Echo", 0, "hi").Err; !isDBusError(err, dbusx.ErrUnknownIface) {
+		t.Errorf("Echo on the refused server = %v, want UnknownInterface", err)
+	}
+}
+
+func TestServeReleaseUnexports(t *testing.T) {
+	dbustest.Session(t)
+	server, client := dbustest.SessionConn(t), dbustest.SessionConn(t)
+	var count dbustest.Var[uint32]
+	release := serve(t, server, &count)
+	obj := client.Object(server.Names()[0], path)
+	if err := obj.Call(iface+".Echo", 0, "hi").Err; err != nil {
+		t.Fatalf("Echo while served: %v", err)
+	}
+	release()
+	if err := obj.Call(iface+".Echo", 0, "hi").Err; !isDBusError(err, dbusx.ErrUnknownIface) {
+		t.Errorf("Echo after release = %v, want UnknownInterface", err)
+	}
+	if err := client.BusObject().Call("org.freedesktop.DBus.GetNameOwner", 0, name).Err; err == nil {
+		t.Errorf("%s still owned after release", name)
 	}
 }
 
