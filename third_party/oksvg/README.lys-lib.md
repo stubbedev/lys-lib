@@ -28,7 +28,7 @@ scale, sqrt(|det|), exact for uniform scales and rotations
 
 `path_style.go`, `DefaultStyle`: upstream defaults `stroke-width` to 2
 and `stroke-linejoin` to bevel; SVG's initial values are 1 and miter
-(lys-ui lys-ui#191).
+(stubbedev/lys-ui#191).
 
 ### userSpaceOnUse gradients follow the transform
 
@@ -39,13 +39,13 @@ coordinates read as device pixels. The patch passes the path's full
 transform to `GetColorFunctionUS`. rasterx maps the gradient's
 geometry forward through it, which is exact for scales and
 translations (the viewBox fit) but not for a radial gradient under a
-rotation or skew (lys-ui lys-ui#190).
+rotation or skew (stubbedev/lys-ui#190).
 
 ## Upstream status
 
 Each patch is offered upstream; once one is merged, the copy is
 rebased onto it and the patch dropped.
 
-- Strokes scale with the transform: srwiley/oksvglys-ui#54
-- Stroke defaults are SVG's: srwiley/oksvglys-ui#55
-- userSpaceOnUse gradients follow the transform: srwiley/oksvglys-ui#56
+- Strokes scale with the transform: srwiley/oksvg#54
+- Stroke defaults are SVG's: srwiley/oksvg#55
+- userSpaceOnUse gradients follow the transform: srwiley/oksvg#56
