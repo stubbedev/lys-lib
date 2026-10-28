@@ -63,6 +63,26 @@ func (e Env) DataHome() (string, bool) { return e.base("XDG_DATA_HOME", ".local/
 // absolute path.
 func (e Env) ConfigHome() (string, bool) { return e.base("XDG_CONFIG_HOME", ".config") }
 
+// RuntimeDir is app's runtime directory, $XDG_RUNTIME_DIR/app, for
+// sockets and markers that live as long as the login; false when the
+// variable holds no absolute path, as the spec defines no fallback. It
+// panics on an app that is not a single path element.
+func (e Env) RuntimeDir(app string) (string, bool) {
+	checkApp(app)
+	dir, ok := e.RuntimeHome()
+	if !ok {
+		return "", false
+	}
+	return filepath.Join(dir, app), true
+}
+
+// RuntimeHome is the user's runtime directory itself, $XDG_RUNTIME_DIR;
+// false when it holds no absolute path.
+func (e Env) RuntimeHome() (string, bool) {
+	dir := e.abs("XDG_RUNTIME_DIR")
+	return dir, dir != ""
+}
+
 // ConfigDirs are the system configuration directories, most important
 // first: the absolute entries of $XDG_CONFIG_DIRS, or /etc/xdg when it
 // names none.
@@ -80,14 +100,18 @@ func (e Env) ConfigDirs() []string {
 }
 
 func (e Env) appDir(env, fallback, app string) (string, bool) {
-	if app == "" || app == "." || app == ".." || strings.ContainsRune(app, filepath.Separator) {
-		panic(fmt.Sprintf("xdg: app %q is not a single path element", app))
-	}
+	checkApp(app)
 	dir, ok := e.base(env, fallback)
 	if !ok {
 		return "", false
 	}
 	return filepath.Join(dir, app), true
+}
+
+func checkApp(app string) {
+	if app == "" || app == "." || app == ".." || strings.ContainsRune(app, filepath.Separator) {
+		panic(fmt.Sprintf("xdg: app %q is not a single path element", app))
+	}
 }
 
 func (e Env) base(env, fallback string) (string, bool) {

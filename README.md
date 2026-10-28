@@ -36,7 +36,7 @@ where the system provides the API: libvulkan.
 | `clib` | dlopen over a candidate list and C string copies, for bindings made with purego |
 | `intconv` | Integer conversions without silent wraparound: checked, panicking, saturating, durations, and two's-complement bit reinterpretation |
 | `atomicfile` | Replaces a file whole and durably: a synced temporary renamed over the target, then the directory synced |
-| `xdg` | The XDG base directories, an app's directory under each, and the user directories of `user-dirs.dirs` |
+| `xdg` | The XDG base directories (runtime included), an app's directory under each, and the user directories of `user-dirs.dirs` |
 | `debug` | The compile-time trace facility (build tag `lysdebug`, categories in `LYS_DEBUG`) |
 | `golden`, `gputest`, `wltest`, `pipewire/pwtest`, `dbustest`, `sockdir` | Test support: golden images, the GPU test driver, Wayland test clients, a private PipeWire daemon with libpipewire consumers, private D-Bus daemons, and directories short enough for Unix sockets |
 
