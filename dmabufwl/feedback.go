@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"math"
 	"slices"
 	"syscall"
 
@@ -88,11 +87,12 @@ func (s *feedbackState) HandleZwpDmabufFeedbackV1FormatTable(ev wlr.ZwpDmabufFee
 
 // HandleZwpDmabufFeedbackV1MainDevice takes the device dev_t.
 func (s *feedbackState) HandleZwpDmabufFeedbackV1MainDevice(ev wlr.ZwpDmabufFeedbackV1MainDeviceEvent) {
-	if len(ev.Device) != 2 {
-		s.err = fmt.Errorf("dmabuf: main_device of %d bytes, want a dev_t's 8", 4*len(ev.Device))
+	dev, err := Device(ev.Device)
+	if err != nil {
+		s.err = fmt.Errorf("%w in main_device", err)
 		return
 	}
-	s.device, s.devSeen = uint64(int64(ev.Device[0])&math.MaxUint32)|uint64(int64(ev.Device[1])&math.MaxUint32)<<32, true
+	s.device, s.devSeen = dev, true
 }
 
 // HandleZwpDmabufFeedbackV1TrancheFormats appends a tranche's table
@@ -107,9 +107,7 @@ func (s *feedbackState) HandleZwpDmabufFeedbackV1TrancheFormats(ev wlr.ZwpDmabuf
 		}
 		format := fourcc.Format(binary.LittleEndian.Uint32(s.table[at:]))
 		mod := fourcc.Modifier(binary.LittleEndian.Uint64(s.table[at+8:]))
-		if mod != fourcc.Invalid && !slices.Contains(s.mods[format], mod) {
-			s.mods[format] = append(s.mods[format], mod)
-		}
+		s.mods[format] = appendExplicit(s.mods[format], mod)
 	}
 }
 

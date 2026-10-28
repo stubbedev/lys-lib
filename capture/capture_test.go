@@ -1,13 +1,18 @@
 package capture
 
 import (
+	"encoding/binary"
 	"errors"
 	"image"
 	"image/color"
+	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
+	"github.com/stubbedev/lys-lib/dmabuf"
 	"github.com/stubbedev/lys-lib/fourcc"
+	"github.com/stubbedev/lys-lib/intconv"
 	"github.com/stubbedev/lys-lib/third_party/wayland/wl"
 	"github.com/stubbedev/lys-lib/wlr"
 )
@@ -152,25 +157,166 @@ func TestTransformSwapsAxes(t *testing.T) {
 	}
 }
 
+// words lays 64-bit values out as the 32-bit words a wl_array decodes
+// to.
+func words(vs ...uint64) []int32 {
+	out := make([]int32, 0, 2*len(vs))
+	for _, v := range vs {
+		var b [8]byte
+		binary.NativeEndian.PutUint64(b[:], v)
+		out = append(out, intconv.Int32Bits(binary.NativeEndian.Uint32(b[:4])), intconv.Int32Bits(binary.NativeEndian.Uint32(b[4:])))
+	}
+	return out
+}
+
+// negotiate feeds one batch of constraint events into ss, ended by
+// done.
+func negotiate(ss *sessionState, w, h uint32, shm []Format, device []int32, offers map[fourcc.Format][]uint64) {
+	ss.HandleImageCopyCaptureSessionV1BufferSize(wlr.ImageCopyCaptureSessionV1BufferSizeEvent{Width: w, Height: h})
+	for _, f := range shm {
+		ss.HandleImageCopyCaptureSessionV1ShmFormat(wlr.ImageCopyCaptureSessionV1ShmFormatEvent{Format: uint32(f)})
+	}
+	if device != nil {
+		ss.HandleImageCopyCaptureSessionV1DmabufDevice(wlr.ImageCopyCaptureSessionV1DmabufDeviceEvent{Device: device})
+	}
+	for _, f := range []fourcc.Format{fourcc.XRGB8888, fourcc.ARGB8888} {
+		if mods, ok := offers[f]; ok {
+			ss.HandleImageCopyCaptureSessionV1DmabufFormat(wlr.ImageCopyCaptureSessionV1DmabufFormatEvent{Format: uint32(f), Modifiers: words(mods...)})
+		}
+	}
+	ss.HandleImageCopyCaptureSessionV1Done(wlr.ImageCopyCaptureSessionV1DoneEvent{})
+}
+
 func TestSessionLayout(t *testing.T) {
-	ss := &sessionState{width: 10, height: 5, done: true}
-	if ss.negotiated() {
-		t.Fatal("negotiated without a format")
-	}
-	ss.formats = []Format{Format(wl.ShmFormatRgb565), FormatBGR888, FormatXRGB8888}
-	if !ss.negotiated() {
-		t.Fatal("not negotiated with size, format, and done")
-	}
-	f, stride, err := ss.layout()
+	k := constraints{width: 10, height: 5, shm: []Format{Format(wl.ShmFormatRgb565), FormatBGR888, FormatXRGB8888}}
+	f, stride, err := k.layout()
 	if err != nil || f != FormatBGR888 || stride != 30 {
 		t.Fatalf("layout = %v %d %v, want the first convertible format packed", f, stride, err)
 	}
-	ss.formats = []Format{Format(wl.ShmFormatRgb565)}
-	if _, _, err := ss.layout(); !errors.Is(err, ErrFormat) {
+	k.shm = []Format{Format(wl.ShmFormatRgb565)}
+	if _, _, err := k.layout(); !errors.Is(err, ErrFormat) {
 		t.Fatalf("layout of unknown formats = %v, want ErrFormat", err)
 	}
-	if (&sessionState{formats: []Format{FormatXRGB8888}, width: 1, height: 1}).negotiated() {
-		t.Fatal("negotiated before done")
+	k.shm = nil
+	if _, _, err := k.layout(); !errors.Is(err, ErrFormat) {
+		t.Fatalf("layout of a dmabuf-only session = %v, want ErrFormat", err)
+	}
+}
+
+// Each batch of constraints replaces the last at its done: a resize
+// neither keeps the old formats nor shows half a batch.
+func TestSessionConstraintsBatch(t *testing.T) {
+	ss := &sessionState{}
+	negotiate(ss, 320, 200, []Format{FormatXRGB8888}, words(0x1234), map[fourcc.Format][]uint64{fourcc.XRGB8888: {uint64(fourcc.Linear)}})
+	if ss.generation != 1 || ss.current.width != 320 || len(ss.current.shm) != 1 {
+		t.Fatalf("first batch: generation %d, constraints %+v", ss.generation, ss.current)
+	}
+	ss.HandleImageCopyCaptureSessionV1BufferSize(wlr.ImageCopyCaptureSessionV1BufferSizeEvent{Width: 640, Height: 400})
+	if ss.current.width != 320 {
+		t.Fatalf("a batch before its done changed the constraints to %+v", ss.current)
+	}
+	negotiate(ss, 640, 400, []Format{FormatARGB8888}, nil, nil)
+	if ss.generation != 2 || ss.current.width != 640 || !slices.Equal(ss.current.shm, []Format{FormatARGB8888}) || ss.current.hasDevice || len(ss.current.dmabuf) != 0 {
+		t.Fatalf("second batch: generation %d, constraints %+v", ss.generation, ss.current)
+	}
+	if ss.err != nil {
+		t.Fatal(ss.err)
+	}
+}
+
+func TestSessionDmabufFormats(t *testing.T) {
+	const tiled = fourcc.Modifier(0x0100000000000001)
+	t.Run("explicit modifiers in the compositor's order", func(t *testing.T) {
+		ss := &sessionState{}
+		negotiate(ss, 320, 200, nil, words(0xe280), map[fourcc.Format][]uint64{
+			fourcc.XRGB8888: {uint64(tiled), uint64(fourcc.Invalid), uint64(fourcc.Linear), uint64(tiled)},
+			fourcc.ARGB8888: {uint64(fourcc.Invalid)},
+		})
+		got, err := ss.current.dmabufFormats()
+		if err != nil {
+			t.Fatal(err)
+		}
+		want := []DmabufFormat{{Fourcc: fourcc.XRGB8888, Width: 320, Height: 200, Modifiers: []fourcc.Modifier{tiled, fourcc.Linear}, Device: 0xe280}}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("formats = %+v, want %+v", got, want)
+		}
+	})
+	for _, tc := range []struct {
+		name   string
+		device []int32
+		offers map[fourcc.Format][]uint64
+	}{
+		{"no dmabuf format", words(1), nil},
+		{"no device", nil, map[fourcc.Format][]uint64{fourcc.XRGB8888: {uint64(fourcc.Linear)}}},
+		{"only implicit modifiers", words(1), map[fourcc.Format][]uint64{fourcc.XRGB8888: {uint64(fourcc.Invalid)}}},
+	} {
+		t.Run(tc.name+" is unsupported", func(t *testing.T) {
+			ss := &sessionState{}
+			negotiate(ss, 320, 200, []Format{FormatXRGB8888}, tc.device, tc.offers)
+			if _, err := ss.current.dmabufFormats(); !errors.Is(err, ErrUnsupported) {
+				t.Fatalf("dmabufFormats = %v, want ErrUnsupported", err)
+			}
+		})
+	}
+	t.Run("a malformed array is the session's error", func(t *testing.T) {
+		ss := &sessionState{}
+		negotiate(ss, 320, 200, nil, []int32{1, 2, 3}, map[fourcc.Format][]uint64{fourcc.XRGB8888: {uint64(fourcc.Linear)}})
+		ss.HandleImageCopyCaptureSessionV1DmabufFormat(wlr.ImageCopyCaptureSessionV1DmabufFormatEvent{Format: uint32(fourcc.XRGB8888), Modifiers: []int32{1}})
+		if ss.err == nil || !strings.Contains(ss.err.Error(), "dmabuf_device") {
+			t.Fatalf("err = %v, want the malformed dmabuf_device named", ss.err)
+		}
+		cs := &copySession{state: ss}
+		if err := cs.usable(); err == nil {
+			t.Fatal("a session with a malformed constraint is usable")
+		}
+	})
+}
+
+func TestConstraintsFit(t *testing.T) {
+	k := constraints{width: 320, height: 200, dmabuf: []dmabufOffer{{format: fourcc.XRGB8888, modifiers: []fourcc.Modifier{fourcc.Linear}}}}
+	ok := dmabuf.Buffer{Width: 320, Height: 200, Format: fourcc.XRGB8888, Modifier: fourcc.Linear}
+	if !k.fits(ok) {
+		t.Fatalf("%+v does not fit %+v", ok, k)
+	}
+	for name, b := range map[string]dmabuf.Buffer{
+		"another size":     {Width: 640, Height: 200, Format: fourcc.XRGB8888, Modifier: fourcc.Linear},
+		"another format":   {Width: 320, Height: 200, Format: fourcc.ARGB8888, Modifier: fourcc.Linear},
+		"another modifier": {Width: 320, Height: 200, Format: fourcc.XRGB8888, Modifier: fourcc.Modifier(0x0100000000000001)},
+	} {
+		if k.fits(b) {
+			t.Errorf("a buffer of %s fits: %+v", name, b)
+		}
+	}
+}
+
+func TestFrameVerdict(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		fs      frameState
+		stopped bool
+		want    error
+	}{
+		{"ready", frameState{ready: true}, false, nil},
+		{"stopped session", frameState{}, true, ErrSessionStopped},
+		{"stopped reason", frameState{failed: true, reason: failureStopped}, false, ErrSessionStopped},
+		{"buffer constraints", frameState{failed: true, reason: failureBufferConstraints}, false, ErrFailed},
+		{"unknown", frameState{failed: true}, false, ErrFailed},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cs := &copySession{state: &sessionState{stopped: tc.stopped}}
+			err := cs.verdict(&tc.fs)
+			if tc.want == nil && err != nil || tc.want != nil && !errors.Is(err, tc.want) {
+				t.Fatalf("verdict = %v, want %v", err, tc.want)
+			}
+		})
+	}
+	if !errors.Is(ErrSessionStopped, ErrFailed) {
+		t.Fatal("ErrSessionStopped is not an ErrFailed")
+	}
+	fs := &frameState{}
+	fs.HandleImageCopyCaptureFrameV1Failed(wlr.ImageCopyCaptureFrameV1FailedEvent{Reason: wlr.ImageCopyCaptureFrameV1FailureReasonBufferConstraints})
+	if !fs.finished() || fs.reason != failureBufferConstraints {
+		t.Fatalf("failed event left %+v", fs)
 	}
 }
 
@@ -178,8 +324,8 @@ func TestFrameStateDamage(t *testing.T) {
 	fs := &frameState{}
 	fs.HandleImageCopyCaptureFrameV1Damage(wlrDamage(1, 2, 3, 4))
 	fs.HandleImageCopyCaptureFrameV1Damage(wlrDamage(-5, -5, 0, 10))
-	if len(fs.damage) != 1 || fs.damage[0] != (Rect{1, 2, 3, 4}) {
-		t.Fatalf("damage = %v, want the one non-empty rect", fs.damage)
+	if len(fs.info.Damage) != 1 || fs.info.Damage[0] != (Rect{1, 2, 3, 4}) {
+		t.Fatalf("damage = %v, want the one non-empty rect", fs.info.Damage)
 	}
 	if fs.finished() {
 		t.Fatal("finished before ready or failed")

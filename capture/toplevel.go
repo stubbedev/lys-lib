@@ -95,14 +95,17 @@ func (c *Client) Toplevels() ([]Toplevel, error) {
 func (c *Client) CaptureToplevel(t Toplevel, opts Options) (*Frame, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if err := c.usable(); err != nil {
-		return nil, err
-	}
-	if !c.HasToplevelCapture() {
+	return c.captureSourceOnce(t, opts)
+}
+
+// imageSource implements Source: a foreign-toplevel capture source on
+// the window's handle.
+func (t Toplevel) imageSource(c *Client) (*wlr.ImageCaptureSourceV1, error) {
+	if c.copyCapture == nil || c.toplevelSrc == nil {
 		return nil, fmt.Errorf("%w: %s + %s", ErrUnsupported, ifaceCopyCapture, ifaceToplevelSrc)
 	}
 	if t.handle == nil {
-		return nil, errors.New("capture: toplevel is not from this client")
+		return nil, fmt.Errorf("capture: toplevel %q is not from this client", t.Title)
 	}
 	// A closed window's handle is destroyed; sending a request against
 	// it would be a protocol error that kills the connection.
@@ -111,47 +114,38 @@ func (c *Client) CaptureToplevel(t Toplevel, opts Options) (*Frame, error) {
 	}
 	source, err := c.toplevelSrc.CreateSource(t.handle)
 	if err != nil {
-		return nil, fmt.Errorf("capture: toplevel source: %w", err)
+		return nil, fmt.Errorf("capture: toplevel %q source: %w", t.Title, err)
 	}
-	defer func() { _ = source.Destroy() }()
-	return c.captureSourceOnce(source, opts)
+	return source, nil
 }
 
-// captureSourceOnce opens a session on source, negotiates, and copies
-// one frame into a fresh shm buffer.
-func (c *Client) captureSourceOnce(source *wlr.ImageCaptureSourceV1, opts Options) (*Frame, error) {
-	session, err := c.copyCapture.CreateSession(source, sessionOptions(opts.Cursor))
-	if err != nil {
-		return nil, fmt.Errorf("capture: session: %w", err)
-	}
-	defer func() { _ = session.Destroy() }()
-	ss := &sessionState{}
-	ss.listen(session)
-	if err := c.dispatchUntil(func() bool { return ss.stopped || ss.negotiated() }); err != nil {
-		return nil, err
-	}
-	if ss.stopped {
-		return nil, ErrFailed
-	}
-	format, stride, err := ss.layout()
+// captureSourceOnce opens a session on src, negotiates, and copies one
+// frame into a fresh shm buffer.
+func (c *Client) captureSourceOnce(src Source, opts Options) (_ *Frame, err error) {
+	cs, err := c.openSession(src, opts.Cursor)
 	if err != nil {
 		return nil, err
 	}
-	buf, err := newShmBuffer(c.shm, ss.width, ss.height, stride, format)
+	defer func() { err = errors.Join(err, cs.destroy()) }()
+	format, stride, err := cs.state.current.layout()
+	if err != nil {
+		return nil, err
+	}
+	buf, err := newShmBuffer(c.shm, cs.state.current.width, cs.state.current.height, stride, format)
 	if err != nil {
 		return nil, err
 	}
 	defer buf.release()
-	fs, err := captureSessionFrame(c.dispatchUntil, session, ss, buf)
+	fs, err := cs.captureFrame(c.dispatchUntil, buf.wl, buf.wlWidth, buf.wlHeight)
 	if err != nil {
 		return nil, err
 	}
-	if !fs.ready {
-		return nil, ErrFailed
+	if err := cs.verdict(fs); err != nil {
+		return nil, err
 	}
 	out := buf.frame(opts.Dst)
-	out.Transform = fs.transform
-	out.Damage = fs.damage
+	out.Transform = fs.info.Transform
+	out.Damage = fs.info.Damage
 	return out, nil
 }
 
@@ -161,19 +155,5 @@ func (c *Client) captureSourceOnce(source *wlr.ImageCaptureSourceV1, opts Option
 func (c *Client) CaptureOutputOnce(o Output, opts Options) (*Frame, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if err := c.usable(); err != nil {
-		return nil, err
-	}
-	if !c.HasOutputCapture() {
-		return nil, fmt.Errorf("%w: %s + %s", ErrUnsupported, ifaceCopyCapture, ifaceOutputSource)
-	}
-	if o.wl == nil {
-		return nil, fmt.Errorf("capture: output %q is not from this client", o.Name)
-	}
-	source, err := c.outputSource.CreateSource(o.wl)
-	if err != nil {
-		return nil, fmt.Errorf("capture: output source: %w", err)
-	}
-	defer func() { _ = source.Destroy() }()
-	return c.captureSourceOnce(source, opts)
+	return c.captureSourceOnce(o, opts)
 }

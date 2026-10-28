@@ -5,8 +5,6 @@ import (
 	"fmt"
 	"sync"
 	"sync/atomic"
-
-	"github.com/stubbedev/lys-lib/wlr"
 )
 
 // streamRing is the number of shm buffers a Stream rotates through:
@@ -36,14 +34,7 @@ type StreamFrame struct {
 	// Seq increments per published frame; an unchanged Seq means
 	// nothing new was captured (the screen is static).
 	Seq uint64
-	// Damage is what changed since the previous frame; empty means
-	// the whole frame.
-	Damage []Rect
-	// Transform is the buffer transform of this frame.
-	Transform Transform
-	// PTSNanos is the compositor's presentation time in nanoseconds
-	// (CLOCK_MONOTONIC), 0 when it reported none.
-	PTSNanos uint64
+	FrameInfo
 
 	stream *Stream
 	buf    *shmBuffer
@@ -98,14 +89,6 @@ type Stream struct {
 	unmapped bool
 }
 
-// ErrStreamStopped reports that the compositor ended the capture
-// session (the output went away).
-var ErrStreamStopped = errors.New("capture: the capture session stopped")
-
-// ErrStreamReconfigured reports that the output's buffer constraints
-// changed under a running Stream (a mode switch); open a new one.
-var ErrStreamReconfigured = errors.New("capture: the output's buffer constraints changed")
-
 // OpenOutputStream starts continuous capture of the output with the
 // given connector name, painting the cursor when cursor is set. It
 // returns once the session negotiated its constraints and the buffer
@@ -126,38 +109,26 @@ func OpenOutputStream(outputName string, cursor bool) (*Stream, error) {
 }
 
 func openStream(client *Client, outputName string, cursor bool) (*Stream, error) {
-	if !client.HasOutputCapture() {
-		return nil, fmt.Errorf("%w: %s + %s", ErrUnsupported, ifaceCopyCapture, ifaceOutputSource)
-	}
 	out, ok := client.OutputByName(outputName)
 	if !ok {
 		return nil, fmt.Errorf("capture: output %q not found", outputName)
 	}
-	source, err := client.outputSource.CreateSource(out.wl)
-	if err != nil {
-		return nil, fmt.Errorf("capture: output source: %w", err)
-	}
-	session, err := client.copyCapture.CreateSession(source, sessionOptions(cursor))
-	if err != nil {
-		return nil, fmt.Errorf("capture: session: %w", err)
-	}
-	ss := &sessionState{}
-	ss.listen(session)
-	if err := client.dispatchUntil(func() bool { return ss.stopped || ss.negotiated() }); err != nil {
-		return nil, err
-	}
-	if ss.stopped {
-		return nil, ErrStreamStopped
-	}
-	format, stride, err := ss.layout()
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	cs, err := client.openSession(out, cursor)
 	if err != nil {
 		return nil, err
+	}
+	k := cs.state.current
+	format, stride, err := k.layout()
+	if err != nil {
+		return nil, errors.Join(err, cs.destroy())
 	}
 	s := &Stream{
 		client: client,
 		done:   make(chan struct{}),
 		info: StreamInfo{
-			Width: ss.width, Height: ss.height, Stride: stride,
+			Width: k.width, Height: k.height, Stride: stride,
 			Format: format, RefreshMHz: out.RefreshMHz, Transform: out.Transform,
 		},
 	}
@@ -165,11 +136,11 @@ func openStream(client *Client, outputName string, cursor bool) (*Stream, error)
 		buf, err := newShmBuffer(client.shm, s.info.Width, s.info.Height, s.info.Stride, s.info.Format)
 		if err != nil {
 			s.unmap()
-			return nil, err
+			return nil, errors.Join(err, cs.destroy())
 		}
 		s.ring = append(s.ring, buf)
 	}
-	go s.run(session, ss)
+	go s.run(cs)
 	return s, nil
 }
 
@@ -183,7 +154,8 @@ func (s *Stream) Latest() *StreamFrame { return s.latest.Load() }
 // Err then says why.
 func (s *Stream) Done() <-chan struct{} { return s.done }
 
-// Err is why the capture loop ended on its own: ErrStreamStopped, a
+// Err is why the capture loop ended on its own: ErrSessionStopped,
+// ErrReconfigured, ErrFailed after repeated refusals, a
 // dispatch failure, or nil after Close.
 func (s *Stream) Err() error {
 	select {
@@ -221,51 +193,50 @@ func (s *Stream) unmap() {
 
 // run is the capture loop: round-robin a ring slot, capture one frame
 // into it, publish it when ready, until the session stops or Close.
-func (s *Stream) run(session *wlr.ImageCopyCaptureSessionV1, ss *sessionState) {
+func (s *Stream) run(cs *copySession) {
 	defer close(s.done)
-	defer func() { _ = session.Destroy() }()
+	defer func() { _ = cs.destroy() }()
 	var seq uint64
 	slot, failures := 0, 0
 	dispatch := func(done func() bool) error {
 		return s.client.dispatchUntil(func() bool { return s.stopping.Load() || done() })
 	}
 	for !s.stopping.Load() {
-		fs, err := captureSessionFrame(dispatch, session, ss, s.ring[slot])
+		buf := s.ring[slot]
+		fs, err := cs.captureFrame(dispatch, buf.wl, buf.wlWidth, buf.wlHeight)
 		if err != nil {
 			if !s.stopping.Load() {
 				s.err = err
 			}
 			return
 		}
-		if ss.stopped {
-			s.err = ErrStreamStopped
-			return
+		if !fs.finished() && !cs.state.stopped {
+			// Interrupted by Close; the loop re-checks the stop flag.
+			continue
 		}
-		if fs.failed && (ss.width != s.info.Width || ss.height != s.info.Height) {
+		err = cs.verdict(fs)
+		switch {
+		case err == nil:
+		case errors.Is(err, ErrSessionStopped):
+			s.err = err
+			return
+		case cs.state.current.width != s.info.Width || cs.state.current.height != s.info.Height:
 			// The output changed mode: the ring no longer fits the
 			// session's constraints, so every further copy would fail.
-			s.err = ErrStreamReconfigured
+			s.err = ErrReconfigured
 			return
-		}
-		if fs.failed {
+		default:
 			// A transient refusal is retried; a compositor that keeps
 			// refusing would otherwise spin this loop hot.
 			failures++
 			if failures >= maxStreamFailures {
-				s.err = ErrFailed
+				s.err = err
 				return
 			}
 			continue
 		}
 		failures = 0
-		if !fs.ready {
-			// Interrupted by Close; the loop re-checks the stop flag.
-			continue
-		}
-		s.latest.Store(&StreamFrame{
-			Seq: seq, Damage: fs.damage, Transform: fs.transform, PTSNanos: fs.ptsNanos,
-			stream: s, buf: s.ring[slot],
-		})
+		s.latest.Store(&StreamFrame{Seq: seq, FrameInfo: fs.info, stream: s, buf: buf})
 		seq++
 		slot = (slot + 1) % len(s.ring)
 	}

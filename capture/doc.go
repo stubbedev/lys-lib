@@ -3,9 +3,10 @@
 // through ext-image-copy-capture (with the ext-foreign-toplevel-list
 // enumeration and its capture sources) or Hyprland's toplevel-export,
 // and continuous damage-driven output capture through an
-// ext-image-copy-capture session (Stream). Screencopy frames can also
-// land in a caller-allocated dmabuf imported through linux-dmabuf, the
-// zero-copy path a screencast producer wants.
+// ext-image-copy-capture session (Stream). Screencopy frames and the
+// frames of a persistent capture session on a window or an output
+// (DmabufSession) can also land in a caller-allocated dmabuf imported
+// through linux-dmabuf, the zero-copy path a screencast producer wants.
 //
 // Capture runs on a private Wayland connection (Client), independent
 // of the application's own session and event loop: every call blocks

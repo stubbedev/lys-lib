@@ -2,9 +2,11 @@ package capture
 
 import (
 	"fmt"
+	"slices"
 
 	"github.com/stubbedev/lys-lib/intconv"
 	"github.com/stubbedev/lys-lib/third_party/wayland/wl"
+	"github.com/stubbedev/lys-lib/wlr"
 )
 
 // Output is one wl_output as the capture connection sees it: the
@@ -119,4 +121,19 @@ func (c *Client) Refresh() error {
 		return err
 	}
 	return c.roundtrip()
+}
+
+// imageSource implements Source: an output capture source.
+func (o Output) imageSource(c *Client) (*wlr.ImageCaptureSourceV1, error) {
+	if c.copyCapture == nil || c.outputSource == nil {
+		return nil, fmt.Errorf("%w: %s + %s", ErrUnsupported, ifaceCopyCapture, ifaceOutputSource)
+	}
+	if o.wl == nil || !slices.ContainsFunc(c.outputs, func(s *outputState) bool { return s.out.wl == o.wl }) {
+		return nil, fmt.Errorf("capture: output %q is not one of this client's", o.Name)
+	}
+	source, err := c.outputSource.CreateSource(o.wl)
+	if err != nil {
+		return nil, fmt.Errorf("capture: output %q source: %w", o.Name, err)
+	}
+	return source, nil
 }

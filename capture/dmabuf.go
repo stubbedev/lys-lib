@@ -12,8 +12,9 @@ import (
 	"github.com/stubbedev/lys-lib/wlr"
 )
 
-// DmabufFormat is the dmabuf layout the compositor offers for an
-// output's screencopy frames: a DRM fourcc and the buffer size.
+// DmabufFormat is a dmabuf layout the compositor takes capture frames
+// in - an output's screencopy frames (Client.DmabufFormat) or a capture
+// session's (DmabufSession.Formats): a DRM fourcc and the buffer size.
 type DmabufFormat struct {
 	Fourcc        fourcc.Format
 	Width, Height int
@@ -25,8 +26,8 @@ type DmabufFormat struct {
 	Device uint64
 }
 
-// DmabufBuffer is an imported dmabuf, ready to receive screencopy
-// frames.
+// DmabufBuffer is an imported dmabuf, ready to receive screencopy and
+// capture session frames.
 type DmabufBuffer struct {
 	wl     *wl.Buffer
 	client *Client

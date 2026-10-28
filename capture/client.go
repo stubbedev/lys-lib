@@ -44,7 +44,7 @@ var ErrUnsupported = errors.New("capture: protocol not offered by the compositor
 // frame's failed event, or a capture session that stopped.
 var ErrFailed = errors.New("capture: the compositor failed the copy")
 
-// ErrClosed reports use of a Client after Close.
+// ErrClosed reports use of a Client or a DmabufSession after Close.
 var ErrClosed = errors.New("capture: client closed")
 
 // Client is a private Wayland connection dedicated to screen capture.
