@@ -356,19 +356,22 @@ func (c *Client) ShowAuthentication(ctx context.Context, caller Caller, r AuthRe
 	return c.call(ctx, "ShowAuthentication", caller, r).Err
 }
 
-func authMatch(handle string) []dbus.MatchOption {
+// authMatch matches the signals host, the unique name owning
+// ServiceName, sends about the request at handle.
+func authMatch(host, handle string) []dbus.MatchOption {
 	return []dbus.MatchOption{
-		dbus.WithMatchSender(ServiceName),
+		dbus.WithMatchSender(host),
 		dbus.WithMatchObjectPath(ServicePath),
 		dbus.WithMatchInterface(iface),
 		dbus.WithMatchArg(0, handle),
 	}
 }
 
-// forHandle reports whether sig is one of the interface's signals
-// about the request at handle, which a watch for it must understand.
-func forHandle(sig *dbus.Signal, handle string) bool {
-	if sig.Path != ServicePath || len(sig.Body) == 0 {
+// forHandle reports whether sig is one of the interface's signals that
+// host, the unique name owning ServiceName, sent about the request at
+// handle, which a watch for it must understand.
+func forHandle(sig *dbus.Signal, host, handle string) bool {
+	if sig.Sender != host || sig.Path != ServicePath || len(sig.Body) == 0 {
 		return false
 	}
 	if owner, _, ok := strings.CutLast(sig.Name, "."); !ok || owner != iface {
@@ -399,10 +402,13 @@ func decodeAuthAction(sig *dbus.Signal) (AuthAction, error) {
 }
 
 // AuthWatch delivers what the user does in one authentication dialog
-// while no Authenticate call waits. It ends when its context ends, on
-// Close, or when it fails: the connection closes, or the host signals
-// something about the request the contract does not define, which
-// means it speaks another one. Every watch must be closed, which
+// while no Authenticate call waits. It hears only the host that owned
+// ServiceName when the watch began: signals from any other peer are not
+// the dialog's. It ends when its context ends, on Close, or when it
+// fails: the connection closes, the host loses ServiceName (it quit or
+// another took over), which takes the dialog with it, or the host
+// signals something about the request the contract does not define,
+// which means it speaks another one. Every watch must be closed, which
 // reports why it failed.
 type AuthWatch struct {
 	actions chan AuthAction
@@ -426,36 +432,67 @@ func (w *AuthWatch) Close() error {
 }
 
 // WatchAuthentication watches the authentication dialog for the
-// request at handle from when it returns until ctx ends or the watch
-// is closed.
+// request at handle, shown by the current owner of ServiceName, from
+// when it returns until ctx ends or the watch is closed. With no host
+// owning ServiceName there is no dialog to watch, which is an error.
 func (c *Client) WatchAuthentication(ctx context.Context, handle string) (*AuthWatch, error) {
 	signals := make(chan *dbus.Signal, 16)
 	c.conn.Signal(signals)
-	match := authMatch(handle)
-	if err := c.conn.AddMatchSignalContext(ctx, match...); err != nil {
+	host, rules, err := c.matchHost(ctx, handle)
+	if err != nil {
 		c.conn.RemoveSignal(signals)
-		return nil, fmt.Errorf("watch authentication %s: %w", handle, err)
+		return nil, errors.Join(err, c.unmatch(ctx, handle, rules))
 	}
 	watchCtx, stop := context.WithCancel(ctx)
 	w := &AuthWatch{actions: make(chan AuthAction), stop: stop, done: make(chan struct{})}
 	go func() {
 		defer close(w.done)
 		defer close(w.actions)
-		err := w.deliver(watchCtx, signals, handle)
+		err := w.deliver(watchCtx, signals, host, handle)
 		c.conn.RemoveSignal(signals)
-		unwatch, cancel := context.WithTimeout(context.WithoutCancel(ctx), unwatchTimeout)
-		defer cancel()
-		if rerr := c.conn.RemoveMatchSignalContext(unwatch, match...); rerr != nil {
-			err = errors.Join(err, fmt.Errorf("watch authentication %s: remove match rule: %w", handle, rerr))
-		}
-		w.err = err
+		w.err = errors.Join(err, c.unmatch(ctx, handle, rules))
 	}()
 	return w, nil
 }
 
-// deliver passes the actions signalled for handle on until ctx ends,
-// which is no failure, or the watch fails.
-func (w *AuthWatch) deliver(ctx context.Context, signals <-chan *dbus.Signal, handle string) error {
+// matchHost resolves the host owning ServiceName and adds the match
+// rules for its ownership changing and for its signals about handle,
+// in that order, so no change after the host is resolved goes unseen.
+// It returns the rules it added, also when it fails.
+func (c *Client) matchHost(ctx context.Context, handle string) (host string, rules [][]dbus.MatchOption, err error) {
+	owner := dbusx.OwnerMatch(ServiceName)
+	if err := c.conn.AddMatchSignalContext(ctx, owner...); err != nil {
+		return "", nil, fmt.Errorf("watch authentication %s: %w", handle, err)
+	}
+	rules = [][]dbus.MatchOption{owner}
+	host, err = dbusx.NameOwner(ctx, c.conn, ServiceName)
+	if err != nil {
+		return "", rules, fmt.Errorf("watch authentication %s: no dialogs host: %w", handle, err)
+	}
+	auth := authMatch(host, handle)
+	if err := c.conn.AddMatchSignalContext(ctx, auth...); err != nil {
+		return "", rules, fmt.Errorf("watch authentication %s: %w", handle, err)
+	}
+	return host, append(rules, auth), nil
+}
+
+// unmatch removes a watch's match rules, bounded by unwatchTimeout
+// even once ctx has ended.
+func (c *Client) unmatch(ctx context.Context, handle string, rules [][]dbus.MatchOption) error {
+	unwatch, cancel := context.WithTimeout(context.WithoutCancel(ctx), unwatchTimeout)
+	defer cancel()
+	var errs []error
+	for _, rule := range rules {
+		if err := c.conn.RemoveMatchSignalContext(unwatch, rule...); err != nil {
+			errs = append(errs, fmt.Errorf("watch authentication %s: remove match rule: %w", handle, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// deliver passes the actions host signalled for handle on until ctx
+// ends, which is no failure, or the watch fails.
+func (w *AuthWatch) deliver(ctx context.Context, signals <-chan *dbus.Signal, host, handle string) error {
 	for {
 		select {
 		case <-ctx.Done():
@@ -464,7 +501,13 @@ func (w *AuthWatch) deliver(ctx context.Context, signals <-chan *dbus.Signal, ha
 			if !open {
 				return fmt.Errorf("watch authentication %s: connection closed", handle)
 			}
-			if !forHandle(sig, handle) {
+			if old, owner, ok := dbusx.NameOwnerChange(sig, ServiceName); ok {
+				if old == host {
+					return hostGone(handle, host, owner)
+				}
+				continue
+			}
+			if !forHandle(sig, host, handle) {
 				continue
 			}
 			a, err := decodeAuthAction(sig)
@@ -478,4 +521,13 @@ func (w *AuthWatch) deliver(ctx context.Context, signals <-chan *dbus.Signal, ha
 			}
 		}
 	}
+}
+
+// hostGone is the failure of a watch whose host lost ServiceName to
+// owner ("" for none): the dialog went with it.
+func hostGone(handle, host, owner string) error {
+	if owner == "" {
+		return fmt.Errorf("watch authentication %s: the dialogs host %s left %s", handle, host, ServiceName)
+	}
+	return fmt.Errorf("watch authentication %s: the dialogs host %s lost %s to %s", handle, host, ServiceName, owner)
 }

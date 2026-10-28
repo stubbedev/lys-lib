@@ -7,19 +7,32 @@ import (
 	dbus "github.com/stubbedev/lys-lib/third_party/godbus"
 )
 
-// busIface is the message bus's own interface, which announces a name
-// gaining or losing its owner.
-const busIface = "org.freedesktop.DBus"
+// bus is the message bus's own name and interface, which announces a
+// name gaining or losing its owner.
+const bus = "org.freedesktop.DBus"
 
-// OwnerMatch matches the NameOwnerChanged signals about name.
-func OwnerMatch(name string) []dbus.MatchOption {
-	return []dbus.MatchOption{dbus.WithMatchInterface(busIface), dbus.WithMatchMember("NameOwnerChanged"), dbus.WithMatchArg(0, name)}
+// NameOwner returns the unique name of name's current owner; a name
+// nobody owns is an error.
+func NameOwner(ctx context.Context, conn *dbus.Conn, name string) (string, error) {
+	var owner string
+	if err := conn.BusObject().CallWithContext(ctx, bus+".GetNameOwner", 0, name).Store(&owner); err != nil {
+		return "", fmt.Errorf("owner of %s: %w", name, err)
+	}
+	return owner, nil
 }
 
-// NameOwnerChange reads a NameOwnerChanged signal about name: the old
-// and new owners ("" for none), and whether the signal is that one.
+// OwnerMatch matches the NameOwnerChanged signals the bus sends about
+// name.
+func OwnerMatch(name string) []dbus.MatchOption {
+	return []dbus.MatchOption{dbus.WithMatchSender(bus), dbus.WithMatchInterface(bus), dbus.WithMatchMember("NameOwnerChanged"), dbus.WithMatchArg(0, name)}
+}
+
+// NameOwnerChange reads a NameOwnerChanged signal the bus sent about
+// name: the old and new owners ("" for none), and whether the signal is
+// that one. Another peer sending NameOwnerChanged is not the bus, so
+// its signal is not that one.
 func NameOwnerChange(sig *dbus.Signal, name string) (oldOwner, newOwner string, ok bool) {
-	if sig.Name != busIface+".NameOwnerChanged" || len(sig.Body) != 3 {
+	if sig.Sender != bus || sig.Name != bus+".NameOwnerChanged" || len(sig.Body) != 3 {
 		return "", "", false
 	}
 	if n, _ := sig.Body[0].(string); n != name {

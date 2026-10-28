@@ -61,3 +61,34 @@ func TestWatchOwnerSeesALateService(t *testing.T) {
 	own("dev.stubbe.lys.Late")
 	expect(false, "the service starting after the watch ended")
 }
+
+func TestNameOwnerIsTheUniqueName(t *testing.T) {
+	bus := dbustest.Start(t)
+	client, service := bus.Conn(t), bus.Conn(t)
+	if owner, err := dbusx.NameOwner(context.Background(), client, "dev.stubbe.lys.Late"); err == nil {
+		t.Fatalf("NameOwner of an unowned name = %q", owner)
+	}
+	if _, err := dbusx.Own(service, "dev.stubbe.lys.Late"); err != nil {
+		t.Fatal(err)
+	}
+	if owner, err := dbusx.NameOwner(context.Background(), client, "dev.stubbe.lys.Late"); err != nil || owner != service.Names()[0] {
+		t.Fatalf("NameOwner = %q, %v; want %s", owner, err, service.Names()[0])
+	}
+}
+
+// Only the bus announces owners: the same signal from a peer is not a
+// NameOwnerChanged.
+func TestNameOwnerChangeComesFromTheBus(t *testing.T) {
+	sig := func(sender string) *dbus.Signal {
+		return &dbus.Signal{Sender: sender, Name: "org.freedesktop.DBus.NameOwnerChanged", Body: []any{"dev.stubbe.lys.Late", ":1.1", ":1.2"}}
+	}
+	if old, owner, ok := dbusx.NameOwnerChange(sig("org.freedesktop.DBus"), "dev.stubbe.lys.Late"); !ok || old != ":1.1" || owner != ":1.2" {
+		t.Errorf("from the bus = %q, %q, %v", old, owner, ok)
+	}
+	if _, _, ok := dbusx.NameOwnerChange(sig(":1.3"), "dev.stubbe.lys.Late"); ok {
+		t.Error("a peer's NameOwnerChanged was read as the bus's")
+	}
+	if _, _, ok := dbusx.NameOwnerChange(sig("org.freedesktop.DBus"), "dev.stubbe.lys.Other"); ok {
+		t.Error("a change of another name was read as this one")
+	}
+}

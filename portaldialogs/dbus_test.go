@@ -439,3 +439,102 @@ func TestIntrospectionDeclaresTheAuthenticationSignals(t *testing.T) {
 		t.Errorf("signals = %+v, want %+v", got, want)
 	}
 }
+
+// forge sends a signal from conn the way the host would, both
+// broadcast and straight to dest, which no match rule filters, and
+// waits until the bus has passed both on.
+func forge(t *testing.T, conn *dbus.Conn, dest string, path dbus.ObjectPath, name string, body ...any) {
+	t.Helper()
+	if err := conn.Emit(path, name, body...); err != nil {
+		t.Fatal(err)
+	}
+	ifc, member, _ := strings.CutLast(name, ".")
+	msg := &dbus.Message{Type: dbus.TypeSignal, Headers: map[dbus.HeaderField]dbus.Variant{
+		dbus.FieldDestination: dbus.MakeVariant(dest),
+		dbus.FieldPath:        dbus.MakeVariant(path),
+		dbus.FieldInterface:   dbus.MakeVariant(ifc),
+		dbus.FieldMember:      dbus.MakeVariant(member),
+		dbus.FieldSignature:   dbus.MakeVariant(dbus.SignatureOf(body...)),
+	}, Body: body}
+	if err := conn.Send(msg, nil).Err; err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.BusObject().Call("org.freedesktop.DBus.GetId", 0).Err; err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A peer other than the host cannot act in its dialog, nor end the
+// watch by claiming the host left; the host's own signal still arrives.
+func TestAuthWatchHearsOnlyTheHost(t *testing.T) {
+	f := startAuth(t)
+	w := f.watch(t, context.Background(), "/r/1")
+	defer func() {
+		if err := w.Close(); err != nil {
+			t.Errorf("Close = %v", err)
+		}
+	}()
+	forger := f.bus.Conn(t)
+	client := f.client.conn.Names()[0]
+	forge(t, forger, client, ServicePath, authCancelled.Name(), "/r/1")
+	forge(t, forger, client, ServicePath, authIdentity.Name(), "/r/1", uint32(0))
+	forge(t, forger, client, ServicePath, iface+".AuthenticationRestarted", "/r/1")
+	forge(t, forger, client, "/org/freedesktop/DBus", "org.freedesktop.DBus.NameOwnerChanged", ServiceName, f.conn.Names()[0], "")
+	if err := f.emitter.AuthAction("/r/1", AuthSwitch{UID: 3}); err != nil {
+		t.Fatal(err)
+	}
+	if got, open := receive(t, w); !open || got != (AuthSwitch{UID: 3}) {
+		t.Errorf("watch got %#v (open %v), want only the host's switch", got, open)
+	}
+}
+
+// The host losing its name takes the dialog with it, whoever owns the
+// name next: the watch ends with an error naming the host, and a new
+// owner's signals are not delivered.
+func TestAuthWatchFailsWhenTheHostGoes(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		gone func(t *testing.T, f authFixture)
+	}{
+		{"released", func(t *testing.T, f authFixture) {
+			if _, err := f.conn.ReleaseName(ServiceName); err != nil {
+				t.Fatal(err)
+			}
+		}},
+		{"disconnected", func(t *testing.T, f authFixture) {
+			if err := f.conn.Close(); err != nil {
+				t.Fatal(err)
+			}
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := startAuth(t)
+			w := f.watch(t, context.Background(), "/r/1")
+			host := f.conn.Names()[0]
+			tc.gone(t, f)
+			successor := f.bus.Conn(t)
+			if _, err := NewDaemon(&fakeHost{}).Export(successor); err != nil {
+				t.Fatal(err)
+			}
+			if err := NewEmitter(successor).AuthAction("/r/1", AuthCancel{}); err != nil {
+				t.Fatal(err)
+			}
+			ended(t, w)
+			err := w.Close()
+			if err == nil || !strings.Contains(err.Error(), host) || !strings.Contains(err.Error(), "/r/1") {
+				t.Errorf("Close = %v, want an error naming the host %s and the handle", err, host)
+			}
+		})
+	}
+}
+
+func TestWatchAuthenticationWithoutHostFails(t *testing.T) {
+	w, err := NewClient(dbustest.Start(t).Conn(t)).WatchAuthentication(context.Background(), "/r/1")
+	if err == nil {
+		_ = w.Close()
+		t.Fatal("watching without a host succeeded")
+	}
+	if !strings.Contains(err.Error(), "/r/1") || !strings.Contains(err.Error(), ServiceName) {
+		t.Errorf("WatchAuthentication = %v, want an error naming the handle and %s", err, ServiceName)
+	}
+}
