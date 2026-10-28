@@ -20,6 +20,7 @@ where the system provides the API: libvulkan.
 | --- | --- |
 | `render` | The 2D canvas: paths, text (with `text`), images, SVG, filters and blends, on the CPU |
 | `gpu` | Vulkan devices, the GPU renderer, exportable dmabufs, and H.264/H.265 encoding |
+| `drm`, `fourcc`, `edid` | DRM ioctls in pure Go (KMS resources, atomic commits, dumb buffers, syncobjs), DRM pixel formats and modifiers, and a display's identity from its EDID |
 | `dmabuf`, `dmabufwl`, `udmabuf` | dmabuf descriptions, their linux-dmabuf protocol plumbing, and memfd-backed udmabufs |
 | `capture` | Screen and window capture: wlr-screencopy, ext-image-copy-capture, Hyprland's toplevel export |
 | `dmabufprobe` | Picks the DRM modifier a screencopy into GPU memory uses, trying the compositor's in order until one takes a frame |
