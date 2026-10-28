@@ -8,7 +8,7 @@ import (
 	"math/bits"
 	"time"
 
-	"github.com/stubbedev/lys-lib/internal/intconv"
+	"github.com/stubbedev/lys-lib/intconv"
 )
 
 const (
@@ -389,7 +389,7 @@ func (m *MKV) patch(cuesAt uint64) error {
 			return fmt.Errorf("mux: patch the Matroska %s: %w", p.what, err)
 		}
 	}
-	pos, err := intconv.To[int64](m.pos)
+	pos, err := intconv.Exact[int64](m.pos)
 	if err != nil {
 		return fmt.Errorf("mux: the Matroska file's end: %w", err)
 	}

@@ -16,7 +16,7 @@ import (
 	"github.com/ebitengine/purego"
 	"golang.org/x/sys/unix"
 
-	"github.com/stubbedev/lys-lib/internal/intconv"
+	"github.com/stubbedev/lys-lib/intconv"
 )
 
 // ErrNoLibrary reports that libva or libva-drm is not installed.
@@ -150,7 +150,7 @@ func Open(path string) (*Display, error) {
 	if err != nil {
 		return nil, fmt.Errorf("va: open %s: %w", path, err)
 	}
-	cfd, err := intconv.To[int32](fd)
+	cfd, err := intconv.Exact[int32](fd)
 	if err != nil {
 		_ = unix.Close(fd)
 		return nil, fmt.Errorf("va: fd of %s: %w", path, err)
@@ -195,7 +195,7 @@ func (d *Display) Entrypoints(profile int32) []int32 {
 // ConfigAttributes reads the driver's value for each of attribs'
 // types, in place: AttribNotSupported where it has none.
 func (d *Display) ConfigAttributes(profile, entrypoint int32, attribs []ConfigAttrib) error {
-	n, err := intconv.To[int32](len(attribs))
+	n, err := intconv.Exact[int32](len(attribs))
 	if err != nil {
 		return fmt.Errorf("va: %d config attributes: %w", len(attribs), err)
 	}
@@ -209,7 +209,7 @@ func (d *Display) CreateConfig(profile, entrypoint int32, attribs []ConfigAttrib
 	if len(attribs) > 0 {
 		p = &attribs[0]
 	}
-	n, err := intconv.To[int32](len(attribs))
+	n, err := intconv.Exact[int32](len(attribs))
 	if err != nil {
 		return 0, fmt.Errorf("va: %d config attributes: %w", len(attribs), err)
 	}
@@ -225,7 +225,7 @@ func (d *Display) CreateSurfaces(format uint32, width, height, n int) ([]uint32,
 	if err != nil {
 		return nil, err
 	}
-	count, err := intconv.To[uint32](n)
+	count, err := intconv.Exact[uint32](n)
 	if err != nil {
 		return nil, fmt.Errorf("va: %d surfaces: %w", n, err)
 	}
@@ -381,7 +381,7 @@ func (d *Display) CreateContext(config uint32, width, height int, targets []uint
 	if err != nil {
 		return 0, err
 	}
-	n, err := intconv.To[int32](len(targets))
+	n, err := intconv.Exact[int32](len(targets))
 	if err != nil {
 		return 0, fmt.Errorf("va: a context over %d surfaces: %w", len(targets), err)
 	}
@@ -395,7 +395,7 @@ func (d *Display) DestroyContext(id uint32) { _ = lib.destroyContext(d.dpy, id) 
 // CreateBuffer makes a buffer of typ for context holding size bytes,
 // copied from data unless nil.
 func (d *Display) CreateBuffer(context uint32, typ int32, size int, data unsafe.Pointer) (uint32, error) {
-	n, err := intconv.To[uint32](size)
+	n, err := intconv.Exact[uint32](size)
 	if err != nil {
 		return 0, fmt.Errorf("va: a %d-byte buffer: %w", size, err)
 	}
@@ -452,7 +452,7 @@ func (d *Display) Encode(context, target uint32, bufs []uint32) error {
 	if err := check("vaBeginPicture", lib.beginPicture(d.dpy, context, target)); err != nil {
 		return err
 	}
-	n, err := intconv.To[int32](len(bufs))
+	n, err := intconv.Exact[int32](len(bufs))
 	if err != nil {
 		return fmt.Errorf("va: render %d buffers: %w", len(bufs), err)
 	}
@@ -470,8 +470,8 @@ func (d *Display) SyncSurface(id uint32) error {
 // size is a width x height size in the integer type a libva call takes
 // it in, or an error naming it when the type cannot hold it.
 func size[T int32 | uint32](width, height int) (w, h T, err error) {
-	w, errW := intconv.To[T](width)
-	h, errH := intconv.To[T](height)
+	w, errW := intconv.Exact[T](width)
+	h, errH := intconv.Exact[T](height)
 	if err := errors.Join(errW, errH); err != nil {
 		return 0, 0, fmt.Errorf("va: size %dx%d: %w", width, height, err)
 	}

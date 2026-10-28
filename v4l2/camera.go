@@ -14,7 +14,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/stubbedev/lys-lib/internal/intconv"
+	"github.com/stubbedev/lys-lib/intconv"
 )
 
 // V4L2 streaming (videodev2.h): memory-mapped capture buffers.
@@ -135,8 +135,8 @@ func Open(device string, frame image.Point, maxFPS int) (*Camera, error) {
 func (c *Camera) setup(frame image.Point) error {
 	w := max(frame.X, MinWidth)
 	h := w * frame.Y / frame.X
-	fw, errW := intconv.To[uint32](w)
-	fh, errH := intconv.To[uint32](h)
+	fw, errW := intconv.Exact[uint32](w)
+	fh, errH := intconv.Exact[uint32](h)
 	if err := errors.Join(errW, errH); err != nil {
 		return fmt.Errorf("format %dx%d: %w", w, h, err)
 	}
@@ -187,8 +187,8 @@ func (c *Camera) setup(frame image.Point) error {
 		return fmt.Errorf("eventfd: %w", err)
 	}
 	c.wake = wake
-	devFd, errDev := intconv.To[int32](c.fd)
-	wakeFd, errWake := intconv.To[int32](wake)
+	devFd, errDev := intconv.Exact[int32](c.fd)
+	wakeFd, errWake := intconv.Exact[int32](wake)
 	if err := errors.Join(errDev, errWake); err != nil {
 		return fmt.Errorf("poll fds %d, %d: %w", c.fd, wake, err)
 	}

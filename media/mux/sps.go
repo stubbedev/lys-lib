@@ -5,7 +5,7 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/stubbedev/lys-lib/internal/intconv"
+	"github.com/stubbedev/lys-lib/intconv"
 )
 
 type bitReader struct {
@@ -206,7 +206,7 @@ func avcC(s avcSPS, sps, pps []byte) ([]byte, error) {
 }
 
 func appendNAL16(b, nal []byte) ([]byte, error) {
-	size, err := intconv.To[uint16](len(nal))
+	size, err := intconv.Exact[uint16](len(nal))
 	if err != nil {
 		return nil, fmt.Errorf("%d bytes is past the 16-bit parameter set length: %w", len(nal), err)
 	}

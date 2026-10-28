@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"image"
 
-	"github.com/stubbedev/lys-lib/internal/intconv"
+	"github.com/stubbedev/lys-lib/intconv"
 	"github.com/stubbedev/lys-lib/third_party/vk"
 )
 

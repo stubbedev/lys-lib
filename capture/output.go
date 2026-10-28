@@ -3,7 +3,7 @@ package capture
 import (
 	"fmt"
 
-	"github.com/stubbedev/lys-lib/internal/intconv"
+	"github.com/stubbedev/lys-lib/intconv"
 	"github.com/stubbedev/lys-lib/third_party/wayland/wl"
 )
 
@@ -56,7 +56,7 @@ func (c *Client) addOutput(o *wl.Output, global uint32) {
 // HandleOutputGeometry implements wl.OutputGeometryHandler.
 func (s *outputState) HandleOutputGeometry(ev wl.OutputGeometryEvent) {
 	s.out.X, s.out.Y = ev.X, ev.Y
-	t, err := intconv.To[Transform](ev.Transform)
+	t, err := intconv.Exact[Transform](ev.Transform)
 	if err != nil {
 		if s.c.protoErr == nil {
 			s.c.protoErr = fmt.Errorf("capture: wl_output %d geometry transform: %w", s.global, err)

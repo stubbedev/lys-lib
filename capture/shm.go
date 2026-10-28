@@ -5,7 +5,7 @@ import (
 	"fmt"
 	"os"
 
-	"github.com/stubbedev/lys-lib/internal/intconv"
+	"github.com/stubbedev/lys-lib/intconv"
 	wlos "github.com/stubbedev/lys-lib/third_party/wayland/os"
 	"github.com/stubbedev/lys-lib/third_party/wayland/wl"
 )
@@ -118,7 +118,7 @@ func int32s(vs ...int) ([]int32, error) {
 	out := make([]int32, len(vs))
 	for i, v := range vs {
 		var err error
-		if out[i], err = intconv.To[int32](v); err != nil {
+		if out[i], err = intconv.Exact[int32](v); err != nil {
 			return nil, err
 		}
 	}

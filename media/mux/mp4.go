@@ -6,7 +6,7 @@ import (
 	"io"
 	"math"
 
-	"github.com/stubbedev/lys-lib/internal/intconv"
+	"github.com/stubbedev/lys-lib/intconv"
 )
 
 const (
@@ -284,7 +284,7 @@ func (m *MP4) WriteSample(s Sample) error {
 			return err
 		}
 	}
-	size, err := intconv.To[uint32](len(u.data))
+	size, err := intconv.Exact[uint32](len(u.data))
 	if err != nil {
 		return m.fail(fmt.Errorf("mux: track %d sample at %v of %d bytes is past MP4's 32-bit sample size: %w", s.Track, t.last, len(u.data), err))
 	}

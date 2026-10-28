@@ -15,7 +15,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/stubbedev/lys-lib/internal/intconv"
+	"github.com/stubbedev/lys-lib/intconv"
 	"github.com/stubbedev/lys-lib/keymapfd"
 	"github.com/stubbedev/lys-lib/third_party/wayland/wl"
 	"github.com/stubbedev/lys-lib/third_party/wayland/wlclient"
@@ -170,7 +170,7 @@ func (v *Device) upload(keymap []byte) error {
 	if _, err := f.Seek(0, 0); err != nil {
 		return err
 	}
-	size, err := intconv.To[uint32](len(keymap))
+	size, err := intconv.Exact[uint32](len(keymap))
 	if err != nil {
 		return fmt.Errorf("vinput: keymap of %d bytes: %w", len(keymap), err)
 	}

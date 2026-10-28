@@ -32,6 +32,9 @@ where the system provides the API: libvulkan.
 | `eis` | An EIS server: the receiving end of libei, replaying what a remote-desktop client emulates |
 | `dbusx`, `third_party/godbus` | D-Bus services: interfaces with live properties, setters and on-demand introspection, well-known names and owner watches, on a patched godbus (`third_party/godbus/README.lys-lib.md`) |
 | `clib` | dlopen over a candidate list and C string copies, for bindings made with purego |
+| `intconv` | Integer conversions without silent wraparound: checked, panicking, saturating, durations, and two's-complement bit reinterpretation |
+| `atomicfile` | Replaces a file whole and durably: a synced temporary renamed over the target, then the directory synced |
+| `xdg` | The XDG base directories, an app's directory under each, and the user directories of `user-dirs.dirs` |
 | `debug` | The compile-time trace facility (build tag `lysdebug`, categories in `LYS_DEBUG`) |
 | `golden`, `gputest`, `wltest`, `pipewire/pwtest`, `dbustest`, `sockdir` | Test support: golden images, the GPU test driver, Wayland test clients, a private PipeWire daemon with libpipewire consumers, private D-Bus daemons, and directories short enough for Unix sockets |
 

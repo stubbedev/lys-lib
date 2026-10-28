@@ -14,7 +14,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/stubbedev/lys-lib/internal/intconv"
+	"github.com/stubbedev/lys-lib/intconv"
 )
 
 // The objects a connection talks to: the core and the client are the
@@ -267,7 +267,7 @@ func (k *core) roundtrip(timeout time.Duration) error {
 // reportError tells the server an event on object id failed (the
 // message with seq), as libpipewire's pw_proxy_error does.
 func (k *core) reportError(id, seq uint32, errno unix.Errno, msg string) error {
-	res, err := intconv.To[int32](errno)
+	res, err := intconv.Exact[int32](errno)
 	if err != nil {
 		return fmt.Errorf("pipewire: report error %d on object %d: %w", uintptr(errno), id, err)
 	}
@@ -367,7 +367,7 @@ func (k *core) coreEvent(m *message) error {
 	case coreEventError:
 		id, _, res, msg := f.uint(), f.int(), f.int(), f.string()
 		if f.err == nil {
-			errno, cerr := intconv.To[unix.Errno](-int64(res))
+			errno, cerr := intconv.Exact[unix.Errno](-int64(res))
 			if cerr != nil {
 				err = fmt.Errorf("pipewire: error on object %d with result %d, not a negative errno: %s", id, res, msg)
 			} else {

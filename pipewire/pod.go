@@ -6,7 +6,7 @@ import (
 	"math"
 
 	"github.com/stubbedev/lys-lib/fourcc"
-	"github.com/stubbedev/lys-lib/internal/intconv"
+	"github.com/stubbedev/lys-lib/intconv"
 )
 
 // SPA pod types (spa/utils/type.h).
@@ -139,9 +139,9 @@ func signed64(b []byte) int64 {
 func podCount(n int) pod { return podInt(int32(min(max(n, 0), math.MaxInt32))) }
 
 func podID(v uint32) pod    { return pod{typeID, le32(v)} }
-func podInt(v int32) pod    { return podUint(intconv.Bits32(v)) }
+func podInt(v int32) pod    { return podUint(intconv.Uint32Bits(v)) }
 func podUint(v uint32) pod  { return pod{typeInt, le32(v)} }
-func podLong(v int64) pod   { return podULong(intconv.Bits64(v)) }
+func podLong(v int64) pod   { return podULong(intconv.Uint64Bits(v)) }
 func podULong(v uint64) pod { return pod{typeLong, binary.LittleEndian.AppendUint64(nil, v)} }
 
 func podBool(v bool) pod {
@@ -198,7 +198,7 @@ func podIntRange(def, lo, hi int32) pod {
 	body := append(le32(choiceRange), le32(0)...)             // choice type, flags
 	body = append(body, append(le32(4), le32(typeInt)...)...) // child pod: size, type
 	for _, v := range []int32{def, lo, hi} {
-		body = append(body, le32(intconv.Bits32(v))...)
+		body = append(body, le32(intconv.Uint32Bits(v))...)
 	}
 	return pod{typeChoice, body}
 }

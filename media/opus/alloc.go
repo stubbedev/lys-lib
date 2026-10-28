@@ -1,7 +1,7 @@
 package opus
 
 import (
-	"github.com/stubbedev/lys-lib/internal/intconv"
+	"github.com/stubbedev/lys-lib/intconv"
 )
 
 // allocation is the outcome of the bit allocation: per band the PVQ

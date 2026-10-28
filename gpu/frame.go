@@ -9,7 +9,7 @@ import (
 	"github.com/go-text/typesetting/font"
 
 	"github.com/stubbedev/lys-lib/debug"
-	"github.com/stubbedev/lys-lib/internal/intconv"
+	"github.com/stubbedev/lys-lib/intconv"
 	"github.com/stubbedev/lys-lib/render"
 	"github.com/stubbedev/lys-lib/third_party/vk"
 )
@@ -621,7 +621,7 @@ func (f *frame) PaintGrain(s render.State, r render.Rect, radii render.Corners, 
 	o := render.MapRect(render.Rect{X: ox, Y: oy}, f.num, f.denom)
 	p := shaded(kindGrain, s, 0)
 	p.quad, p.box, p.radii = quadOf(s.Bounds), box, rc
-	p.cols = [4]uint32{render.GrainStrength(opacity), intconv.Bits32(intconv.Must[int32](o.X)), intconv.Bits32(intconv.Must[int32](o.Y))}
+	p.cols = [4]uint32{render.GrainStrength(opacity), intconv.Uint32Bits(intconv.Must[int32](o.X)), intconv.Uint32Bits(intconv.Must[int32](o.Y))}
 	f.draw(f.on(s), nil, pipeOver, p)
 }
 
@@ -909,7 +909,7 @@ func (f *frame) blendLayer(s render.State, l *render.Layer, src render.Rect, mod
 	if mode == render.BlendSoftLight {
 		p.cols[1] = count(f.words)
 		for _, v := range render.SoftLightTable {
-			f.words = append(f.words, intconv.Bits32(v))
+			f.words = append(f.words, intconv.Uint32Bits(v))
 		}
 	}
 	f.inPlace(dst, r, ls, kindBlend, p)

@@ -17,7 +17,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/stubbedev/lys-lib/fourcc"
-	"github.com/stubbedev/lys-lib/internal/intconv"
+	"github.com/stubbedev/lys-lib/intconv"
 )
 
 // Rect is a damaged region in buffer pixels.
@@ -497,7 +497,7 @@ func memfd(name string, size int) (int, []byte, error) {
 }
 
 func chunkStride(stride uint32) (int32, error) {
-	s, err := intconv.To[int32](stride)
+	s, err := intconv.Exact[int32](stride)
 	if err != nil {
 		return 0, fmt.Errorf("pipewire: stride %d exceeds spa_chunk's int32: %w", stride, err)
 	}

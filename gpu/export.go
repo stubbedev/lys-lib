@@ -11,7 +11,7 @@ import (
 
 	"github.com/stubbedev/lys-lib/dmabuf"
 	"github.com/stubbedev/lys-lib/fourcc"
-	"github.com/stubbedev/lys-lib/internal/intconv"
+	"github.com/stubbedev/lys-lib/intconv"
 	"github.com/stubbedev/lys-lib/third_party/vk"
 )
 
@@ -224,8 +224,8 @@ func (e *exported) create(d *Device, width, height int, vf vk.Format, planes int
 			return fmt.Errorf("%w: %s lays memory plane %d of a modifier %s image at %d, inside the plane before (to %d)", errPlanesOverlap, d.name, i, e.buf.Modifier, lay.Offset, end)
 		}
 		end = lay.Offset + lay.Size
-		offset, errOffset := intconv.To[uint32](lay.Offset)
-		stride, errStride := intconv.To[uint32](lay.RowPitch)
+		offset, errOffset := intconv.Exact[uint32](lay.Offset)
+		stride, errStride := intconv.Exact[uint32](lay.RowPitch)
 		if err := errors.Join(errOffset, errStride); err != nil {
 			if i == 0 {
 				_ = syscall.Close(int(fd))

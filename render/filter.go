@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/stubbedev/lys-lib/internal/intconv"
+	"github.com/stubbedev/lys-lib/intconv"
 )
 
 // The CSS filter effects: the color-matrix family (brightness,
@@ -506,8 +506,8 @@ func BlurPlanOf(radius float64) (BlurPlan, bool) {
 // word (Recip fits 32 bits from n 2 on; n 1 divides by nothing).
 func BoxDivisor(n int) (half, recip uint32) {
 	d := newBoxDiv(n)
-	h, errH := intconv.To[uint32](d.half)
-	r, errR := intconv.To[uint32](d.recip)
+	h, errH := intconv.Exact[uint32](d.half)
+	r, errR := intconv.Exact[uint32](d.recip)
 	if err := errors.Join(errH, errR); err != nil {
 		panic(fmt.Sprintf("render: box divisor of %d sums: %v", n, err))
 	}

@@ -23,7 +23,7 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/stubbedev/lys-lib/internal/intconv"
+	"github.com/stubbedev/lys-lib/intconv"
 )
 
 // The stream geometry the encoder produces.

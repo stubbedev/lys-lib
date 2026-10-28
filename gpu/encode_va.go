@@ -12,7 +12,7 @@ import (
 
 	"github.com/stubbedev/lys-lib/dmabuf"
 	"github.com/stubbedev/lys-lib/fourcc"
-	"github.com/stubbedev/lys-lib/internal/intconv"
+	"github.com/stubbedev/lys-lib/intconv"
 	"github.com/stubbedev/lys-lib/internal/nal"
 	"github.com/stubbedev/lys-lib/internal/va"
 	"github.com/stubbedev/lys-lib/third_party/vk"
@@ -374,8 +374,8 @@ func (vb *vaBackend) importPicture(b dmabuf.Buffer) (uint32, error) {
 	if err != nil {
 		return va.InvalidID, fmt.Errorf("gpu: the encoder picture's dmabuf size: %w", err)
 	}
-	bytes, errSize := intconv.To[uint32](size)
-	fd, errFD := intconv.To[int32](b.Planes[0].FD)
+	bytes, errSize := intconv.Exact[uint32](size)
+	fd, errFD := intconv.Exact[int32](b.Planes[0].FD)
 	if err := errors.Join(errSize, errFD); err != nil {
 		return va.InvalidID, fmt.Errorf("gpu: the encoder picture's dmabuf (fd %d, %d bytes): %w", b.Planes[0].FD, size, err)
 	}

@@ -7,7 +7,7 @@ import (
 	"slices"
 	"unsafe"
 
-	"github.com/stubbedev/lys-lib/internal/intconv"
+	"github.com/stubbedev/lys-lib/intconv"
 	"github.com/stubbedev/lys-lib/third_party/vk"
 )
 
@@ -510,8 +510,8 @@ func (vi *videoImage) close(d *Device) {
 func (vb *vulkanBackend) createBuffers() error {
 	d := vb.d
 	c := vb.caps.video
-	sizeAlign, errSize := intconv.To[int](max(c.MinBitstreamBufferSizeAlignment, 1))
-	offsetAlign, errOffset := intconv.To[int](max(c.MinBitstreamBufferOffsetAlignment, 1))
+	sizeAlign, errSize := intconv.Exact[int](max(c.MinBitstreamBufferSizeAlignment, 1))
+	offsetAlign, errOffset := intconv.Exact[int](max(c.MinBitstreamBufferOffsetAlignment, 1))
 	if err := errors.Join(errSize, errOffset); err != nil {
 		return fmt.Errorf("gpu: %s's bitstream alignments %d and %d: %w", d.name, c.MinBitstreamBufferSizeAlignment, c.MinBitstreamBufferOffsetAlignment, err)
 	}

@@ -21,7 +21,7 @@ import (
 	"math/bits"
 	"time"
 
-	"github.com/stubbedev/lys-lib/internal/intconv"
+	"github.com/stubbedev/lys-lib/intconv"
 )
 
 // Track describes one stream of a file: H264, H265 or Opus.
@@ -154,8 +154,8 @@ func (h H265) describe() (track, error) {
 }
 
 func frameSize(w, h int) (width, height uint16, err error) {
-	width, errW := intconv.To[uint16](w)
-	height, errH := intconv.To[uint16](h)
+	width, errW := intconv.Exact[uint16](w)
+	height, errH := intconv.Exact[uint16](h)
 	if err := errors.Join(errW, errH); err != nil {
 		return 0, 0, fmt.Errorf("frame size %dx%d is past MP4's 16-bit sample entry: %w", w, h, err)
 	}
@@ -270,7 +270,7 @@ func (t *track) payload(dst, data []byte) ([]byte, bool, error) {
 		case typ == nalKey:
 			key = true
 		}
-		size, err := intconv.To[uint32](len(nal))
+		size, err := intconv.Exact[uint32](len(nal))
 		if err != nil {
 			return fmt.Errorf("NAL unit of %d bytes: %w", len(nal), err)
 		}

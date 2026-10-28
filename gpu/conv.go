@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"image"
 
-	"github.com/stubbedev/lys-lib/internal/intconv"
+	"github.com/stubbedev/lys-lib/intconv"
 	"github.com/stubbedev/lys-lib/third_party/vk"
 )
 
@@ -37,4 +37,4 @@ func (d *Device) checkSize(w, h int) error {
 
 // flags is a Vulkan FlagBits enumerant, or several ORed, as the Flags
 // word Vulkan takes them in: the same 32 bits.
-func flags[F ~uint32, B ~int32](b B) F { return F(intconv.Bits32(int32(b))) }
+func flags[F ~uint32, B ~int32](b B) F { return F(intconv.Uint32Bits(int32(b))) }

@@ -12,7 +12,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/stubbedev/lys-lib/internal/intconv"
+	"github.com/stubbedev/lys-lib/intconv"
 )
 
 type createRequest struct {
@@ -59,11 +59,11 @@ func (b *Buffer) init(dev *os.File, size int) error {
 	if _, err := unix.FcntlInt(uintptr(b.memfd), unix.F_ADD_SEALS, unix.F_SEAL_SHRINK); err != nil {
 		return fmt.Errorf("udmabuf: seal the memfd: %w", err)
 	}
-	memfd, err := intconv.To[uint32](b.memfd)
+	memfd, err := intconv.Exact[uint32](b.memfd)
 	if err != nil {
 		return fmt.Errorf("udmabuf: memfd %d: %w", b.memfd, err)
 	}
-	length, err := intconv.To[uint64](size)
+	length, err := intconv.Exact[uint64](size)
 	if err != nil {
 		return fmt.Errorf("udmabuf: size %d: %w", size, err)
 	}

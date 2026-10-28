@@ -5,7 +5,7 @@ import (
 	"runtime"
 	"unsafe"
 
-	"github.com/stubbedev/lys-lib/internal/intconv"
+	"github.com/stubbedev/lys-lib/intconv"
 	"github.com/stubbedev/lys-lib/third_party/vk"
 )
 
@@ -178,7 +178,7 @@ func (b *deviceBuffer) close() {
 // deviceSize is a buffer's size in bytes as Vulkan takes it, or an
 // error naming it when it is negative.
 func deviceSize(size int) (vk.DeviceSize, error) {
-	n, err := intconv.To[vk.DeviceSize](size)
+	n, err := intconv.Exact[vk.DeviceSize](size)
 	if err != nil {
 		return 0, fmt.Errorf("gpu: buffer of %d bytes: %w", size, err)
 	}

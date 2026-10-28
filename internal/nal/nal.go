@@ -8,7 +8,7 @@ import (
 	"fmt"
 	"math"
 
-	"github.com/stubbedev/lys-lib/internal/intconv"
+	"github.com/stubbedev/lys-lib/intconv"
 )
 
 // Writer collects a NAL unit's RBSP bits, most significant first.
@@ -69,7 +69,7 @@ func (w *Writer) SEInt(v int) {
 // UInt writes v as u(n) where the syntax element is held as a Go int;
 // a v outside what n bits hold is a caller bug, and panics.
 func (w *Writer) UInt(n uint, v int) {
-	u, err := intconv.To[uint32](v)
+	u, err := intconv.Exact[uint32](v)
 	if err != nil || n > 32 || uint64(u) >= 1<<n {
 		panic(fmt.Sprintf("nal: %d does not fit u(%d)", v, n))
 	}
