@@ -43,6 +43,12 @@ type Painter struct {
 	mu      sync.Mutex
 	err     error
 	surface []*painted
+	// paintMu serializes painting between the event goroutine's
+	// configures, the test's resizes and the connection's close; closed
+	// stops the configures still buffered at the close from painting
+	// on a closed connection.
+	paintMu sync.Mutex
+	closed  bool
 }
 
 // painted is one surface the painter fills with color.
@@ -52,6 +58,7 @@ type painted struct {
 	color  color.RGBA
 	layer  *wlr.ZwlrLayerSurfaceV1
 	xs     *xdg.Surface
+	top    *xdg.Toplevel
 	w, h   int32
 	shown  bool
 	buffer *wl.Buffer
@@ -79,7 +86,7 @@ func NewPainter(t *testing.T) *Painter {
 		t.Fatalf("wltest: the compositor lacks a global painting needs (compositor %v, shm %v, xdg_wm_base %v, layer shell %v, output %v)",
 			p.comp != nil, p.shm != nil, p.wm != nil, p.layers != nil, p.output != nil)
 	}
-	t.Cleanup(func() { _ = p.ctx.Close() })
+	t.Cleanup(p.close)
 	return p
 }
 
@@ -110,6 +117,14 @@ func (p *Painter) HandleRegistryGlobalRemove(wl.RegistryGlobalRemoveEvent) {}
 
 // HandleWmBasePing answers the compositor's ping.
 func (p *Painter) HandleWmBasePing(ev xdg.WmBasePingEvent) { p.fail(p.wm.Pong(ev.Serial)) }
+
+// close closes the connection once no configure is painting.
+func (p *Painter) close() {
+	p.paintMu.Lock()
+	defer p.paintMu.Unlock()
+	p.closed = true
+	_ = p.ctx.Close()
+}
 
 func (p *Painter) roundtrip() error {
 	cb, err := p.display.Sync()
@@ -156,8 +171,12 @@ func (p *Painter) Layer(anchor uint32, w, h int32, c color.RGBA) {
 	p.show(s)
 }
 
+// Window is a toplevel a Painter shows, painted at the size the test
+// gives it whatever the compositor configures.
+type Window struct{ s *painted }
+
 // Window shows a w x h toplevel of c titled title with app id appID.
-func (p *Painter) Window(appID, title string, w, h int32, c color.RGBA) {
+func (p *Painter) Window(appID, title string, w, h int32, c color.RGBA) *Window {
 	p.t.Helper()
 	s := p.newSurface(c)
 	s.w, s.h = w, h
@@ -171,6 +190,7 @@ func (p *Painter) Window(appID, title string, w, h int32, c color.RGBA) {
 	if err != nil {
 		p.t.Fatalf("wltest: toplevel: %v", err)
 	}
+	s.top = top
 	if err := top.SetAppId(appID); err != nil {
 		p.t.Fatal(err)
 	}
@@ -178,6 +198,35 @@ func (p *Painter) Window(appID, title string, w, h int32, c color.RGBA) {
 		p.t.Fatal(err)
 	}
 	p.show(s)
+	return &Window{s: s}
+}
+
+// Resize repaints the window at w x h.
+func (w *Window) Resize(width, height int32) {
+	p := w.s.p
+	p.t.Helper()
+	p.paintMu.Lock()
+	defer p.paintMu.Unlock()
+	w.s.w, w.s.h = width, height
+	if err := w.s.paint(); err != nil {
+		p.t.Fatalf("wltest: resize the window to %dx%d: %v", width, height, err)
+	}
+}
+
+// Close unmaps and destroys the window.
+func (w *Window) Close() {
+	p := w.s.p
+	p.t.Helper()
+	p.paintMu.Lock()
+	defer p.paintMu.Unlock()
+	s := w.s
+	err := errors.Join(s.top.Destroy(), s.xs.Destroy(), s.s.Destroy())
+	if s.buffer != nil {
+		err = errors.Join(err, s.buffer.Destroy())
+	}
+	if err != nil {
+		p.t.Fatalf("wltest: close the window: %v", err)
+	}
 }
 
 func (p *Painter) newSurface(c color.RGBA) *painted {
@@ -227,6 +276,11 @@ func (p *Painter) Run() {
 
 // HandleZwlrLayerSurfaceV1Configure paints the layer at its size.
 func (s *painted) HandleZwlrLayerSurfaceV1Configure(ev wlr.ZwlrLayerSurfaceV1ConfigureEvent) {
+	s.p.paintMu.Lock()
+	defer s.p.paintMu.Unlock()
+	if s.p.closed {
+		return
+	}
 	s.p.fail(s.layer.AckConfigure(ev.Serial))
 	w, errW := intconv.Exact[int32](ev.Width)
 	h, errH := intconv.Exact[int32](ev.Height)
@@ -240,6 +294,11 @@ func (s *painted) HandleZwlrLayerSurfaceV1Configure(ev wlr.ZwlrLayerSurfaceV1Con
 
 // HandleSurfaceConfigure paints the toplevel at its size.
 func (s *painted) HandleSurfaceConfigure(ev xdg.SurfaceConfigureEvent) {
+	s.p.paintMu.Lock()
+	defer s.p.paintMu.Unlock()
+	if s.p.closed {
+		return
+	}
 	s.p.fail(s.xs.AckConfigure(ev.Serial))
 	s.p.fail(s.paint())
 }
