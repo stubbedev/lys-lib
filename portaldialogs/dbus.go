@@ -10,7 +10,9 @@ package portaldialogs
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/stubbedev/lys-lib/dbusx"
@@ -43,7 +45,7 @@ var (
 	authIdentity  = dbusx.NewSignal[authIdentityArgs](iface, "AuthenticationIdentity")
 )
 
-// unwatchTimeout bounds removing a watch's match rule once its context
+// unwatchTimeout bounds removing a watch's match rule once the watch
 // has ended.
 const unwatchTimeout = 5 * time.Second
 
@@ -363,33 +365,70 @@ func authMatch(handle string) []dbus.MatchOption {
 	}
 }
 
-// authAction reads a signal as the action it reports for handle, and
-// whether it is one.
-func authAction(sig *dbus.Signal, handle string) (AuthAction, bool) {
+// forHandle reports whether sig is one of the interface's signals
+// about the request at handle, which a watch for it must understand.
+func forHandle(sig *dbus.Signal, handle string) bool {
 	if sig.Path != ServicePath || len(sig.Body) == 0 {
-		return nil, false
+		return false
 	}
-	if h, _ := sig.Body[0].(string); h != handle {
-		return nil, false
+	if owner, _, ok := strings.CutLast(sig.Name, "."); !ok || owner != iface {
+		return false
 	}
+	h, ok := sig.Body[0].(string)
+	return ok && h == handle
+}
+
+// decodeAuthAction reads a signal about a request as the action it
+// reports, refusing one the contract does not define.
+func decodeAuthAction(sig *dbus.Signal) (AuthAction, error) {
 	switch sig.Name {
 	case authCancelled.Name():
-		return AuthCancel{}, len(sig.Body) == 1
-	case authIdentity.Name():
-		if len(sig.Body) != 2 {
-			return nil, false
+		if _, err := authCancelled.Decode(sig); err != nil {
+			return nil, err
 		}
-		uid, ok := sig.Body[1].(uint32)
-		return AuthSwitch{UID: uid}, ok
+		return AuthCancel{}, nil
+	case authIdentity.Name():
+		args, err := authIdentity.Decode(sig)
+		if err != nil {
+			return nil, err
+		}
+		return AuthSwitch{UID: args.UID}, nil
 	default:
-		return nil, false
+		return nil, fmt.Errorf("unknown signal %s", sig.Name)
 	}
 }
 
-// WatchAuthentication delivers what the user does in the authentication
-// dialog for the request at handle while no Authenticate call waits,
-// from when it returns until ctx ends, which closes the channel.
-func (c *Client) WatchAuthentication(ctx context.Context, handle string) (<-chan AuthAction, error) {
+// AuthWatch delivers what the user does in one authentication dialog
+// while no Authenticate call waits. It ends when its context ends, on
+// Close, or when it fails: the connection closes, or the host signals
+// something about the request the contract does not define, which
+// means it speaks another one. Every watch must be closed, which
+// reports why it failed.
+type AuthWatch struct {
+	actions chan AuthAction
+	stop    context.CancelFunc
+	done    chan struct{}
+	err     error
+}
+
+// Actions delivers the user's actions in the order the host signalled
+// them; it closes when the watch ends.
+func (w *AuthWatch) Actions() <-chan AuthAction { return w.actions }
+
+// Close ends the watch, waits until its match rule is removed, and
+// returns why it failed, joined with any error removing the rule: nil
+// when it ended through its context or Close. Closing again returns
+// the same.
+func (w *AuthWatch) Close() error {
+	w.stop()
+	<-w.done
+	return w.err
+}
+
+// WatchAuthentication watches the authentication dialog for the
+// request at handle from when it returns until ctx ends or the watch
+// is closed.
+func (c *Client) WatchAuthentication(ctx context.Context, handle string) (*AuthWatch, error) {
 	signals := make(chan *dbus.Signal, 16)
 	c.conn.Signal(signals)
 	match := authMatch(handle)
@@ -397,34 +436,46 @@ func (c *Client) WatchAuthentication(ctx context.Context, handle string) (<-chan
 		c.conn.RemoveSignal(signals)
 		return nil, fmt.Errorf("watch authentication %s: %w", handle, err)
 	}
-	actions := make(chan AuthAction)
+	watchCtx, stop := context.WithCancel(ctx)
+	w := &AuthWatch{actions: make(chan AuthAction), stop: stop, done: make(chan struct{})}
 	go func() {
-		defer close(actions)
-		defer func() {
-			unwatch, cancel := context.WithTimeout(context.WithoutCancel(ctx), unwatchTimeout)
-			defer cancel()
-			_ = c.conn.RemoveMatchSignalContext(unwatch, match...)
-		}()
-		defer c.conn.RemoveSignal(signals)
-		for {
+		defer close(w.done)
+		defer close(w.actions)
+		err := w.deliver(watchCtx, signals, handle)
+		c.conn.RemoveSignal(signals)
+		unwatch, cancel := context.WithTimeout(context.WithoutCancel(ctx), unwatchTimeout)
+		defer cancel()
+		if rerr := c.conn.RemoveMatchSignalContext(unwatch, match...); rerr != nil {
+			err = errors.Join(err, fmt.Errorf("watch authentication %s: remove match rule: %w", handle, rerr))
+		}
+		w.err = err
+	}()
+	return w, nil
+}
+
+// deliver passes the actions signalled for handle on until ctx ends,
+// which is no failure, or the watch fails.
+func (w *AuthWatch) deliver(ctx context.Context, signals <-chan *dbus.Signal, handle string) error {
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case sig, open := <-signals:
+			if !open {
+				return fmt.Errorf("watch authentication %s: connection closed", handle)
+			}
+			if !forHandle(sig, handle) {
+				continue
+			}
+			a, err := decodeAuthAction(sig)
+			if err != nil {
+				return fmt.Errorf("watch authentication %s: %w", handle, err)
+			}
 			select {
+			case w.actions <- a:
 			case <-ctx.Done():
-				return
-			case sig, open := <-signals:
-				if !open {
-					return
-				}
-				a, ok := authAction(sig, handle)
-				if !ok {
-					continue
-				}
-				select {
-				case actions <- a:
-				case <-ctx.Done():
-					return
-				}
+				return nil
 			}
 		}
-	}()
-	return actions, nil
+	}
 }

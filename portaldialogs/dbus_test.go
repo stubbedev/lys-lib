@@ -2,12 +2,16 @@ package portaldialogs
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stubbedev/lys-lib/dbustest"
+	dbus "github.com/stubbedev/lys-lib/third_party/godbus"
 	"github.com/stubbedev/lys-lib/third_party/godbus/introspect"
 )
 
@@ -263,10 +267,10 @@ func TestCallsWithoutHostFail(t *testing.T) {
 	}
 }
 
-func receive(t *testing.T, actions <-chan AuthAction) (AuthAction, bool) {
+func receive(t *testing.T, w *AuthWatch) (AuthAction, bool) {
 	t.Helper()
 	select {
-	case a, open := <-actions:
+	case a, open := <-w.Actions():
 		return a, open
 	case <-time.After(5 * time.Second):
 		t.Fatal("no authentication action within 5s")
@@ -274,36 +278,56 @@ func receive(t *testing.T, actions <-chan AuthAction) (AuthAction, bool) {
 	}
 }
 
-func TestAuthenticationSignals(t *testing.T) {
+func ended(t *testing.T, w *AuthWatch) {
+	t.Helper()
+	if a, open := receive(t, w); open {
+		t.Fatalf("watch delivered %#v, want it ended", a)
+	}
+}
+
+type authFixture struct {
+	bus     *dbustest.Bus
+	conn    *dbus.Conn
+	emitter *Emitter
+	client  *Client
+}
+
+func startAuth(t *testing.T) authFixture {
+	t.Helper()
 	bus := dbustest.Start(t)
 	conn := bus.Conn(t)
 	release, err := NewDaemon(&fakeHost{}).Export(conn)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer release()
-	emitter := NewEmitter(conn)
-	c := NewClient(bus.Conn(t))
+	t.Cleanup(release)
+	return authFixture{bus: bus, conn: conn, emitter: NewEmitter(conn), client: NewClient(bus.Conn(t))}
+}
+
+func (f authFixture) watch(t *testing.T, ctx context.Context, handle string) *AuthWatch {
+	t.Helper()
+	w, err := f.client.WatchAuthentication(ctx, handle)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return w
+}
+
+func TestAuthenticationSignals(t *testing.T) {
+	f := startAuth(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	mine, err := c.WatchAuthentication(ctx, "/r/1")
-	if err != nil {
-		t.Fatal(err)
-	}
-	theirs, err := c.WatchAuthentication(ctx, "/r/2")
-	if err != nil {
-		t.Fatal(err)
-	}
+	mine, theirs := f.watch(t, ctx, "/r/1"), f.watch(t, ctx, "/r/2")
 
 	for _, a := range []AuthAction{AuthSwitch{UID: 0}, AuthCancel{}} {
-		if err := emitter.AuthAction("/r/1", a); err != nil {
+		if err := f.emitter.AuthAction("/r/1", a); err != nil {
 			t.Fatalf("emit %#v: %v", a, err)
 		}
 	}
-	if err := emitter.AuthAction("/r/1", nil); err == nil {
+	if err := f.emitter.AuthAction("/r/1", nil); err == nil {
 		t.Error("emitting no action succeeded")
 	}
-	if err := emitter.AuthAction("/r/2", AuthSwitch{UID: 7}); err != nil {
+	if err := f.emitter.AuthAction("/r/2", AuthSwitch{UID: 7}); err != nil {
 		t.Fatal(err)
 	}
 	for _, want := range []AuthAction{AuthSwitch{UID: 0}, AuthCancel{}} {
@@ -315,23 +339,80 @@ func TestAuthenticationSignals(t *testing.T) {
 		t.Errorf("/r/2 watch got %#v, want only its own switch", got)
 	}
 
-	if err := conn.Emit(ServicePath, authIdentity.Name(), "/r/1"); err != nil {
-		t.Fatal(err)
-	}
-	if err := emitter.AuthAction("/r/1", AuthCancel{}); err != nil {
-		t.Fatal(err)
-	}
-	if got, _ := receive(t, mine); got != (AuthCancel{}) {
-		t.Errorf("/r/1 watch got %#v after a malformed signal, want the cancel after it", got)
-	}
-
 	cancel()
-	for _, actions := range []<-chan AuthAction{mine, theirs} {
-		for {
-			if _, open := receive(t, actions); !open {
-				break
-			}
+	for _, w := range []*AuthWatch{mine, theirs} {
+		ended(t, w)
+		if err := w.Close(); err != nil {
+			t.Errorf("Close after the context ended = %v", err)
 		}
+	}
+}
+
+func TestAuthWatchCloseEndsIt(t *testing.T) {
+	f := startAuth(t)
+	w := f.watch(t, context.Background(), "/r/1")
+	for range 2 {
+		if err := w.Close(); err != nil {
+			t.Errorf("Close = %v", err)
+		}
+	}
+	ended(t, w)
+}
+
+func TestAuthWatchFailsOnASignalOutsideTheContract(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		member string
+		body   []any
+	}{
+		{"identity without a uid", "AuthenticationIdentity", []any{"/r/1"}},
+		{"identity with a string uid", "AuthenticationIdentity", []any{"/r/1", "0"}},
+		{"identity with a signed uid", "AuthenticationIdentity", []any{"/r/1", int32(0)}},
+		{"cancel with an extra argument", "AuthenticationCancelled", []any{"/r/1", uint32(0)}},
+		{"an undefined signal", "AuthenticationRestarted", []any{"/r/1"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			f := startAuth(t)
+			mine, theirs := f.watch(t, context.Background(), "/r/1"), f.watch(t, context.Background(), "/r/2")
+			defer theirs.Close()
+			if err := f.conn.Emit(ServicePath, iface+"."+tc.member, tc.body...); err != nil {
+				t.Fatal(err)
+			}
+			ended(t, mine)
+			err := mine.Close()
+			if err == nil || !strings.Contains(err.Error(), tc.member) || !strings.Contains(err.Error(), "/r/1") {
+				t.Errorf("Close = %v, want an error naming %s and the handle", err, tc.member)
+			}
+			if again := mine.Close(); !errors.Is(again, err) {
+				t.Errorf("Close again = %v, want %v", again, err)
+			}
+			if err := f.emitter.AuthAction("/r/2", AuthCancel{}); err != nil {
+				t.Fatal(err)
+			}
+			if got, _ := receive(t, theirs); got != (AuthCancel{}) {
+				t.Errorf("/r/2 watch got %#v, want its cancel after another request's bad signal", got)
+			}
+		})
+	}
+}
+
+func TestAuthWatchReportsTheConnectionClosing(t *testing.T) {
+	f := startAuth(t)
+	conn := f.bus.Conn(t)
+	w, err := NewClient(conn).WatchAuthentication(context.Background(), "/r/1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.Close(); err != nil {
+		t.Fatal(err)
+	}
+	ended(t, w)
+	err = w.Close()
+	if err == nil || !strings.Contains(err.Error(), "connection closed") {
+		t.Errorf("Close = %v, want the connection closing", err)
+	}
+	if !strings.Contains(fmt.Sprint(err), "remove match rule") || !errors.Is(err, dbus.ErrClosed) {
+		t.Errorf("Close = %v, want the failure to remove the match rule", err)
 	}
 }
 
