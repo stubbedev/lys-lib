@@ -1,6 +1,6 @@
 // Package xdg resolves the XDG base directories and user directories:
 // the base directories themselves, and an app's own directory under
-// each.
+// each, all read from an [Env].
 package xdg
 
 import (
@@ -10,56 +10,83 @@ import (
 	"strings"
 )
 
+// Env is the environment the directories are resolved from: it maps a
+// variable's name to its value, "" when unset, as [os.Getenv] does.
+// Tests pass their own to leave the process environment alone.
+type Env func(name string) string
+
+// OS is the process environment.
+var OS Env = os.Getenv
+
 // StateDir is app's state directory, $XDG_STATE_HOME/app or
 // ~/.local/state/app; false when neither variable holds an absolute
 // path. It panics on an app that is not a single path element.
-func StateDir(app string) (string, bool) { return appDir("XDG_STATE_HOME", ".local/state", app) }
+func (e Env) StateDir(app string) (string, bool) {
+	return e.appDir("XDG_STATE_HOME", ".local/state", app)
+}
 
 // CacheDir is app's cache directory, $XDG_CACHE_HOME/app or
 // ~/.cache/app; false when neither variable holds an absolute path. It
 // panics on an app that is not a single path element.
-func CacheDir(app string) (string, bool) { return appDir("XDG_CACHE_HOME", ".cache", app) }
+func (e Env) CacheDir(app string) (string, bool) {
+	return e.appDir("XDG_CACHE_HOME", ".cache", app)
+}
 
 // DataDir is app's data directory, $XDG_DATA_HOME/app or
 // ~/.local/share/app; false when neither variable holds an absolute
 // path. It panics on an app that is not a single path element.
-func DataDir(app string) (string, bool) { return appDir("XDG_DATA_HOME", ".local/share", app) }
+func (e Env) DataDir(app string) (string, bool) {
+	return e.appDir("XDG_DATA_HOME", ".local/share", app)
+}
+
+// ConfigDir is app's configuration directory, $XDG_CONFIG_HOME/app or
+// ~/.config/app; false when neither variable holds an absolute path.
+// It panics on an app that is not a single path element.
+func (e Env) ConfigDir(app string) (string, bool) {
+	return e.appDir("XDG_CONFIG_HOME", ".config", app)
+}
 
 // CacheHome is the user's cache directory itself, $XDG_CACHE_HOME or
 // ~/.cache, where caches shared across apps live (the thumbnails);
 // false when neither variable holds an absolute path.
-func CacheHome() (string, bool) { return base("XDG_CACHE_HOME", ".cache") }
+func (e Env) CacheHome() (string, bool) { return e.base("XDG_CACHE_HOME", ".cache") }
 
 // DataHome is the user's data directory itself, $XDG_DATA_HOME or
 // ~/.local/share, where data shared across apps lives (the trash, the
 // recently-used list); false when neither variable holds an absolute
 // path.
-func DataHome() (string, bool) { return base("XDG_DATA_HOME", ".local/share") }
+func (e Env) DataHome() (string, bool) { return e.base("XDG_DATA_HOME", ".local/share") }
 
-func appDir(env, fallback, app string) (string, bool) {
+// ConfigHome is the user's configuration directory itself,
+// $XDG_CONFIG_HOME or ~/.config, where configuration shared across
+// apps lives (user-dirs.dirs); false when neither variable holds an
+// absolute path.
+func (e Env) ConfigHome() (string, bool) { return e.base("XDG_CONFIG_HOME", ".config") }
+
+func (e Env) appDir(env, fallback, app string) (string, bool) {
 	if app == "" || app == "." || app == ".." || strings.ContainsRune(app, filepath.Separator) {
 		panic(fmt.Sprintf("xdg: app %q is not a single path element", app))
 	}
-	dir, ok := base(env, fallback)
+	dir, ok := e.base(env, fallback)
 	if !ok {
 		return "", false
 	}
 	return filepath.Join(dir, app), true
 }
 
-func base(env, fallback string) (string, bool) {
-	if dir := absEnv(env); dir != "" {
+func (e Env) base(env, fallback string) (string, bool) {
+	if dir := e.abs(env); dir != "" {
 		return dir, true
 	}
-	home := absEnv("HOME")
+	home := e.abs("HOME")
 	if home == "" {
 		return "", false
 	}
 	return filepath.Join(home, fallback), true
 }
 
-func absEnv(name string) string {
-	if dir := os.Getenv(name); filepath.IsAbs(dir) {
+func (e Env) abs(name string) string {
+	if dir := e(name); filepath.IsAbs(dir) {
 		return dir
 	}
 	return ""
