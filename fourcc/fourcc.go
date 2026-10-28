@@ -58,6 +58,15 @@ func (f Format) Opaque() Format {
 	return f
 }
 
+func (f Format) WithAlpha() Format {
+	for alpha, opaque := range withoutAlpha {
+		if opaque == f {
+			return alpha
+		}
+	}
+	return f
+}
+
 func (f Format) String() string {
 	var b [4]byte
 	binary.LittleEndian.PutUint32(b[:], uint32(f))
