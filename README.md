@@ -9,7 +9,7 @@ through.
 - **GPU:** Vulkan devices, exportable dmabufs, and H.264/H.265 encoding.
 - **Media:** MP4/Matroska muxing, the Opus encoder, PCM mixing and V4L2 webcam capture.
 - **Wayland:** screen capture, virtual input and the protocol bindings they use.
-- **System services:** the PipeWire native-protocol client and the EIS server.
+- **System services:** the PipeWire native-protocol client, the EIS server, and D-Bus on a patched godbus.
 
 Pure Go, `CGO_ENABLED=0`. Native libraries are dlopened at runtime only
 where the system provides the API: libvulkan.
@@ -30,9 +30,10 @@ where the system provides the API: libvulkan.
 | `v4l2` | Webcam capture from V4L2 nodes, as RGBA frames letterboxed to an aspect; the system's capture nodes |
 | `pipewire` | The ScreenCast video producer: a node over PipeWire's native protocol, no libpipewire |
 | `eis` | An EIS server: the receiving end of libei, replaying what a remote-desktop client emulates |
+| `dbusx`, `third_party/godbus` | D-Bus services: interfaces with live properties, setters and on-demand introspection, well-known names and owner watches, on a patched godbus (`third_party/godbus/README.lys-lib.md`) |
 | `clib` | dlopen over a candidate list and C string copies, for bindings made with purego |
 | `debug` | The compile-time trace facility (build tag `lysdebug`, categories in `LYS_DEBUG`) |
-| `golden`, `gputest`, `wltest`, `pipewire/pwtest`, `sockdir` | Test support: golden images, the GPU test driver, Wayland test clients, a private PipeWire daemon with libpipewire consumers, and directories short enough for Unix sockets |
+| `golden`, `gputest`, `wltest`, `pipewire/pwtest`, `dbustest`, `sockdir` | Test support: golden images, the GPU test driver, Wayland test clients, a private PipeWire daemon with libpipewire consumers, private D-Bus daemons, and directories short enough for Unix sockets |
 
 ## Development
 
