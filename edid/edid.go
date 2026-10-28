@@ -23,7 +23,7 @@ const (
 
 // PNPEnv is the environment variable that points PNPPath at a PNP ID
 // database.
-const PNPEnv = "LYS_WM_PNP_IDS"
+const PNPEnv = "LYS_PNP_IDS"
 
 var defaultPNP = "/usr/share/hwdata/pnp.ids"
 
