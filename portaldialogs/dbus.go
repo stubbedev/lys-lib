@@ -2,7 +2,7 @@
 // the native dialogs lys-shell shows behind the desktop-portal backend's
 // Access, Account, AppChooser, DynamicLauncher, Usb and Wallpaper
 // preview, in place of xdg-desktop-portal-gtk, and the password prompt
-// other lys processes ask through it. It holds the requests and replies,
+// and administrator authentication other lys processes ask through it. It holds the requests and replies,
 // the Host a shell implements, the Daemon serving one, the Client
 // calling it, and what every portal dialog is told about the request it
 // serves: its Caller and the Choices it carries.
@@ -10,6 +10,8 @@ package portaldialogs
 
 import (
 	"context"
+	"fmt"
+	"time"
 
 	"github.com/stubbedev/lys-lib/dbusx"
 	dbus "github.com/stubbedev/lys-lib/third_party/godbus"
@@ -20,7 +22,14 @@ const (
 	ServiceName = "dev.stubbe.lys.PortalDialogs1"
 	ServicePath = dbus.ObjectPath("/dev/stubbe/lys/PortalDialogs")
 	iface       = "dev.stubbe.lys.PortalDialogs1"
+
+	authCancelled = "AuthenticationCancelled"
+	authIdentity  = "AuthenticationIdentity"
 )
+
+// unwatchTimeout bounds removing a watch's match rule once its context
+// has ended.
+const unwatchTimeout = 5 * time.Second
 
 // AccessRequest is one grant/deny prompt.
 type AccessRequest struct {
@@ -104,6 +113,16 @@ type Host interface {
 	ConfirmInstall(Caller, LauncherRequest) (bool, string)
 	// Password replies whether the user entered a password, and it.
 	Password(Caller, PasswordRequest) (bool, string)
+	// Authenticate shows the authentication dialog for the request at
+	// the caller's handle, or updates the one showing, and replies once
+	// the user answers its prompt, cancels or picks another identity.
+	// The dialog stays up until Dismiss.
+	Authenticate(Caller, AuthRequest) AuthReply
+	// ShowAuthentication shows the authentication dialog for the
+	// request at the caller's handle, or updates the one showing,
+	// without a prompt: its notes only. What the user does meanwhile
+	// goes out through an Emitter.
+	ShowAuthentication(Caller, AuthRequest)
 	// Dismiss takes down the dialog showing for the request at handle,
 	// when one is; the app closed the request.
 	Dismiss(handle string)
@@ -166,18 +185,70 @@ func (d *Daemon) Password(c Caller, r PasswordRequest) (bool, string, *dbus.Erro
 	return ok, password, nil
 }
 
+// Authenticate is one prompt of an administrator authentication.
+func (d *Daemon) Authenticate(c Caller, r AuthRequest) (bool, uint32, string, *dbus.Error) {
+	if err := r.check(); err != nil {
+		return false, 0, "", dbusx.InvalidArgs("Authenticate: " + err.Error())
+	}
+	ok, uid, response, err := encodeReply(r, d.host.Authenticate(c, r))
+	if err != nil {
+		return false, 0, "", dbusx.Failed("Authenticate: host replied a " + err.Error())
+	}
+	return ok, uid, response, nil
+}
+
+// ShowAuthentication updates an administrator authentication without a
+// prompt.
+func (d *Daemon) ShowAuthentication(c Caller, r AuthRequest) *dbus.Error {
+	if err := r.check(); err != nil {
+		return dbusx.InvalidArgs("ShowAuthentication: " + err.Error())
+	}
+	d.host.ShowAuthentication(c, r)
+	return nil
+}
+
 // Dismiss takes down the dialog showing for the request at handle.
 func (d *Daemon) Dismiss(handle string) *dbus.Error {
 	d.host.Dismiss(handle)
 	return nil
 }
 
+// Emitter signals what the user does in an authentication dialog while
+// no Authenticate call waits.
+type Emitter struct{ conn *dbus.Conn }
+
+// NewEmitter signals over conn, the one the Daemon is exported on.
+func NewEmitter(conn *dbus.Conn) *Emitter { return &Emitter{conn: conn} }
+
+// AuthAction signals the action taken in the dialog for the request at
+// handle: AuthenticationCancelled(s) or AuthenticationIdentity(su).
+func (e *Emitter) AuthAction(handle string, a AuthAction) error {
+	var err error
+	switch a := a.(type) {
+	case AuthCancel:
+		err = e.conn.Emit(ServicePath, iface+"."+authCancelled, handle)
+	case AuthSwitch:
+		err = e.conn.Emit(ServicePath, iface+"."+authIdentity, handle, a.UID)
+	default:
+		return fmt.Errorf("signal %T for %s: unknown action", a, handle)
+	}
+	if err != nil {
+		return fmt.Errorf("signal %T for %s: %w", a, handle, err)
+	}
+	return nil
+}
+
 // Client calls the shell's dialogs; a dialog waits on the user, so the
 // calls are bounded only by ctx.
-type Client struct{ obj dbus.BusObject }
+type Client struct {
+	conn *dbus.Conn
+	obj  dbus.BusObject
+}
 
 // NewClient addresses the host over conn.
-func NewClient(conn *dbus.Conn) *Client { return &Client{obj: conn.Object(ServiceName, ServicePath)} }
+func NewClient(conn *dbus.Conn) *Client {
+	return &Client{conn: conn, obj: conn.Object(ServiceName, ServicePath)}
+}
 
 func (c *Client) call(ctx context.Context, method string, args ...any) *dbus.Call {
 	return c.obj.CallWithContext(ctx, iface+"."+method, 0, args...)
@@ -237,4 +308,104 @@ func (c *Client) Password(ctx context.Context, caller Caller, r PasswordRequest)
 // Dismiss takes down the dialog showing for the request at handle.
 func (c *Client) Dismiss(ctx context.Context, handle string) error {
 	return c.call(ctx, "Dismiss", handle).Err
+}
+
+// Authenticate shows one prompt of an administrator authentication and
+// waits for the user: an AuthAnswer for r.Selected, an AuthSwitch to
+// another of r.Identities, or an AuthCancel.
+func (c *Client) Authenticate(ctx context.Context, caller Caller, r AuthRequest) (AuthReply, error) {
+	var (
+		ok       bool
+		uid      uint32
+		response string
+	)
+	if err := c.call(ctx, "Authenticate", caller, r).Store(&ok, &uid, &response); err != nil {
+		return nil, err
+	}
+	reply, err := decodeReply(r, ok, uid, response)
+	if err != nil {
+		return nil, fmt.Errorf("authenticate %s: %w", caller.Handle, err)
+	}
+	return reply, nil
+}
+
+// ShowAuthentication updates an administrator authentication without a
+// prompt; WatchAuthentication reports what the user does meanwhile.
+func (c *Client) ShowAuthentication(ctx context.Context, caller Caller, r AuthRequest) error {
+	return c.call(ctx, "ShowAuthentication", caller, r).Err
+}
+
+func authMatch(handle string) []dbus.MatchOption {
+	return []dbus.MatchOption{
+		dbus.WithMatchSender(ServiceName),
+		dbus.WithMatchObjectPath(ServicePath),
+		dbus.WithMatchInterface(iface),
+		dbus.WithMatchArg(0, handle),
+	}
+}
+
+// authAction reads a signal as the action it reports for handle, and
+// whether it is one.
+func authAction(sig *dbus.Signal, handle string) (AuthAction, bool) {
+	if sig.Path != ServicePath || len(sig.Body) == 0 {
+		return nil, false
+	}
+	if h, _ := sig.Body[0].(string); h != handle {
+		return nil, false
+	}
+	switch sig.Name {
+	case iface + "." + authCancelled:
+		return AuthCancel{}, len(sig.Body) == 1
+	case iface + "." + authIdentity:
+		if len(sig.Body) != 2 {
+			return nil, false
+		}
+		uid, ok := sig.Body[1].(uint32)
+		return AuthSwitch{UID: uid}, ok
+	default:
+		return nil, false
+	}
+}
+
+// WatchAuthentication delivers what the user does in the authentication
+// dialog for the request at handle while no Authenticate call waits,
+// from when it returns until ctx ends, which closes the channel.
+func (c *Client) WatchAuthentication(ctx context.Context, handle string) (<-chan AuthAction, error) {
+	signals := make(chan *dbus.Signal, 16)
+	c.conn.Signal(signals)
+	match := authMatch(handle)
+	if err := c.conn.AddMatchSignalContext(ctx, match...); err != nil {
+		c.conn.RemoveSignal(signals)
+		return nil, fmt.Errorf("watch authentication %s: %w", handle, err)
+	}
+	actions := make(chan AuthAction)
+	go func() {
+		defer close(actions)
+		defer func() {
+			unwatch, cancel := context.WithTimeout(context.WithoutCancel(ctx), unwatchTimeout)
+			defer cancel()
+			_ = c.conn.RemoveMatchSignalContext(unwatch, match...)
+		}()
+		defer c.conn.RemoveSignal(signals)
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case sig, open := <-signals:
+				if !open {
+					return
+				}
+				a, ok := authAction(sig, handle)
+				if !ok {
+					continue
+				}
+				select {
+				case actions <- a:
+				case <-ctx.Done():
+					return
+				}
+			}
+		}
+	}()
+	return actions, nil
 }

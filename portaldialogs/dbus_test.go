@@ -5,6 +5,7 @@ import (
 	"reflect"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/stubbedev/lys-lib/dbustest"
 )
@@ -15,6 +16,7 @@ type fakeHost struct {
 	asked     dbustest.Var[[]any]
 	caller    dbustest.Var[Caller]
 	dismissed dbustest.Var[[]string]
+	auth      dbustest.Var[AuthReply]
 }
 
 func (f *fakeHost) record(c Caller, args ...any) {
@@ -69,6 +71,15 @@ func (f *fakeHost) Password(c Caller, r PasswordRequest) (bool, string) {
 		return false, ""
 	}
 	return true, "typed"
+}
+
+func (f *fakeHost) Authenticate(c Caller, r AuthRequest) AuthReply {
+	f.record(c, r)
+	return f.auth.Load()
+}
+
+func (f *fakeHost) ShowAuthentication(c Caller, r AuthRequest) {
+	f.record(c, r)
 }
 
 func (f *fakeHost) Dismiss(handle string) {
@@ -171,6 +182,55 @@ func TestRoundTrip(t *testing.T) {
 		}
 		askedBy("Password", pw)
 
+		auth := AuthRequest{
+			Message: "Authentication is needed to run a program as another user", Icon: "dialog-password",
+			Details:    []AuthDetail{{"Program", "/usr/bin/true"}, {"Command line", "true --flag"}},
+			Identities: []AuthIdentity{{0, "root"}, {1000, "Ada"}},
+			Selected:   1000,
+			Notes:      []AuthNote{{false, "Place your finger"}, {true, "Sorry, try again."}},
+			Prompt:     "Password:",
+		}
+		for _, want := range []AuthReply{AuthAnswer{Response: NewResponse(map[bool]string{true: "hunter2"}[yes])}, AuthSwitch{UID: 0}, AuthCancel{}} {
+			host.auth.Store(want)
+			if got, err := c.Authenticate(ctx, caller, auth); err != nil || got != want {
+				t.Errorf("Authenticate (yes=%v) = %#v, %v; want %#v", yes, got, err, want)
+			}
+			askedBy("Authenticate", auth)
+		}
+		echoed := AuthRequest{Identities: []AuthIdentity{{0, "root"}}, Prompt: "Username:", Echo: true}
+		host.auth.Store(AuthAnswer{Response: NewResponse("root")})
+		if got, err := c.Authenticate(ctx, caller, echoed); err != nil || got != host.auth.Load() {
+			t.Errorf("Authenticate echoed (yes=%v) = %#v, %v", yes, got, err)
+		}
+		askedBy("Authenticate", AuthRequest{Details: []AuthDetail{}, Identities: echoed.Identities, Notes: []AuthNote{}, Prompt: "Username:", Echo: true})
+		for _, bad := range []AuthReply{nil, AuthSwitch{UID: 1000}, AuthSwitch{UID: 42}} {
+			host.auth.Store(bad)
+			if got, err := c.Authenticate(ctx, caller, auth); err == nil {
+				t.Errorf("Authenticate (yes=%v) with the host replying %#v = %#v", yes, bad, got)
+			}
+		}
+		if got, err := c.Authenticate(ctx, caller, AuthRequest{Identities: auth.Identities, Selected: 42}); err == nil {
+			t.Errorf("Authenticate for an unknown selected uid = %#v", got)
+		}
+		if got, err := c.Authenticate(ctx, caller, AuthRequest{}); err == nil {
+			t.Errorf("Authenticate without identities = %#v", got)
+		}
+
+		shown := auth
+		shown.Prompt = ""
+		host.asked.Store(nil)
+		if err := c.ShowAuthentication(ctx, caller, shown); err != nil {
+			t.Errorf("ShowAuthentication (yes=%v): %v", yes, err)
+		}
+		askedBy("ShowAuthentication", shown)
+		host.asked.Store([]any{"untouched"})
+		if err := c.ShowAuthentication(ctx, caller, AuthRequest{Identities: auth.Identities, Selected: 42}); err == nil {
+			t.Error("ShowAuthentication for an unknown selected uid succeeded")
+		}
+		if got := host.asked.Load(); !reflect.DeepEqual(got, []any{"untouched"}) {
+			t.Errorf("ShowAuthentication for an unknown selected uid reached the host with %#v", got)
+		}
+
 		if err := c.Dismiss(ctx, "/r/1"); err != nil || !slices.Equal(host.dismissed.Load(), []string{"/r/1"}) {
 			t.Errorf("Dismiss = %v, dismissed %v", err, host.dismissed.Load())
 		}
@@ -192,10 +252,84 @@ func TestCallsWithoutHostFail(t *testing.T) {
 		{"ChooseDevices", func() error { _, _, err := c.ChooseDevices(ctx, Caller{}, nil); return err }},
 		{"ConfirmInstall", func() error { _, _, err := c.ConfirmInstall(ctx, Caller{}, LauncherRequest{}); return err }},
 		{"Password", func() error { _, _, err := c.Password(ctx, Caller{}, PasswordRequest{}); return err }},
+		{"Authenticate", func() error { _, err := c.Authenticate(ctx, Caller{}, AuthRequest{}); return err }},
+		{"ShowAuthentication", func() error { return c.ShowAuthentication(ctx, Caller{}, AuthRequest{}) }},
 		{"Dismiss", func() error { return c.Dismiss(ctx, "") }},
 	} {
 		if err := tc.call(); err == nil {
 			t.Errorf("%s answered without a host", tc.method)
+		}
+	}
+}
+
+func receive(t *testing.T, actions <-chan AuthAction) (AuthAction, bool) {
+	t.Helper()
+	select {
+	case a, open := <-actions:
+		return a, open
+	case <-time.After(5 * time.Second):
+		t.Fatal("no authentication action within 5s")
+		return nil, false
+	}
+}
+
+func TestAuthenticationSignals(t *testing.T) {
+	bus := dbustest.Start(t)
+	conn := bus.Conn(t)
+	release, err := NewDaemon(&fakeHost{}).Export(conn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	emitter := NewEmitter(conn)
+	c := NewClient(bus.Conn(t))
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	mine, err := c.WatchAuthentication(ctx, "/r/1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	theirs, err := c.WatchAuthentication(ctx, "/r/2")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, a := range []AuthAction{AuthSwitch{UID: 0}, AuthCancel{}} {
+		if err := emitter.AuthAction("/r/1", a); err != nil {
+			t.Fatalf("emit %#v: %v", a, err)
+		}
+	}
+	if err := emitter.AuthAction("/r/1", nil); err == nil {
+		t.Error("emitting no action succeeded")
+	}
+	if err := emitter.AuthAction("/r/2", AuthSwitch{UID: 7}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []AuthAction{AuthSwitch{UID: 0}, AuthCancel{}} {
+		if got, _ := receive(t, mine); got != want {
+			t.Errorf("/r/1 watch got %#v, want %#v", got, want)
+		}
+	}
+	if got, _ := receive(t, theirs); got != (AuthSwitch{UID: 7}) {
+		t.Errorf("/r/2 watch got %#v, want only its own switch", got)
+	}
+
+	if err := conn.Emit(ServicePath, iface+"."+authIdentity, "/r/1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := emitter.AuthAction("/r/1", AuthCancel{}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := receive(t, mine); got != (AuthCancel{}) {
+		t.Errorf("/r/1 watch got %#v after a malformed signal, want the cancel after it", got)
+	}
+
+	cancel()
+	for _, actions := range []<-chan AuthAction{mine, theirs} {
+		for {
+			if _, open := receive(t, actions); !open {
+				break
+			}
 		}
 	}
 }
