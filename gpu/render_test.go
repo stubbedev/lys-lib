@@ -7,7 +7,7 @@ import (
 	"image/color"
 	"testing"
 
-	"github.com/stubbedev/lys-lib/dmabuf"
+	"github.com/stubbedev/lys-lib/fourcc"
 	"github.com/stubbedev/lys-lib/render"
 )
 
@@ -26,11 +26,11 @@ func newTarget(t *testing.T, d *Device, w, h int) *Target {
 // and the next frame draws over what the last left.
 func TestRenderIntoDmabuf(t *testing.T) {
 	d := exportingDevice(t)
-	mods, err := d.Modifiers(dmabuf.FormatARGB8888)
+	mods, err := d.Modifiers(fourcc.ARGB8888)
 	if err != nil {
 		t.Fatal(err)
 	}
-	tg, err := d.NewTarget(32, 16, dmabuf.FormatARGB8888, mods)
+	tg, err := d.NewTarget(32, 16, fourcc.ARGB8888, mods)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -686,11 +686,11 @@ func TestCopyRectsBetweenTargets(t *testing.T) {
 		"offscreen": func() (*Target, error) { return d.NewOffscreen(32, 16) },
 	}
 	if d.Exports() {
-		mods, err := d.Modifiers(dmabuf.FormatARGB8888)
+		mods, err := d.Modifiers(fourcc.ARGB8888)
 		if err != nil {
 			t.Fatal(err)
 		}
-		newTarget["exported"] = func() (*Target, error) { return d.NewTarget(32, 16, dmabuf.FormatARGB8888, mods) }
+		newTarget["exported"] = func() (*Target, error) { return d.NewTarget(32, 16, fourcc.ARGB8888, mods) }
 	}
 	for name, open := range newTarget {
 		t.Run(name, func(t *testing.T) {

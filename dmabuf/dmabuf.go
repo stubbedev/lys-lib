@@ -4,23 +4,10 @@
 // contents; widget.GPUArea presents them.
 package dmabuf
 
-import "fmt"
+import (
+	"fmt"
 
-// DRM fourcc formats and modifiers the lys packages name; any other DRM code
-// works the same way.
-const (
-	// FormatXRGB8888 is DRM_FORMAT_XRGB8888 ('XR24').
-	FormatXRGB8888 uint32 = 0x34325258
-	// FormatARGB8888 is DRM_FORMAT_ARGB8888 ('AR24').
-	FormatARGB8888 uint32 = 0x34325241
-	// FormatNV12 is DRM_FORMAT_NV12 ('NV12'): 4:2:0 luma, then
-	// interleaved chroma, in two planes.
-	FormatNV12 uint32 = 0x3231564e
-	// ModifierLinear is DRM_FORMAT_MOD_LINEAR.
-	ModifierLinear uint64 = 0
-	// ModifierInvalid is DRM_FORMAT_MOD_INVALID: an implicit,
-	// driver-chosen layout.
-	ModifierInvalid uint64 = 0x00ffffffffffffff
+	"github.com/stubbedev/lys-lib/fourcc"
 )
 
 const maxPlanes = 4
@@ -39,11 +26,9 @@ type Plane struct {
 // be the ones Format calls for.
 type Buffer struct {
 	Width, Height int
-	// Format is the DRM fourcc.
-	Format uint32
-	// Modifier is the DRM format modifier.
-	Modifier uint64
-	Planes   []Plane
+	Format        fourcc.Format
+	Modifier      fourcc.Modifier
+	Planes        []Plane
 }
 
 // Validate reports a buffer the compositor would reject as a protocol

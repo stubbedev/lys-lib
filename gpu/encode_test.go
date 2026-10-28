@@ -18,7 +18,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stubbedev/lys-lib/dmabuf"
+	"github.com/stubbedev/lys-lib/fourcc"
 	"github.com/stubbedev/lys-lib/internal/nal"
 	"github.com/stubbedev/lys-lib/internal/nal/naltest"
 	"github.com/stubbedev/lys-lib/media/mux"
@@ -136,11 +136,11 @@ func newClip(t *testing.T, d *Device, cfg EncoderConfig) *clip {
 // openClip is a clip on the encoder open makes.
 func openClip(t *testing.T, d *Device, cfg EncoderConfig, open func(EncoderConfig) (*Encoder, error)) *clip {
 	t.Helper()
-	mods, err := d.ExportModifiers(dmabuf.FormatXRGB8888)
+	mods, err := d.ExportModifiers(fourcc.XRGB8888)
 	if err != nil {
 		t.Fatal(err)
 	}
-	buf, err := d.NewBuffer(cfg.Width, cfg.Height, dmabuf.FormatXRGB8888, mods)
+	buf, err := d.NewBuffer(cfg.Width, cfg.Height, fourcc.XRGB8888, mods)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -514,11 +514,11 @@ func abs(n int) int { return max(n, -n) }
 // A Buffer reads back what was copied into it, opaque in XRGB8888.
 func TestBufferReadsBack(t *testing.T) {
 	d := exportingDevice(t)
-	mods, err := d.ExportModifiers(dmabuf.FormatXRGB8888)
+	mods, err := d.ExportModifiers(fourcc.XRGB8888)
 	if err != nil {
 		t.Fatal(err)
 	}
-	buf, err := d.NewBuffer(48, 20, dmabuf.FormatXRGB8888, mods)
+	buf, err := d.NewBuffer(48, 20, fourcc.XRGB8888, mods)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -629,11 +629,11 @@ func TestEncoderSourceAndTransform(t *testing.T) {
 				rs := cfg.sourceSize()
 				cfg.Source = image.Rectangle{Min: image.Pt(37, 21)}
 				cfg.Source.Max = cfg.Source.Min.Add(rs)
-				mods, err := d.ExportModifiers(dmabuf.FormatXRGB8888)
+				mods, err := d.ExportModifiers(fourcc.XRGB8888)
 				if err != nil {
 					t.Fatal(err)
 				}
-				buf, err := d.NewBuffer(200, 160, dmabuf.FormatXRGB8888, mods)
+				buf, err := d.NewBuffer(200, 160, fourcc.XRGB8888, mods)
 				if err != nil {
 					t.Fatal(err)
 				}

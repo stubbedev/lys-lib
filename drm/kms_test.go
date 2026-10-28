@@ -113,8 +113,7 @@ func TestPlanesAdvertiseFormatsAndModifiers(t *testing.T) {
 			continue
 		}
 		primaries++
-		const xrgb8888 = 'X' | 'R'<<8 | '2'<<16 | '4'<<24
-		if !slices.Contains(p.Formats, xrgb8888) {
+		if !slices.Contains(p.Formats, fourcc.XRGB8888) {
 			t.Errorf("primary plane %d lacks XRGB8888: %v", id, p.Formats)
 		}
 		in, ok := props["IN_FORMATS"]
@@ -125,7 +124,7 @@ func TestPlanesAdvertiseFormatsAndModifiers(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		mods, err := drm.Modifiers(blob, xrgb8888)
+		mods, err := drm.Modifiers(blob, fourcc.XRGB8888)
 		if err != nil || len(mods) == 0 {
 			t.Fatalf("XRGB8888 modifiers %v: %v", mods, err)
 		}

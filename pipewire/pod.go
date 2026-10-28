@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 
+	"github.com/stubbedev/lys-lib/fourcc"
 	"github.com/stubbedev/lys-lib/internal/intconv"
 )
 
@@ -232,19 +233,19 @@ func object(typ, id uint32, props ...prop) []byte {
 
 // formatPod is the EnumFormat object for one offered video format; a
 // modifier marks a dmabuf format (mandatory), none the SHM one.
-func formatPod(width, height, fps uint32, format VideoFormat, modifier *uint64) []byte {
+func formatPod(width, height, fps uint32, format VideoFormat, modifier *fourcc.Modifier) []byte {
 	return formatObject(paramEnumFormat, width, height, fps, format, modifier)
 }
 
 // formatObject is formatPod as the param id (EnumFormat or Format).
-func formatObject(id, width, height, fps uint32, format VideoFormat, modifier *uint64) []byte {
+func formatObject(id, width, height, fps uint32, format VideoFormat, modifier *fourcc.Modifier) []byte {
 	props := []prop{
 		{key: formatMediaType, value: podID(mediaTypeVideo)},
 		{key: formatMediaSubtype, value: podID(mediaSubtypeRaw)},
 		{key: formatVideoFormat, value: podID(uint32(format))},
 	}
 	if modifier != nil {
-		props = append(props, prop{key: formatVideoModifier, flags: propFlagMandatory, value: podULong(*modifier)})
+		props = append(props, prop{key: formatVideoModifier, flags: propFlagMandatory, value: podULong(uint64(*modifier))})
 	}
 	props = append(props,
 		prop{key: formatVideoSize, value: podRectangle(width, height)},

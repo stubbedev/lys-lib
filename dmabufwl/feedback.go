@@ -8,7 +8,7 @@ import (
 	"slices"
 	"syscall"
 
-	"github.com/stubbedev/lys-lib/dmabuf"
+	"github.com/stubbedev/lys-lib/fourcc"
 	"github.com/stubbedev/lys-lib/wlr"
 )
 
@@ -18,14 +18,14 @@ import (
 // order (tranche by tranche).
 type Feedback struct {
 	Device    uint64
-	Modifiers map[uint32][]uint64
+	Modifiers map[fourcc.Format][]fourcc.Modifier
 }
 
 // feedbackState gathers the feedback events until done.
 type feedbackState struct {
 	table   []byte
 	device  uint64
-	mods    map[uint32][]uint64
+	mods    map[fourcc.Format][]fourcc.Modifier
 	err     error
 	devSeen bool
 	done    bool
@@ -44,7 +44,7 @@ func DefaultFeedback(mgr *wlr.ZwpDmabufV1, version uint32, roundtrip func() erro
 		return Feedback{}, fmt.Errorf("dmabuf: get_default_feedback: %w", err)
 	}
 	defer func() { _ = fb.Destroy() }()
-	st := &feedbackState{mods: map[uint32][]uint64{}}
+	st := &feedbackState{mods: map[fourcc.Format][]fourcc.Modifier{}}
 	fb.AddFormatTableHandler(st)
 	fb.AddMainDeviceHandler(st)
 	fb.AddTrancheFormatsHandler(st)
@@ -105,9 +105,9 @@ func (s *feedbackState) HandleZwpDmabufFeedbackV1TrancheFormats(ev wlr.ZwpDmabuf
 			s.err = fmt.Errorf("dmabuf: tranche index %d past the %d-entry format table", i, len(s.table)/16)
 			return
 		}
-		format := binary.LittleEndian.Uint32(s.table[at:])
-		mod := binary.LittleEndian.Uint64(s.table[at+8:])
-		if mod != dmabuf.ModifierInvalid && !slices.Contains(s.mods[format], mod) {
+		format := fourcc.Format(binary.LittleEndian.Uint32(s.table[at:]))
+		mod := fourcc.Modifier(binary.LittleEndian.Uint64(s.table[at+8:]))
+		if mod != fourcc.Invalid && !slices.Contains(s.mods[format], mod) {
 			s.mods[format] = append(s.mods[format], mod)
 		}
 	}

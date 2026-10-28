@@ -11,6 +11,7 @@ import (
 
 	"github.com/ebitengine/purego"
 
+	"github.com/stubbedev/lys-lib/fourcc"
 	"github.com/stubbedev/lys-lib/pipewire/pwtest"
 )
 
@@ -69,7 +70,7 @@ func newConsumer(t *testing.T, loop *loopThread, width, height uint32) *consumer
 
 // newConsumerOf is newConsumer offering modifier's dmabuf format, or
 // the plain one when nil.
-func newConsumerOf(t *testing.T, loop *loopThread, width, height uint32, modifier *uint64) *consumer {
+func newConsumerOf(t *testing.T, loop *loopThread, width, height uint32, modifier *fourcc.Modifier) *consumer {
 	t.Helper()
 	return newConsumerOfFormat(t, loop, formatPod(width, height, 30, VideoBGRx, modifier))
 }

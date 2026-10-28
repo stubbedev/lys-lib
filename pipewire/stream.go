@@ -16,6 +16,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/stubbedev/lys-lib/fourcc"
 	"github.com/stubbedev/lys-lib/internal/intconv"
 )
 
@@ -46,7 +47,7 @@ type Resizable interface {
 // through Fill.
 type DmabufSource interface {
 	Source
-	Modifier() uint64
+	Modifier() fourcc.Modifier
 	// DmabufVideoFormat is the GPU buffers' format, which need not be
 	// the shared-memory one (a GPU compositor hands out 24-bit shm and
 	// 32-bit dmabufs).
@@ -279,8 +280,8 @@ func (p *Producer) setFormat(f []byte) error {
 		if p.dmabuf == nil {
 			return errors.New("a dmabuf format, and the source has no GPU buffers")
 		}
-		if mtyp != typeLong || len(mv) < 8 || binary.LittleEndian.Uint64(mv) != p.dmabuf.Modifier() {
-			return fmt.Errorf("modifier is not the offered %#x", p.dmabuf.Modifier())
+		if mtyp != typeLong || len(mv) < 8 || fourcc.Modifier(binary.LittleEndian.Uint64(mv)) != p.dmabuf.Modifier() {
+			return fmt.Errorf("modifier is not the offered %s", p.dmabuf.Modifier())
 		}
 		want = p.dmabuf.DmabufVideoFormat()
 	}

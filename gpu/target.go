@@ -8,6 +8,7 @@ import (
 	"unsafe"
 
 	"github.com/stubbedev/lys-lib/dmabuf"
+	"github.com/stubbedev/lys-lib/fourcc"
 	"github.com/stubbedev/lys-lib/third_party/vk"
 )
 
@@ -40,42 +41,42 @@ func (d *Device) NewOffscreen(width, height int) (*Target, error) {
 	return t, nil
 }
 
-// vkFormatOf maps a DRM fourcc to the Vulkan format with the same byte
+// vkFormatOf maps a DRM format to the Vulkan format with the same byte
 // order in memory.
-func vkFormatOf(fourcc uint32) (vk.Format, error) {
-	if fourcc == dmabuf.FormatNV12 {
-		return 0, fmt.Errorf("gpu: DRM format %#08x is the encoder's alone", fourcc)
+func vkFormatOf(format fourcc.Format) (vk.Format, error) {
+	if format == fourcc.NV12 {
+		return 0, fmt.Errorf("gpu: DRM format %s is the encoder's alone", format)
 	}
-	vf, _, err := exportFormatOf(fourcc)
+	vf, _, err := exportFormatOf(format)
 	return vf, err
 }
 
-// exportFormatOf is the Vulkan format of an image exported in fourcc,
+// exportFormatOf is the Vulkan format of an image exported in format,
 // and how many memory planes it has: the surfaces' formats and the
 // encoder's NV12.
-func exportFormatOf(fourcc uint32) (vk.Format, int, error) {
-	switch fourcc {
-	case dmabuf.FormatARGB8888, dmabuf.FormatXRGB8888:
+func exportFormatOf(format fourcc.Format) (vk.Format, int, error) {
+	switch format {
+	case fourcc.ARGB8888, fourcc.XRGB8888:
 		return vk.FormatB8g8r8a8Unorm, 1, nil
-	case dmabuf.FormatNV12:
+	case fourcc.NV12:
 		return nv12, 2, nil
 	}
-	return 0, 0, fmt.Errorf("gpu: no Vulkan format for DRM format %#08x", fourcc)
+	return 0, 0, fmt.Errorf("gpu: no Vulkan format for DRM format %s", format)
 }
 
-// NewTarget allocates a width x height image in format (a DRM fourcc:
-// dmabuf.FormatARGB8888, or FormatXRGB8888 with the same bytes) whose
-// layout the driver picks among modifiers, the ones the consumer
-// imports, that the device renders format in (Modifiers): linear when
-// both take it. None in common, as with only the implicit
-// dmabuf.ModifierInvalid on offer, is an error naming both lists.
-func (d *Device) NewTarget(width, height int, format uint32, modifiers []uint64) (*Target, error) {
+// NewTarget allocates a width x height image in format
+// (fourcc.ARGB8888, or XRGB8888 with the same bytes) whose layout the
+// driver picks among modifiers, the ones the consumer imports, that the
+// device renders format in (Modifiers): linear when both take it. None
+// in common, as with only the implicit fourcc.Invalid on offer, is an
+// error naming both lists.
+func (d *Device) NewTarget(width, height int, format fourcc.Format, modifiers []fourcc.Modifier) (*Target, error) {
 	vf, err := vkFormatOf(format)
 	if err != nil {
 		return nil, err
 	}
 	if vf != surfaceFormat {
-		return nil, fmt.Errorf("gpu: DRM format %#08x renders as Vulkan format %d, surfaces are %d", format, vf, surfaceFormat)
+		return nil, fmt.Errorf("gpu: DRM format %s renders as Vulkan format %d, surfaces are %d", format, vf, surfaceFormat)
 	}
 	e, err := d.export(width, height, format, modifiers, renderUse)
 	if err != nil {
@@ -236,4 +237,6 @@ func (d *Device) readPixels(w, h int, opaque bool, record func(cb vk.CommandBuff
 // Modifiers are the DRM modifiers the device renders format into as a
 // single-plane color attachment: what to intersect with the ones a
 // consumer imports before NewTarget.
-func (d *Device) Modifiers(format uint32) ([]uint64, error) { return d.modifiers(format, renderUse) }
+func (d *Device) Modifiers(format fourcc.Format) ([]fourcc.Modifier, error) {
+	return d.modifiers(format, renderUse)
+}

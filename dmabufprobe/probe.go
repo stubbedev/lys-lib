@@ -10,14 +10,14 @@ import (
 	"fmt"
 	"slices"
 
-	"github.com/stubbedev/lys-lib/dmabuf"
+	"github.com/stubbedev/lys-lib/fourcc"
 )
 
 // Layout is one modifier to probe and how its buffers are allocated:
 // for rendering into, when the device renders the modifier, or only for
 // transfer and sampling, when it only exports it (linear on NVIDIA).
 type Layout struct {
-	Modifier uint64
+	Modifier fourcc.Modifier
 	Render   bool
 }
 
@@ -26,13 +26,13 @@ type Layout struct {
 // driver takes, then the ones the device renders in, then the ones it
 // only exports. A modifier the device neither renders nor exports is
 // left out.
-func Layouts(compositor, rendered, exported []uint64) []Layout {
+func Layouts(compositor, rendered, exported []fourcc.Modifier) []Layout {
 	var linear, drawn, exportOnly []Layout
 	for _, m := range compositor {
 		l := Layout{Modifier: m, Render: slices.Contains(rendered, m)}
 		switch {
 		case !l.Render && !slices.Contains(exported, m):
-		case m == dmabuf.ModifierLinear:
+		case m == fourcc.Linear:
 			linear = append(linear, l)
 		case l.Render:
 			drawn = append(drawn, l)
@@ -62,7 +62,7 @@ func First[T any](layouts []Layout, try func(Layout) (T, error)) (T, Layout, err
 		if err == nil {
 			return v, l, nil
 		}
-		declined = append(declined, fmt.Errorf("modifier %#x: %w", l.Modifier, err))
+		declined = append(declined, fmt.Errorf("modifier %s: %w", l.Modifier, err))
 	}
 	return zero, Layout{}, errors.Join(declined...)
 }

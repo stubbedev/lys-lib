@@ -11,6 +11,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/stubbedev/lys-lib/dmabuf"
+	"github.com/stubbedev/lys-lib/fourcc"
 	"github.com/stubbedev/lys-lib/internal/intconv"
 	"github.com/stubbedev/lys-lib/internal/nal"
 	"github.com/stubbedev/lys-lib/internal/va"
@@ -321,7 +322,7 @@ func (vb *vaBackend) createContext() error {
 // best first: the one the driver gives its own surfaces (an encoder
 // may read only that one right: iHD's low-power encoder misreads
 // linear pictures it reads back fine), then linear.
-func (vb *vaBackend) pictureModifiers() ([]uint64, error) {
+func (vb *vaBackend) pictureModifiers() ([]fourcc.Modifier, error) {
 	desc, err := vb.dpy.ExportSurface(vb.recon[0])
 	if err != nil {
 		return nil, err
@@ -329,10 +330,10 @@ func (vb *vaBackend) pictureModifiers() ([]uint64, error) {
 	for _, o := range desc.Objects[:desc.NumObjects] {
 		_ = unix.Close(int(o.Fd))
 	}
-	if own := desc.Objects[0].DrmFormatModifier; own != dmabuf.ModifierLinear {
-		return []uint64{own, dmabuf.ModifierLinear}, nil
+	if own := fourcc.Modifier(desc.Objects[0].DrmFormatModifier); own != fourcc.Linear {
+		return []fourcc.Modifier{own, fourcc.Linear}, nil
 	}
-	return []uint64{dmabuf.ModifierLinear}, nil
+	return []fourcc.Modifier{fourcc.Linear}, nil
 }
 
 // createSlots makes each slot's picture, imports it as a surface and
@@ -346,7 +347,7 @@ func (vb *vaBackend) createSlots() error {
 		s := &vb.slots[i]
 		var errs []error
 		for _, mod := range mods {
-			s.picture, err = vb.d.export(vb.coded[0], vb.coded[1], dmabuf.FormatNV12, []uint64{mod}, encodeUse)
+			s.picture, err = vb.d.export(vb.coded[0], vb.coded[1], fourcc.NV12, []fourcc.Modifier{mod}, encodeUse)
 			if err == nil {
 				break
 			}
@@ -378,18 +379,18 @@ func (vb *vaBackend) importPicture(b dmabuf.Buffer) (uint32, error) {
 	if err := errors.Join(errSize, errFD); err != nil {
 		return va.InvalidID, fmt.Errorf("gpu: the encoder picture's dmabuf (fd %d, %d bytes): %w", b.Planes[0].FD, size, err)
 	}
-	layer := va.DRMPRIMESurfaceDescriptorLayers{DrmFormat: va.FourccNV12, NumPlanes: count(b.Planes)}
+	layer := va.DRMPRIMESurfaceDescriptorLayers{DrmFormat: uint32(b.Format), NumPlanes: count(b.Planes)}
 	for i, p := range b.Planes {
 		layer.Offset[i], layer.Pitch[i] = p.Offset, p.Stride
 	}
 	desc := va.DRMPRIMESurfaceDescriptor{
 		Fourcc: va.FourccNV12, Width: intconv.Must[uint32](b.Width), Height: intconv.Must[uint32](b.Height),
-		NumObjects: 1, Objects: [4]va.DRMPRIMESurfaceDescriptorObjects{{Fd: fd, Size: bytes, DrmFormatModifier: b.Modifier}},
+		NumObjects: 1, Objects: [4]va.DRMPRIMESurfaceDescriptorObjects{{Fd: fd, Size: bytes, DrmFormatModifier: uint64(b.Modifier)}},
 		NumLayers: 1, Layers: [4]va.DRMPRIMESurfaceDescriptorLayers{layer},
 	}
 	id, err := vb.dpy.ImportSurface(&desc)
 	if err != nil {
-		return va.InvalidID, fmt.Errorf("gpu: import the encoder picture (%dx%d, modifier %#x, planes %+v): %w", b.Width, b.Height, b.Modifier, b.Planes, err)
+		return va.InvalidID, fmt.Errorf("gpu: import the encoder picture (%dx%d, modifier %s, planes %+v): %w", b.Width, b.Height, b.Modifier, b.Planes, err)
 	}
 	return id, nil
 }

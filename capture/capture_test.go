@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/stubbedev/lys-lib/fourcc"
 	"github.com/stubbedev/lys-lib/third_party/wayland/wl"
 	"github.com/stubbedev/lys-lib/wlr"
 )
@@ -118,13 +119,13 @@ func TestFrameImageRejects(t *testing.T) {
 }
 
 func TestFormatFourccRoundTrip(t *testing.T) {
-	if FormatFromFourcc(0x34325258) != FormatXRGB8888 || FormatXRGB8888.Fourcc() != 0x34325258 {
+	if FormatFromFourcc(fourcc.XRGB8888) != FormatXRGB8888 || FormatXRGB8888.Fourcc() != fourcc.XRGB8888 {
 		t.Fatal("XR24 does not map to the legacy xrgb8888 code and back")
 	}
-	if FormatFromFourcc(0x34325241) != FormatARGB8888 || FormatARGB8888.Fourcc() != 0x34325241 {
+	if FormatFromFourcc(fourcc.ARGB8888) != FormatARGB8888 || FormatARGB8888.Fourcc() != fourcc.ARGB8888 {
 		t.Fatal("AR24 does not map to the legacy argb8888 code and back")
 	}
-	if FormatFromFourcc(uint32(FormatXBGR8888)) != FormatXBGR8888 {
+	if FormatFromFourcc(fourcc.XBGR8888) != FormatXBGR8888 {
 		t.Fatal("a fourcc-coded format changed in the mapping")
 	}
 	if got := FormatXRGB8888.String(); got != "XR24" {

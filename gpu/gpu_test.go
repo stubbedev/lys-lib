@@ -14,7 +14,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
-	"github.com/stubbedev/lys-lib/dmabuf"
+	"github.com/stubbedev/lys-lib/fourcc"
 	"github.com/stubbedev/lys-lib/gputest"
 	"github.com/stubbedev/lys-lib/third_party/vk"
 )
@@ -50,7 +50,7 @@ func exportingDevice(t testing.TB) *Device {
 	t.Helper()
 	d := openDevice(t)
 	if !d.Exports() {
-		if _, err := d.NewTarget(4, 4, dmabuf.FormatARGB8888, []uint64{0}); !errors.Is(err, ErrNoDmabuf) {
+		if _, err := d.NewTarget(4, 4, fourcc.ARGB8888, []fourcc.Modifier{0}); !errors.Is(err, ErrNoDmabuf) {
 			t.Fatalf("NewTarget on a device without dmabuf export: %v, want ErrNoDmabuf", err)
 		}
 		t.Skipf("%s does not export dmabufs", d.Name())
@@ -62,11 +62,11 @@ func exportingDevice(t testing.TB) *Device {
 // and what the GPU writes into it reads back.
 func TestTargetClearsAndReadsBack(t *testing.T) {
 	d := exportingDevice(t)
-	mods, err := d.Modifiers(dmabuf.FormatARGB8888)
+	mods, err := d.Modifiers(fourcc.ARGB8888)
 	if err != nil || len(mods) == 0 {
 		t.Fatalf("modifiers %v, %v", mods, err)
 	}
-	tg, err := d.NewTarget(64, 32, dmabuf.FormatARGB8888, mods)
+	tg, err := d.NewTarget(64, 32, fourcc.ARGB8888, mods)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -97,17 +97,17 @@ func TestTargetClearsAndReadsBack(t *testing.T) {
 // A size or format the device cannot target fails at once.
 func TestNewTargetRejectsBadRequests(t *testing.T) {
 	d := exportingDevice(t)
-	mods, _ := d.Modifiers(dmabuf.FormatARGB8888)
-	if _, err := d.NewTarget(0, 10, dmabuf.FormatARGB8888, mods); err == nil {
+	mods, _ := d.Modifiers(fourcc.ARGB8888)
+	if _, err := d.NewTarget(0, 10, fourcc.ARGB8888, mods); err == nil {
 		t.Error("a zero-width target was made")
 	}
-	if _, err := d.NewTarget(10, 10, 0x3231564e, mods); err == nil {
+	if _, err := d.NewTarget(10, 10, fourcc.NV12, mods); err == nil {
 		t.Error("an NV12 target was made")
 	}
-	if _, err := d.NewTarget(10, 10, dmabuf.FormatARGB8888, nil); err == nil {
+	if _, err := d.NewTarget(10, 10, fourcc.ARGB8888, nil); err == nil {
 		t.Error("a target with no modifier was made")
 	}
-	if _, err := d.NewTarget(d.maxDim+1, 10, dmabuf.FormatARGB8888, mods); err == nil || !strings.Contains(err.Error(), strconv.Itoa(d.maxDim+1)) {
+	if _, err := d.NewTarget(d.maxDim+1, 10, fourcc.ARGB8888, mods); err == nil || !strings.Contains(err.Error(), strconv.Itoa(d.maxDim+1)) {
 		t.Errorf("a target wider than any modifier exports: %v, want an error naming its size", err)
 	}
 }
@@ -132,27 +132,27 @@ func TestDeviceCloseClosesTargets(t *testing.T) {
 // one, naming both lists; XRGB8888 allocates as ARGB8888 does (#330).
 func TestTargetModifiersMeetTheDevices(t *testing.T) {
 	d := exportingDevice(t)
-	mods, err := d.Modifiers(dmabuf.FormatXRGB8888)
+	mods, err := d.Modifiers(fourcc.XRGB8888)
 	if err != nil || len(mods) == 0 {
 		t.Fatalf("modifiers %v, %v", mods, err)
 	}
-	const unknown = 0x0abc000000000001
-	tg, err := d.NewTarget(16, 8, dmabuf.FormatXRGB8888, []uint64{unknown, mods[0]})
+	const unknown fourcc.Modifier = 0x0abc000000000001
+	tg, err := d.NewTarget(16, 8, fourcc.XRGB8888, []fourcc.Modifier{unknown, mods[0]})
 	if err != nil {
 		t.Fatalf("a list holding one supported modifier: %v", err)
 	}
-	if b := tg.Dmabuf(); b.Modifier != mods[0] || b.Format != dmabuf.FormatXRGB8888 || len(b.Planes) != 1 {
-		t.Errorf("allocated %#x in %#08x with %d planes, want %#x in XRGB8888", b.Modifier, b.Format, len(b.Planes), mods[0])
+	if b := tg.Dmabuf(); b.Modifier != mods[0] || b.Format != fourcc.XRGB8888 || len(b.Planes) != 1 {
+		t.Errorf("allocated %s in %s with %d planes, want %s in XRGB8888", b.Modifier, b.Format, len(b.Planes), mods[0])
 	}
 	tg.Close()
-	if slices.Contains(mods, dmabuf.ModifierLinear) {
-		tg, err := d.NewTarget(16, 8, dmabuf.FormatARGB8888, []uint64{dmabuf.ModifierLinear})
-		if err != nil || tg.Dmabuf().Modifier != dmabuf.ModifierLinear {
+	if slices.Contains(mods, fourcc.Linear) {
+		tg, err := d.NewTarget(16, 8, fourcc.ARGB8888, []fourcc.Modifier{fourcc.Linear})
+		if err != nil || tg.Dmabuf().Modifier != fourcc.Linear {
 			t.Fatalf("linear on offer: %v", err)
 		}
 		tg.Close()
 	}
-	if _, err := d.NewTarget(16, 8, dmabuf.FormatARGB8888, []uint64{dmabuf.ModifierInvalid}); err == nil || !strings.Contains(err.Error(), "none of the modifiers") {
+	if _, err := d.NewTarget(16, 8, fourcc.ARGB8888, []fourcc.Modifier{fourcc.Invalid}); err == nil || !strings.Contains(err.Error(), "none of the modifiers") {
 		t.Errorf("an implicit-only list: %v, want an error naming the lists", err)
 	}
 }
@@ -212,30 +212,30 @@ func TestOpenNode(t *testing.T) {
 // refuses a list with none it can, closing with the device (#335).
 func TestBufferExportsWithoutRendering(t *testing.T) {
 	d := exportingDevice(t)
-	mods, err := d.ExportModifiers(dmabuf.FormatXRGB8888)
+	mods, err := d.ExportModifiers(fourcc.XRGB8888)
 	if err != nil || len(mods) == 0 {
 		t.Fatalf("export modifiers %v, %v", mods, err)
 	}
-	render, _ := d.Modifiers(dmabuf.FormatXRGB8888)
-	t.Logf("%s: export %#x, render %#x", d.Name(), mods, render)
-	if strings.Contains(d.Name(), "NVIDIA") && !slices.Contains(mods, dmabuf.ModifierLinear) {
-		t.Errorf("NVIDIA exports no linear XRGB8888 buffer: %#x", mods)
+	render, _ := d.Modifiers(fourcc.XRGB8888)
+	t.Logf("%s: export %v, render %v", d.Name(), mods, render)
+	if strings.Contains(d.Name(), "NVIDIA") && !slices.Contains(mods, fourcc.Linear) {
+		t.Errorf("NVIDIA exports no linear XRGB8888 buffer: %v", mods)
 	}
 	for _, m := range mods {
-		b, err := d.NewBuffer(64, 16, dmabuf.FormatXRGB8888, []uint64{m})
+		b, err := d.NewBuffer(64, 16, fourcc.XRGB8888, []fourcc.Modifier{m})
 		if err != nil {
-			t.Fatalf("modifier %#x: %v", m, err)
+			t.Fatalf("modifier %s: %v", m, err)
 		}
-		if buf := b.Dmabuf(); buf.Modifier != m || len(buf.Planes) != 1 || buf.Format != dmabuf.FormatXRGB8888 || (m == dmabuf.ModifierLinear && buf.Planes[0].Stride < 64*4) {
-			t.Errorf("modifier %#x: allocated %+v", m, buf)
+		if buf := b.Dmabuf(); buf.Modifier != m || len(buf.Planes) != 1 || buf.Format != fourcc.XRGB8888 || (m == fourcc.Linear && buf.Planes[0].Stride < 64*4) {
+			t.Errorf("modifier %s: allocated %+v", m, buf)
 		}
 		b.Close()
 		b.Close()
 	}
-	if _, err := d.NewBuffer(16, 8, dmabuf.FormatXRGB8888, []uint64{dmabuf.ModifierInvalid}); err == nil || !strings.Contains(err.Error(), "none of the modifiers") {
+	if _, err := d.NewBuffer(16, 8, fourcc.XRGB8888, []fourcc.Modifier{fourcc.Invalid}); err == nil || !strings.Contains(err.Error(), "none of the modifiers") {
 		t.Errorf("an implicit-only list: %v, want an error naming the lists", err)
 	}
-	if _, err := d.NewBuffer(16, 8, dmabuf.FormatXRGB8888, []uint64{mods[0]}); err != nil {
+	if _, err := d.NewBuffer(16, 8, fourcc.XRGB8888, []fourcc.Modifier{mods[0]}); err != nil {
 		t.Fatal(err)
 	}
 	d.Close()

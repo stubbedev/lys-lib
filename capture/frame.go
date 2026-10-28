@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"image"
 
+	"github.com/stubbedev/lys-lib/fourcc"
 	"github.com/stubbedev/lys-lib/third_party/wayland/wl"
 )
 
@@ -30,34 +31,28 @@ const (
 	FormatBGR888      Format = wl.ShmFormatBgr888
 )
 
-// DRM fourccs of the two formats wl_shm spells with legacy codes.
-const (
-	fourccARGB8888 = 0x34325241 // 'AR24'
-	fourccXRGB8888 = 0x34325258 // 'XR24'
-)
-
-// FormatFromFourcc maps a DRM fourcc (a dmabuf format) to the wl_shm
+// FormatFromFourcc maps a DRM format (a dmabuf's) to the wl_shm
 // format code of the same memory layout.
-func FormatFromFourcc(fourcc uint32) Format {
-	switch fourcc {
-	case fourccARGB8888:
+func FormatFromFourcc(drm fourcc.Format) Format {
+	switch drm {
+	case fourcc.ARGB8888:
 		return FormatARGB8888
-	case fourccXRGB8888:
+	case fourcc.XRGB8888:
 		return FormatXRGB8888
 	}
-	return Format(fourcc)
+	return Format(drm)
 }
 
-// Fourcc is the DRM fourcc of the format, the inverse of
+// Fourcc is the DRM format of the format, the inverse of
 // FormatFromFourcc.
-func (f Format) Fourcc() uint32 {
+func (f Format) Fourcc() fourcc.Format {
 	switch f {
 	case FormatARGB8888:
-		return fourccARGB8888
+		return fourcc.ARGB8888
 	case FormatXRGB8888:
-		return fourccXRGB8888
+		return fourcc.XRGB8888
 	}
-	return uint32(f)
+	return fourcc.Format(f)
 }
 
 // BytesPerPixel is the pixel size of a supported format, 0 for the
@@ -87,8 +82,7 @@ func (f Format) hasAlpha() bool {
 }
 
 func (f Format) String() string {
-	b := f.Fourcc()
-	s := binary.LittleEndian.AppendUint32(nil, b)
+	s := binary.LittleEndian.AppendUint32(nil, uint32(f.Fourcc()))
 	for _, c := range s {
 		if c < 0x20 || c > 0x7e {
 			return fmt.Sprintf("format(%#x)", uint32(f))

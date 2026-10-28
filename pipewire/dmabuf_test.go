@@ -7,11 +7,12 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/stubbedev/lys-lib/fourcc"
 	"github.com/stubbedev/lys-lib/pipewire/pwtest"
 )
 
 func TestObjectPropFindsTheModifier(t *testing.T) {
-	mod := uint64(0x00ffffffffffffff)
+	mod := fourcc.Invalid
 	if objectProp(formatPod(8, 8, 30, VideoBGRx, &mod), formatVideoModifier) == nil {
 		t.Error("a dmabuf format lost its modifier")
 	}
@@ -60,7 +61,7 @@ type gpuSource struct {
 	allocs, fills, released atomic.Int32
 }
 
-func (g *gpuSource) Modifier() uint64 { return 0 }
+func (g *gpuSource) Modifier() fourcc.Modifier { return fourcc.Linear }
 
 func (g *gpuSource) DmabufVideoFormat() VideoFormat { return VideoBGRx }
 
@@ -80,7 +81,7 @@ func (g *gpuSource) FillDmabuf(Dmabuf) ([]Rect, bool) {
 
 // streamTo runs src into a consumer offering modifier (nil: the plain
 // format) and returns the first non-empty buffer it received.
-func streamTo(t *testing.T, src Source, modifier *uint64) (consumed, *Producer) {
+func streamTo(t *testing.T, src Source, modifier *fourcc.Modifier) (consumed, *Producer) {
 	t.Helper()
 	pwtest.Start(t)
 	p, err := Start(Config{Application: testApplication, Name: testNode, Width: 64, Height: 32, Stride: 256, Format: VideoBGRx, FPS: 30, Source: src})
@@ -118,7 +119,7 @@ func streamTo(t *testing.T, src Source, modifier *uint64) (consumed, *Producer) 
 
 func TestADmabufSourceStreamsGPUBuffersToADmabufConsumer(t *testing.T) {
 	src := &gpuSource{solid: solid{0x11}}
-	mod := uint64(0)
+	mod := fourcc.Linear
 	f, p := streamTo(t, src, &mod)
 	if f.dataType != dataDmaBuf || f.fd < 0 || f.size != 256*32 {
 		t.Errorf("frame = %+v, want a %d-byte DmaBuf with its fd", f, 256*32)

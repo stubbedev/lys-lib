@@ -7,6 +7,7 @@ import (
 
 	"github.com/stubbedev/lys-lib/dmabuf"
 	"github.com/stubbedev/lys-lib/dmabufwl"
+	"github.com/stubbedev/lys-lib/fourcc"
 	"github.com/stubbedev/lys-lib/third_party/wayland/wl"
 	"github.com/stubbedev/lys-lib/wlr"
 )
@@ -14,11 +15,11 @@ import (
 // DmabufFormat is the dmabuf layout the compositor offers for an
 // output's screencopy frames: a DRM fourcc and the buffer size.
 type DmabufFormat struct {
-	Fourcc        uint32
+	Fourcc        fourcc.Format
 	Width, Height int
 	// Modifiers are the explicit modifiers the compositor imports
 	// Fourcc in, in its preference order: allocate in one of them.
-	Modifiers []uint64
+	Modifiers []fourcc.Modifier
 	// Device is the dev_t of the DRM device the compositor wants the
 	// buffer allocated on (gpu.OpenNode).
 	Device uint64
@@ -88,7 +89,7 @@ func (c *Client) DmabufFormat(o Output, cursor bool) (DmabufFormat, error) {
 		p.format.Device = fb.Device
 		p.format.Modifiers = slices.Clone(fb.Modifiers[p.format.Fourcc])
 		if len(p.format.Modifiers) == 0 {
-			return DmabufFormat{}, fmt.Errorf("%w: the compositor imports DRM format %#08x in no explicit modifier", ErrUnsupported, p.format.Fourcc)
+			return DmabufFormat{}, fmt.Errorf("%w: the compositor imports DRM format %s in no explicit modifier", ErrUnsupported, p.format.Fourcc)
 		}
 	}
 	c.dmabufProbe[o.wl] = p
@@ -156,7 +157,7 @@ func (c *Client) ImportDmabuf(d dmabuf.Buffer) (*DmabufBuffer, error) {
 	if err != nil {
 		return nil, fmt.Errorf("capture: dmabuf %dx%d: %w", d.Width, d.Height, err)
 	}
-	if err := params.Create(size[0], size[1], d.Format, 0); err != nil {
+	if err := params.Create(size[0], size[1], uint32(d.Format), 0); err != nil {
 		return nil, fmt.Errorf("capture: dmabuf create: %w", err)
 	}
 	if err := c.roundtrip(); err != nil {

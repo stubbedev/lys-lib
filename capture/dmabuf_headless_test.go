@@ -13,6 +13,7 @@ import (
 
 	"github.com/stubbedev/lys-lib/capture"
 	"github.com/stubbedev/lys-lib/dmabuf"
+	"github.com/stubbedev/lys-lib/fourcc"
 	"github.com/stubbedev/lys-lib/gpu"
 	"github.com/stubbedev/lys-lib/udmabuf"
 	"github.com/stubbedev/lys-lib/wltest"
@@ -57,7 +58,7 @@ func TestHeadlessDmabufCapture(t *testing.T) {
 	if format.Width != int(out.Width) || format.Height != int(out.Height) {
 		t.Fatalf("dmabuf format %+v for a %dx%d output", format, out.Width, out.Height)
 	}
-	t.Logf("dmabuf format %#08x %dx%d on device %#x, modifiers %#x", format.Fourcc, format.Width, format.Height, format.Device, format.Modifiers)
+	t.Logf("dmabuf format %s %dx%d on device %#x, modifiers %v", format.Fourcc, format.Width, format.Height, format.Device, format.Modifiers)
 	if len(format.Modifiers) == 0 || format.Device == 0 {
 		t.Fatalf("dmabuf format %+v names no modifiers or device; the compositor's feedback should (#339)", format)
 	}
@@ -77,7 +78,7 @@ func TestHeadlessDmabufCapture(t *testing.T) {
 		// never as a hang.
 		bad := captureClient(t)
 		_, err := bad.ImportDmabuf(dmabuf.Buffer{
-			Width: format.Width, Height: format.Height * 4, Format: dmabuf.FormatXRGB8888,
+			Width: format.Width, Height: format.Height * 4, Format: fourcc.XRGB8888,
 			Planes: []dmabuf.Plane{{FD: fd, Stride: uint32(stride)}},
 		})
 		if err == nil {
@@ -192,15 +193,15 @@ func TestHeadlessDmabufCaptureIntoGPUBuffer(t *testing.T) {
 	defer d.Close()
 	buf, err := d.NewBuffer(format.Width, format.Height, format.Fourcc, format.Modifiers)
 	if err != nil {
-		t.Fatalf("a %s buffer in one of the compositor's modifiers %#x: %v", d.Name(), format.Modifiers, err)
+		t.Fatalf("a %s buffer in one of the compositor's modifiers %v: %v", d.Name(), format.Modifiers, err)
 	}
 	defer buf.Close()
 	imported, err := c.ImportDmabuf(buf.Dmabuf())
 	if err != nil {
-		t.Fatalf("import the %s buffer in modifier %#x: %v", d.Name(), buf.Dmabuf().Modifier, err)
+		t.Fatalf("import the %s buffer in modifier %s: %v", d.Name(), buf.Dmabuf().Modifier, err)
 	}
 	defer imported.Destroy()
-	t.Logf("%s buffer in modifier %#x", d.Name(), buf.Dmabuf().Modifier)
+	t.Logf("%s buffer in modifier %s", d.Name(), buf.Dmabuf().Modifier)
 	wltest.Eventually(t, "red frame in the GPU buffer", func() error {
 		if err := c.CopyOutputDmabuf(out, false, imported); err != nil {
 			return err

@@ -4,6 +4,8 @@ import (
 	"encoding/binary"
 	"slices"
 	"testing"
+
+	"github.com/stubbedev/lys-lib/fourcc"
 )
 
 func TestClampDamage(t *testing.T) {
@@ -53,7 +55,7 @@ func TestPodLayout(t *testing.T) {
 		t.Errorf("object = %x", obj)
 	}
 	// A dmabuf format carries the modifier, mandatory.
-	mod := uint64(0x00ffffffffffffff)
+	mod := fourcc.Invalid
 	if a, b := formatPod(1, 1, 30, VideoBGRx, nil), formatPod(1, 1, 30, VideoBGRx, &mod); len(b) != len(a)+8+16 {
 		t.Errorf("modifier prop size: %d vs %d", len(b), len(a))
 	}

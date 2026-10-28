@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image"
 
+	"github.com/stubbedev/lys-lib/fourcc"
 	"github.com/stubbedev/lys-lib/third_party/wayland/wl"
 	"github.com/stubbedev/lys-lib/wlr"
 )
@@ -48,8 +49,8 @@ func (s *copyState) buffer(format, width, height, stride uint32) {
 	s.shm = &shmParams{width: int(width), height: int(height), stride: int(stride), format: Format(format)}
 }
 
-func (s *copyState) linuxDmabuf(fourcc, width, height uint32) {
-	s.dmabuf = &DmabufFormat{Fourcc: fourcc, Width: int(width), Height: int(height)}
+func (s *copyState) linuxDmabuf(format, width, height uint32) {
+	s.dmabuf = &DmabufFormat{Fourcc: fourcc.Format(format), Width: int(width), Height: int(height)}
 }
 
 func (s *copyState) addDamage(x, y, w, h uint32) {

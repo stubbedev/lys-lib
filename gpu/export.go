@@ -10,6 +10,7 @@ import (
 	"unsafe"
 
 	"github.com/stubbedev/lys-lib/dmabuf"
+	"github.com/stubbedev/lys-lib/fourcc"
 	"github.com/stubbedev/lys-lib/internal/intconv"
 	"github.com/stubbedev/lys-lib/third_party/vk"
 )
@@ -50,7 +51,7 @@ var (
 // and exports as a dmabuf, with the format's own planes. Modifiers with
 // an auxiliary plane (Intel CCS, AMD DCC) are left out: an exported
 // image carries only its format's planes.
-func (d *Device) modifiers(format uint32, use exportUse) ([]uint64, error) {
+func (d *Device) modifiers(format fourcc.Format, use exportUse) ([]fourcc.Modifier, error) {
 	if !d.exports {
 		return nil, ErrNoDmabuf
 	}
@@ -67,13 +68,14 @@ func (d *Device) modifiers(format uint32, use exportUse) ([]uint64, error) {
 		d.cmds.GetPhysicalDeviceFormatProperties2(d.phys, vf, &props)
 	}
 	runtime.KeepAlive(&list)
-	var out []uint64
+	var out []fourcc.Modifier
 	for _, m := range all[:list.DrmFormatModifierCount] {
 		if int(m.DrmFormatModifierPlaneCount) != planes || m.DrmFormatModifierTilingFeatures&use.features != use.features {
 			continue
 		}
-		if _, ok := d.exportable(vf, m.DrmFormatModifier, use.usage); ok {
-			out = append(out, m.DrmFormatModifier)
+		mod := fourcc.Modifier(m.DrmFormatModifier)
+		if _, ok := d.exportable(vf, mod, use.usage); ok {
+			out = append(out, mod)
 		}
 	}
 	return out, nil
@@ -82,9 +84,9 @@ func (d *Device) modifiers(format uint32, use exportUse) ([]uint64, error) {
 // exportable reports whether an image of vf in modifier mod, made for
 // usage, exports its memory as a dmabuf, and the largest such image:
 // what a modifier's format features alone do not promise.
-func (d *Device) exportable(vf vk.Format, mod uint64, usage vk.ImageUsageFlags) (vk.Extent3D, bool) {
+func (d *Device) exportable(vf vk.Format, mod fourcc.Modifier, usage vk.ImageUsageFlags) (vk.Extent3D, bool) {
 	modInfo := vk.PhysicalDeviceImageDrmFormatModifierInfoEXT{
-		SType: vk.StructureTypePhysicalDeviceImageDrmFormatModifierInfoExt, DrmFormatModifier: mod, SharingMode: vk.SharingModeExclusive,
+		SType: vk.StructureTypePhysicalDeviceImageDrmFormatModifierInfoExt, DrmFormatModifier: uint64(mod), SharingMode: vk.SharingModeExclusive,
 	}
 	ext := vk.PhysicalDeviceExternalImageFormatInfo{
 		SType: vk.StructureTypePhysicalDeviceExternalImageFormatInfo, PNext: (*uintptr)(unsafe.Pointer(&modInfo)),
@@ -120,7 +122,7 @@ type exported struct {
 // export allocates a width x height image in format for use whose
 // layout the driver picks among the offered modifiers the device has
 // for use; none in common is an error naming both lists.
-func (d *Device) export(width, height int, format uint32, offered []uint64, use exportUse) (exported, error) {
+func (d *Device) export(width, height int, format fourcc.Format, offered []fourcc.Modifier, use exportUse) (exported, error) {
 	if err := d.checkSize(width, height); err != nil {
 		return exported{}, err
 	}
@@ -138,7 +140,7 @@ func (d *Device) export(width, height int, format uint32, offered []uint64, use 
 	if err != nil {
 		return exported{}, err
 	}
-	mods := slices.DeleteFunc(slices.Clone(offered), func(m uint64) bool {
+	mods := slices.DeleteFunc(slices.Clone(offered), func(m fourcc.Modifier) bool {
 		if !slices.Contains(supported, m) {
 			return true
 		}
@@ -146,7 +148,7 @@ func (d *Device) export(width, height int, format uint32, offered []uint64, use 
 		return width > int(limit.Width) || height > int(limit.Height)
 	})
 	if len(mods) == 0 {
-		return exported{}, fmt.Errorf("gpu: none of the modifiers %#x is one %s %s DRM format %#08x in at %dx%d (%#x)", offered, d.name, use.verb, format, width, height, supported)
+		return exported{}, fmt.Errorf("gpu: none of the modifiers %v is one %s %s DRM format %s in at %dx%d (%v)", offered, d.name, use.verb, format, width, height, supported)
 	}
 	var e exported
 	if err := e.create(d, width, height, vf, planes, mods, use.usage); err != nil {
@@ -159,7 +161,11 @@ func (d *Device) export(width, height int, format uint32, offered []uint64, use 
 
 // create makes the image in one of mods, its exportable memory and the
 // dmabuf describing its planes, each plane with an fd of its own.
-func (e *exported) create(d *Device, width, height int, vf vk.Format, planes int, mods []uint64, usage vk.ImageUsageFlags) error {
+func (e *exported) create(d *Device, width, height int, vf vk.Format, planes int, offered []fourcc.Modifier, usage vk.ImageUsageFlags) error {
+	mods := make([]uint64, len(offered))
+	for i, m := range offered {
+		mods[i] = uint64(m)
+	}
 	modList := vk.ImageDrmFormatModifierListCreateInfoEXT{
 		SType: vk.StructureTypeImageDrmFormatModifierListCreateInfoExt, DrmFormatModifierCount: count(mods), PDrmFormatModifiers: &mods[0],
 	}
@@ -208,14 +214,14 @@ func (e *exported) create(d *Device, width, height int, vf vk.Format, planes int
 		_ = syscall.Close(int(fd))
 		return fmt.Errorf("gpu: vkGetImageDrmFormatModifierPropertiesEXT: %d", r)
 	}
-	e.buf = dmabuf.Buffer{Width: width, Height: height, Modifier: mod.DrmFormatModifier}
+	e.buf = dmabuf.Buffer{Width: width, Height: height, Modifier: fourcc.Modifier(mod.DrmFormatModifier)}
 	var end vk.DeviceSize
 	for i := range planes {
 		sub := vk.ImageSubresource{AspectMask: vk.ImageAspectFlags(vk.ImageAspectMemoryPlane0BitExt << i)}
 		var lay vk.SubresourceLayout
 		d.cmds.GetImageSubresourceLayout(d.device, e.image, &sub, &lay)
 		if lay.Offset < end {
-			return fmt.Errorf("%w: %s lays memory plane %d of a modifier %#x image at %d, inside the plane before (to %d)", errPlanesOverlap, d.name, i, mod.DrmFormatModifier, lay.Offset, end)
+			return fmt.Errorf("%w: %s lays memory plane %d of a modifier %s image at %d, inside the plane before (to %d)", errPlanesOverlap, d.name, i, e.buf.Modifier, lay.Offset, end)
 		}
 		end = lay.Offset + lay.Size
 		offset, errOffset := intconv.To[uint32](lay.Offset)
@@ -272,19 +278,19 @@ type Buffer struct {
 // ExportModifiers are the single-plane DRM modifiers the device
 // allocates format in for a Buffer: what to intersect with the ones a
 // consumer imports before NewBuffer.
-func (d *Device) ExportModifiers(format uint32) ([]uint64, error) {
+func (d *Device) ExportModifiers(format fourcc.Format) ([]fourcc.Modifier, error) {
 	if _, err := vkFormatOf(format); err != nil {
 		return nil, err
 	}
 	return d.modifiers(format, shareUse)
 }
 
-// NewBuffer allocates a width x height Buffer in format (a DRM fourcc:
-// ARGB8888 or XRGB8888) whose layout the driver picks among offered,
-// the modifiers the consumer imports, that the device exports format
-// in (ExportModifiers). None in common, as with only the implicit
-// dmabuf.ModifierInvalid on offer, is an error naming both lists.
-func (d *Device) NewBuffer(width, height int, format uint32, offered []uint64) (*Buffer, error) {
+// NewBuffer allocates a width x height Buffer in format
+// (fourcc.ARGB8888 or XRGB8888) whose layout the driver picks among
+// offered, the modifiers the consumer imports, that the device exports
+// format in (ExportModifiers). None in common, as with only the
+// implicit fourcc.Invalid on offer, is an error naming both lists.
+func (d *Device) NewBuffer(width, height int, format fourcc.Format, offered []fourcc.Modifier) (*Buffer, error) {
 	if _, err := vkFormatOf(format); err != nil {
 		return nil, err
 	}
@@ -310,7 +316,7 @@ func (b *Buffer) ReadPixels() (*image.RGBA, error) {
 	}
 	d := b.d
 	w, h := b.e.buf.Width, b.e.buf.Height
-	return d.readPixels(w, h, b.e.buf.Format == dmabuf.FormatXRGB8888, func(cb vk.CommandBuffer, staging *buffer) {
+	return d.readPixels(w, h, b.e.buf.Format == fourcc.XRGB8888, func(cb vk.CommandBuffer, staging *buffer) {
 		fullBarrier(d, cb, b.e.image, vk.ImageLayoutGeneral, vk.ImageLayoutTransferSrcOptimal, vk.QueueFamilyForeignExt, d.family)
 		region := vk.BufferImageCopy{
 			ImageSubresource: vk.ImageSubresourceLayers{AspectMask: vk.ImageAspectFlags(vk.ImageAspectColorBit), LayerCount: 1},

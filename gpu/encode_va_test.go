@@ -10,7 +10,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stubbedev/lys-lib/dmabuf"
+	"github.com/stubbedev/lys-lib/fourcc"
 	"github.com/stubbedev/lys-lib/internal/va"
 	"github.com/stubbedev/lys-lib/third_party/vk"
 )
@@ -88,7 +88,7 @@ func TestVASurfaceHoldsTheConversion(t *testing.T) {
 				}
 				l := desc.Layers[0]
 				ours := vb.slots[0].picture.buf
-				t.Logf("the driver's %dx%d surface: modifier %#x, size %d, fourcc %#x, pitches %v, offsets %v; ours: modifier %#x, planes %+v",
+				t.Logf("the driver's %dx%d surface: modifier %#x, size %d, fourcc %#x, pitches %v, offsets %v; ours: modifier %s, planes %+v",
 					desc.Width, desc.Height, desc.Objects[0].DrmFormatModifier, desc.Objects[0].Size, l.DrmFormat, l.Pitch[:l.NumPlanes], l.Offset[:l.NumPlanes], ours.Modifier, ours.Planes)
 			}
 			col := color.RGBA{200, 50, 100, 255}
@@ -145,7 +145,7 @@ func TestVASurfaceHoldsTheConversion(t *testing.T) {
 // the planes over each other.
 func TestNV12PicturesExport(t *testing.T) {
 	d := exportingDevice(t)
-	mods, err := d.modifiers(dmabuf.FormatNV12, encodeUse)
+	mods, err := d.modifiers(fourcc.NV12, encodeUse)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -153,23 +153,23 @@ func TestNV12PicturesExport(t *testing.T) {
 		t.Skipf("%s exports no NV12 pictures", d.Name())
 	}
 	for _, mod := range mods {
-		e, err := d.export(330, 240, dmabuf.FormatNV12, []uint64{mod}, encodeUse)
+		e, err := d.export(330, 240, fourcc.NV12, []fourcc.Modifier{mod}, encodeUse)
 		if errors.Is(err, errPlanesOverlap) {
-			t.Logf("modifier %#x: %v", mod, err)
+			t.Logf("modifier %s: %v", mod, err)
 			continue
 		}
 		if err != nil {
-			t.Fatalf("modifier %#x: %v", mod, err)
+			t.Fatalf("modifier %s: %v", mod, err)
 		}
 		b := e.buf
 		e.close(d)
 		if len(b.Planes) != 2 || b.Modifier != mod {
-			t.Fatalf("modifier %#x: a %#x picture of %d planes", mod, b.Modifier, len(b.Planes))
+			t.Fatalf("modifier %s: a %s picture of %d planes", mod, b.Modifier, len(b.Planes))
 		}
 		if b.Planes[0].Stride < 330 || b.Planes[1].Stride < 330 || b.Planes[1].Offset < b.Planes[0].Stride*240 {
-			t.Errorf("modifier %#x: planes %+v do not hold 330x240 NV12", mod, b.Planes)
+			t.Errorf("modifier %s: planes %+v do not hold 330x240 NV12", mod, b.Planes)
 		}
-		t.Logf("modifier %#x: planes %+v", mod, b.Planes)
+		t.Logf("modifier %s: planes %+v", mod, b.Planes)
 	}
 }
 

@@ -25,7 +25,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/stubbedev/lys-lib/debug"
-	"github.com/stubbedev/lys-lib/dmabuf"
+	"github.com/stubbedev/lys-lib/fourcc"
 	"github.com/stubbedev/lys-lib/third_party/vk"
 )
 
@@ -338,14 +338,14 @@ func (d *Device) open() error {
 // extensions and modifiers and still fail every export (lavapipe
 // without /dev/udmabuf), which only an export shows.
 func (d *Device) proveExport() error {
-	mods, err := d.modifiers(dmabuf.FormatARGB8888, shareUse)
+	mods, err := d.modifiers(fourcc.ARGB8888, shareUse)
 	if err != nil {
 		return err
 	}
 	if len(mods) == 0 {
 		return fmt.Errorf("%s exports ARGB8888 in no modifier", d.name)
 	}
-	e, err := d.export(1, 1, dmabuf.FormatARGB8888, mods, shareUse)
+	e, err := d.export(1, 1, fourcc.ARGB8888, mods, shareUse)
 	if err != nil {
 		return fmt.Errorf("%s cannot export a dmabuf: %w", d.name, err)
 	}
