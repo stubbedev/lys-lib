@@ -248,3 +248,15 @@ func TestPropertiesReadTheSameTwice(t *testing.T) {
 		t.Fatalf("CRTC %d properties %v, then %v", res.CRTCs[0], first, second)
 	}
 }
+
+func TestParseModeReadsWhatBytesWrites(t *testing.T) {
+	want := drm.Mode{Clock: 148500, HDisplay: 1920, HSyncStart: 2008, HSyncEnd: 2052, HTotal: 2200, VDisplay: 1080, VSyncStart: 1084, VSyncEnd: 1089, VTotal: 1125, VRefresh: 60, Type: 1 << 3}
+	copy(want.Name[:], "1920x1080")
+	got, err := drm.ParseMode(want.Bytes())
+	if err != nil || got != want {
+		t.Fatalf("ParseMode(Bytes()) = %+v, %v; want %+v", got, err, want)
+	}
+	if _, err := drm.ParseMode(want.Bytes()[:67]); err == nil {
+		t.Fatal("a short mode blob parsed")
+	}
+}

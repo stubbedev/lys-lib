@@ -260,6 +260,20 @@ func (m Mode) Bytes() []byte {
 	return b
 }
 
+// ParseMode reads a struct drm_mode_modeinfo in native byte order, the
+// payload of a MODE_ID property blob, as Bytes writes it. It fails when
+// data is not exactly one mode long.
+func ParseMode(data []byte) (Mode, error) {
+	var m Mode
+	if size := binary.Size(m); len(data) != size {
+		return Mode{}, fmt.Errorf("drm: a mode blob of %d bytes, not %d", len(data), size)
+	}
+	if _, err := binary.Decode(data, binary.NativeEndian, &m); err != nil {
+		return Mode{}, fmt.Errorf("drm: decode a mode blob: %w", err)
+	}
+	return m, nil
+}
+
 // Connection is a connector's state, as the kernel's enum
 // drm_connector_status.
 type Connection uint32
