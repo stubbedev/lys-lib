@@ -37,6 +37,7 @@ where the system provides the API: libvulkan.
 | `intconv` | Integer conversions without silent wraparound: checked, panicking, saturating, durations, and two's-complement bit reinterpretation |
 | `atomicfile` | Replaces a file whole and durably: a synced temporary renamed over the target, then the directory synced |
 | `xdg` | The XDG base directories (runtime included), an app's directory under each, and the user directories of `user-dirs.dirs` |
+| `peercred` | The uid of the process at a Unix socket's other end, from SO_PEERCRED |
 | `debug` | The compile-time trace facility (build tag `lysdebug`, categories in `LYS_DEBUG`) |
 | `golden`, `gputest`, `wltest`, `pipewire/pwtest`, `dbustest`, `sockdir` | Test support: golden images, the GPU test driver, Wayland test clients, a private PipeWire daemon with libpipewire consumers, private D-Bus daemons, and directories short enough for Unix sockets |
 
