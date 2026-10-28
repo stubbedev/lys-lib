@@ -252,3 +252,39 @@ func TestExportRefusesASetterWithoutAGetter(t *testing.T) {
 		t.Errorf("Export = %v, want an error naming Ghost", err)
 	}
 }
+
+// An interface Export refuses leaves nothing at the path, not even the
+// interfaces given before it.
+func TestExportIsAllOrNothing(t *testing.T) {
+	bus := dbustest.Start(t)
+	server, client := bus.Conn(t), bus.Conn(t)
+	const bad = dbus.ObjectPath("/dev/stubbe/lys/Half")
+	for _, tc := range []struct {
+		what   string
+		second dbusx.Interface
+	}{
+		{"a setter without a getter", dbusx.Interface{Name: "dev.stubbe.lys.Other1", Methods: other{}, Setters: dbusx.Setters{"Ghost": func(dbus.Variant) *dbus.Error { return nil }}}},
+		{"a signal of another interface", dbusx.Interface{Name: "dev.stubbe.lys.Other1", Methods: other{}, Signals: []dbusx.SignalDecl{dbusx.NewSignal[struct{}](iface, "Stray")}}},
+		{"a repeated interface", dbusx.Interface{Name: iface, Methods: other{}}},
+		{"a Properties interface", dbusx.Interface{Name: "org.freedesktop.DBus.Properties", Methods: other{}}},
+	} {
+		what := tc.what
+		if _, err := dbusx.Export(server, bad, dbusx.Interface{Name: iface, Methods: echo{}}, tc.second); err == nil {
+			t.Fatalf("%s: Export succeeded", what)
+		}
+		obj := client.Object(server.Names()[0], bad)
+		if err := obj.Call(iface+".Echo", 0, "hi").Err; !isDBusError(err, dbusx.ErrUnknownIface) {
+			t.Errorf("%s: Echo after a refused Export = %v, want UnknownInterface", what, err)
+		}
+		if err := obj.Call("org.freedesktop.DBus.Properties.GetAll", 0, iface).Err; !isDBusError(err, dbusx.ErrUnknownIface) {
+			t.Errorf("%s: GetAll after a refused Export = %v, want UnknownInterface", what, err)
+		}
+		var xml string
+		if err := obj.Call("org.freedesktop.DBus.Introspectable.Introspect", 0).Store(&xml); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(xml, iface) {
+			t.Errorf("%s: introspection after a refused Export lists %s:\n%s", what, iface, xml)
+		}
+	}
+}

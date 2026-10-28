@@ -26,6 +26,13 @@ const (
 	ErrPropertyRO      = "org.freedesktop.DBus.Error.PropertyReadOnly"
 )
 
+// The interfaces Export serves itself at each path, for all of the
+// path's interfaces.
+const (
+	propertiesIface     = "org.freedesktop.DBus.Properties"
+	introspectableIface = "org.freedesktop.DBus.Introspectable"
+)
+
 // Failed is fdo::Error::Failed(msg).
 func Failed(msg string) *dbus.Error { return dbus.NewError(ErrFailed, []any{msg}) }
 
@@ -133,26 +140,55 @@ type Interface struct {
 // all of their properties and introspection listing them all, as zbus's
 // object_server().at does for each interface it mounts at a path. The
 // returned unexport removes them again (a Request or Session object
-// ending).
+// ending). Export is all or nothing: every interface is checked before
+// any is exported, and a failure leaves none of them at path.
 func Export(conn *dbus.Conn, path dbus.ObjectPath, ifaces ...Interface) (unexport func(), err error) {
-	props := &properties{ifaces: map[string]Getters{}, setters: map[string]Setters{}}
+	objects, err := objectsAt(path, ifaces)
+	if err != nil {
+		return nil, err
+	}
+	for i, o := range objects {
+		if err := conn.Export(o.methods, path, o.iface); err != nil {
+			unexportAll(conn, path, objects[:i])
+			return nil, fmt.Errorf("export %s at %s: %w", o.iface, path, err)
+		}
+	}
+	for _, iface := range ifaces {
+		if len(iface.Ordered) > 0 {
+			conn.DispatchInOrder(iface.Name, iface.Ordered...)
+		}
+	}
+	return func() { unexportAll(conn, path, objects) }, nil
+}
+
+// exported is one interface's methods as Export hands them to the
+// connection.
+type exported struct {
+	iface   string
+	methods any
+}
+
+// objectsAt checks ifaces and builds what Export puts at path: each
+// interface's methods, then the Properties and Introspectable objects
+// that answer for all of them.
+func objectsAt(path dbus.ObjectPath, ifaces []Interface) ([]exported, error) {
+	props := &properties{ifaces: make(map[string]Getters, len(ifaces)), setters: make(map[string]Setters, len(ifaces))}
 	node := introspect.Node{Name: string(path), Interfaces: []introspect.Interface{
 		introspect.IntrospectData,
-		{Name: "org.freedesktop.DBus.Properties", Methods: introspect.Methods(props)},
+		{Name: propertiesIface, Methods: introspect.Methods(props)},
 	}}
-	names := []string{"org.freedesktop.DBus.Properties", "org.freedesktop.DBus.Introspectable"}
+	objects := make([]exported, 0, len(ifaces)+2)
 	for _, iface := range ifaces {
+		if iface.Name == propertiesIface || iface.Name == introspectableIface {
+			return nil, fmt.Errorf("export %s at %s: Export serves that interface itself", iface.Name, path)
+		}
+		if _, dup := props.ifaces[iface.Name]; dup {
+			return nil, fmt.Errorf("export %s at %s: the interface is given twice", iface.Name, path)
+		}
 		signals, err := introspectSignals(iface)
 		if err != nil {
 			return nil, err
 		}
-		if err := conn.Export(iface.Methods, path, iface.Name); err != nil {
-			return nil, fmt.Errorf("export %s: %w", iface.Name, err)
-		}
-		if len(iface.Ordered) > 0 {
-			conn.DispatchInOrder(iface.Name, iface.Ordered...)
-		}
-		names = append(names, iface.Name)
 		for name := range iface.Setters {
 			if _, ok := iface.Properties[name]; !ok {
 				return nil, fmt.Errorf("export %s: setter for %s, which has no getter", iface.Name, name)
@@ -161,18 +197,19 @@ func Export(conn *dbus.Conn, path dbus.ObjectPath, ifaces ...Interface) (unexpor
 		props.ifaces[iface.Name] = iface.Properties
 		props.setters[iface.Name] = iface.Setters
 		node.Interfaces = append(node.Interfaces, introspect.Interface{Name: iface.Name, Methods: introspect.Methods(iface.Methods), Signals: signals})
+		objects = append(objects, exported{iface: iface.Name, methods: iface.Methods})
 	}
-	if err := conn.Export(props, path, "org.freedesktop.DBus.Properties"); err != nil {
-		return nil, fmt.Errorf("export %s properties: %w", path, err)
+	return append(objects,
+		exported{iface: propertiesIface, methods: props},
+		exported{iface: introspectableIface, methods: lazyIntrospectable{node: node, ifaces: ifaces}},
+	), nil
+}
+
+// unexportAll takes objects off path again.
+func unexportAll(conn *dbus.Conn, path dbus.ObjectPath, objects []exported) {
+	for _, o := range objects {
+		_ = conn.Export(nil, path, o.iface)
 	}
-	if err := conn.Export(lazyIntrospectable{node: node, ifaces: ifaces}, path, "org.freedesktop.DBus.Introspectable"); err != nil {
-		return nil, fmt.Errorf("export %s introspection: %w", path, err)
-	}
-	return func() {
-		for _, name := range names {
-			_ = conn.Export(nil, path, name)
-		}
-	}, nil
 }
 
 // Serve exports s on conn and takes its well-known name; the returned
