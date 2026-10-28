@@ -31,6 +31,7 @@ where the system provides the API: libvulkan.
 | `pipewire` | The ScreenCast video producer: a node over PipeWire's native protocol, no libpipewire |
 | `eis` | An EIS server: the receiving end of libei, replaying what a remote-desktop client emulates |
 | `dbusx`, `third_party/godbus` | D-Bus services: interfaces with live properties, setters and on-demand introspection, well-known names and owner watches, on a patched godbus (`third_party/godbus/README.lys-lib.md`) |
+| `portaldialogs` | The `dev.stubbe.lys.PortalDialogs1` contract: the shell's portal dialogs (Access, Account, app chooser, dynamic launcher, USB, wallpaper, password) as request types, a `Host` interface, its `Daemon` and a `Client`, plus the `Caller` and `Choice` every portal dialog is given |
 | `clib` | dlopen over a candidate list and C string copies, for bindings made with purego |
 | `intconv` | Integer conversions without silent wraparound: checked, panicking, saturating, durations, and two's-complement bit reinterpretation |
 | `atomicfile` | Replaces a file whole and durably: a synced temporary renamed over the target, then the directory synced |
