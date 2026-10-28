@@ -1,6 +1,9 @@
 package xdg
 
-import "testing"
+import (
+	"slices"
+	"testing"
+)
 
 func env(vars map[string]string) Env {
 	return func(name string) string { return vars[name] }
@@ -75,6 +78,22 @@ func TestHomes(t *testing.T) {
 		}
 		if got, ok := tc.home(env(map[string]string{"HOME": "home/u"})); ok {
 			t.Errorf("%s home with a relative HOME = %q", tc.name, got)
+		}
+	}
+}
+
+func TestConfigDirs(t *testing.T) {
+	for _, c := range []struct {
+		dirs string
+		want []string
+	}{
+		{"/a:/b", []string{"/a", "/b"}},
+		{"/a:relative::/b", []string{"/a", "/b"}},
+		{"relative", []string{"/etc/xdg"}},
+		{"", []string{"/etc/xdg"}},
+	} {
+		if got := env(map[string]string{"XDG_CONFIG_DIRS": c.dirs}).ConfigDirs(); !slices.Equal(got, c.want) {
+			t.Errorf("XDG_CONFIG_DIRS=%q: ConfigDirs = %q, want %q", c.dirs, got, c.want)
 		}
 	}
 }

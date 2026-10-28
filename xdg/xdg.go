@@ -63,6 +63,22 @@ func (e Env) DataHome() (string, bool) { return e.base("XDG_DATA_HOME", ".local/
 // absolute path.
 func (e Env) ConfigHome() (string, bool) { return e.base("XDG_CONFIG_HOME", ".config") }
 
+// ConfigDirs are the system configuration directories, most important
+// first: the absolute entries of $XDG_CONFIG_DIRS, or /etc/xdg when it
+// names none.
+func (e Env) ConfigDirs() []string {
+	var dirs []string
+	for _, d := range filepath.SplitList(e("XDG_CONFIG_DIRS")) {
+		if filepath.IsAbs(d) {
+			dirs = append(dirs, d)
+		}
+	}
+	if len(dirs) == 0 {
+		return []string{"/etc/xdg"}
+	}
+	return dirs
+}
+
 func (e Env) appDir(env, fallback, app string) (string, bool) {
 	if app == "" || app == "." || app == ".." || strings.ContainsRune(app, filepath.Separator) {
 		panic(fmt.Sprintf("xdg: app %q is not a single path element", app))
