@@ -22,9 +22,25 @@ const (
 	ServiceName = "dev.stubbe.lys.PortalDialogs1"
 	ServicePath = dbus.ObjectPath("/dev/stubbe/lys/PortalDialogs")
 	iface       = "dev.stubbe.lys.PortalDialogs1"
+)
 
-	authCancelled = "AuthenticationCancelled"
-	authIdentity  = "AuthenticationIdentity"
+// authCancelledArgs is AuthenticationCancelled(s handle): the user
+// cancelled the authentication for the request at handle.
+type authCancelledArgs struct {
+	Handle string `dbus:"handle"`
+}
+
+// authIdentityArgs is AuthenticationIdentity(s handle, u uid): the user
+// chose to authenticate as uid instead.
+type authIdentityArgs struct {
+	Handle string `dbus:"handle"`
+	UID    uint32 `dbus:"uid"`
+}
+
+// The signals an Emitter sends while no Authenticate call waits.
+var (
+	authCancelled = dbusx.NewSignal[authCancelledArgs](iface, "AuthenticationCancelled")
+	authIdentity  = dbusx.NewSignal[authIdentityArgs](iface, "AuthenticationIdentity")
 )
 
 // unwatchTimeout bounds removing a watch's match rule once its context
@@ -137,7 +153,10 @@ func NewDaemon(host Host) *Daemon { return &Daemon{host: host} }
 // Export serves the interface under its name; the returned release
 // drops the name.
 func (d *Daemon) Export(conn *dbus.Conn) (func(), error) {
-	return dbusx.Serve(conn, dbusx.Service{Name: ServiceName, Path: ServicePath, Interface: iface, Methods: d})
+	return dbusx.Serve(conn, dbusx.Service{
+		Name: ServiceName, Path: ServicePath, Interface: iface, Methods: d,
+		Signals: []dbusx.SignalDecl{authCancelled, authIdentity},
+	})
 }
 
 // Access is the grant/deny prompt.
@@ -226,9 +245,9 @@ func (e *Emitter) AuthAction(handle string, a AuthAction) error {
 	var err error
 	switch a := a.(type) {
 	case AuthCancel:
-		err = e.conn.Emit(ServicePath, iface+"."+authCancelled, handle)
+		err = authCancelled.Emit(e.conn, ServicePath, authCancelledArgs{Handle: handle})
 	case AuthSwitch:
-		err = e.conn.Emit(ServicePath, iface+"."+authIdentity, handle, a.UID)
+		err = authIdentity.Emit(e.conn, ServicePath, authIdentityArgs{Handle: handle, UID: a.UID})
 	default:
 		return fmt.Errorf("signal %T for %s: unknown action", a, handle)
 	}
@@ -354,9 +373,9 @@ func authAction(sig *dbus.Signal, handle string) (AuthAction, bool) {
 		return nil, false
 	}
 	switch sig.Name {
-	case iface + "." + authCancelled:
+	case authCancelled.Name():
 		return AuthCancel{}, len(sig.Body) == 1
-	case iface + "." + authIdentity:
+	case authIdentity.Name():
 		if len(sig.Body) != 2 {
 			return nil, false
 		}

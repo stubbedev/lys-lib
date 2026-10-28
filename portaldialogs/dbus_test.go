@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/stubbedev/lys-lib/dbustest"
+	"github.com/stubbedev/lys-lib/third_party/godbus/introspect"
 )
 
 type fakeHost struct {
@@ -314,7 +315,7 @@ func TestAuthenticationSignals(t *testing.T) {
 		t.Errorf("/r/2 watch got %#v, want only its own switch", got)
 	}
 
-	if err := conn.Emit(ServicePath, iface+"."+authIdentity, "/r/1"); err != nil {
+	if err := conn.Emit(ServicePath, authIdentity.Name(), "/r/1"); err != nil {
 		t.Fatal(err)
 	}
 	if err := emitter.AuthAction("/r/1", AuthCancel{}); err != nil {
@@ -331,5 +332,29 @@ func TestAuthenticationSignals(t *testing.T) {
 				break
 			}
 		}
+	}
+}
+
+func TestIntrospectionDeclaresTheAuthenticationSignals(t *testing.T) {
+	bus := dbustest.Start(t)
+	release, err := NewDaemon(&fakeHost{}).Export(bus.Conn(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer release()
+	node, err := introspect.Call(bus.Conn(t).Object(ServiceName, ServicePath))
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []introspect.Signal{
+		{Name: "AuthenticationCancelled", Args: []introspect.Arg{{Name: "handle", Type: "s"}}},
+		{Name: "AuthenticationIdentity", Args: []introspect.Arg{{Name: "handle", Type: "s"}, {Name: "uid", Type: "u"}}},
+	}
+	i := slices.IndexFunc(node.Interfaces, func(i introspect.Interface) bool { return i.Name == iface })
+	if i < 0 {
+		t.Fatalf("introspection lacks %s: %+v", iface, node.Interfaces)
+	}
+	if got := node.Interfaces[i].Signals; !reflect.DeepEqual(got, want) {
+		t.Errorf("signals = %+v, want %+v", got, want)
 	}
 }

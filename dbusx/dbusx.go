@@ -109,16 +109,20 @@ type Service struct {
 	Methods any
 	// Properties are the read-only properties.
 	Properties Getters
+	// Signals are the signals the interface emits.
+	Signals []SignalDecl
 }
 
 // Interface is one D-Bus interface of an object: its methods (an
 // object whose exported methods each end in a *dbus.Error result), its
-// properties, and the writers of those that are writable.
+// properties, the writers of those that are writable, and the signals
+// it emits.
 type Interface struct {
 	Name       string
 	Methods    any
 	Properties Getters
 	Setters    Setters
+	Signals    []SignalDecl
 	// Ordered are the methods whose calls run one at a time in arrival
 	// order (dbus.Conn.DispatchInOrder), for a caller that does not wait
 	// for each reply.
@@ -138,6 +142,10 @@ func Export(conn *dbus.Conn, path dbus.ObjectPath, ifaces ...Interface) (unexpor
 	}}
 	names := []string{"org.freedesktop.DBus.Properties", "org.freedesktop.DBus.Introspectable"}
 	for _, iface := range ifaces {
+		signals, err := introspectSignals(iface)
+		if err != nil {
+			return nil, err
+		}
 		if err := conn.Export(iface.Methods, path, iface.Name); err != nil {
 			return nil, fmt.Errorf("export %s: %w", iface.Name, err)
 		}
@@ -152,7 +160,7 @@ func Export(conn *dbus.Conn, path dbus.ObjectPath, ifaces ...Interface) (unexpor
 		}
 		props.ifaces[iface.Name] = iface.Properties
 		props.setters[iface.Name] = iface.Setters
-		node.Interfaces = append(node.Interfaces, introspect.Interface{Name: iface.Name, Methods: introspect.Methods(iface.Methods)})
+		node.Interfaces = append(node.Interfaces, introspect.Interface{Name: iface.Name, Methods: introspect.Methods(iface.Methods), Signals: signals})
 	}
 	if err := conn.Export(props, path, "org.freedesktop.DBus.Properties"); err != nil {
 		return nil, fmt.Errorf("export %s properties: %w", path, err)
@@ -171,7 +179,7 @@ func Export(conn *dbus.Conn, path dbus.ObjectPath, ifaces ...Interface) (unexpor
 // release drops the name. A name already owned is an error, as zbus's
 // request_name with DoNotQueue.
 func Serve(conn *dbus.Conn, s Service) (func(), error) {
-	if _, err := Export(conn, s.Path, Interface{Name: s.Interface, Methods: s.Methods, Properties: s.Properties}); err != nil {
+	if _, err := Export(conn, s.Path, Interface{Name: s.Interface, Methods: s.Methods, Properties: s.Properties, Signals: s.Signals}); err != nil {
 		return nil, err
 	}
 	return Own(conn, s.Name)
@@ -205,6 +213,18 @@ func (l lazyIntrospectable) Introspect() (string, *dbus.Error) {
 		node.Interfaces[2+i].Properties = introspectProps(iface.Properties, iface.Setters)
 	}
 	return string(introspect.NewIntrospectable(&node)), nil
+}
+
+func introspectSignals(iface Interface) ([]introspect.Signal, error) {
+	out := make([]introspect.Signal, 0, len(iface.Signals))
+	for _, decl := range iface.Signals {
+		owner, sig := decl.declaration()
+		if owner != iface.Name {
+			return nil, fmt.Errorf("export %s: signal %s.%s belongs to another interface", iface.Name, owner, sig.Name)
+		}
+		out = append(out, sig)
+	}
+	return out, nil
 }
 
 func introspectProps(getters Getters, setters Setters) []introspect.Property {
