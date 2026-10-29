@@ -66,6 +66,18 @@ took the underline metrics and `isFixedPitch` with it. Pinned by
 `font/lys_post_test.go`, and by `font/lys_heap_test.go`'s budget, now
 1.45x.
 
+### IsMonospace accepts multiple-cell glyphs
+
+`font/metadata.go`, `IsMonospace`: upstream called a font proportional
+at its second distinct non-zero advance. Noto Sans Mono's hmtx has
+advances 600 x3309, 1200 x241 and 1800 x9, so it failed (its OS/2
+panose proportion is 9, monospaced; fontconfig 2.18 gives it generic
+family monospace). A font is now monospace when every non-zero advance
+past `.notdef` is about a whole multiple, up to 3, of the narrowest one:
+fontconfig's dual-width rule (stubbedev/lys-lib#47) extended to
+triple-width glyphs, still within upstream's 1/33 tolerance. Pinned by
+`font/metadata_test.go`.
+
 ### Import path
 
 Every source imports `github.com/stubbedev/lys-lib/third_party/typesetting`

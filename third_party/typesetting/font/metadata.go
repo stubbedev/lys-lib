@@ -397,30 +397,34 @@ func (fd *Font) IsMonospace() bool {
 		return true
 	}
 
-	// directly read the advances in the 'hmtx' table
-	var firstAdvance int
-	for gid, metric := range fd.hmtx.Metrics {
-		if gid == 0 { // ignore the 'unset' glyph, which may be different
-			continue
+	// directly read the advances in the 'hmtx' table,
+	// ignoring the 'unset' glyph, which may be different
+	return advancesAreCellMultiples(fd.hmtx.Metrics[1:])
+}
+
+// maxCellMultiple is the widest glyph, in cells, of a monospace font.
+const maxCellMultiple = 3
+
+// advancesAreCellMultiples reports whether every non-zero advance is about
+// a whole multiple, up to [maxCellMultiple], of the narrowest one: fontconfig's
+// dual-width rule extended to glyphs spanning more than two cells.
+func advancesAreCellMultiples(metrics []tables.LongHorMetric) bool {
+	cell := 0
+	for _, metric := range metrics {
+		if advance := int(uint16(metric.AdvanceWidth)); advance != 0 && (cell == 0 || advance < cell) {
+			cell = advance
 		}
-		advance := int(metric.AdvanceWidth)
+	}
+	for _, metric := range metrics {
+		advance := int(uint16(metric.AdvanceWidth))
 		if advance == 0 { // do not count zero as a proper width
 			continue
 		}
-
-		if firstAdvance == 0 {
-			firstAdvance = advance
-			continue
+		cells := (advance + cell/2) / cell
+		if cells > maxCellMultiple || !approximatelyEqual(advance, cells*cell) {
+			return false
 		}
-
-		if approximatelyEqual(advance, firstAdvance) {
-			continue
-		}
-
-		// two distinct advances : the font is not monospace
-		return false
 	}
-
 	return true
 }
 
