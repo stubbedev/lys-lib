@@ -5,8 +5,8 @@ import (
 	"math"
 	"slices"
 
-	"github.com/go-text/typesetting/font"
-	"github.com/go-text/typesetting/font/opentype/tables"
+	"github.com/stubbedev/lys-lib/third_party/typesetting/font"
+	"github.com/stubbedev/lys-lib/third_party/typesetting/font/opentype/tables"
 )
 
 // COLR color glyphs (v0 layers and the v1 paint graph), painted into a

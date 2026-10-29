@@ -8,10 +8,11 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/go-text/typesetting/font"
-	"github.com/go-text/typesetting/fontscan"
 	"golang.org/x/image/font/gofont/gomono"
 	"golang.org/x/image/font/gofont/goregular"
+
+	"github.com/stubbedev/lys-lib/third_party/typesetting/font"
+	"github.com/stubbedev/lys-lib/third_party/typesetting/fontscan"
 )
 
 // Source-over conformance. Every past rendering bug in this package was

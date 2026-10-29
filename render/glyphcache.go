@@ -15,10 +15,11 @@ import (
 	"image/color"
 	"math"
 
-	"github.com/go-text/typesetting/font"
-	ot "github.com/go-text/typesetting/font/opentype"
 	"golang.org/x/image/draw"
 	"golang.org/x/image/vector"
+
+	"github.com/stubbedev/lys-lib/third_party/typesetting/font"
+	ot "github.com/stubbedev/lys-lib/third_party/typesetting/font/opentype"
 )
 
 // glyphKey pins one rasterized outline. scale is the device pixels per

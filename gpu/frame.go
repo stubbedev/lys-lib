@@ -6,11 +6,10 @@ import (
 	"math"
 	"unsafe"
 
-	"github.com/go-text/typesetting/font"
-
 	"github.com/stubbedev/lys-lib/debug"
 	"github.com/stubbedev/lys-lib/intconv"
 	"github.com/stubbedev/lys-lib/render"
+	"github.com/stubbedev/lys-lib/third_party/typesetting/font"
 	"github.com/stubbedev/lys-lib/third_party/vk"
 )
 

@@ -5,11 +5,11 @@ import (
 	"strconv"
 	"strings"
 
-	ot "github.com/go-text/typesetting/font/opentype"
-	"github.com/go-text/typesetting/shaping"
 	"golang.org/x/image/math/fixed"
 
 	"github.com/stubbedev/lys-lib/text"
+	ot "github.com/stubbedev/lys-lib/third_party/typesetting/font/opentype"
+	"github.com/stubbedev/lys-lib/third_party/typesetting/shaping"
 )
 
 // WordSep reports whether r is a CSS word separator: the characters

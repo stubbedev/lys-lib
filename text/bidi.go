@@ -26,8 +26,9 @@ import (
 	"slices"
 	"sync"
 
-	tsbidi "github.com/go-text/typesetting/bidi"
 	"golang.org/x/text/unicode/bidi"
+
+	tsbidi "github.com/stubbedev/lys-lib/third_party/typesetting/bidi"
 )
 
 // Direction names the base paragraph direction text resolves and lays

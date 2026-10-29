@@ -11,14 +11,14 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/go-text/typesetting/di"
-	"github.com/go-text/typesetting/font"
-	ot "github.com/go-text/typesetting/font/opentype"
-	"github.com/go-text/typesetting/segmenter"
-	"github.com/go-text/typesetting/shaping"
 	"golang.org/x/image/math/fixed"
 
 	"github.com/stubbedev/lys-lib/text"
+	"github.com/stubbedev/lys-lib/third_party/typesetting/di"
+	"github.com/stubbedev/lys-lib/third_party/typesetting/font"
+	ot "github.com/stubbedev/lys-lib/third_party/typesetting/font/opentype"
+	"github.com/stubbedev/lys-lib/third_party/typesetting/segmenter"
+	"github.com/stubbedev/lys-lib/third_party/typesetting/shaping"
 )
 
 // Font shapes and paints text: a single Typeface, or a Chain that

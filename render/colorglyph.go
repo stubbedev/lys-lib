@@ -7,7 +7,7 @@ import (
 	"image"
 	"math"
 
-	"github.com/go-text/typesetting/font"
+	"github.com/stubbedev/lys-lib/third_party/typesetting/font"
 )
 
 // Color glyphs: COLR (v0 layers and the v1 paint graph, colr.go) and

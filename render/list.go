@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"image"
 
-	"github.com/go-text/typesetting/font"
+	"github.com/stubbedev/lys-lib/third_party/typesetting/font"
 )
 
 // List is a frame recorded instead of rasterized: every drawing call a

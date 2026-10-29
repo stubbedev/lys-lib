@@ -1,6 +1,6 @@
 package text
 
-import "github.com/go-text/typesetting/segmenter"
+import "github.com/stubbedev/lys-lib/third_party/typesetting/segmenter"
 
 // LineSegments splits s at its line-break opportunities (UAX #14), each
 // segment a word with the spaces after it: "a/b c" gives "a/", "b ",
