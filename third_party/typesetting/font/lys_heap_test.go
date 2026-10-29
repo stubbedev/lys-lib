@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-const lysFaceHeapBudget = 1.6
+const lysFaceHeapBudget = 1.45
 
 func lysDejaVuSans(t testing.TB) []byte {
 	t.Helper()

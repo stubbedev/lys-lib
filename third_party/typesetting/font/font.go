@@ -271,7 +271,7 @@ func NewFont(ld *ot.Loader) (*Font, error) {
 
 	raw, _ = ld.RawTable(ot.MustNewTag("post"))
 	post, _, _ := tables.ParsePost(raw)
-	out.post, _ = newPost(post)
+	out.post = newPost(post)
 
 	raw, _ = ld.RawTable(ot.MustNewTag("SVG "))
 	svg, _, _ := tables.ParseSVG(raw)

@@ -51,6 +51,21 @@ count from the raw bytes match the decoded glyph) and
 `font/lys_heap_test.go` (a DejaVu Sans `Face`, 3.5x its file upstream,
 holds at most 1.6x).
 
+### post glyph names are decoded on lookup
+
+`font/opentype/tables/post_src.go` and `font/post.go`, `font/font.go`:
+upstream decoded every format 2.0 `post` name into a string at load
+(0.23 MB of the font above, which now holds 3.0 MB per `Face`), for
+`GlyphName`, which shaping and rendering never call.
+`PostNames20.Strings` is now the raw Pascal string data; the first
+`GlyphName` indexes it once (`sync.OnceValue`, a `Font` stays safe for
+concurrent use) and each lookup decodes one name. An index past the
+names or in the reserved 32768..65535 range names nothing; upstream
+rejected the whole names table for either, and a truncated string table
+took the underline metrics and `isFixedPitch` with it. Pinned by
+`font/lys_post_test.go`, and by `font/lys_heap_test.go`'s budget, now
+1.45x.
+
 ### Import path
 
 Every source imports `github.com/stubbedev/lys-lib/third_party/typesetting`
@@ -69,3 +84,15 @@ faces in typesetting-utils, render/testdata and DejaVu Sans, plus 325
 installed faces (Noto, JetBrainsMono Nerd Font), had the same name,
 extents, outline and vertical origin as upstream's, variable fonts at
 their default and at 0.7 on every axis.
+
+## Not patched
+
+Loading tables as subslices of one buffer instead of per-table copies
+does not pay for a heap-backed file: the file buffer would be kept whole
+(a `Font` of the font above would hold 2.9 MB instead of 2.1 MB). It
+pays only over an mmapped file (0.4 MB of heap per `Font`), which needs
+a mapping that lives as long as the face and a file nobody truncates.
+
+Variable fonts still cost several times their file: `gvar` is decoded
+whole at load (Noto Sans Mono's variable TTF, 1.7 MB, holds 7.0 MB per
+`Face`, 8.0 MB upstream).

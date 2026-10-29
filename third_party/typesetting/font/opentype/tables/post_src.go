@@ -2,8 +2,6 @@
 
 package tables
 
-import "fmt"
-
 // PostScript table
 // See https://learn.microsoft.com/en-us/typography/opentype/spec/post
 type Post struct {
@@ -41,25 +39,40 @@ type PostNames10 struct{}
 
 type PostNames20 struct {
 	GlyphNameIndexes []uint16 `arrayCount:"FirstUint16"` // size numGlyph
-	Strings          []string `isOpaque:"" subsliceStart:"AtCurrent"`
+	// Strings holds the names as Pascal strings, kept raw:
+	// see [PostNames20.StringOffsets] and [PostNames20.String].
+	Strings []byte `isOpaque:"" subsliceStart:"AtCurrent"`
 }
 
-// see https://learn.microsoft.com/en-us/typography/opentype/spec/post#version-20
 func (ps *PostNames20) parseStrings(src []byte) error {
+	ps.Strings = src
+	return nil
+}
+
+// StringOffsets returns where each name starts in [PostNames20.Strings].
+// A name running past the end of the table is left out, with the ones after it.
+// see https://learn.microsoft.com/en-us/typography/opentype/spec/post#version-20
+func (ps PostNames20) StringOffsets() []uint32 {
 	// "Strings are in Pascal string format, meaning that the first byte of
 	// a given string is a length: the number of characters in that string.
 	// The length byte is not included; for example, a length byte of 8 indicates
 	// that the 8 bytes following the length byte comprise the string character data."
-	for i := 0; i < len(src); {
-		length := int(src[i]) // read the length
-		end := i + 1 + length
-		if L := len(src); L < end {
-			return fmt.Errorf("invalid Postscript names tables format 20: EOF: expected %d, got %d", end, L)
+	var out []uint32
+	for i := 0; i < len(ps.Strings); {
+		end := i + 1 + int(ps.Strings[i])
+		if end > len(ps.Strings) {
+			break
 		}
-		ps.Strings = append(ps.Strings, string(src[i+1:end]))
+		out = append(out, uint32(i))
 		i = end
 	}
-	return nil
+	return out
+}
+
+// String returns the name starting at [offset], one of [PostNames20.StringOffsets].
+func (ps PostNames20) String(offset uint32) string {
+	length := uint32(ps.Strings[offset])
+	return string(ps.Strings[offset+1 : offset+1+length])
 }
 
 type PostNames30 PostNames10

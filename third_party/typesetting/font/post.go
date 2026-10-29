@@ -3,7 +3,7 @@
 package font
 
 import (
-	"errors"
+	"sync"
 
 	"github.com/stubbedev/lys-lib/third_party/typesetting/font/opentype/tables"
 )
@@ -285,7 +285,7 @@ type post struct {
 	isFixedPitch bool
 }
 
-func newPost(pst tables.Post) (post, error) {
+func newPost(pst tables.Post) post {
 	out := post{
 		underlinePosition:  float32(pst.UnderlinePosition),
 		underlineThickness: float32(pst.UnderlineThickness),
@@ -295,15 +295,11 @@ func newPost(pst tables.Post) (post, error) {
 	case tables.PostNames10:
 		out.names = postNames10or30{}
 	case tables.PostNames20:
-		n := postNames20(names)
-		if err := n.sanitize(); err != nil {
-			return out, err
-		}
-		out.names = n
+		out.names = newPostNames20(names)
 	case tables.PostNames30:
 		// no-op, do not use the post name tables
 	}
-	return out, nil
+	return out
 }
 
 // postGlyphNames stores the names of a 'post' table.
@@ -323,7 +319,14 @@ func (p postNames10or30) glyphName(x GID) string {
 	return builtInPostNames[x]
 }
 
-type postNames20 tables.PostNames20
+type postNames20 struct {
+	tables.PostNames20
+	offsets func() []uint32
+}
+
+func newPostNames20(names tables.PostNames20) postNames20 {
+	return postNames20{PostNames20: names, offsets: sync.OnceValue(names.StringOffsets)}
+}
 
 func (p postNames20) glyphName(x GID) string {
 	if int(x) >= len(p.GlyphNameIndexes) {
@@ -333,27 +336,15 @@ func (p postNames20) glyphName(x GID) string {
 	if u < numBuiltInPostNames {
 		return builtInPostNames[u]
 	}
+	// https://developer.apple.com/fonts/TrueType-Reference-Manual/RM06/Chap6post.html
+	// says that "32768 through 65535 are reserved for future use".
+	if u > 32767 {
+		return ""
+	}
+	offsets := p.offsets()
 	u -= numBuiltInPostNames
-	return p.Strings[u]
-}
-
-// check that all the indexes are valid
-func (p postNames20) sanitize() error {
-	var maxIndex uint16
-	// find the maximum
-	for _, u := range p.GlyphNameIndexes {
-		// https://developer.apple.com/fonts/TrueType-Reference-Manual/RM06/Chap6post.html
-		// says that "32768 through 65535 are reserved for future use".
-		if u > 32767 {
-			return errors.New("invalid index in Postscript names table format 20")
-		}
-		if u > maxIndex {
-			maxIndex = u
-		}
+	if u >= len(offsets) {
+		return ""
 	}
-
-	if int(maxIndex) >= numBuiltInPostNames && len(p.Strings) < (int(maxIndex)-numBuiltInPostNames) {
-		return errors.New("invalid index in Postscript names table format 20")
-	}
-	return nil
+	return p.String(offsets[u])
 }
