@@ -18,8 +18,7 @@ const Enabled = true
 // excludes one).
 var (
 	parseOnce sync.Once
-	cats      map[string]bool
-	allCats   bool
+	filter    categories
 )
 
 // start is the process start time, so trace lines carry monotonic
@@ -30,27 +29,45 @@ var start = time.Now()
 // LYS_DEBUG admits the category: "<offset>s <category>: <message>"
 // on stderr.
 func Log(category, format string, args ...any) {
-	parseOnce.Do(parseEnv)
-	if !allCats && !cats[category] {
+	parseOnce.Do(func() { filter = parseCategories(os.Getenv("LYS_DEBUG")) })
+	if !filter.admits(category) {
 		return
 	}
 	fmt.Fprintf(os.Stderr, "%7.3fs %s: %s\n",
 		time.Since(start).Seconds(), category, fmt.Sprintf(format, args...))
 }
 
-// parseEnv reads LYS_DEBUG once per process.
-func parseEnv() {
-	cats = make(map[string]bool)
-	for _, name := range strings.Split(os.Getenv("LYS_DEBUG"), ",") {
+// categories is a parsed LYS_DEBUG: the named categories, or every
+// category when none is named, less the excluded ones.
+type categories struct {
+	named    map[string]bool
+	excluded map[string]bool
+	all      bool
+}
+
+func parseCategories(spec string) categories {
+	c := categories{named: map[string]bool{}, excluded: map[string]bool{}}
+	for name := range strings.SplitSeq(spec, ",") {
 		name = strings.TrimSpace(name)
 		switch {
 		case name == "":
 		case name == "*":
-			allCats = true
+			c.all = true
 		case strings.HasPrefix(name, "-"):
-			cats[name[1:]] = false
+			c.excluded[name[1:]] = true
 		default:
-			cats[name] = true
+			c.named[name] = true
 		}
 	}
+	if len(c.named) == 0 {
+		c.all = true
+	}
+	return c
+}
+
+func (c categories) admits(category string) bool {
+	if c.excluded[category] {
+		return false
+	}
+	return c.all || c.named[category]
 }
