@@ -7,6 +7,7 @@
 package dbusx
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"slices"
@@ -25,6 +26,11 @@ const (
 	ErrUnknownIface    = "org.freedesktop.DBus.Error.UnknownInterface"
 	ErrPropertyRO      = "org.freedesktop.DBus.Error.PropertyReadOnly"
 )
+
+// ErrNameTaken is what Own and Serve wrap when another connection
+// already owns the well-known name, so a caller can tell a taken name
+// from a bus failure.
+var ErrNameTaken = errors.New("name already owned")
 
 // The interfaces Export serves itself at each path, for all of the
 // path's interfaces.
@@ -213,9 +219,9 @@ func unexportAll(conn *dbus.Conn, path dbus.ObjectPath, objects []exported) {
 }
 
 // Serve exports s on conn and takes its well-known name; the returned
-// release drops the name and unexports s. A name already owned is an
-// error, as zbus's request_name with DoNotQueue, and leaves nothing
-// exported.
+// release drops the name and unexports s. A name already owned is
+// ErrNameTaken, as zbus's request_name with DoNotQueue, and leaves
+// nothing exported.
 func Serve(conn *dbus.Conn, s Service) (func(), error) {
 	unexport, err := Export(conn, s.Path, Interface{Name: s.Interface, Methods: s.Methods, Properties: s.Properties, Signals: s.Signals})
 	if err != nil {
@@ -233,14 +239,15 @@ func Serve(conn *dbus.Conn, s Service) (func(), error) {
 }
 
 // Own takes a well-known name; the returned release drops it. A name
-// already owned is an error, as zbus's request_name with DoNotQueue.
+// already owned is ErrNameTaken, as zbus's request_name with
+// DoNotQueue.
 func Own(conn *dbus.Conn, name string) (func(), error) {
 	reply, err := conn.RequestName(name, dbus.NameFlagDoNotQueue)
 	if err != nil {
 		return nil, fmt.Errorf("request %s: %w", name, err)
 	}
 	if reply != dbus.RequestNameReplyPrimaryOwner {
-		return nil, fmt.Errorf("%s is already owned", name)
+		return nil, fmt.Errorf("request %s: %w", name, ErrNameTaken)
 	}
 	return func() { _, _ = conn.ReleaseName(name) }, nil
 }

@@ -92,8 +92,8 @@ func TestServeRefusesAnOwnedName(t *testing.T) {
 	_, err := dbusx.Serve(second, dbusx.Service{
 		Name: name, Path: path, Interface: iface, Methods: echo{}, Properties: dbusx.Getters{},
 	})
-	if err == nil {
-		t.Fatal("a second owner was accepted")
+	if !errors.Is(err, dbusx.ErrNameTaken) {
+		t.Fatalf("second owner = %v, want ErrNameTaken", err)
 	}
 	if err := client.Object(second.Names()[0], path).Call(iface+".Echo", 0, "hi").Err; !isDBusError(err, dbusx.ErrUnknownIface) {
 		t.Errorf("Echo on the refused server = %v, want UnknownInterface", err)
