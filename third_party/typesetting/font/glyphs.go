@@ -61,7 +61,7 @@ const maxCompositeNesting = 20 // protect against malicious fonts
 func (f *Face) getPointsForGlyphRec(gid tables.GlyphID, currentDepth int, currentGlyphs glyphSet, allPoints *[]contourPoint /* OUT */) {
 	// adapted from harfbuzz/src/OT/glyf/Glyph.hh
 
-	if currentDepth > maxCompositeNesting || int(gid) >= len(f.glyf) {
+	if currentDepth > maxCompositeNesting || int(gid) >= f.glyf.Len() {
 		// The glyph is missing or too deeply nested; still contribute the
 		// phantom points so the invariant documented above holds and callers
 		// never see a slice shorter than phantomCount.
@@ -69,13 +69,16 @@ func (f *Face) getPointsForGlyphRec(gid tables.GlyphID, currentDepth int, curren
 		return
 	}
 
-	g := f.glyf[gid]
+	g, err := f.glyf.Glyph(gid)
+	if err != nil {
+		g = tables.Glyph{}
+	}
 
 	var points []contourPoint
 	if data, ok := g.Data.(tables.SimpleGlyph); ok {
 		points = getContourPoints(data) // fetch the "real" points
 	} else { // zeros values are enough
-		points = make([]contourPoint, pointNumbersCount(g))
+		points = make([]contourPoint, g.PointNumbersCount())
 	}
 
 	// init phantom point
@@ -159,18 +162,6 @@ func (f *Face) getPointsForGlyphRec(gid tables.GlyphID, currentDepth int, curren
 	}
 }
 
-// does not includes phantom points
-func pointNumbersCount(g tables.Glyph) int {
-	switch g := g.Data.(type) {
-	case tables.SimpleGlyph:
-		return len(g.Points)
-	case tables.CompositeGlyph:
-		/* pseudo component points for each component in composite glyph */
-		return len(g.Glyphs)
-	}
-	return 0
-}
-
 // return all the contour points, without phantoms
 func getContourPoints(sg tables.SimpleGlyph) []contourPoint {
 	const flagOnCurve = 1 << 0 // 0x0001
@@ -210,7 +201,7 @@ func extentsFromPoints(allPoints []contourPoint) (ext GlyphExtents) {
 // walk through the contour points of the given glyph to compute its extends and its phantom points
 // As an optimization, if `computeExtents` is false, the extents computation is skipped (a zero value is returned).
 func (f *Face) getGlyfPoints(gid tables.GlyphID, computeExtents bool) (ext GlyphExtents, ph [phantomCount]contourPoint) {
-	if int(gid) >= len(f.glyf) {
+	if int(gid) >= f.glyf.Len() {
 		return
 	}
 	allPoints := f.getPointsForGlyph(gid)
@@ -292,7 +283,7 @@ func transformPoints(c *tables.CompositeGlyphPart, points []contourPoint) {
 	}
 }
 
-func getGlyphExtents(g tables.Glyph, metrics tables.Hmtx, gid gID) GlyphExtents {
+func getGlyphExtents(g tables.GlyphHeader, metrics tables.Hmtx, gid gID) GlyphExtents {
 	var extents GlyphExtents
 	/* Undocumented rasterizer behavior: shift glyph to the left by (lsb - xMin), i.e., xMin = lsb */
 	/* extents.XBearing = hb_min (glyph_header.xMin, glyph_header.xMax); */

@@ -61,30 +61,6 @@ func ParseCompositeGlyphPart(src []byte) (CompositeGlyphPart, int, error) {
 	return item, n, nil
 }
 
-func ParseGlyph(src []byte) (Glyph, int, error) {
-	var item Glyph
-	n := 0
-	if L := len(src); L < 10 {
-		return item, 0, fmt.Errorf("reading Glyph: "+"EOF: expected length: 10, got %d", L)
-	}
-	_ = src[9] // early bound checking
-	item.numberOfContours = int16(binary.BigEndian.Uint16(src[0:]))
-	item.XMin = int16(binary.BigEndian.Uint16(src[2:]))
-	item.YMin = int16(binary.BigEndian.Uint16(src[4:]))
-	item.XMax = int16(binary.BigEndian.Uint16(src[6:]))
-	item.YMax = int16(binary.BigEndian.Uint16(src[8:]))
-	n += 10
-
-	{
-
-		err := item.parseData(src[10:])
-		if err != nil {
-			return item, 0, fmt.Errorf("reading Glyph: %s", err)
-		}
-	}
-	return item, n, nil
-}
-
 func ParseGlyphContourPoint(src []byte) (GlyphContourPoint, int, error) {
 	var item GlyphContourPoint
 	n := 0

@@ -33,35 +33,148 @@ func ParseLoca(src []byte, numGlyphs int, isLong bool) (out []uint32, err error)
 	return out, nil
 }
 
-// Glyph Data
-type Glyf []Glyph
+// Glyf is the 'glyf' table, kept raw: a glyph is decoded only when
+// asked for, so a face does not hold every outline of the font.
+type Glyf struct {
+	data []byte
+	loca []uint32
+}
 
-// ParseGlyf parses the 'glyf' table.
-// locaOffsets has length numGlyphs + 1, and is returned by ParseLoca
+// ParseGlyf wraps the 'glyf' table [src].
+// locaOffsets has length numGlyphs + 1, and is returned by ParseLoca.
+// Glyph offsets are checked when a glyph is read.
 func ParseGlyf(src []byte, locaOffsets []uint32) (Glyf, error) {
-	out := make(Glyf, len(locaOffsets)-1)
-	var err error
-	for i := range out {
-		start, end := locaOffsets[i], locaOffsets[i+1]
-		// If a glyph has no outline, then loca[n] = loca [n+1].
-		if start == end {
-			continue
-		}
-		out[i], _, err = ParseGlyph(src[start:end])
-		if err != nil {
-			return nil, err
-		}
+	if len(locaOffsets) == 0 {
+		return Glyf{}, errors.New("reading Glyf: empty loca")
 	}
-	return out, nil
+	return Glyf{data: src, loca: locaOffsets}, nil
+}
+
+// Len returns the number of glyphs in the table, 0 for an absent table.
+func (g Glyf) Len() int {
+	if len(g.loca) == 0 {
+		return 0
+	}
+	return len(g.loca) - 1
+}
+
+// glyphBytes returns the data of [gid], empty for a glyph without outline.
+func (g Glyf) glyphBytes(gid GlyphID) ([]byte, error) {
+	if int(gid) >= g.Len() {
+		return nil, fmt.Errorf("reading Glyf: glyph %d out of range (%d glyphs)", gid, g.Len())
+	}
+	start, end := g.loca[gid], g.loca[gid+1]
+	if start > end || int(end) > len(g.data) {
+		return nil, fmt.Errorf("reading Glyf: glyph %d has invalid offsets [%d, %d) in a %d-byte table", gid, start, end, len(g.data))
+	}
+	return g.data[start:end], nil
+}
+
+// Glyph decodes the glyph [gid]. A glyph without outline
+// (loca[n] = loca[n+1]) is the zero Glyph.
+func (g Glyf) Glyph(gid GlyphID) (Glyph, error) {
+	src, err := g.glyphBytes(gid)
+	if err != nil || len(src) == 0 {
+		return Glyph{}, err
+	}
+	out, _, err := ParseGlyph(src)
+	return out, err
+}
+
+// Header decodes the fixed header of the glyph [gid], which is all
+// its extents need. A glyph without outline has the zero header.
+func (g Glyf) Header(gid GlyphID) (GlyphHeader, error) {
+	src, err := g.glyphBytes(gid)
+	if err != nil || len(src) == 0 {
+		return GlyphHeader{}, err
+	}
+	return parseGlyphHeader(src)
+}
+
+// PointNumbersCount returns the number of points of the glyph [gid]
+// as variation data counts them, without its phantom points: its outline
+// points for a simple glyph, its components for a composite one.
+// It reads the contour end points, not the outline.
+func (g Glyf) PointNumbersCount(gid GlyphID) (int, error) {
+	src, err := g.glyphBytes(gid)
+	if err != nil || len(src) == 0 {
+		return 0, err
+	}
+	header, err := parseGlyphHeader(src)
+	if err != nil {
+		return 0, err
+	}
+	src = src[glyphHeaderSize:]
+	if header.numberOfContours < 0 {
+		composite, _, err := ParseCompositeGlyph(src)
+		return len(composite.Glyphs), err
+	}
+	if header.numberOfContours == 0 {
+		return 0, nil
+	}
+	last := 2 * (int(header.numberOfContours) - 1)
+	if L := len(src); L < last+2 {
+		return 0, fmt.Errorf("reading SimpleGlyph: EOF: expected length: %d, got %d", last+2, L)
+	}
+	return int(binary.BigEndian.Uint16(src[last:])) + 1, nil
+}
+
+const glyphHeaderSize = 10
+
+// GlyphHeader is the fixed start of a glyph.
+type GlyphHeader struct {
+	numberOfContours int16 // If the number of contours is greater than or equal to zero, this is a simple glyph. If negative, this is a composite glyph — the value -1 should be used for composite glyphs.
+	XMin             int16 // Minimum x for coordinate data.
+	YMin             int16 // Minimum y for coordinate data.
+	XMax             int16 // Maximum x for coordinate data.
+	YMax             int16 // Maximum y for coordinate data.
+}
+
+func parseGlyphHeader(src []byte) (GlyphHeader, error) {
+	if L := len(src); L < glyphHeaderSize {
+		return GlyphHeader{}, fmt.Errorf("reading Glyph: EOF: expected length: %d, got %d", glyphHeaderSize, L)
+	}
+	return GlyphHeader{
+		numberOfContours: int16(binary.BigEndian.Uint16(src[0:])),
+		XMin:             int16(binary.BigEndian.Uint16(src[2:])),
+		YMin:             int16(binary.BigEndian.Uint16(src[4:])),
+		XMax:             int16(binary.BigEndian.Uint16(src[6:])),
+		YMax:             int16(binary.BigEndian.Uint16(src[8:])),
+	}, nil
 }
 
 type Glyph struct {
-	numberOfContours int16     // If the number of contours is greater than or equal to zero, this is a simple glyph. If negative, this is a composite glyph — the value -1 should be used for composite glyphs.
-	XMin             int16     // Minimum x for coordinate data.
-	YMin             int16     // Minimum y for coordinate data.
-	XMax             int16     // Maximum x for coordinate data.
-	YMax             int16     // Maximum y for coordinate data.
-	Data             GlyphData `isOpaque:"" subsliceStart:"AtCurrent"`
+	GlyphHeader
+	Data GlyphData
+}
+
+// ParseGlyph decodes one glyph, header and outline.
+func ParseGlyph(src []byte) (Glyph, int, error) {
+	var (
+		item Glyph
+		err  error
+	)
+	item.GlyphHeader, err = parseGlyphHeader(src)
+	if err != nil {
+		return item, 0, err
+	}
+	if err := item.parseData(src[glyphHeaderSize:]); err != nil {
+		return item, 0, fmt.Errorf("reading Glyph: %s", err)
+	}
+	return item, glyphHeaderSize, nil
+}
+
+// PointNumbersCount returns the number of points of the glyph as
+// variation data counts them, without its phantom points.
+func (gl Glyph) PointNumbersCount() int {
+	switch data := gl.Data.(type) {
+	case SimpleGlyph:
+		return len(data.Points)
+	case CompositeGlyph:
+		/* pseudo component points for each component in composite glyph */
+		return len(data.Glyphs)
+	}
+	return 0
 }
 
 func (gl *Glyph) parseData(src []byte) (err error) {

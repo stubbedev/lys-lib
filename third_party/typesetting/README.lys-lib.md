@@ -25,10 +25,47 @@ face from one copy is not a face of the other.
 
 Drop the copy once upstream carries every change below.
 
+### Glyph outlines are decoded on demand
+
+`font/opentype/tables/glyphs_glyf_src.go` (with `glyphs_glyf_gen.go`,
+whose `ParseGlyph` moved to the source file) and `font/font.go`,
+`glyphs.go`, `metrics.go`, `renderer.go`, `variations.go`: upstream's
+`NewFont` decoded every `glyf` outline into `tables.Glyf` (`[]Glyph`
+with parsed points) and kept the raw table the glyphs alias, about 3x a
+TrueType file in heap per face (JetBrainsMono Nerd Font Regular, 2.53 MB:
+8.9 MB per `Face`, 3.3 MB with this patch). `tables.Glyf` now holds
+the raw table and the `loca` offsets: `Glyph` decodes one glyph when
+the outline is asked for, `Header` reads the 10-byte header that
+unvaried extents need, and `PointNumbersCount` gives `gvar` its
+per-glyph point count from the contour end points (simple glyphs) or
+the component records (composite ones) without decoding points. Glyph
+offsets are checked per glyph: upstream sliced out of range (a panic)
+on a bad `loca` and dropped the whole table when one glyph failed to
+parse; a malformed glyph now reads as one without outline, the others
+are unaffected. Outlines are not cached: a glyph is decoded each time
+its outline is asked for, which render's glyph atlas already caches.
+Parsing the font above takes 0.8 ms instead of 12.5 ms.
+Pinned by `font/opentype/tables/lys_glyf_test.go`,
+`font/lys_glyf_test.go` (every glyph of DejaVu Sans: header and point
+count from the raw bytes match the decoded glyph) and
+`font/lys_heap_test.go` (a DejaVu Sans `Face`, 3.5x its file upstream,
+holds at most 1.6x).
+
 ### Import path
 
 Every source imports `github.com/stubbedev/lys-lib/third_party/typesetting`
 in place of `github.com/go-text/typesetting`, and the copy has no
 go.mod of its own. Upstream's tests (which read fonts from the separate
 `go-text/typesetting-utils` module), testdata, `testutils`, CI files,
-CODEOWNERS and READMEs are not carried.
+CODEOWNERS and READMEs are not carried. The heap and DejaVu tests read
+the font `LYS_TEST_DEJAVU_SANS` names, which the dev shell sets, and
+skip without it.
+
+## Verified against upstream
+
+With the patches applied, upstream's v0.3.5 test suite passed (its
+`glyf` tests adapted to the lazy table), and every glyph of the 789
+faces in typesetting-utils, render/testdata and DejaVu Sans, plus 325
+installed faces (Noto, JetBrainsMono Nerd Font), had the same name,
+extents, outline and vertical origin as upstream's, variable fonts at
+their default and at 0.7 on every axis.

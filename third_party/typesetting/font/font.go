@@ -256,7 +256,7 @@ func NewFont(ld *ot.Loader) (*Font, error) {
 	raw, _ = ld.RawTable(ot.MustNewTag("glyf"))
 	locaRaw, _ := ld.RawTable(ot.MustNewTag("loca"))
 	loca, err := tables.ParseLoca(locaRaw, out.nGlyphs, out.head.IndexToLocFormat == 1)
-	if err == nil { // ParseGlyf panics if len(loca) == 0
+	if err == nil {
 		out.glyf, _ = tables.ParseGlyf(raw, loca)
 	}
 

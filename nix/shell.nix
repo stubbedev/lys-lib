@@ -78,6 +78,10 @@
         # cgo: only that recipe points CC here and turns cgo on, so the
         # shell keeps no C compiler on PATH.
         LYS_RACE_CC = "${pkgs.gcc}/bin/gcc";
+
+        # third_party/typesetting's heap-budget and lazy-table tests
+        # parse a real font of thousands of glyphs.
+        LYS_TEST_DEJAVU_SANS = "${pkgs.dejavu_fonts.minimal}/share/fonts/truetype/DejaVuSans.ttf";
       }
       // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
         # The GPU renderer (package gpu) loads libvulkan at runtime, and
