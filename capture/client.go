@@ -47,6 +47,15 @@ var ErrFailed = errors.New("capture: the compositor failed the copy")
 // ErrClosed reports use of a Client or a DmabufSession after Close.
 var ErrClosed = errors.New("capture: client closed")
 
+// ErrToplevelBusy reports a capture of a window that already has a
+// capture session open on the same Client (a DmabufSession). wlroots
+// (sway 1.12, wlroots 0.20) gives all of a window's sessions one shared
+// capture source that renders only when the window's content changes,
+// so a session joining an open one gets its first frame only at the
+// window's next change, and on a static window never: the capture is
+// refused rather than left to block.
+var ErrToplevelBusy = errors.New("capture: the window already has a capture session open on this client")
+
 // Client is a private Wayland connection dedicated to screen capture.
 // It binds whichever capture protocols the compositor offers and
 // tracks the outputs; every capture call blocks on the calling
@@ -76,6 +85,9 @@ type Client struct {
 
 	outputs   []*outputState
 	toplevels []*toplevelState
+	// sessionToplevels are the windows with a capture session open on
+	// this client: one at a time each (ErrToplevelBusy).
+	sessionToplevels map[*wlr.ForeignToplevelHandleV1]struct{}
 
 	// slot is the reusable screencopy target (see shm.go); dmabufProbe
 	// caches each output's advertised dmabuf format.
@@ -106,9 +118,10 @@ func ConnectTo(socket string) (*Client, error) {
 		return nil, fmt.Errorf("capture: connect: %w", err)
 	}
 	c := &Client{
-		display:     display,
-		ctx:         display.Context(),
-		dmabufProbe: make(map[*wl.Output]dmabufProbe),
+		display:          display,
+		ctx:              display.Context(),
+		dmabufProbe:      make(map[*wl.Output]dmabufProbe),
+		sessionToplevels: make(map[*wlr.ForeignToplevelHandleV1]struct{}),
 	}
 	display.AddErrorHandler(c)
 	display.AddDeleteIdHandler(c)

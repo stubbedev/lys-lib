@@ -123,17 +123,18 @@ func (c *Client) Refresh() error {
 	return c.roundtrip()
 }
 
-// imageSource implements Source: an output capture source.
-func (o Output) imageSource(c *Client) (*wlr.ImageCaptureSourceV1, error) {
+// imageSource implements Source: an output capture source. An output's
+// sessions claim nothing: they may overlap.
+func (o Output) imageSource(c *Client) (*wlr.ImageCaptureSourceV1, func(), error) {
 	if c.copyCapture == nil || c.outputSource == nil {
-		return nil, fmt.Errorf("%w: %s + %s", ErrUnsupported, ifaceCopyCapture, ifaceOutputSource)
+		return nil, nil, fmt.Errorf("%w: %s + %s", ErrUnsupported, ifaceCopyCapture, ifaceOutputSource)
 	}
 	if o.wl == nil || !slices.ContainsFunc(c.outputs, func(s *outputState) bool { return s.out.wl == o.wl }) {
-		return nil, fmt.Errorf("capture: output %q is not one of this client's", o.Name)
+		return nil, nil, fmt.Errorf("capture: output %q is not one of this client's", o.Name)
 	}
 	source, err := c.outputSource.CreateSource(o.wl)
 	if err != nil {
-		return nil, fmt.Errorf("capture: output %q source: %w", o.Name, err)
+		return nil, nil, fmt.Errorf("capture: output %q source: %w", o.Name, err)
 	}
-	return source, nil
+	return source, func() {}, nil
 }

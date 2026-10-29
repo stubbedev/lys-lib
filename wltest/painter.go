@@ -203,13 +203,27 @@ func (p *Painter) Window(appID, title string, w, h int32, c color.RGBA) *Window 
 
 // Resize repaints the window at w x h.
 func (w *Window) Resize(width, height int32) {
+	w.s.p.t.Helper()
+	w.paint(func(s *painted) { s.w, s.h = width, height })
+}
+
+// Repaint paints the window again at its size: a change of content the
+// compositor sees, with no change of size.
+func (w *Window) Repaint() {
+	w.s.p.t.Helper()
+	w.paint(func(*painted) {})
+}
+
+// paint applies resize to the window's surface and paints it, under
+// the painter's paint lock.
+func (w *Window) paint(resize func(*painted)) {
 	p := w.s.p
 	p.t.Helper()
 	p.paintMu.Lock()
 	defer p.paintMu.Unlock()
-	w.s.w, w.s.h = width, height
+	resize(w.s)
 	if err := w.s.paint(); err != nil {
-		p.t.Fatalf("wltest: resize the window to %dx%d: %v", width, height, err)
+		p.t.Fatalf("wltest: paint the window at %dx%d: %v", w.s.w, w.s.h, err)
 	}
 }
 

@@ -92,6 +92,12 @@ func (c *Client) Toplevels() ([]Toplevel, error) {
 // CaptureToplevel copies one frame of a window through
 // ext-image-copy-capture: a capture source from the toplevel handle, a
 // session whose constraints size the shm buffer, and one frame.
+//
+// It must not overlap a DmabufSession on the same window: on this
+// Client that is ErrToplevelBusy; on another Client or in another
+// process, which this one cannot see, wlroots compositors (sway) copy
+// the frame only once the window's content next changes, so the call
+// blocks until then.
 func (c *Client) CaptureToplevel(t Toplevel, opts Options) (*Frame, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -99,24 +105,29 @@ func (c *Client) CaptureToplevel(t Toplevel, opts Options) (*Frame, error) {
 }
 
 // imageSource implements Source: a foreign-toplevel capture source on
-// the window's handle.
-func (t Toplevel) imageSource(c *Client) (*wlr.ImageCaptureSourceV1, error) {
+// the window's handle, claiming the window for the session's lifetime
+// (ErrToplevelBusy).
+func (t Toplevel) imageSource(c *Client) (*wlr.ImageCaptureSourceV1, func(), error) {
 	if c.copyCapture == nil || c.toplevelSrc == nil {
-		return nil, fmt.Errorf("%w: %s + %s", ErrUnsupported, ifaceCopyCapture, ifaceToplevelSrc)
+		return nil, nil, fmt.Errorf("%w: %s + %s", ErrUnsupported, ifaceCopyCapture, ifaceToplevelSrc)
 	}
 	if t.handle == nil {
-		return nil, fmt.Errorf("capture: toplevel %q is not from this client", t.Title)
+		return nil, nil, fmt.Errorf("capture: toplevel %q is not from this client", t.Title)
 	}
 	// A closed window's handle is destroyed; sending a request against
 	// it would be a protocol error that kills the connection.
 	if !slices.ContainsFunc(c.toplevels, func(s *toplevelState) bool { return s.tl.handle == t.handle }) {
-		return nil, fmt.Errorf("%w: the window %q closed", ErrFailed, t.Title)
+		return nil, nil, fmt.Errorf("%w: the window %q closed", ErrFailed, t.Title)
+	}
+	if _, busy := c.sessionToplevels[t.handle]; busy {
+		return nil, nil, fmt.Errorf("%w: %q", ErrToplevelBusy, t.Title)
 	}
 	source, err := c.toplevelSrc.CreateSource(t.handle)
 	if err != nil {
-		return nil, fmt.Errorf("capture: toplevel %q source: %w", t.Title, err)
+		return nil, nil, fmt.Errorf("capture: toplevel %q source: %w", t.Title, err)
 	}
-	return source, nil
+	c.sessionToplevels[t.handle] = struct{}{}
+	return source, func() { delete(c.sessionToplevels, t.handle) }, nil
 }
 
 // captureSourceOnce opens a session on src, negotiates, and copies one

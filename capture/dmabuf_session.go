@@ -34,6 +34,13 @@ type DmabufSession struct {
 // ErrUnsupported means the compositor lacks the session's protocols or
 // offers this source no dmabuf layout with an explicit modifier, and
 // ErrSessionStopped that the source went away first.
+//
+// A window takes one session at a time: while the session is open,
+// CaptureToplevel and another OpenDmabufSession on the same window and
+// Client fail with ErrToplevelBusy, as wlroots compositors (sway) would
+// copy the joining session's first frame only once the window's content
+// next changes. A session on the window from another Client or process
+// cannot be detected here and has that wait.
 func (c *Client) OpenDmabufSession(src Source, cursor bool) (*DmabufSession, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()

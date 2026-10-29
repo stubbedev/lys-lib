@@ -201,20 +201,7 @@ func TestHeadlessToplevelCapture(t *testing.T) {
 	if !c.HasToplevelCapture() {
 		t.Fatal("sway offers ext toplevel capture")
 	}
-	var target capture.Toplevel
-	wltest.Eventually(t, "toplevel listed", func() error {
-		tls, err := c.Toplevels()
-		if err != nil {
-			return err
-		}
-		for _, tl := range tls {
-			if tl.AppID == appID {
-				target = tl
-				return nil
-			}
-		}
-		return errors.New("not listed yet")
-	})
+	target := findToplevel(t, c, appID)
 	if target.Title != "capture target" || target.Identifier == "" {
 		t.Fatalf("toplevel metadata %+v", target)
 	}

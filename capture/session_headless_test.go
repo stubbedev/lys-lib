@@ -20,6 +20,12 @@ func showWindow(t *testing.T, c *capture.Client, appID string, w, h int32) (*wlt
 	p := wltest.NewPainter(t)
 	win := p.Window(appID, "session target", w, h, fillGreen)
 	p.Run()
+	return win, findToplevel(t, c, appID)
+}
+
+// findToplevel waits for the window of appID in c's toplevel list.
+func findToplevel(t *testing.T, c *capture.Client, appID string) capture.Toplevel {
+	t.Helper()
 	var target capture.Toplevel
 	wltest.Eventually(t, "toplevel listed", func() error {
 		tls, err := c.Toplevels()
@@ -33,7 +39,7 @@ func showWindow(t *testing.T, c *capture.Client, appID string, w, h int32) (*wlt
 		target = tls[i]
 		return nil
 	})
-	return win, target
+	return target
 }
 
 // gpuTarget is a GPU buffer allocated in one of a session's dmabuf
@@ -162,8 +168,9 @@ func awaitCapture(t *testing.T, s *capture.DmabufSession, buf *capture.DmabufBuf
 // a GPU (just gpu-host); the pixman gate skips it.
 func TestHeadlessToplevelDmabufSession(t *testing.T) {
 	wltest.Require(t)
+	const appID = "dev.stubbe.lys.ui.dmabufsession"
 	c := captureClient(t)
-	win, target := showWindow(t, c, "dev.stubbe.lys.ui.dmabufsession", 320, 200)
+	win, target := showWindow(t, c, appID, 320, 200)
 	s, formats := openDmabufSession(t, c, target)
 	for _, f := range formats {
 		if f.Width != 320 || f.Height != 200 || f.Device == 0 || len(f.Modifiers) == 0 {
@@ -175,8 +182,9 @@ func TestHeadlessToplevelDmabufSession(t *testing.T) {
 	wantGreen(t, s, first, win)
 
 	t.Run("Close wakes a capture of a static window", func(t *testing.T) {
-		parked, _ := openDmabufSession(t, c, target)
-		buf := allocate(t, c, formats)
+		other := captureClient(t)
+		parked, _ := openDmabufSession(t, other, findToplevel(t, other, appID))
+		buf := allocate(t, other, formats)
 		if err := captureRepainting(t, parked, buf.imported, win); err != nil {
 			t.Fatalf("first frame: %v", err)
 		}
@@ -257,6 +265,61 @@ func TestHeadlessToplevelDmabufSession(t *testing.T) {
 			t.Fatal("opened a session on a closed window")
 		}
 	})
+}
+
+// TestHeadlessToplevelSessionOverlap pins that a window takes one
+// capture session at a time on a Client (#45): while a DmabufSession
+// is open on a static window, CaptureToplevel and a second session on
+// it fail at once with ErrToplevelBusy instead of waiting for a change
+// of the window that never comes, and the window captures again once
+// the session closed.
+func TestHeadlessToplevelSessionOverlap(t *testing.T) {
+	wltest.Require(t)
+	c := captureClient(t)
+	win, target := showWindow(t, c, "dev.stubbe.lys.ui.sessionoverlap", 320, 200)
+	s, _ := openDmabufSession(t, c, target)
+	var during [2]error
+	for i := range during {
+		during[i] = captureToplevelPromptly(t, c, target, win)
+	}
+	for i, err := range during {
+		if !errors.Is(err, capture.ErrToplevelBusy) {
+			t.Fatalf("CaptureToplevel %d during the session = %v, want ErrToplevelBusy", i+1, err)
+		}
+	}
+	if _, err := c.OpenDmabufSession(target, false); !errors.Is(err, capture.ErrToplevelBusy) {
+		t.Fatalf("a second session on the window = %v, want ErrToplevelBusy", err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 2 {
+		if err := captureToplevelPromptly(t, c, target, win); err != nil {
+			t.Fatalf("CaptureToplevel %d after the session closed: %v", i+1, err)
+		}
+	}
+}
+
+// captureToplevelPromptly runs one CaptureToplevel off the test
+// goroutine and fails the test when it has not returned within five
+// seconds, repainting the window then so the parked capture returns
+// and the client is free for cleanup.
+func captureToplevelPromptly(t *testing.T, c *capture.Client, target capture.Toplevel, win *wltest.Window) error {
+	t.Helper()
+	done := make(chan error, 1)
+	go func() {
+		_, err := c.CaptureToplevel(target, capture.Options{})
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(5 * time.Second):
+		win.Repaint()
+		<-done
+		t.Fatal("CaptureToplevel blocked")
+		return nil
+	}
 }
 
 // TestHeadlessOutputDmabufSession pins that a session opens on any

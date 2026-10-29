@@ -15,7 +15,9 @@ import (
 // Source is what an ext-image-copy-capture session captures: an Output
 // or a Toplevel, as the Client that opens the session lists them.
 type Source interface {
-	imageSource(c *Client) (*wlr.ImageCaptureSourceV1, error)
+	// imageSource creates a capture source on c, and the release of
+	// the claim the session opened on it holds until it is destroyed.
+	imageSource(c *Client) (*wlr.ImageCaptureSourceV1, func(), error)
 }
 
 // ErrSessionStopped reports that the compositor ended a capture
@@ -255,10 +257,12 @@ func sessionOptions(cursor bool) uint32 {
 	return 0
 }
 
-// copySession is an open ext-image-copy-capture session and the
-// capture source it was opened on.
+// copySession is an open ext-image-copy-capture session, the capture
+// source it was opened on, and the release of its claim on that
+// source.
 type copySession struct {
 	source  *wlr.ImageCaptureSourceV1
+	release func()
 	session *wlr.ImageCopyCaptureSessionV1
 	state   *sessionState
 }
@@ -270,16 +274,16 @@ func (c *Client) openSession(src Source, cursor bool) (*copySession, error) {
 	if err := c.usable(); err != nil {
 		return nil, err
 	}
-	source, err := src.imageSource(c)
+	source, release, err := src.imageSource(c)
 	if err != nil {
 		return nil, err
 	}
 	session, err := c.copyCapture.CreateSession(source, sessionOptions(cursor))
 	if err != nil {
-		_ = source.Destroy()
-		return nil, fmt.Errorf("capture: create a capture session: %w", err)
+		release()
+		return nil, errors.Join(fmt.Errorf("capture: create a capture session: %w", err), source.Destroy())
 	}
-	cs := &copySession{source: source, session: session, state: &sessionState{}}
+	cs := &copySession{source: source, release: release, session: session, state: &sessionState{}}
 	cs.state.listen(session)
 	if err := c.dispatchUntil(func() bool { return cs.state.stopped || cs.state.generation > 0 }); err != nil {
 		return nil, errors.Join(err, cs.destroy())
@@ -302,8 +306,9 @@ func (cs *copySession) usable() error {
 	return cs.state.err
 }
 
-// destroy releases the session and its source.
+// destroy releases the session, its source and its claim on it.
 func (cs *copySession) destroy() error {
+	cs.release()
 	err := errors.Join(cs.session.Destroy(), cs.source.Destroy())
 	if err != nil {
 		return fmt.Errorf("capture: destroy the capture session: %w", err)
