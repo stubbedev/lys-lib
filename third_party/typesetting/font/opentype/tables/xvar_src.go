@@ -219,7 +219,7 @@ type Gvar struct {
 	flags                         uint16                                                                                         // Bit-field that gives the format of the offset array that follows. If bit 0 is clear, the offsets are uint16; if bit 0 is set, the offsets are uint32.
 	glyphVariationDataArrayOffset Offset32                                                                                       // Offset from the start of this table to the array of GlyphVariationData tables.
 	glyphVariationDataOffsets     []uint32                                                                                       `isOpaque:"" subsliceStart:"AtCurrent"` // [glyphCount + 1]Offset16 or Offset32 Offsets from the start of the GlyphVariationData array to each GlyphVariationData table.
-	GlyphVariationDatas           []GlyphVariationData                                                                           `isOpaque:""`
+	data                          []byte                                                                                         `isOpaque:""`                           // The whole table, which [Gvar.GlyphVariationData] reads a glyph's variations from.
 }
 
 func (gv *Gvar) parseGlyphVariationDataOffsets(src []byte) error {
@@ -228,30 +228,41 @@ func (gv *Gvar) parseGlyphVariationDataOffsets(src []byte) error {
 	return err
 }
 
-func (gv *Gvar) parseGlyphVariationDatas(src []byte) error {
-	gv.GlyphVariationDatas = make([]GlyphVariationData, gv.glyphCount)
-	startArray := uint32(gv.glyphVariationDataArrayOffset)
-	for i := range gv.GlyphVariationDatas {
-		start, end := int(startArray+gv.glyphVariationDataOffsets[i]), int(startArray+gv.glyphVariationDataOffsets[i+1])
-		if start == end {
-			continue
-		}
-
-		if start > end {
-			return fmt.Errorf("invalid offsets %d > %d", start, end)
-		}
-
-		if L := len(src); L < end {
-			return fmt.Errorf("EOF: expected length: %d, got %d", end, L)
-		}
-
-		var err error
-		gv.GlyphVariationDatas[i], _, err = ParseGlyphVariationData(src[start:end], int(gv.axisCount))
-		if err != nil {
-			return err
+func (gv *Gvar) parseData(src []byte) error {
+	start := uint64(gv.glyphVariationDataArrayOffset)
+	for i, end := range gv.glyphVariationDataOffsets[1:] {
+		if begin := gv.glyphVariationDataOffsets[i]; begin > end {
+			return fmt.Errorf("invalid offsets %d > %d for glyph %d", begin, end, i)
 		}
 	}
+	if last, L := start+uint64(gv.glyphVariationDataOffsets[gv.glyphCount]), uint64(len(src)); L < last {
+		return fmt.Errorf("EOF: expected length: %d, got %d", last, L)
+	}
+	gv.data = src
 	return nil
+}
+
+// Len returns the number of glyphs the table has variations for, 0 for
+// an absent table.
+func (gv Gvar) Len() int { return int(gv.glyphCount) }
+
+// GlyphVariationData decodes the variations of the glyph [gid]; a glyph
+// without variations has the zero GlyphVariationData. The table is kept
+// raw, so a face does not hold the variations of every glyph.
+func (gv Gvar) GlyphVariationData(gid GlyphID) (GlyphVariationData, error) {
+	if int(gid) >= gv.Len() {
+		return GlyphVariationData{}, fmt.Errorf("reading Gvar: glyph %d out of range (%d glyphs)", gid, gv.Len())
+	}
+	start := uint64(gv.glyphVariationDataArrayOffset)
+	begin, end := start+uint64(gv.glyphVariationDataOffsets[gid]), start+uint64(gv.glyphVariationDataOffsets[gid+1])
+	if begin == end {
+		return GlyphVariationData{}, nil
+	}
+	out, _, err := ParseGlyphVariationData(gv.data[begin:end], int(gv.axisCount))
+	if err != nil {
+		return GlyphVariationData{}, fmt.Errorf("reading Gvar: glyph %d: %w", gid, err)
+	}
+	return out, nil
 }
 
 type SharedTuples struct {

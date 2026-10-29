@@ -48,41 +48,23 @@ func (mv mvar) getVar(tag Tag, coords []VarCoord) float32 {
 // ---------------------------------- gvar ----------------------------------
 
 type gvar struct {
-	sharedTuples         [][]VarCoord       // with size tupleCount x axisCount
-	variations           [][]tupleVariation // with length glyphCount
-	sharedTupleActiveIdx []int              // with length tupleCount
+	table                tables.Gvar
+	sharedTuples         [][]VarCoord // with size tupleCount x axisCount
+	sharedTupleActiveIdx []int        // with length tupleCount
 }
 
 func newGvar(table tables.Gvar, glyf tables.Glyf) (gvar, error) {
-	if len(table.GlyphVariationDatas) != glyf.Len() {
+	if table.Len() != glyf.Len() {
 		return gvar{}, fmt.Errorf("invalid 'gvar' table: mismatch in glyphs count")
 	}
 
 	out := gvar{
+		table:                table,
 		sharedTuples:         make([][]VarCoord, len(table.SharedTuples.SharedTuples)),
-		variations:           make([][]tupleVariation, len(table.GlyphVariationDatas)),
 		sharedTupleActiveIdx: make([]int, len(table.SharedTuples.SharedTuples)),
 	}
 	for i, ts := range table.SharedTuples.SharedTuples {
 		out.sharedTuples[i] = ts.Values
-	}
-	for i, vs := range table.GlyphVariationDatas {
-		tvs := make([]tupleVariation, len(vs.TupleVariationHeaders))
-		for j, header := range vs.TupleVariationHeaders {
-			tvs[j].TupleVariationHeader = header
-		}
-
-		pointNumbersCount, err := glyf.PointNumbersCount(tables.GlyphID(i))
-		if err != nil {
-			return out, err
-		}
-		pointsNumberCountAll := pointNumbersCount + phantomCount
-		err = parseGlyphVariationSerializedData(vs.SerializedData,
-			vs.HasSharedPointNumbers(), pointsNumberCountAll, false, tvs)
-		if err != nil {
-			return out, err
-		}
-		out.variations[i] = tvs
 	}
 
 	// For shared tuples that only have one axis active, share the index of
@@ -103,6 +85,23 @@ func newGvar(table tables.Gvar, glyf tables.Glyf) (gvar, error) {
 	}
 
 	return out, nil
+}
+
+// glyphVariations decodes the tuple variations of [glyph], whose outline
+// has [pointCount] points, phantom points included.
+func (gvar gvar) glyphVariations(glyph gID, pointCount int) ([]tupleVariation, error) {
+	data, err := gvar.table.GlyphVariationData(glyph)
+	if err != nil {
+		return nil, err
+	}
+	tvs := make([]tupleVariation, len(data.TupleVariationHeaders))
+	for i, header := range data.TupleVariationHeaders {
+		tvs[i].TupleVariationHeader = header
+	}
+	if err := parseGlyphVariationSerializedData(data.SerializedData, data.HasSharedPointNumbers(), pointCount, tvs); err != nil {
+		return nil, fmt.Errorf("invalid 'gvar' table: glyph %d: %w", glyph, err)
+	}
+	return tvs, nil
 }
 
 type tupleVariation struct {
@@ -171,7 +170,7 @@ func (t tupleVariation) calculateScalar(coords []VarCoord, sharedTuples [][]VarC
 
 // complete `out`, which contains the parsed tuple headers.
 // pointNumbersCountAll is used when the tuple variation data provides deltas for all glyph points
-func parseGlyphVariationSerializedData(data []byte, hasSharedPoints bool, pointNumbersCountAll int, isCvar bool, out []tupleVariation) error {
+func parseGlyphVariationSerializedData(data []byte, hasSharedPoints bool, pointNumbersCountAll int, out []tupleVariation) error {
 	var (
 		sharedPointNumbers []uint16
 		err                error
@@ -203,14 +202,15 @@ func parseGlyphVariationSerializedData(data []byte, hasSharedPoints bool, pointN
 		if privatePointNumbers != nil {
 			pointCount = len(privatePointNumbers)
 		}
+		for _, pt := range privatePointNumbers {
+			if int(pt) >= pointNumbersCountAll {
+				return fmt.Errorf("invalid glyph variation point number %d for %d points", pt, pointNumbersCountAll)
+			}
+		}
 
 		out[i].pointNumbers = privatePointNumbers
 
-		if !isCvar {
-			pointCount *= 2 // for X and Y
-		}
-
-		out[i].deltas, err = unpackDeltas(data, pointCount)
+		out[i].deltas, err = unpackDeltas(data, 2*pointCount)
 		if err != nil {
 			return err
 		}
@@ -342,7 +342,8 @@ func (gvar gvar) applyDeltasToPoints(glyph gID, coords []VarCoord, points []cont
 	// adapted from harfbuzz/src/hb-ot-var-gvar-table.hh
 	const phantomOnly = false
 
-	if int(glyph) >= len(gvar.variations) { // should not happend
+	varData, err := gvar.glyphVariations(glyph, len(points))
+	if err != nil || len(varData) == 0 {
 		return
 	}
 
@@ -351,7 +352,6 @@ func (gvar gvar) applyDeltasToPoints(glyph gID, coords []VarCoord, points []cont
 	// flag is used to indicate referenced point
 	deltas := make([]contourPoint, len(points))
 
-	varData := gvar.variations[glyph]
 	for _, tuple := range varData {
 		scalar := tuple.calculateScalar(coords, gvar.sharedTuples, gvar.sharedTupleActiveIdx)
 		if scalar == 0 {

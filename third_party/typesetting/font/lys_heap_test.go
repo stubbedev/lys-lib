@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-const lysFaceHeapBudget = 1.45
+const lysQuicksandVF = "../../../render/testdata/Quicksand-VF.ttf"
 
 func lysDejaVuSans(t testing.TB) []byte {
 	t.Helper()
@@ -22,30 +22,50 @@ func lysDejaVuSans(t testing.TB) []byte {
 	return data
 }
 
-func TestFaceHeapIsAboutItsFileSize(t *testing.T) {
-	data := lysDejaVuSans(t)
-	const faces = 4
-	held := make([]*Face, faces)
-
-	var before, after runtime.MemStats
-	runtime.GC()
-	runtime.ReadMemStats(&before)
-	for i := range held {
-		face, err := ParseTTF(bytes.NewReader(data))
-		if err != nil {
-			t.Fatalf("parse DejaVu Sans: %v", err)
-		}
-		held[i] = face
+func lysQuicksand(t testing.TB) []byte {
+	t.Helper()
+	data, err := os.ReadFile(lysQuicksandVF)
+	if err != nil {
+		t.Fatalf("read Quicksand: %v", err)
 	}
-	runtime.GC()
-	runtime.ReadMemStats(&after)
-	runtime.KeepAlive(data)
-	runtime.KeepAlive(held)
+	return data
+}
 
-	perFace := float64(int64(after.HeapAlloc)-int64(before.HeapAlloc)) / faces
-	ratio := perFace / float64(len(data))
-	t.Logf("%.0f B of heap per face for a %d B file (%.2fx)", perFace, len(data), ratio)
-	if ratio > lysFaceHeapBudget {
-		t.Errorf("a face holds %.2fx its file in heap, over the %.2fx budget", ratio, lysFaceHeapBudget)
+func TestFaceHeapIsAboutItsFileSize(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		font   func(testing.TB) []byte
+		budget float64
+	}{
+		{"static DejaVu Sans", lysDejaVuSans, 1.45},
+		{"variable Quicksand", lysQuicksand, 2.2},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data := tc.font(t)
+			const faces = 16
+			held := make([]*Face, faces)
+
+			var before, after runtime.MemStats
+			runtime.GC()
+			runtime.ReadMemStats(&before)
+			for i := range held {
+				face, err := ParseTTF(bytes.NewReader(data))
+				if err != nil {
+					t.Fatalf("parse %s: %v", tc.name, err)
+				}
+				held[i] = face
+			}
+			runtime.GC()
+			runtime.ReadMemStats(&after)
+			runtime.KeepAlive(data)
+			runtime.KeepAlive(held)
+
+			perFace := float64(int64(after.HeapAlloc)-int64(before.HeapAlloc)) / faces
+			ratio := perFace / float64(len(data))
+			t.Logf("%.0f B of heap per face for a %d B file (%.2fx)", perFace, len(data), ratio)
+			if ratio > tc.budget {
+				t.Errorf("a face holds %.2fx its file in heap, over the %.2fx budget", ratio, tc.budget)
+			}
+		})
 	}
 }

@@ -342,7 +342,7 @@ func ParseGvar(src []byte) (Gvar, int, error) {
 	}
 	{
 
-		err := item.parseGlyphVariationDatas(src[:])
+		err := item.parseData(src[:])
 		if err != nil {
 			return item, 0, fmt.Errorf("reading Gvar: %s", err)
 		}

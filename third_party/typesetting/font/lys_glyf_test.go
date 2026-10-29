@@ -7,7 +7,7 @@ import (
 	"github.com/stubbedev/lys-lib/third_party/typesetting/font/opentype/tables"
 )
 
-func TestGlyfHeadersAndPointCountsMatchDecodedGlyphs(t *testing.T) {
+func TestGlyfHeadersMatchDecodedGlyphs(t *testing.T) {
 	face, err := ParseTTF(bytes.NewReader(lysDejaVuSans(t)))
 	if err != nil {
 		t.Fatalf("parse DejaVu Sans: %v", err)
@@ -28,10 +28,6 @@ func TestGlyfHeadersAndPointCountsMatchDecodedGlyphs(t *testing.T) {
 		header, err := glyf.Header(gid)
 		if err != nil || header != glyph.GlyphHeader {
 			t.Fatalf("glyph %d header %+v, %v; decoded %+v", gid, header, err, glyph.GlyphHeader)
-		}
-		count, err := glyf.PointNumbersCount(gid)
-		if err != nil || count != glyph.PointNumbersCount() {
-			t.Fatalf("glyph %d point count %d, %v; decoded %d", gid, count, err, glyph.PointNumbersCount())
 		}
 	}
 	if composites == 0 {

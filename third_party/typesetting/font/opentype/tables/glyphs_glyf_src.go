@@ -91,34 +91,6 @@ func (g Glyf) Header(gid GlyphID) (GlyphHeader, error) {
 	return parseGlyphHeader(src)
 }
 
-// PointNumbersCount returns the number of points of the glyph [gid]
-// as variation data counts them, without its phantom points: its outline
-// points for a simple glyph, its components for a composite one.
-// It reads the contour end points, not the outline.
-func (g Glyf) PointNumbersCount(gid GlyphID) (int, error) {
-	src, err := g.glyphBytes(gid)
-	if err != nil || len(src) == 0 {
-		return 0, err
-	}
-	header, err := parseGlyphHeader(src)
-	if err != nil {
-		return 0, err
-	}
-	src = src[glyphHeaderSize:]
-	if header.numberOfContours < 0 {
-		composite, _, err := ParseCompositeGlyph(src)
-		return len(composite.Glyphs), err
-	}
-	if header.numberOfContours == 0 {
-		return 0, nil
-	}
-	last := 2 * (int(header.numberOfContours) - 1)
-	if L := len(src); L < last+2 {
-		return 0, fmt.Errorf("reading SimpleGlyph: EOF: expected length: %d, got %d", last+2, L)
-	}
-	return int(binary.BigEndian.Uint16(src[last:])) + 1, nil
-}
-
 const glyphHeaderSize = 10
 
 // GlyphHeader is the fixed start of a glyph.
