@@ -18,7 +18,7 @@ where the system provides the API: libvulkan.
 
 | Package | What it is |
 | --- | --- |
-| `render` | The 2D canvas: paths, text (with `text`), images, SVG, filters and blends, on the CPU |
+| `render` | The 2D canvas: paths, text (with `text`, shaped by a patched go-text in `third_party/typesetting`), images, SVG, filters and blends, on the CPU |
 | `gpu` | Vulkan devices, the GPU renderer, exportable dmabufs, and H.264/H.265 encoding |
 | `drm`, `fourcc`, `edid` | DRM ioctls in pure Go (KMS resources, atomic commits, dumb buffers, syncobjs), DRM pixel formats and modifiers, and a display's identity from its EDID |
 | `dmabuf`, `dmabufwl`, `udmabuf` | dmabuf descriptions, their linux-dmabuf protocol plumbing, and memfd-backed udmabufs |
