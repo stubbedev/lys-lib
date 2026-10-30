@@ -16,11 +16,18 @@ its twelve jobs lands on whatever CPU GitHub's `ubuntu-latest` hands it
 3. on AVX-512 hosts, runs again with `cpuname.c` preloaded, which overrides
    `llvm::sys::getHostCPUName()` so llvmpipe compiles for the other vendor's
    CPU (znver4 on Intel, sapphirerapids on AMD);
-4. runs again with `GALLIUM_OVERRIDE_CPU_CAPS=avx` as a control.
+4. runs again with `GALLIUM_OVERRIDE_CPU_CAPS=avx` as a control;
+5. where a run faulted, rebuilds the faulting code offline and checks it
+   (below).
 
 `llc-check.sh <out-dir> [mcpu]` rebuilds the dumped `fs_variant` functions
-offline with Mesa 26.2's pass pipeline and llc, for diffing against the JIT.
-Add `-code-model=large` to match the JIT's code exactly.
+offline with Mesa 26.2's pass pipeline and
+`llc -O2 -mcpu=<mcpu> -mattr=<llvmpipe's list> -code-model=large`, which is
+what llvmpipe's JIT runs, and compiles each once more under LLVM's machine
+verifier (`-verify-machineinstrs`). `fault-check.sh <out-dir> [mcpu]` then
+compares `fault-window.bin` with each rebuild, instruction by instruction at
+the same offset into the function. Neither needs AVX-512: any x86-64 host can
+run them on a downloaded artifact.
 
 ## Results (runs 40384260347, 40386295534, 40388063210, 40389627012, 40391359714)
 

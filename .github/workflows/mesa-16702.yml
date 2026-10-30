@@ -6,6 +6,9 @@
 # keep their values across preemption (hi16.c), and runs once more with
 # llvmpipe compiling for the other vendor's CPU (cpuname.c: znver4 code on
 # Intel, sapphirerapids code on AMD), to tell the code from the CPU.
+# Where a run faulted, llc-check.sh rebuilds the dumped fs_variant
+# functions offline under LLVM's machine verifier and fault-check.sh
+# compares the faulting code with that rebuild.
 name: mesa-16702
 
 on:
@@ -46,12 +49,23 @@ jobs:
           if ! grep -qw avx512f /proc/cpuinfo; then mkdir -p out/swap; echo "result: skipped (no AVX-512)" > out/swap/system.txt; exit 0; fi
           if grep -q AuthenticAMD /proc/cpuinfo; then cpu=sapphirerapids; else cpu=znver4; fi
           nix shell --inputs-from . nixpkgs#gcc -c gcc -O2 -shared -fPIC -Wl,--version-script=repro/mesa-16702/cpuname.map -o "$PWD/cpuname.so" repro/mesa-16702/cpuname.c
+          mkdir -p out/swap
+          echo "$cpu" > out/swap/mcpu
           repro/mesa-16702/run.sh out/swap LD_PRELOAD="$PWD/cpuname.so" LYS_FAKE_CPU=$cpu
       - name: Control, GALLIUM_OVERRIDE_CPU_CAPS=avx
         run: repro/mesa-16702/run.sh out/avx GALLIUM_OVERRIDE_CPU_CAPS=avx
+      - name: Faulting code rebuilt with llc, under the machine verifier
+        run: |
+          host=$(nix shell --inputs-from . 'nixpkgs#llvmPackages_21.llvm' -c llc --version | sed -n 's/^ *Host CPU: //p')
+          for d in out/native out/swap; do
+            [[ -f "$d/fault-window.bin" ]] || continue
+            mcpu=$host
+            [[ -f "$d/mcpu" ]] && mcpu=$(cat "$d/mcpu")
+            { repro/mesa-16702/llc-check.sh "$d" "$mcpu"; repro/mesa-16702/fault-check.sh "$d" "$mcpu"; } 2>&1 | tee "$d/llc-check.txt"
+          done
       - name: Summary
         run: |
-          { tail -1 out/hi16.txt; for d in out/native out/swap out/avx; do echo "== $d"; cat "$d/system.txt"; done; } | tee -a "$GITHUB_STEP_SUMMARY"
+          { tail -1 out/hi16.txt; for d in out/native out/swap out/avx; do echo "== $d"; cat "$d/system.txt"; [[ ! -f "$d/llc-check.txt" ]] || cat "$d/llc-check.txt"; done; } | tee -a "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: attempt-${{ matrix.attempt }}
