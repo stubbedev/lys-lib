@@ -74,8 +74,10 @@ type Device struct {
 	// va is what the VA-API driver encodes, probed on first use.
 	va *vaEncoders
 	// targets and buffers are the live ones, closed with the device.
-	targets map[*Target]struct{}
-	buffers map[*Buffer]struct{}
+	targets  map[*Target]struct{}
+	buffers  map[*Buffer]struct{}
+	textures map[*Texture]struct{}
+	upload   *buffer
 	// closed marks a device Close released.
 	closed bool
 	// pixels holds the CPU scratch canvases off the Go heap: the
@@ -175,7 +177,7 @@ func open(node *drmNode) (*Device, error) {
 	if err != nil {
 		return nil, err
 	}
-	d := &Device{cmds: cmds, instance: instance, targets: map[*Target]struct{}{}, buffers: map[*Buffer]struct{}{}}
+	d := &Device{cmds: cmds, instance: instance, targets: map[*Target]struct{}{}, buffers: map[*Buffer]struct{}{}, textures: map[*Texture]struct{}{}}
 	n := physicalDeviceCount(d.cmds, d.instance)
 	phys := make([]vk.PhysicalDevice, n)
 	if n > 0 {
@@ -375,6 +377,9 @@ func (d *Device) Close() {
 	for b := range d.buffers {
 		b.Close()
 	}
+	for t := range d.textures {
+		t.Close()
+	}
 	d.closeDevice()
 }
 
@@ -382,6 +387,10 @@ func (d *Device) Close() {
 func (d *Device) closeDevice() {
 	d.cmds.DeviceWaitIdle(d.device)
 	d.closeScratch()
+	if d.upload != nil {
+		d.upload.close()
+		d.upload = nil
+	}
 	d.destroyPipelines()
 	d.pipelines = pipelines{}
 	d.cmds.DestroyCommandPool(d.device, d.pool, nil)

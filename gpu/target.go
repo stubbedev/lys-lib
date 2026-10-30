@@ -56,10 +56,9 @@ func vkFormatOf(format fourcc.Format) (vk.Format, error) {
 // encoder's NV12.
 func exportFormatOf(format fourcc.Format) (vk.Format, int, error) {
 	switch format {
-	case fourcc.ARGB8888, fourcc.XRGB8888:
-		return vk.FormatB8g8r8a8Unorm, 1, nil
-	case fourcc.NV12:
-		return nv12, 2, nil
+	case fourcc.ARGB8888, fourcc.XRGB8888, fourcc.NV12:
+		pf, err := pixelFormatOf(format)
+		return pf.vk, pf.planes, err
 	}
 	return 0, 0, fmt.Errorf("gpu: no Vulkan format for DRM format %s", format)
 }
