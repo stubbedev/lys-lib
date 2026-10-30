@@ -56,3 +56,11 @@ const (
 	FormatFeatureDisjointBit FormatFeatureFlagBits = 1 << 22
 	ImageCreateDisjointBit   ImageCreateFlagBits   = 1 << 9
 )
+
+// Core 1.1 external semaphore structure types vk-gen leaves out, for
+// sync_file export and the query of what a device exports.
+const (
+	StructureTypePhysicalDeviceExternalSemaphoreInfo StructureType = 1000076000
+	StructureTypeExternalSemaphoreProperties         StructureType = 1000076001
+	StructureTypeExportSemaphoreCreateInfo           StructureType = 1000077000
+)

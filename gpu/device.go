@@ -88,6 +88,7 @@ type Device struct {
 	pixels memory.Local
 	pipelines
 	scratch
+	timing
 }
 
 // Open picks the first Vulkan device with a graphics queue that
@@ -283,6 +284,7 @@ func (d *Device) pick(p vk.PhysicalDevice, exporting bool, node *drmNode) error 
 				d.renderNode = fmt.Sprintf("/dev/dri/renderD%d", drm.RenderMinor)
 			}
 			d.sync2 = d.probeSync2(p, props.ApiVersion)
+			d.timingExts = d.probeTiming(p, have, &props, f)
 			d.video, d.videoWhy = d.probeVideo(p, d.sync2, have)
 			return nil
 		}
@@ -301,6 +303,7 @@ func (d *Device) open() error {
 	if d.exports {
 		exts = append(exts, exportExtensions...)
 	}
+	exts = append(exts, d.timingExts...)
 	f13 := vk.PhysicalDeviceVulkan13Features{SType: vk.StructureTypePhysicalDeviceVulkan13Features, Synchronization2: vk.True}
 	if d.sync2 {
 		dci.PNext = (*uintptr)(unsafe.Pointer(&f13))
@@ -388,6 +391,7 @@ func (d *Device) Close() {
 // closeDevice releases the logical device and what was made on it.
 func (d *Device) closeDevice() {
 	d.cmds.DeviceWaitIdle(d.device)
+	d.closeTiming()
 	d.closeScratch()
 	if d.upload != nil {
 		d.upload.close()
@@ -455,28 +459,10 @@ func (d *Device) freeMemory(mems []vk.DeviceMemory) {
 // submit records one command buffer with record, runs it and waits for
 // it to finish.
 func (d *Device) submit(record func(cb vk.CommandBuffer)) error {
-	cai := vk.CommandBufferAllocateInfo{SType: vk.StructureTypeCommandBufferAllocateInfo, CommandPool: d.pool, Level: vk.CommandBufferLevelPrimary, CommandBufferCount: 1}
-	var cb vk.CommandBuffer
-	if r := d.cmds.AllocateCommandBuffers(d.device, &cai, &cb); r != vk.Success {
-		return fmt.Errorf("gpu: vkAllocateCommandBuffers: %d", r)
+	if err := d.submitAsync(record, false); err != nil {
+		return err
 	}
-	defer d.cmds.FreeCommandBuffers(d.device, d.pool, 1, &cb)
-	cbi := vk.CommandBufferBeginInfo{SType: vk.StructureTypeCommandBufferBeginInfo, Flags: vk.CommandBufferUsageFlags(vk.CommandBufferUsageOneTimeSubmitBit)}
-	if r := d.cmds.BeginCommandBuffer(cb, &cbi); r != vk.Success {
-		return fmt.Errorf("gpu: vkBeginCommandBuffer: %d", r)
-	}
-	record(cb)
-	if r := d.cmds.EndCommandBuffer(cb); r != vk.Success {
-		return fmt.Errorf("gpu: vkEndCommandBuffer: %d", r)
-	}
-	si := vk.SubmitInfo{SType: vk.StructureTypeSubmitInfo, CommandBufferCount: 1, PCommandBuffers: &cb}
-	if r := d.cmds.QueueSubmit(d.queue, 1, &si, 0); r != vk.Success {
-		return fmt.Errorf("gpu: vkQueueSubmit: %d", r)
-	}
-	if r := d.cmds.QueueWaitIdle(d.queue); r != vk.Success {
-		return fmt.Errorf("gpu: vkQueueWaitIdle: %d", r)
-	}
-	return nil
+	return d.idle()
 }
 
 func vkVersion(major, minor uint32) uint32 { return major<<22 | minor<<12 }

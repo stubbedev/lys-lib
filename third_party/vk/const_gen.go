@@ -5145,7 +5145,7 @@ const (
 	StructureTypeExternalFormatQnx                                            StructureType = 1000529003
 	StructureTypePhysicalDeviceExternalMemoryScreenBufferFeaturesQnx          StructureType = 1000529004
 	StructureTypePhysicalDeviceLayeredDriverPropertiesMsft                    StructureType = 1000530000
-	StructureTypeCalibratedTimestampInfoKhr                                   StructureType = 1000543000
+	StructureTypeCalibratedTimestampInfoKhr                                   StructureType = 1000184000
 	StructureTypeSetDescriptorBufferOffsetsInfoExt                            StructureType = 1000545007
 	StructureTypeBindDescriptorBufferEmbeddedSamplersInfoExt                  StructureType = 1000545008
 	StructureTypePhysicalDeviceDescriptorPoolOverallocationFeaturesNv         StructureType = 1000546000

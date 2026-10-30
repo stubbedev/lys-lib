@@ -54,7 +54,12 @@ func TestImportTargetDrawsIntoAUdmabuf(t *testing.T) {
 		p.Clear(color.RGBA{0, 0, 255, 255})
 		p.FillRect(image.Rect(4, 0, 16, 8), color.RGBA{0, 255, 0, 255})
 	})
-	at := func(x, y int) [4]byte { return [4]byte(u.Mem[y*linearStride+x*4:]) }
+	at := func(x, y int) [4]byte {
+		if err := d.Finish(); err != nil {
+			t.Fatal(err)
+		}
+		return [4]byte(u.Mem[y*linearStride+x*4:])
+	}
 	for y := range h {
 		for x := range w {
 			want := [4]byte{0x11, 0x11, 0x11, 0x11}

@@ -158,6 +158,7 @@ func (t *Texture) Close() {
 		return
 	}
 	t.closed = true
+	_ = t.d.idle()
 	delete(t.d.textures, t)
 	t.release()
 }

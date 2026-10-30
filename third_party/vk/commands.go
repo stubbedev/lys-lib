@@ -113,6 +113,11 @@ func (c *Commands) LoadInstance(instance Instance) error {
 	c.getPhysicalDeviceFormatProperties2 = GetInstanceProcAddr(instance, "vkGetPhysicalDeviceFormatProperties2")
 	c.getPhysicalDeviceQueueFamilyProperties2 = GetInstanceProcAddr(instance, "vkGetPhysicalDeviceQueueFamilyProperties2")
 	c.getPhysicalDeviceImageFormatProperties2 = GetInstanceProcAddr(instance, "vkGetPhysicalDeviceImageFormatProperties2")
+	c.getPhysicalDeviceExternalSemaphoreProperties = GetInstanceProcAddr(instance, "vkGetPhysicalDeviceExternalSemaphoreProperties")
+	c.getPhysicalDeviceCalibrateableTimeDomainsKHR = GetInstanceProcAddr(instance, "vkGetPhysicalDeviceCalibrateableTimeDomainsKHR")
+	if c.getPhysicalDeviceCalibrateableTimeDomainsKHR == nil {
+		c.getPhysicalDeviceCalibrateableTimeDomainsKHR = GetInstanceProcAddr(instance, "vkGetPhysicalDeviceCalibrateableTimeDomainsEXT")
+	}
 
 	// VK_KHR_video_queue and VK_KHR_video_encode_queue: what a device
 	// encodes, in which formats and at which quality levels.
@@ -173,6 +178,12 @@ func (c *Commands) LoadDevice(device Device) error {
 	c.destroyFence = c.deviceProcAddr(device, "vkDestroyFence")
 	c.resetFences = c.deviceProcAddr(device, "vkResetFences")
 	c.getFenceStatus = c.deviceProcAddr(device, "vkGetFenceStatus")
+	c.importSemaphoreFdKHR = c.deviceProcAddr(device, "vkImportSemaphoreFdKHR")
+	c.getSemaphoreFdKHR = c.deviceProcAddr(device, "vkGetSemaphoreFdKHR")
+	c.getCalibratedTimestampsKHR = c.deviceProcAddr(device, "vkGetCalibratedTimestampsKHR")
+	if c.getCalibratedTimestampsKHR == nil {
+		c.getCalibratedTimestampsKHR = c.deviceProcAddr(device, "vkGetCalibratedTimestampsEXT")
+	}
 	c.waitForFences = c.deviceProcAddr(device, "vkWaitForFences")
 	c.createSemaphore = c.deviceProcAddr(device, "vkCreateSemaphore")
 	c.destroySemaphore = c.deviceProcAddr(device, "vkDestroySemaphore")

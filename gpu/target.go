@@ -99,6 +99,7 @@ func (t *Target) Close() {
 	}
 	t.closed = true
 	d := t.s.d
+	_ = d.idle()
 	delete(d.targets, t)
 	t.s.close()
 	if t.offscreen {

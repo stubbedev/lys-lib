@@ -166,3 +166,15 @@ through its own instance's, which `LoadInstance` already loaded.
 for binding a disjoint imported image plane by plane.
 `const_lysui.go`: the core 1.1 bind and memory-requirement structure
 types, the disjoint format feature and the disjoint image create flag.
+
+### Explicit sync and calibrated timestamps
+
+`commands.go`: `LoadInstance` loads
+`vkGetPhysicalDeviceExternalSemaphoreProperties` and
+`vkGetPhysicalDeviceCalibrateableTimeDomainsKHR` (its EXT name where
+the KHR one is missing); `LoadDevice` loads `vkImportSemaphoreFdKHR`,
+`vkGetSemaphoreFdKHR` and `vkGetCalibratedTimestampsKHR` (or EXT).
+All had fields and wrappers. `const_gen.go`:
+`StructureTypeCalibratedTimestampInfoKhr` is 1000184000, the header's,
+not vk-gen's 1000543000 (one of the extnumber values above).
+`const_lysui.go`: the core 1.1 external semaphore structure types.
