@@ -142,3 +142,36 @@ holds because the miscompiled select then has no zero lane to replace. Why
 `TestRenderBlendModes` crashes only after `TestRenderTiles` is not explained
 yet: the code is the same in both, so the difference must be in which path
 reaches the fault, or in what ymm20 holds when it does.
+
+Run 41097735029 confirmed this on all twelve runners. Every SIGFPE (seven of
+them) ran code built for znver4 or znver5, including on Intel Xeon 8370C and
+8573C forced to znver4. Every such compile fails the verifier on
+`AVX2_SETALLONES`, and every fault matches the llc rebuild. Every pass ran
+code built for sapphirerapids or AVX2. LLVM reports the EPYC 9V45 as znver5.
+
+## Reduced: `setallones-ymm16-31.ll`
+
+`llvm-reduce` (with the verifier error as the test) cut the 535 KB module down
+to 191 lines, which shows the bug without any Mesa code:
+
+```
+llc -O2 -mcpu=znver4 -code-model=large -verify-machineinstrs -filetype=null setallones-ymm16-31.ll
+```
+
+LLVM 21.1.8 rejects `%584:vr256x = AVX2_SETALLONES`. Without the verifier, it
+allocates `$ymm29` to that value and emits `c4 01 15 76 ed`, which is
+`vpcmpeqd %ymm13,%ymm13,%ymm13`. `-code-model=large`, which llvmpipe uses, is
+needed for the reduced file to fail.
+
+## Fixed in LLVM 22
+
+LLVM 22.1.8 and 23.1.3 compile both the reduced file and all four full
+modules without a verifier error. They materialize the all-ones values in
+ymm16-31 with `AVX512_256_SETALLONES`, which expands to EVEX `vpternlogd`
+for those registers. That pseudo came from llvm/llvm-project#169009
+(d14840779bf9, "[X86][AVX512] Add pseudos for `AVX512_*_SETALLONES`"), which
+is in llvmorg-22.1.0 but not in 21.1.8. The patch applies cleanly to 21.1.8's
+source; no patched 21.1.8 has been built to test it.
+
+Any Mesa built against LLVM 21 for an AVX-512 host is affected. nixpkgs
+builds Mesa with the default `llvmPackages`, which is `llvmPackages_21`.
