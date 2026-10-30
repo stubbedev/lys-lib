@@ -13,6 +13,7 @@ type pixelFormat struct {
 	vk     vk.Format
 	planes int
 	opaque bool
+	ycbcr  bool
 	size   int
 }
 
@@ -25,7 +26,8 @@ var pixelFormats = map[fourcc.Format]pixelFormat{
 	fourcc.XRGB2101010: {vk: vk.FormatA2r10g10b10UnormPack32, planes: 1, opaque: true, size: 4},
 	fourcc.ABGR2101010: {vk: vk.FormatA2b10g10r10UnormPack32, planes: 1, size: 4},
 	fourcc.XBGR2101010: {vk: vk.FormatA2b10g10r10UnormPack32, planes: 1, opaque: true, size: 4},
-	fourcc.NV12:        {vk: nv12, planes: 2, size: 1},
+	fourcc.NV12:        {vk: nv12, planes: 2, ycbcr: true, size: 1},
+	fourcc.P010:        {vk: vk.FormatG10x6B10x6r10x62plane420Unorm3pack16, planes: 2, ycbcr: true, size: 2},
 }
 
 func pixelFormatOf(format fourcc.Format) (pixelFormat, error) {

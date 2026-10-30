@@ -64,3 +64,19 @@ const (
 	StructureTypeExternalSemaphoreProperties         StructureType = 1000076001
 	StructureTypeExportSemaphoreCreateInfo           StructureType = 1000077000
 )
+
+// Core 1.1 values vk-gen leaves out that sampling YUV buffers names:
+// the sampler YCbCr conversion structures and feature block, the
+// 10-bit two-plane 4:2:0 format (P010) and the chroma format features.
+const (
+	StructureTypeSamplerYcbcrConversionCreateInfo            StructureType = 1000156000
+	StructureTypeSamplerYcbcrConversionInfo                  StructureType = 1000156001
+	StructureTypeSamplerYcbcrConversionImageFormatProperties StructureType = 1000156005
+	StructureTypePhysicalDeviceVulkan11Features              StructureType = 49
+
+	FormatG10x6B10x6r10x62plane420Unorm3pack16 Format = 1000156013
+
+	FormatFeatureMidpointChromaSamplesBit                   FormatFeatureFlagBits = 1 << 17
+	FormatFeatureSampledImageYcbcrConversionLinearFilterBit FormatFeatureFlagBits = 1 << 18
+	FormatFeatureCositedChromaSamplesBit                    FormatFeatureFlagBits = 1 << 23
+)

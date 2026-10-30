@@ -178,3 +178,10 @@ All had fields and wrappers. `const_gen.go`:
 `StructureTypeCalibratedTimestampInfoKhr` is 1000184000, the header's,
 not vk-gen's 1000543000 (one of the extnumber values above).
 `const_lysui.go`: the core 1.1 external semaphore structure types.
+
+### Sampler YCbCr conversion
+
+`commands.go`, `LoadDevice`: `vkCreateSamplerYcbcrConversion` and
+`vkDestroySamplerYcbcrConversion` load (fields and wrappers existed).
+`const_lysui.go`: the conversion's structure types, the 1.1 feature
+block's, P010's format and the chroma format features.

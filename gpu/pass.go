@@ -25,6 +25,7 @@ type FRect struct {
 type Pass struct {
 	d      *Device
 	t      *Target
+	ct     *compTarget
 	damage []image.Rectangle
 	ops    []passOp
 	err    error
@@ -40,11 +41,13 @@ const (
 )
 
 type passOp struct {
-	kind opKind
-	dst  image.Rectangle
-	tex  *Texture
-	set  vk.DescriptorSet
-	dc   drawConstants
+	kind   opKind
+	dst    image.Rectangle
+	tex    *Texture
+	set    vk.DescriptorSet
+	pipe   vk.Pipeline
+	layout vk.PipelineLayout
+	dc     drawConstants
 }
 
 // Begin starts a pass drawing into t, where only damage, clipped to t,
@@ -58,13 +61,14 @@ func (d *Device) Begin(t *Target, damage []image.Rectangle) (*Pass, error) {
 	case d.active != nil:
 		return nil, errors.New("gpu: Begin while a pass is open")
 	}
-	if _, err := d.compTargetOf(t.s.format()); err != nil {
+	ct, err := d.compTargetOf(t.s.format())
+	if err != nil {
 		return nil, err
 	}
 	if err := t.s.ready(); err != nil {
 		return nil, err
 	}
-	p := &Pass{d: d, t: t, damage: disjoint(damage, image.Rectangle{Max: t.Size()})}
+	p := &Pass{d: d, t: t, ct: ct, damage: disjoint(damage, image.Rectangle{Max: t.Size()})}
 	d.active = p
 	return p, nil
 }
@@ -138,7 +142,7 @@ func (p *Pass) FillRect(r image.Rectangle, c color.RGBA) {
 		p.fail(err)
 		return
 	}
-	p.ops = append(p.ops, passOp{kind: opFill, dst: r, dc: drawConstants{extra: [2][4]float32{col}}})
+	p.ops = append(p.ops, passOp{kind: opFill, dst: r, pipe: p.ct.fill, layout: p.d.comp.layout, dc: drawConstants{extra: [2][4]float32{col}}})
 }
 
 // DrawTexture blends src of t, scaled to dst and turned by tr, at
@@ -188,7 +192,15 @@ func (p *Pass) DrawTexture(t *Texture, src FRect, dst image.Rectangle, tr Transf
 		dc.extra[i/2][i%2*2] = float32((src.X + s[0]*src.W) / float64(t.w))
 		dc.extra[i/2][i%2*2+1] = float32((src.Y + s[1]*src.H) / float64(t.h))
 	}
-	p.ops = append(p.ops, passOp{kind: opTexture, dst: dst, tex: t, set: set, dc: dc})
+	op := passOp{kind: opTexture, dst: dst, tex: t, set: set, pipe: p.ct.tex, layout: p.d.comp.layout, dc: dc}
+	if t.ycbcr != nil {
+		if op.pipe, err = t.ycbcr.pipeline(p.d, p.t.s.vf); err != nil {
+			p.fail(err)
+			return
+		}
+		op.layout = t.ycbcr.layout
+	}
+	p.ops = append(p.ops, op)
 }
 
 func whole(r FRect) bool {
@@ -240,8 +252,12 @@ func flip(f float64, reversed bool) float64 {
 }
 
 func (t *Texture) set(f filter) (vk.DescriptorSet, error) {
+	sp, sampler := &t.d.comp.sets, t.d.comp.samplers[f]
+	if t.ycbcr != nil {
+		f, sp, sampler = filterNearest, &t.ycbcr.sets, t.ycbcr.sampler
+	}
 	if t.sets[f].set == 0 {
-		s, err := t.d.compSet(t.view, f)
+		s, err := t.d.allocSet(sp, t.view, sampler)
 		if err != nil {
 			return 0, err
 		}
@@ -307,21 +323,17 @@ func (p *Pass) record(cb vk.CommandBuffer, ct *compTarget) {
 			p.clear(cb, op.dc.extra[0])
 			continue
 		}
-		pipe := ct.fill
-		if op.kind == opTexture {
-			pipe = ct.tex
-		}
-		if pipe != bound {
-			d.cmds.CmdBindPipeline(cb, vk.PipelineBindPointGraphics, pipe)
-			bound = pipe
+		if op.pipe != bound {
+			d.cmds.CmdBindPipeline(cb, vk.PipelineBindPointGraphics, op.pipe)
+			bound = op.pipe
 		}
 		if op.kind == opTexture && op.set != set {
-			d.cmds.CmdBindDescriptorSets(cb, vk.PipelineBindPointGraphics, d.comp.layout, 0, 1, &op.set, 0, nil)
+			d.cmds.CmdBindDescriptorSets(cb, vk.PipelineBindPointGraphics, op.layout, 0, 1, &op.set, 0, nil)
 			set = op.set
 		}
 		op.dc.rect = [4]float32{float32(op.dst.Min.X), float32(op.dst.Min.Y), float32(op.dst.Dx()), float32(op.dst.Dy())}
 		op.dc.target[0], op.dc.target[1] = float32(s.w), float32(s.h)
-		d.cmds.CmdPushConstants(cb, d.comp.layout, stages, 0, uint32(unsafe.Sizeof(op.dc)), unsafe.Pointer(&op.dc))
+		d.cmds.CmdPushConstants(cb, op.layout, stages, 0, uint32(unsafe.Sizeof(op.dc)), unsafe.Pointer(&op.dc))
 		for _, r := range p.damage {
 			clip := op.dst.Intersect(r)
 			if clip.Empty() {

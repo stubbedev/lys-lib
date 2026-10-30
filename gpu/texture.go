@@ -4,7 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"runtime"
 	"slices"
+	"unsafe"
 
 	"github.com/stubbedev/lys-lib/fourcc"
 	"github.com/stubbedev/lys-lib/intconv"
@@ -25,6 +27,7 @@ type Texture struct {
 	view    vk.ImageView
 	sets    [2]textureSet
 	layout  vk.ImageLayout
+	ycbcr   *ycbcrKind
 	foreign bool
 	closed  bool
 }
@@ -86,7 +89,14 @@ func (t *Texture) createView() error {
 		SType: vk.StructureTypeImageViewCreateInfo, Image: t.image, ViewType: vk.ImageViewType2d, Format: t.pf.vk,
 		Components: t.pf.components(), SubresourceRange: colorRange,
 	}
-	if r := t.d.cmds.CreateImageView(t.d.device, &vci, nil, &t.view); r != vk.Success {
+	info := vk.SamplerYcbcrConversionInfo{SType: vk.StructureTypeSamplerYcbcrConversionInfo}
+	if t.ycbcr != nil {
+		info.Conversion = t.ycbcr.conv
+		vci.PNext = (*uintptr)(unsafe.Pointer(&info))
+	}
+	r := t.d.cmds.CreateImageView(t.d.device, &vci, nil, &t.view)
+	runtime.KeepAlive(&info)
+	if r != vk.Success {
 		return fmt.Errorf("gpu: vkCreateImageView (texture): %d", r)
 	}
 	return nil

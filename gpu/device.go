@@ -67,6 +67,7 @@ type Device struct {
 	// sync2 is whether the device has Vulkan 1.3's synchronization2,
 	// enabled for the encoders.
 	sync2 bool
+	ycbcr bool
 	// video is the video encode queue, nil on a device that encodes
 	// none; videoWhy says why for each codec it does not encode.
 	video    *videoQueue
@@ -285,6 +286,7 @@ func (d *Device) pick(p vk.PhysicalDevice, exporting bool, node *drmNode) error 
 			}
 			d.sync2 = d.probeSync2(p, props.ApiVersion)
 			d.timingExts = d.probeTiming(p, have, &props, f)
+			d.ycbcr = d.probeYCbCr(p)
 			d.video, d.videoWhy = d.probeVideo(p, d.sync2, have)
 			return nil
 		}
@@ -308,6 +310,10 @@ func (d *Device) open() error {
 	if d.sync2 {
 		dci.PNext = (*uintptr)(unsafe.Pointer(&f13))
 	}
+	f11 := vk.PhysicalDeviceVulkan11Features{SType: vk.StructureTypePhysicalDeviceVulkan11Features, PNext: dci.PNext, SamplerYcbcrConversion: vk.True}
+	if d.ycbcr {
+		dci.PNext = (*uintptr)(unsafe.Pointer(&f11))
+	}
 	if d.video != nil {
 		if d.video.family != d.family {
 			qcis = append(qcis, vk.DeviceQueueCreateInfo{SType: vk.StructureTypeDeviceQueueCreateInfo, QueueFamilyIndex: d.video.family, QueueCount: 1, PQueuePriorities: &prio})
@@ -321,6 +327,7 @@ func (d *Device) open() error {
 	r := d.cmds.CreateDevice(d.phys, &dci, nil, &d.device)
 	runtime.KeepAlive(qcis)
 	runtime.KeepAlive(&f13)
+	runtime.KeepAlive(&f11)
 	if r != vk.Success {
 		return fmt.Errorf("%s: vkCreateDevice: %d", d.name, r)
 	}

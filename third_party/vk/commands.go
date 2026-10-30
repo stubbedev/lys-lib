@@ -179,6 +179,8 @@ func (c *Commands) LoadDevice(device Device) error {
 	c.resetFences = c.deviceProcAddr(device, "vkResetFences")
 	c.getFenceStatus = c.deviceProcAddr(device, "vkGetFenceStatus")
 	c.importSemaphoreFdKHR = c.deviceProcAddr(device, "vkImportSemaphoreFdKHR")
+	c.createSamplerYcbcrConversion = c.deviceProcAddr(device, "vkCreateSamplerYcbcrConversion")
+	c.destroySamplerYcbcrConversion = c.deviceProcAddr(device, "vkDestroySamplerYcbcrConversion")
 	c.getSemaphoreFdKHR = c.deviceProcAddr(device, "vkGetSemaphoreFdKHR")
 	c.getCalibratedTimestampsKHR = c.deviceProcAddr(device, "vkGetCalibratedTimestampsKHR")
 	if c.getCalibratedTimestampsKHR == nil {
