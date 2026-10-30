@@ -82,3 +82,63 @@ reads the -1 from ymm7 at the same spot. So llvmpipe's JIT does not produce,
 from this IR, the code an offline llc does, and the faulting code is neither.
 What differs between the two (target options, the module as the JIT sees it,
 or code being replaced after the disassembly) is the open question.
+
+## Correction: the faulting function was printed, past the listing's end
+
+The two sections above are wrong about the faulting code, for two reasons:
+
+- `lp_disassemble()` (`lp_bld_debug.cpp`) stops at `extent = 96 * 1024`, so
+  every `GALLIVM_DEBUG=asm` listing ends at `17ffc: invalid`. The
+  `fs_variant_partial` functions are about 140 KiB (their executable mapping
+  is 0x23000 bytes), and the fault is at offset 0x187c2, past the end of the
+  listing. The 242 `idiv`s in a listing
+  are the first 96 KiB of the 416 in the function, not a smaller compile.
+- The `irdump.c` modules carry no `target triple`, so `opt` ran Mesa's passes
+  without the x86 target and produced different IR. With the triple added,
+  they compile to the same code as the IR text `GALLIVM_DEBUG=ir` prints.
+
+The fault is in `fs329_variant0`, the `TestRenderBlendModes` compile of
+`fs164`. Its code starts at the start of the executable mapping that holds the
+pc, right after the page holding its constant pool, which is the one the
+`fs329` listing's `movabs` immediates point to. Over the 104 KiB that
+`fault-window.bin` holds, the JIT's code is the same as the llc rebuild,
+instruction for instruction, apart from absolute addresses. This is true for
+every faulting attempt checked (40406582460 #9 and 40408043360 #1, #5 and
+#10, on EPYC 9V74 and 9V45). So offline llc reproduces the faulting code, and
+from IR that GALLIVM_DEBUG prints.
+
+## Cause: LLVM 21 puts a VEX-only -1 in ymm20
+
+LLVM's machine verifier rejects all four `fs_variant_partial` compiles for
+znver4, right after the greedy register allocator:
+
+```
+*** Bad machine code: Illegal virtual register for instruction ***
+- function:    fs_variant_partial
+- instruction: %27625:vr256x = AVX2_SETALLONES
+```
+
+`AVX2_SETALLONES` (all-ones by `vpcmpeqd`, VEX-encoded) is only valid for the
+VR256 class, ymm0-15, but the allocator rematerialized it into a VR256X
+virtual register, which may be ymm16-31. Just before pseudo expansion, the
+block that rematerializes it reads `renamable $ymm20 = AVX2_SETALLONES`. VEX
+has no bit for register 20's high bit: the encoder emits `c4 a1 5d 76 e4`,
+putting the bit in VEX.X, which a register-register instruction ignores, so
+the CPU runs `vpcmpeqd %ymm4,%ymm4,%ymm4`. ymm4 becomes -1, ymm20 keeps
+whatever it held, and the zero-divisor replacement
+`vmovdqa32 %ymm20,%ymm28{%k1}` writes that value into the lanes whose divisor
+is 0.
+
+In the code, that block is at 0x185a5. A path from 0x17994 reaches the fault
+at 0x18772 through it (`je` at 0x17ac5) with no other write to ymm20; the
+other path in sets ymm20 from ymm7 at 0x17d22. The ymm20 at the fault is the
+masked merge from 0x17994, not -1.
+
+This explains why the crash follows znver4 code and not the CPU. Built for
+sapphirerapids, the same four functions pass the verifier
+(`llc-check.sh <out-dir> sapphirerapids`), and an AVX2 target has no
+ymm16-31 to hand out. The workaround in lys-lib (every such divisor at least 1)
+holds because the miscompiled select then has no zero lane to replace. Why
+`TestRenderBlendModes` crashes only after `TestRenderTiles` is not explained
+yet: the code is the same in both, so the difference must be in which path
+reaches the fault, or in what ymm20 holds when it does.
