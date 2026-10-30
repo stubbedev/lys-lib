@@ -12,18 +12,21 @@ import (
 )
 
 // Texture is an image a Pass samples, kept across frames: one the
-// device allocates and the CPU uploads into (NewTexture). Close it
+// device allocates and the CPU uploads into (NewTexture), or a dmabuf
+// imported from its producer (ImportTexture). Close it
 // when done; the device closes the ones still open with it.
 type Texture struct {
-	d      *Device
-	format fourcc.Format
-	pf     pixelFormat
-	w, h   int
-	image  vk.Image
-	memory vk.DeviceMemory
-	view   vk.ImageView
-	sets   [2]textureSet
-	closed bool
+	d       *Device
+	format  fourcc.Format
+	pf      pixelFormat
+	w, h    int
+	image   vk.Image
+	memory  []vk.DeviceMemory
+	view    vk.ImageView
+	sets    [2]textureSet
+	layout  vk.ImageLayout
+	foreign bool
+	closed  bool
 }
 
 // NewTexture allocates a width x height texture in format, one of
@@ -63,8 +66,8 @@ func (t *Texture) create() error {
 	if err != nil {
 		return err
 	}
-	t.memory = mem
-	if r := d.cmds.BindImageMemory(d.device, t.image, t.memory, 0); r != vk.Success {
+	t.memory = []vk.DeviceMemory{mem}
+	if r := d.cmds.BindImageMemory(d.device, t.image, mem, 0); r != vk.Success {
 		return fmt.Errorf("gpu: vkBindImageMemory: %d", r)
 	}
 	if err := t.createView(); err != nil {
@@ -100,6 +103,9 @@ func (t *Texture) Format() fourcc.Format { return t.format }
 func (t *Texture) Update(r image.Rectangle, stride int, pix []byte) error {
 	if t.closed {
 		return errors.New("gpu: update of a closed texture")
+	}
+	if t.foreign {
+		return errors.New("gpu: an imported texture is written by its producer, not uploaded")
 	}
 	if r.Empty() || !r.In(image.Rectangle{Max: t.Size()}) {
 		return fmt.Errorf("gpu: update %v outside a %dx%d texture", r, t.w, t.h)
@@ -169,8 +175,16 @@ func (t *Texture) release() {
 		d.cmds.DestroyImage(d.device, t.image, nil)
 		t.image = 0
 	}
-	if t.memory != 0 {
-		d.cmds.FreeMemory(d.device, t.memory, nil)
-		t.memory = 0
-	}
+	d.freeMemory(t.memory)
+	t.memory = nil
+}
+
+func (t *Texture) acquireForeign(cb vk.CommandBuffer) {
+	fullBarrier(t.d, cb, t.image, t.layout, vk.ImageLayoutShaderReadOnlyOptimal, vk.QueueFamilyForeignExt, t.d.family)
+	t.layout = vk.ImageLayoutShaderReadOnlyOptimal
+}
+
+func (t *Texture) releaseForeign(cb vk.CommandBuffer) {
+	fullBarrier(t.d, cb, t.image, t.layout, vk.ImageLayoutGeneral, t.d.family, vk.QueueFamilyForeignExt)
+	t.layout = vk.ImageLayoutGeneral
 }

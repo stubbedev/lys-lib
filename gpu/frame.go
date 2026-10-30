@@ -77,6 +77,9 @@ type frame struct {
 // recorded at t's size; its layers keep their GPU surfaces on this
 // device across frames.
 func (d *Device) Render(l *render.List, t *Target) error {
+	if t.s.vf != surfaceFormat {
+		return fmt.Errorf("gpu: Render draws into ARGB8888 and XRGB8888 targets, not %s", t.buf.Format)
+	}
 	d.freeDeadLayers()
 	d.retireImages()
 	defer d.forgetImages()

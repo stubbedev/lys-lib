@@ -20,6 +20,7 @@ type surface struct {
 	image  vk.Image
 	memory vk.DeviceMemory
 	w, h   int
+	vf     vk.Format
 	// layout is the image's current layout, which a recording picks up
 	// and leaves the image in.
 	layout vk.ImageLayout
@@ -33,7 +34,7 @@ func (d *Device) newSurface(w, h int) (*surface, error) {
 	if err := d.checkSize(w, h); err != nil {
 		return nil, err
 	}
-	s := &surface{d: d, w: w, h: h, layout: vk.ImageLayoutUndefined}
+	s := &surface{d: d, w: w, h: h, vf: surfaceFormat, layout: vk.ImageLayoutUndefined}
 	ici := vk.ImageCreateInfo{
 		SType: vk.StructureTypeImageCreateInfo, ImageType: vk.ImageType2d, Format: surfaceFormat,
 		Extent: extent3D(w, h), MipLevels: 1, ArrayLayers: 1,
@@ -66,15 +67,23 @@ func (s *surface) ready() error {
 		return nil
 	}
 	d := s.d
+	pass := d.pass
+	if s.vf != surfaceFormat {
+		ct, err := d.compTargetOf(s.vf)
+		if err != nil {
+			return err
+		}
+		pass = ct.pass
+	}
 	vci := vk.ImageViewCreateInfo{
-		SType: vk.StructureTypeImageViewCreateInfo, Image: s.image, ViewType: vk.ImageViewType2d, Format: surfaceFormat,
+		SType: vk.StructureTypeImageViewCreateInfo, Image: s.image, ViewType: vk.ImageViewType2d, Format: s.vf,
 		SubresourceRange: colorRange,
 	}
 	if r := d.cmds.CreateImageView(d.device, &vci, nil, &s.view); r != vk.Success {
 		return fmt.Errorf("gpu: vkCreateImageView: %d", r)
 	}
 	fci := vk.FramebufferCreateInfo{
-		SType: vk.StructureTypeFramebufferCreateInfo, RenderPass: d.pass, AttachmentCount: 1, PAttachments: &s.view,
+		SType: vk.StructureTypeFramebufferCreateInfo, RenderPass: pass, AttachmentCount: 1, PAttachments: &s.view,
 		Width: intconv.Must[uint32](s.w), Height: intconv.Must[uint32](s.h), Layers: 1,
 	}
 	if r := d.cmds.CreateFramebuffer(d.device, &fci, nil, &s.fb); r != vk.Success {
@@ -88,7 +97,7 @@ func (s *surface) ready() error {
 	return nil
 }
 
-func (s *surface) format() vk.Format { return surfaceFormat }
+func (s *surface) format() vk.Format { return s.vf }
 
 // colorRange is a surface's whole color subresource.
 var colorRange = vk.ImageSubresourceRange{AspectMask: vk.ImageAspectFlags(vk.ImageAspectColorBit), LevelCount: 1, LayerCount: 1}

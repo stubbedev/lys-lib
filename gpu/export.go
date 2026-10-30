@@ -59,17 +59,8 @@ func (d *Device) modifiers(format fourcc.Format, use exportUse) ([]fourcc.Modifi
 	if err != nil {
 		return nil, err
 	}
-	list := vk.DrmFormatModifierPropertiesListEXT{SType: vk.StructureTypeDrmFormatModifierPropertiesListExt}
-	props := vk.FormatProperties2{SType: vk.StructureTypeFormatProperties2, PNext: (*uintptr)(unsafe.Pointer(&list))}
-	d.cmds.GetPhysicalDeviceFormatProperties2(d.phys, vf, &props)
-	all := make([]vk.DrmFormatModifierPropertiesEXT, list.DrmFormatModifierCount)
-	if len(all) > 0 {
-		list.PDrmFormatModifierProperties = &all[0]
-		d.cmds.GetPhysicalDeviceFormatProperties2(d.phys, vf, &props)
-	}
-	runtime.KeepAlive(&list)
 	var out []fourcc.Modifier
-	for _, m := range all[:list.DrmFormatModifierCount] {
+	for _, m := range d.formatModifiers(vf) {
 		if int(m.DrmFormatModifierPlaneCount) != planes || m.DrmFormatModifierTilingFeatures&use.features != use.features {
 			continue
 		}
@@ -81,10 +72,27 @@ func (d *Device) modifiers(format fourcc.Format, use exportUse) ([]fourcc.Modifi
 	return out, nil
 }
 
+func (d *Device) formatModifiers(vf vk.Format) []vk.DrmFormatModifierPropertiesEXT {
+	list := vk.DrmFormatModifierPropertiesListEXT{SType: vk.StructureTypeDrmFormatModifierPropertiesListExt}
+	props := vk.FormatProperties2{SType: vk.StructureTypeFormatProperties2, PNext: (*uintptr)(unsafe.Pointer(&list))}
+	d.cmds.GetPhysicalDeviceFormatProperties2(d.phys, vf, &props)
+	all := make([]vk.DrmFormatModifierPropertiesEXT, list.DrmFormatModifierCount)
+	if len(all) > 0 {
+		list.PDrmFormatModifierProperties = &all[0]
+		d.cmds.GetPhysicalDeviceFormatProperties2(d.phys, vf, &props)
+	}
+	runtime.KeepAlive(&list)
+	return all[:list.DrmFormatModifierCount]
+}
+
 // exportable reports whether an image of vf in modifier mod, made for
 // usage, exports its memory as a dmabuf, and the largest such image:
 // what a modifier's format features alone do not promise.
 func (d *Device) exportable(vf vk.Format, mod fourcc.Modifier, usage vk.ImageUsageFlags) (vk.Extent3D, bool) {
+	return d.external(vf, mod, usage, 0, vk.ExternalMemoryFeatureExportableBit)
+}
+
+func (d *Device) external(vf vk.Format, mod fourcc.Modifier, usage vk.ImageUsageFlags, create vk.ImageCreateFlags, want vk.ExternalMemoryFeatureFlagBits) (vk.Extent3D, bool) {
 	modInfo := vk.PhysicalDeviceImageDrmFormatModifierInfoEXT{
 		SType: vk.StructureTypePhysicalDeviceImageDrmFormatModifierInfoExt, DrmFormatModifier: uint64(mod), SharingMode: vk.SharingModeExclusive,
 	}
@@ -94,7 +102,7 @@ func (d *Device) exportable(vf vk.Format, mod fourcc.Modifier, usage vk.ImageUsa
 	}
 	info := vk.PhysicalDeviceImageFormatInfo2{
 		SType: vk.StructureTypePhysicalDeviceImageFormatInfo2, PNext: (*uintptr)(unsafe.Pointer(&ext)),
-		Format: vf, Type: vk.ImageType2d, Tiling: vk.ImageTilingDrmFormatModifierExt, Usage: usage,
+		Format: vf, Type: vk.ImageType2d, Tiling: vk.ImageTilingDrmFormatModifierExt, Usage: usage, Flags: create,
 	}
 	extProps := vk.ExternalImageFormatProperties{SType: vk.StructureTypeExternalImageFormatProperties}
 	props := vk.ImageFormatProperties2{SType: vk.StructureTypeImageFormatProperties2, PNext: (*uintptr)(unsafe.Pointer(&extProps))}
@@ -102,8 +110,8 @@ func (d *Device) exportable(vf vk.Format, mod fourcc.Modifier, usage vk.ImageUsa
 	runtime.KeepAlive(&modInfo)
 	runtime.KeepAlive(&ext)
 	runtime.KeepAlive(&extProps)
-	exportable := extProps.ExternalMemoryProperties.ExternalMemoryFeatures&vk.ExternalMemoryFeatureFlags(vk.ExternalMemoryFeatureExportableBit) != 0
-	return props.ImageFormatProperties.MaxExtent, r == vk.Success && exportable
+	has := extProps.ExternalMemoryProperties.ExternalMemoryFeatures&flags[vk.ExternalMemoryFeatureFlags](want) != 0
+	return props.ImageFormatProperties.MaxExtent, r == vk.Success && has
 }
 
 // errPlanesOverlap reports a driver that lays an exported image's
@@ -316,7 +324,7 @@ func (b *Buffer) ReadPixels() (*image.RGBA, error) {
 	}
 	d := b.d
 	w, h := b.e.buf.Width, b.e.buf.Height
-	return d.readPixels(w, h, b.e.buf.Format == fourcc.XRGB8888, func(cb vk.CommandBuffer, staging *buffer) {
+	return d.readPixels(w, h, false, b.e.buf.Format == fourcc.XRGB8888, func(cb vk.CommandBuffer, staging *buffer) {
 		fullBarrier(d, cb, b.e.image, vk.ImageLayoutGeneral, vk.ImageLayoutTransferSrcOptimal, vk.QueueFamilyForeignExt, d.family)
 		region := vk.BufferImageCopy{
 			ImageSubresource: vk.ImageSubresourceLayers{AspectMask: vk.ImageAspectFlags(vk.ImageAspectColorBit), LayerCount: 1},

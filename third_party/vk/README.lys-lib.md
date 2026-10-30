@@ -158,3 +158,11 @@ it: devices opened on several goroutines at once crashed.
 pointer, fetched through whichever instance came first and kept after
 that instance was destroyed. `LoadDevice` now looks device functions up
 through its own instance's, which `LoadInstance` already loaded.
+
+### Importing dmabufs
+
+`commands.go`, `LoadDevice`: `vkBindImageMemory2` and
+`vkGetImageMemoryRequirements2` load (fields and wrappers existed),
+for binding a disjoint imported image plane by plane.
+`const_lysui.go`: the core 1.1 bind and memory-requirement structure
+types, the disjoint format feature and the disjoint image create flag.

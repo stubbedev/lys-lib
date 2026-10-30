@@ -42,3 +42,17 @@ const (
 	ImageAspectPlane0Bit ImageAspectFlagBits = 1 << 4
 	ImageAspectPlane1Bit ImageAspectFlagBits = 1 << 5
 )
+
+// Core 1.1 values vk-gen leaves out that importing dmabufs names: the
+// memory requirement and bind structures, per plane for a disjoint
+// image, and the disjoint format feature and create flag.
+const (
+	StructureTypeBindImageMemoryInfo              StructureType = 1000157001
+	StructureTypeImageMemoryRequirementsInfo2     StructureType = 1000146001
+	StructureTypeMemoryRequirements2              StructureType = 1000146003
+	StructureTypeBindImagePlaneMemoryInfo         StructureType = 1000156002
+	StructureTypeImagePlaneMemoryRequirementsInfo StructureType = 1000156003
+
+	FormatFeatureDisjointBit FormatFeatureFlagBits = 1 << 22
+	ImageCreateDisjointBit   ImageCreateFlagBits   = 1 << 9
+)

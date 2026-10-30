@@ -444,6 +444,14 @@ func (d *Device) allocateIn(req vk.MemoryRequirements, want vk.MemoryPropertyFla
 	return mem, mt, nil
 }
 
+func (d *Device) freeMemory(mems []vk.DeviceMemory) {
+	for _, m := range mems {
+		if m != 0 {
+			d.cmds.FreeMemory(d.device, m, nil)
+		}
+	}
+}
+
 // submit records one command buffer with record, runs it and waits for
 // it to finish.
 func (d *Device) submit(record func(cb vk.CommandBuffer)) error {

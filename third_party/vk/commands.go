@@ -165,6 +165,8 @@ func (c *Commands) LoadDevice(device Device) error {
 	c.bindBufferMemory = c.deviceProcAddr(device, "vkBindBufferMemory")
 	c.getImageMemoryRequirements = c.deviceProcAddr(device, "vkGetImageMemoryRequirements")
 	c.bindImageMemory = c.deviceProcAddr(device, "vkBindImageMemory")
+	c.bindImageMemory2 = c.deviceProcAddr(device, "vkBindImageMemory2")
+	c.getImageMemoryRequirements2 = c.deviceProcAddr(device, "vkGetImageMemoryRequirements2")
 	c.getImageSparseMemoryRequirements = c.deviceProcAddr(device, "vkGetImageSparseMemoryRequirements")
 	c.queueBindSparse = c.deviceProcAddr(device, "vkQueueBindSparse")
 	c.createFence = c.deviceProcAddr(device, "vkCreateFence")

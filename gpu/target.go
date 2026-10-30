@@ -18,7 +18,7 @@ import (
 // the consumer imports it. Between frames it belongs to the consumer.
 type Target struct {
 	s      surface
-	memory vk.DeviceMemory
+	memory []vk.DeviceMemory
 	buf    dmabuf.Buffer
 	// held is whether the device holds t, between acquire and release.
 	held bool
@@ -81,7 +81,7 @@ func (d *Device) NewTarget(width, height int, format fourcc.Format, modifiers []
 	if err != nil {
 		return nil, err
 	}
-	t := &Target{s: surface{d: d, w: width, h: height, layout: vk.ImageLayoutUndefined, image: e.image}, memory: e.memory, buf: e.buf}
+	t := &Target{s: surface{d: d, w: width, h: height, vf: vf, layout: vk.ImageLayoutUndefined, image: e.image}, memory: []vk.DeviceMemory{e.memory}, buf: e.buf}
 	d.targets[t] = struct{}{}
 	return t, nil
 }
@@ -103,9 +103,13 @@ func (t *Target) Close() {
 	d := t.s.d
 	delete(d.targets, t)
 	t.s.close()
-	e := exported{image: t.s.image, memory: t.memory, buf: t.buf}
+	if t.offscreen {
+		return
+	}
+	e := exported{image: t.s.image, buf: t.buf}
 	e.close(d)
-	t.s.image, t.memory, t.buf.Planes = 0, 0, nil
+	d.freeMemory(t.memory)
+	t.s.image, t.memory, t.buf.Planes = 0, nil, nil
 }
 
 // acquire records taking t back from its consumer for drawing; its
@@ -158,8 +162,8 @@ func (d *Device) CopyRects(dst, src *Target, rects []image.Rectangle) error {
 		return errors.New("gpu: CopyRects with a closed target")
 	case dst.s.d != d || src.s.d != d:
 		return errors.New("gpu: CopyRects across devices")
-	case dst.Size() != src.Size():
-		return fmt.Errorf("gpu: CopyRects from %v onto %v", src.Size(), dst.Size())
+	case dst.Size() != src.Size() || dst.s.vf != src.s.vf:
+		return fmt.Errorf("gpu: CopyRects from %v %s onto %v %s", src.Size(), src.buf.Format, dst.Size(), dst.buf.Format)
 	case src.s.layout == vk.ImageLayoutUndefined:
 		return errors.New("gpu: CopyRects from a target never drawn")
 	}
@@ -200,17 +204,18 @@ func (d *Device) CopyRects(dst, src *Target, rects []image.Rectangle) error {
 // RGBA: tests and screenshots.
 func (t *Target) ReadPixels() (*image.RGBA, error) {
 	w, h := t.buf.Width, t.buf.Height
-	return t.s.d.readPixels(w, h, false, func(cb vk.CommandBuffer, staging *buffer) {
+	return t.s.d.readPixels(w, h, t.s.vf == vk.FormatR8g8b8a8Unorm, false, func(cb vk.CommandBuffer, staging *buffer) {
 		t.acquire(cb)
 		t.s.download(cb, image.Rect(0, 0, w, h), staging, 0)
 		t.release(cb)
 	})
 }
 
-// readPixels reads a w x h B8G8R8A8 image back as RGBA: record copies
-// it, tight, into the staging buffer it is handed. opaque reads every
-// alpha as 255, for a format whose fourth byte is padding.
-func (d *Device) readPixels(w, h int, opaque bool, record func(cb vk.CommandBuffer, staging *buffer)) (*image.RGBA, error) {
+// readPixels reads a w x h B8G8R8A8 image, or R8G8B8A8 when rgba,
+// back as RGBA: record copies it, tight, into the staging buffer it is
+// handed. opaque reads every alpha as 255, for a format whose fourth
+// byte is padding.
+func (d *Device) readPixels(w, h int, rgba, opaque bool, record func(cb vk.CommandBuffer, staging *buffer)) (*image.RGBA, error) {
 	staging, err := d.newReadBuffer(w*h*4, vk.BufferUsageTransferDstBit, nil)
 	if err != nil {
 		return nil, err
@@ -226,6 +231,9 @@ func (d *Device) readPixels(w, h int, opaque bool, record func(cb vk.CommandBuff
 	src := staging.mapped
 	for i := 0; i < len(img.Pix); i += 4 {
 		img.Pix[i], img.Pix[i+1], img.Pix[i+2], img.Pix[i+3] = src[i+2], src[i+1], src[i], src[i+3]
+		if rgba {
+			img.Pix[i], img.Pix[i+2] = src[i], src[i+2]
+		}
 		if opaque {
 			img.Pix[i+3] = 0xff
 		}

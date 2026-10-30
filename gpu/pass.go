@@ -6,6 +6,7 @@ import (
 	"image"
 	"image/color"
 	"math"
+	"slices"
 	"unsafe"
 
 	"github.com/stubbedev/lys-lib/render"
@@ -282,6 +283,13 @@ func (p *Pass) End() error {
 func (p *Pass) record(cb vk.CommandBuffer, ct *compTarget) {
 	d, s := p.d, &p.t.s
 	p.t.acquire(cb)
+	var foreign []*Texture
+	for _, op := range p.ops {
+		if op.tex != nil && op.tex.foreign && !slices.Contains(foreign, op.tex) {
+			foreign = append(foreign, op.tex)
+			op.tex.acquireForeign(cb)
+		}
+	}
 	s.to(cb, vk.ImageLayoutColorAttachmentOptimal)
 	area := vk.Rect2D{Extent: extent2D(s.w, s.h)}
 	bi := vk.RenderPassBeginInfo{SType: vk.StructureTypeRenderPassBeginInfo, RenderPass: ct.pass, Framebuffer: s.fb, RenderArea: area}
@@ -323,6 +331,9 @@ func (p *Pass) record(cb vk.CommandBuffer, ct *compTarget) {
 		}
 	}
 	d.cmds.CmdEndRenderPass(cb)
+	for _, t := range foreign {
+		t.releaseForeign(cb)
+	}
 	p.t.release(cb)
 }
 
