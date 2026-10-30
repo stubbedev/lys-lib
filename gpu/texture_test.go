@@ -19,13 +19,13 @@ func textureBytes(t *testing.T, tx *Texture) []byte {
 	}
 	defer staging.close()
 	err = d.submit(func(cb vk.CommandBuffer) {
-		fullBarrier(d, cb, tx.image, tx.layout, vk.ImageLayoutTransferSrcOptimal, vk.QueueFamilyIgnored, vk.QueueFamilyIgnored)
+		fullBarrier(d, cb, tx.image, vk.ImageLayoutShaderReadOnlyOptimal, vk.ImageLayoutTransferSrcOptimal, vk.QueueFamilyIgnored, vk.QueueFamilyIgnored)
 		region := vk.BufferImageCopy{
 			ImageSubresource: vk.ImageSubresourceLayers{AspectMask: vk.ImageAspectFlags(vk.ImageAspectColorBit), LayerCount: 1},
 			ImageExtent:      extent3D(tx.w, tx.h),
 		}
 		d.cmds.CmdCopyImageToBuffer(cb, tx.image, vk.ImageLayoutTransferSrcOptimal, staging.buf, 1, &region)
-		fullBarrier(d, cb, tx.image, vk.ImageLayoutTransferSrcOptimal, tx.layout, vk.QueueFamilyIgnored, vk.QueueFamilyIgnored)
+		fullBarrier(d, cb, tx.image, vk.ImageLayoutTransferSrcOptimal, vk.ImageLayoutShaderReadOnlyOptimal, vk.QueueFamilyIgnored, vk.QueueFamilyIgnored)
 	})
 	if err != nil {
 		t.Fatal(err)

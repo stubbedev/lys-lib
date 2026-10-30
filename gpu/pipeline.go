@@ -41,8 +41,14 @@ func (d *Device) createPipelines() error {
 // createPass is the render pass: one color attachment kept across the
 // pass, so a frame's draws land over what the surface holds.
 func (d *Device) createPass() error {
+	var err error
+	d.pass, err = d.renderPass(surfaceFormat)
+	return err
+}
+
+func (d *Device) renderPass(format vk.Format) (vk.RenderPass, error) {
 	att := vk.AttachmentDescription{
-		Format: surfaceFormat, Samples: vk.SampleCount1Bit,
+		Format: format, Samples: vk.SampleCount1Bit,
 		LoadOp: vk.AttachmentLoadOpLoad, StoreOp: vk.AttachmentStoreOpStore,
 		StencilLoadOp: vk.AttachmentLoadOpDontCare, StencilStoreOp: vk.AttachmentStoreOpDontCare,
 		InitialLayout: vk.ImageLayoutColorAttachmentOptimal, FinalLayout: vk.ImageLayoutColorAttachmentOptimal,
@@ -50,10 +56,11 @@ func (d *Device) createPass() error {
 	ref := vk.AttachmentReference{Attachment: 0, Layout: vk.ImageLayoutColorAttachmentOptimal}
 	sub := vk.SubpassDescription{PipelineBindPoint: vk.PipelineBindPointGraphics, ColorAttachmentCount: 1, PColorAttachments: &ref}
 	rci := vk.RenderPassCreateInfo{SType: vk.StructureTypeRenderPassCreateInfo, AttachmentCount: 1, PAttachments: &att, SubpassCount: 1, PSubpasses: &sub}
-	if r := d.cmds.CreateRenderPass(d.device, &rci, nil, &d.pass); r != vk.Success {
-		return fmt.Errorf("gpu: vkCreateRenderPass: %d", r)
+	var pass vk.RenderPass
+	if r := d.cmds.CreateRenderPass(d.device, &rci, nil, &pass); r != vk.Success {
+		return 0, fmt.Errorf("gpu: vkCreateRenderPass: %d", r)
 	}
-	return nil
+	return pass, nil
 }
 
 // createLayouts makes set 0 (the frame's primitives), sets 1 and 2
@@ -176,12 +183,28 @@ func (d *Device) createPrimPipelines() error {
 	if d.primModules[1], err = d.shaderModule(primFrag); err != nil {
 		return err
 	}
+	if d.over, err = d.graphicsPipeline(d.primModules, d.layout, d.pass, blendOver); err != nil {
+		return err
+	}
+	d.replace, err = d.graphicsPipeline(d.primModules, d.layout, d.pass, vk.PipelineColorBlendAttachmentState{ColorWriteMask: rgbaMask})
+	return err
+}
+
+const rgbaMask = vk.ColorComponentFlags(vk.ColorComponentRBit | vk.ColorComponentGBit | vk.ColorComponentBBit | vk.ColorComponentABit)
+
+var blendOver = vk.PipelineColorBlendAttachmentState{
+	BlendEnable: vk.True, ColorWriteMask: rgbaMask,
+	SrcColorBlendFactor: vk.BlendFactorOne, DstColorBlendFactor: vk.BlendFactorOneMinusSrcAlpha, ColorBlendOp: vk.BlendOpAdd,
+	SrcAlphaBlendFactor: vk.BlendFactorOne, DstAlphaBlendFactor: vk.BlendFactorOneMinusSrcAlpha, AlphaBlendOp: vk.BlendOpAdd,
+}
+
+func (d *Device) graphicsPipeline(modules [2]vk.ShaderModule, layout vk.PipelineLayout, pass vk.RenderPass, blend vk.PipelineColorBlendAttachmentState) (vk.Pipeline, error) {
 	var pin runtime.Pinner
 	defer pin.Unpin()
 	main := cstr(&pin, "main")
 	stages := [2]vk.PipelineShaderStageCreateInfo{
-		{SType: vk.StructureTypePipelineShaderStageCreateInfo, Stage: vk.ShaderStageVertexBit, Module: d.primModules[0], PName: main},
-		{SType: vk.StructureTypePipelineShaderStageCreateInfo, Stage: vk.ShaderStageFragmentBit, Module: d.primModules[1], PName: main},
+		{SType: vk.StructureTypePipelineShaderStageCreateInfo, Stage: vk.ShaderStageVertexBit, Module: modules[0], PName: main},
+		{SType: vk.StructureTypePipelineShaderStageCreateInfo, Stage: vk.ShaderStageFragmentBit, Module: modules[1], PName: main},
 	}
 	vin := vk.PipelineVertexInputStateCreateInfo{SType: vk.StructureTypePipelineVertexInputStateCreateInfo}
 	asm := vk.PipelineInputAssemblyStateCreateInfo{SType: vk.StructureTypePipelineInputAssemblyStateCreateInfo, Topology: vk.PrimitiveTopologyTriangleStrip}
@@ -193,28 +216,17 @@ func (d *Device) createPrimPipelines() error {
 	ms := vk.PipelineMultisampleStateCreateInfo{SType: vk.StructureTypePipelineMultisampleStateCreateInfo, RasterizationSamples: vk.SampleCount1Bit}
 	dyn := [2]vk.DynamicState{vk.DynamicStateViewport, vk.DynamicStateScissor}
 	ds := vk.PipelineDynamicStateCreateInfo{SType: vk.StructureTypePipelineDynamicStateCreateInfo, DynamicStateCount: 2, PDynamicStates: &dyn[0]}
-	rgba := vk.ColorComponentFlags(vk.ColorComponentRBit | vk.ColorComponentGBit | vk.ColorComponentBBit | vk.ColorComponentABit)
-	make := func(blend vk.PipelineColorBlendAttachmentState, out *vk.Pipeline) error {
-		cb := vk.PipelineColorBlendStateCreateInfo{SType: vk.StructureTypePipelineColorBlendStateCreateInfo, AttachmentCount: 1, PAttachments: &blend}
-		gci := vk.GraphicsPipelineCreateInfo{
-			SType: vk.StructureTypeGraphicsPipelineCreateInfo, StageCount: 2, PStages: &stages[0],
-			PVertexInputState: &vin, PInputAssemblyState: &asm, PViewportState: &vps, PRasterizationState: &ras,
-			PMultisampleState: &ms, PColorBlendState: &cb, PDynamicState: &ds, Layout: d.layout, RenderPass: d.pass,
-		}
-		if r := d.cmds.CreateGraphicsPipelines(d.device, 0, 1, &gci, nil, out); r != vk.Success {
-			return fmt.Errorf("gpu: vkCreateGraphicsPipelines: %d", r)
-		}
-		return nil
+	cb := vk.PipelineColorBlendStateCreateInfo{SType: vk.StructureTypePipelineColorBlendStateCreateInfo, AttachmentCount: 1, PAttachments: &blend}
+	gci := vk.GraphicsPipelineCreateInfo{
+		SType: vk.StructureTypeGraphicsPipelineCreateInfo, StageCount: 2, PStages: &stages[0],
+		PVertexInputState: &vin, PInputAssemblyState: &asm, PViewportState: &vps, PRasterizationState: &ras,
+		PMultisampleState: &ms, PColorBlendState: &cb, PDynamicState: &ds, Layout: layout, RenderPass: pass,
 	}
-	over := vk.PipelineColorBlendAttachmentState{
-		BlendEnable: vk.True, ColorWriteMask: rgba,
-		SrcColorBlendFactor: vk.BlendFactorOne, DstColorBlendFactor: vk.BlendFactorOneMinusSrcAlpha, ColorBlendOp: vk.BlendOpAdd,
-		SrcAlphaBlendFactor: vk.BlendFactorOne, DstAlphaBlendFactor: vk.BlendFactorOneMinusSrcAlpha, AlphaBlendOp: vk.BlendOpAdd,
+	var p vk.Pipeline
+	if r := d.cmds.CreateGraphicsPipelines(d.device, 0, 1, &gci, nil, &p); r != vk.Success {
+		return 0, fmt.Errorf("gpu: vkCreateGraphicsPipelines: %d", r)
 	}
-	if err := make(over, &d.over); err != nil {
-		return err
-	}
-	return make(vk.PipelineColorBlendAttachmentState{ColorWriteMask: rgba}, &d.replace)
+	return p, nil
 }
 
 // pipe names a primitive pipeline: how a prim's color meets the

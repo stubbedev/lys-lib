@@ -21,6 +21,10 @@ func extent2D(w, h int) vk.Extent2D {
 	return vk.Extent2D{Width: intconv.Must[uint32](w), Height: intconv.Must[uint32](h)}
 }
 
+func rect2D(r image.Rectangle) vk.Rect2D {
+	return vk.Rect2D{Offset: vk.Offset2D{X: intconv.Must[int32](r.Min.X), Y: intconv.Must[int32](r.Min.Y)}, Extent: extent2D(r.Dx(), r.Dy())}
+}
+
 // extent3D is a w x h size as a one-deep Vulkan extent.
 func extent3D(w, h int) vk.Extent3D {
 	return vk.Extent3D{Width: intconv.Must[uint32](w), Height: intconv.Must[uint32](h), Depth: 1}

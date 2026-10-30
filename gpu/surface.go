@@ -88,6 +88,8 @@ func (s *surface) ready() error {
 	return nil
 }
 
+func (s *surface) format() vk.Format { return surfaceFormat }
+
 // colorRange is a surface's whole color subresource.
 var colorRange = vk.ImageSubresourceRange{AspectMask: vk.ImageAspectFlags(vk.ImageAspectColorBit), LevelCount: 1, LayerCount: 1}
 

@@ -22,7 +22,7 @@ type Texture struct {
 	image  vk.Image
 	memory vk.DeviceMemory
 	view   vk.ImageView
-	layout vk.ImageLayout
+	sets   [2]textureSet
 	closed bool
 }
 
@@ -36,7 +36,7 @@ func (d *Device) NewTexture(format fourcc.Format, width, height int) (*Texture, 
 	if err := d.checkSize(width, height); err != nil {
 		return nil, err
 	}
-	t := &Texture{d: d, format: format, pf: pixelFormats[format], w: width, h: height, layout: vk.ImageLayoutUndefined}
+	t := &Texture{d: d, format: format, pf: pixelFormats[format], w: width, h: height}
 	if err := t.create(); err != nil {
 		t.release()
 		return nil, err
@@ -67,7 +67,15 @@ func (t *Texture) create() error {
 	if r := d.cmds.BindImageMemory(d.device, t.image, t.memory, 0); r != vk.Success {
 		return fmt.Errorf("gpu: vkBindImageMemory: %d", r)
 	}
-	return t.createView()
+	if err := t.createView(); err != nil {
+		return err
+	}
+	return d.submit(func(cb vk.CommandBuffer) {
+		fullBarrier(d, cb, t.image, vk.ImageLayoutUndefined, vk.ImageLayoutTransferDstOptimal, vk.QueueFamilyIgnored, vk.QueueFamilyIgnored)
+		var clear vk.ClearColorValue
+		d.cmds.CmdClearColorImage(cb, t.image, vk.ImageLayoutTransferDstOptimal, &clear, 1, &colorRange)
+		fullBarrier(d, cb, t.image, vk.ImageLayoutTransferDstOptimal, vk.ImageLayoutShaderReadOnlyOptimal, vk.QueueFamilyIgnored, vk.QueueFamilyIgnored)
+	})
 }
 
 func (t *Texture) createView() error {
@@ -111,14 +119,7 @@ func (t *Texture) Update(r image.Rectangle, stride int, pix []byte) error {
 	}
 	copy(d.upload.mapped, pix[:n])
 	return d.submit(func(cb vk.CommandBuffer) {
-		whole := r == image.Rectangle{Max: t.Size()}
-		if t.layout == vk.ImageLayoutUndefined && !whole {
-			fullBarrier(d, cb, t.image, t.layout, vk.ImageLayoutTransferDstOptimal, vk.QueueFamilyIgnored, vk.QueueFamilyIgnored)
-			var clear vk.ClearColorValue
-			d.cmds.CmdClearColorImage(cb, t.image, vk.ImageLayoutTransferDstOptimal, &clear, 1, &colorRange)
-			t.layout = vk.ImageLayoutTransferDstOptimal
-		}
-		fullBarrier(d, cb, t.image, t.layout, vk.ImageLayoutTransferDstOptimal, vk.QueueFamilyIgnored, vk.QueueFamilyIgnored)
+		fullBarrier(d, cb, t.image, vk.ImageLayoutShaderReadOnlyOptimal, vk.ImageLayoutTransferDstOptimal, vk.QueueFamilyIgnored, vk.QueueFamilyIgnored)
 		region := vk.BufferImageCopy{
 			BufferRowLength:  intconv.Must[uint32](stride / px),
 			ImageSubresource: vk.ImageSubresourceLayers{AspectMask: vk.ImageAspectFlags(vk.ImageAspectColorBit), LayerCount: 1},
@@ -127,7 +128,6 @@ func (t *Texture) Update(r image.Rectangle, stride int, pix []byte) error {
 		}
 		d.cmds.CmdCopyBufferToImage(cb, d.upload.buf, t.image, vk.ImageLayoutTransferDstOptimal, 1, &region)
 		fullBarrier(d, cb, t.image, vk.ImageLayoutTransferDstOptimal, vk.ImageLayoutShaderReadOnlyOptimal, vk.QueueFamilyIgnored, vk.QueueFamilyIgnored)
-		t.layout = vk.ImageLayoutShaderReadOnlyOptimal
 	})
 }
 
@@ -158,6 +158,9 @@ func (t *Texture) Close() {
 
 func (t *Texture) release() {
 	d := t.d
+	for i := range t.sets {
+		t.sets[i].free(d)
+	}
 	if t.view != 0 {
 		d.cmds.DestroyImageView(d.device, t.view, nil)
 		t.view = 0

@@ -15,7 +15,7 @@ func TestShadersAreCurrent(t *testing.T) {
 	if _, err := exec.LookPath("glslangValidator"); err != nil {
 		t.Skip("no glslangValidator: run inside the dev shell")
 	}
-	for name, embedded := range map[string][]byte{"prim.vert": primVert, "prim.frag": primFrag} {
+	for name, embedded := range map[string][]byte{"prim.vert": primVert, "prim.frag": primFrag, "comp.vert": compVert, "comp.frag": compFrag, "fill.frag": fillFrag} {
 		out := filepath.Join(t.TempDir(), name+".spv")
 		cmd := exec.Command("glslangValidator", "-V", "--quiet", "-o", out, filepath.Join("shaders", name))
 		if msg, err := cmd.CombinedOutput(); err != nil {

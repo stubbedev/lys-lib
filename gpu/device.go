@@ -78,6 +78,8 @@ type Device struct {
 	buffers  map[*Buffer]struct{}
 	textures map[*Texture]struct{}
 	upload   *buffer
+	comp     compositor
+	active   *Pass
 	// closed marks a device Close released.
 	closed bool
 	// pixels holds the CPU scratch canvases off the Go heap: the
@@ -391,6 +393,7 @@ func (d *Device) closeDevice() {
 		d.upload.close()
 		d.upload = nil
 	}
+	d.destroyComp()
 	d.destroyPipelines()
 	d.pipelines = pipelines{}
 	d.cmds.DestroyCommandPool(d.device, d.pool, nil)
