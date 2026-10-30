@@ -39,6 +39,7 @@ package vk
 
 import (
 	"fmt"
+	"os"
 	"runtime"
 	"sync"
 	"unsafe"
@@ -58,7 +59,7 @@ var (
 
 // vulkanLibraryName returns platform-specific Vulkan library name.
 func vulkanLibraryName() string {
-	return vulkanLibraryNameFor(runtime.GOOS)
+	return vulkanLibraryPath(os.Getenv, runtime.GOOS)
 }
 
 func vulkanLibraryNameFor(goos string) string {
@@ -70,7 +71,7 @@ func vulkanLibraryNameFor(goos string) string {
 	case "android":
 		return "libvulkan.so"
 	default: // linux, freebsd, etc.
-		return "libvulkan.so.1"
+		return defaultLibrary
 	}
 }
 

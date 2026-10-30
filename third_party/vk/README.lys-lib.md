@@ -190,3 +190,14 @@ block's, P010's format and the chroma format features.
 
 `const_lysui.go`: `StructureTypeExternalMemoryBufferCreateInfo`, the
 core 1.1 structure type a buffer imported from a dmabuf is made with.
+
+### The loader path can be pinned
+
+`LYS_LIBVULKAN` names the loader to open, and on Linux the default
+`libvulkan.so.1` is the package variable `defaultLibrary`, which a
+build can pin with `-ldflags '-X
+github.com/stubbedev/lys-lib/third_party/vk.defaultLibrary=/nix/store/…/libvulkan.so.1'`.
+A Nix-built `CGO_ENABLED=0` program then finds the loader without
+`LD_LIBRARY_PATH`, which a compositor would otherwise leak into every
+client it spawns. This is a lys-lib integration choice rather than an
+upstream bug.
