@@ -80,3 +80,7 @@ const (
 	FormatFeatureSampledImageYcbcrConversionLinearFilterBit FormatFeatureFlagBits = 1 << 18
 	FormatFeatureCositedChromaSamplesBit                    FormatFeatureFlagBits = 1 << 23
 )
+
+// The core 1.1 structure type importing a dmabuf as a buffer names,
+// left out of const_gen.go.
+const StructureTypeExternalMemoryBufferCreateInfo StructureType = 1000072000

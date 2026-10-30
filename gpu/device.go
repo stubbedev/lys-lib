@@ -78,6 +78,7 @@ type Device struct {
 	targets  map[*Target]struct{}
 	buffers  map[*Buffer]struct{}
 	textures map[*Texture]struct{}
+	linears  map[*Linear]struct{}
 	upload   *buffer
 	comp     compositor
 	active   *Pass
@@ -181,7 +182,7 @@ func open(node *drmNode) (*Device, error) {
 	if err != nil {
 		return nil, err
 	}
-	d := &Device{cmds: cmds, instance: instance, targets: map[*Target]struct{}{}, buffers: map[*Buffer]struct{}{}, textures: map[*Texture]struct{}{}}
+	d := &Device{cmds: cmds, instance: instance, targets: map[*Target]struct{}{}, buffers: map[*Buffer]struct{}{}, textures: map[*Texture]struct{}{}, linears: map[*Linear]struct{}{}}
 	n := physicalDeviceCount(d.cmds, d.instance)
 	phys := make([]vk.PhysicalDevice, n)
 	if n > 0 {
@@ -391,6 +392,9 @@ func (d *Device) Close() {
 	}
 	for t := range d.textures {
 		t.Close()
+	}
+	for l := range d.linears {
+		l.Close()
 	}
 	d.closeDevice()
 }

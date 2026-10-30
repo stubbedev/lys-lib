@@ -185,3 +185,8 @@ not vk-gen's 1000543000 (one of the extnumber values above).
 `vkDestroySamplerYcbcrConversion` load (fields and wrappers existed).
 `const_lysui.go`: the conversion's structure types, the 1.1 feature
 block's, P010's format and the chroma format features.
+
+### Dmabufs as buffers
+
+`const_lysui.go`: `StructureTypeExternalMemoryBufferCreateInfo`, the
+core 1.1 structure type a buffer imported from a dmabuf is made with.

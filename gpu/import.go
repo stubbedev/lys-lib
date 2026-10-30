@@ -203,7 +203,7 @@ func (im *imported) create(d *Device, b dmabuf.Buffer, usage vk.ImageUsageFlags,
 	if create == 0 {
 		var req vk.MemoryRequirements
 		d.cmds.GetImageMemoryRequirements(d.device, im.image, &req)
-		mem, err := d.importMemory(b.Planes[0].FD, req, im.image)
+		mem, err := d.importMemory(b.Planes[0].FD, req, &vk.MemoryDedicatedAllocateInfo{Image: im.image})
 		if err != nil {
 			return err
 		}
@@ -226,7 +226,7 @@ func (im *imported) bindPlanes(d *Device, b dmabuf.Buffer) error {
 		req := vk.MemoryRequirements2{SType: vk.StructureTypeMemoryRequirements2}
 		d.cmds.GetImageMemoryRequirements2(d.device, &ri, &req)
 		runtime.KeepAlive(&pi)
-		mem, err := d.importMemory(p.FD, req.MemoryRequirements, 0)
+		mem, err := d.importMemory(p.FD, req.MemoryRequirements, nil)
 		if err != nil {
 			return err
 		}
@@ -242,10 +242,18 @@ func (im *imported) bindPlanes(d *Device, b dmabuf.Buffer) error {
 	return nil
 }
 
-func (d *Device) importMemory(fd int, req vk.MemoryRequirements, dedicated vk.Image) (vk.DeviceMemory, error) {
+func dmabufSize(fd int) (int64, error) {
 	size, err := unix.Seek(fd, 0, unix.SEEK_END)
 	if err != nil {
 		return 0, fmt.Errorf("gpu: size of dmabuf %d: %w", fd, err)
+	}
+	return size, nil
+}
+
+func (d *Device) importMemory(fd int, req vk.MemoryRequirements, ded *vk.MemoryDedicatedAllocateInfo) (vk.DeviceMemory, error) {
+	size, err := dmabufSize(fd)
+	if err != nil {
+		return 0, err
 	}
 	if need, err := intconv.Exact[int64](req.Size); err != nil || size < need {
 		return 0, fmt.Errorf("gpu: dmabuf %d holds %d bytes, the image needs %d", fd, size, req.Size)
@@ -262,10 +270,10 @@ func (d *Device) importMemory(fd int, req vk.MemoryRequirements, dedicated vk.Im
 	if err != nil {
 		return 0, fmt.Errorf("gpu: dup dmabuf %d: %w", fd, err)
 	}
-	ded := vk.MemoryDedicatedAllocateInfo{SType: vk.StructureTypeMemoryDedicatedAllocateInfo, Image: dedicated}
 	imp := vk.ImportMemoryFdInfoKHR{SType: vk.StructureTypeImportMemoryFdInfoKhr, HandleType: vk.ExternalMemoryHandleTypeDmaBufBitExt, Fd: intconv.Must[int32](dup)}
-	if dedicated != 0 {
-		imp.PNext = (*uintptr)(unsafe.Pointer(&ded))
+	if ded != nil {
+		ded.SType = vk.StructureTypeMemoryDedicatedAllocateInfo
+		imp.PNext = (*uintptr)(unsafe.Pointer(ded))
 	}
 	mai := vk.MemoryAllocateInfo{
 		SType: vk.StructureTypeMemoryAllocateInfo, PNext: (*uintptr)(unsafe.Pointer(&imp)),
@@ -273,7 +281,7 @@ func (d *Device) importMemory(fd int, req vk.MemoryRequirements, dedicated vk.Im
 	}
 	var mem vk.DeviceMemory
 	r := d.cmds.AllocateMemory(d.device, &mai, nil, &mem)
-	runtime.KeepAlive(&ded)
+	runtime.KeepAlive(ded)
 	runtime.KeepAlive(&imp)
 	if r != vk.Success {
 		_ = unix.Close(dup)
