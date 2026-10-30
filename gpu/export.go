@@ -324,7 +324,7 @@ func (b *Buffer) ReadPixels() (*image.RGBA, error) {
 	}
 	d := b.d
 	w, h := b.e.buf.Width, b.e.buf.Height
-	return d.readPixels(w, h, false, b.e.buf.Format == fourcc.XRGB8888, func(cb vk.CommandBuffer, staging *buffer) {
+	return d.readPixels(w, h, vk.FormatB8g8r8a8Unorm, b.e.buf.Format == fourcc.XRGB8888, func(cb vk.CommandBuffer, staging *buffer) {
 		fullBarrier(d, cb, b.e.image, vk.ImageLayoutGeneral, vk.ImageLayoutTransferSrcOptimal, vk.QueueFamilyForeignExt, d.family)
 		region := vk.BufferImageCopy{
 			ImageSubresource: vk.ImageSubresourceLayers{AspectMask: vk.ImageAspectFlags(vk.ImageAspectColorBit), LayerCount: 1},

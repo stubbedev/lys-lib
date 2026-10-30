@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"image"
 	"runtime"
+	"slices"
 	"unsafe"
 
 	"github.com/stubbedev/lys-lib/dmabuf"
@@ -44,39 +45,36 @@ func (d *Device) NewOffscreen(width, height int) (*Target, error) {
 // vkFormatOf maps a DRM format to the Vulkan format with the same byte
 // order in memory.
 func vkFormatOf(format fourcc.Format) (vk.Format, error) {
-	if format == fourcc.NV12 {
-		return 0, fmt.Errorf("gpu: DRM format %s is the encoder's alone", format)
+	if format != fourcc.ARGB8888 && format != fourcc.XRGB8888 {
+		return 0, fmt.Errorf("gpu: a Buffer is ARGB8888 or XRGB8888, not DRM format %s", format)
 	}
 	vf, _, err := exportFormatOf(format)
 	return vf, err
 }
 
 // exportFormatOf is the Vulkan format of an image exported in format,
-// and how many memory planes it has: the surfaces' formats and the
+// and how many memory planes it has: the targets' formats and the
 // encoder's NV12.
 func exportFormatOf(format fourcc.Format) (vk.Format, int, error) {
-	switch format {
-	case fourcc.ARGB8888, fourcc.XRGB8888, fourcc.NV12:
-		pf, err := pixelFormatOf(format)
-		return pf.vk, pf.planes, err
+	if format != fourcc.NV12 && !slices.Contains(textureFormats, format) {
+		return 0, 0, fmt.Errorf("gpu: no Vulkan format for DRM format %s", format)
 	}
-	return 0, 0, fmt.Errorf("gpu: no Vulkan format for DRM format %s", format)
+	pf, err := pixelFormatOf(format)
+	return pf.vk, pf.planes, err
 }
 
-// NewTarget allocates a width x height image in format
-// (fourcc.ARGB8888, or XRGB8888 with the same bytes) whose layout the
+// NewTarget allocates a width x height image in format (one of
+// TextureFormats; Render draws only into ARGB8888 and XRGB8888, a Pass
+// into any) whose layout the
 // driver picks among modifiers, the ones the consumer imports, that the
 // device renders format in (Modifiers): linear when both take it. None
 // in common, as with only the implicit fourcc.Invalid on offer, is an
 // error naming both lists.
 func (d *Device) NewTarget(width, height int, format fourcc.Format, modifiers []fourcc.Modifier) (*Target, error) {
-	vf, err := vkFormatOf(format)
-	if err != nil {
-		return nil, err
+	if !slices.Contains(textureFormats, format) {
+		return nil, fmt.Errorf("gpu: no target in DRM format %s (%v)", format, textureFormats)
 	}
-	if vf != surfaceFormat {
-		return nil, fmt.Errorf("gpu: DRM format %s renders as Vulkan format %d, surfaces are %d", format, vf, surfaceFormat)
-	}
+	vf := pixelFormats[format].vk
 	e, err := d.export(width, height, format, modifiers, renderUse)
 	if err != nil {
 		return nil, err
@@ -204,18 +202,17 @@ func (d *Device) CopyRects(dst, src *Target, rects []image.Rectangle) error {
 // RGBA: tests and screenshots.
 func (t *Target) ReadPixels() (*image.RGBA, error) {
 	w, h := t.buf.Width, t.buf.Height
-	return t.s.d.readPixels(w, h, t.s.vf == vk.FormatR8g8b8a8Unorm, false, func(cb vk.CommandBuffer, staging *buffer) {
+	return t.s.d.readPixels(w, h, t.s.vf, false, func(cb vk.CommandBuffer, staging *buffer) {
 		t.acquire(cb)
 		t.s.download(cb, image.Rect(0, 0, w, h), staging, 0)
 		t.release(cb)
 	})
 }
 
-// readPixels reads a w x h B8G8R8A8 image, or R8G8B8A8 when rgba,
-// back as RGBA: record copies it, tight, into the staging buffer it is
-// handed. opaque reads every alpha as 255, for a format whose fourth
-// byte is padding.
-func (d *Device) readPixels(w, h int, rgba, opaque bool, record func(cb vk.CommandBuffer, staging *buffer)) (*image.RGBA, error) {
+// readPixels reads a w x h image in vf back as 8-bit RGBA: record
+// copies it, tight, into the staging buffer it is handed. opaque reads
+// every alpha as 255, for a format whose alpha is padding.
+func (d *Device) readPixels(w, h int, vf vk.Format, opaque bool, record func(cb vk.CommandBuffer, staging *buffer)) (*image.RGBA, error) {
 	staging, err := d.newReadBuffer(w*h*4, vk.BufferUsageTransferDstBit, nil)
 	if err != nil {
 		return nil, err
@@ -230,10 +227,7 @@ func (d *Device) readPixels(w, h int, rgba, opaque bool, record func(cb vk.Comma
 	img := image.NewRGBA(image.Rect(0, 0, w, h))
 	src := staging.mapped
 	for i := 0; i < len(img.Pix); i += 4 {
-		img.Pix[i], img.Pix[i+1], img.Pix[i+2], img.Pix[i+3] = src[i+2], src[i+1], src[i], src[i+3]
-		if rgba {
-			img.Pix[i], img.Pix[i+2] = src[i], src[i+2]
-		}
+		img.Pix[i], img.Pix[i+1], img.Pix[i+2], img.Pix[i+3] = decode(vf, [4]byte(src[i:]))
 		if opaque {
 			img.Pix[i+3] = 0xff
 		}
