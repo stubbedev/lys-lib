@@ -28,6 +28,7 @@ type Texture struct {
 	sets    [2]textureSet
 	layout  vk.ImageLayout
 	ycbcr   *ycbcrKind
+	surf    *surface
 	foreign bool
 	closed  bool
 }
@@ -117,6 +118,9 @@ func (t *Texture) Update(r image.Rectangle, stride int, pix []byte) error {
 	if t.foreign {
 		return errors.New("gpu: an imported texture is written by its producer, not uploaded")
 	}
+	if t.surf != nil {
+		return errors.New("gpu: a target's texture is drawn by a Pass, not uploaded")
+	}
 	if r.Empty() || !r.In(image.Rectangle{Max: t.Size()}) {
 		return fmt.Errorf("gpu: update %v outside a %dx%d texture", r, t.w, t.h)
 	}
@@ -161,10 +165,10 @@ func (d *Device) fitUpload(n int) error {
 	return nil
 }
 
-// Close releases the texture; closing it again, or after its device,
-// does nothing.
+// Close releases the texture; closing it again, after its device, or
+// closing a target's texture, which its target owns, does nothing.
 func (t *Texture) Close() {
-	if t.closed {
+	if t.closed || t.surf != nil {
 		return
 	}
 	t.closed = true
@@ -177,6 +181,10 @@ func (t *Texture) release() {
 	d := t.d
 	for i := range t.sets {
 		t.sets[i].free(d)
+	}
+	if t.surf != nil {
+		t.view = 0
+		return
 	}
 	if t.view != 0 {
 		d.cmds.DestroyImageView(d.device, t.view, nil)

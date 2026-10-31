@@ -27,6 +27,8 @@ type Target struct {
 	offscreen bool
 	// closed marks a target Close released.
 	closed bool
+	// tex samples an offscreen target (Texture).
+	tex *Texture
 }
 
 // NewOffscreen allocates a width x height target in device memory no
@@ -84,6 +86,25 @@ func (d *Device) NewTarget(width, height int, format fourcc.Format, modifiers []
 	return t, nil
 }
 
+// Texture is an offscreen target as a texture a later Pass samples:
+// what the target's last pass drew, premultiplied ARGB8888. It lives
+// as long as the target; a pass cannot draw a target into itself.
+func (t *Target) Texture() (*Texture, error) {
+	switch {
+	case t.closed:
+		return nil, errors.New("gpu: Texture of a closed target")
+	case !t.offscreen:
+		return nil, errors.New("gpu: only an offscreen target is sampled; a dmabuf target belongs to its consumer")
+	case t.tex != nil:
+		return t.tex, nil
+	}
+	if err := t.s.ready(); err != nil {
+		return nil, err
+	}
+	t.tex = &Texture{d: t.s.d, format: fourcc.ARGB8888, pf: pixelFormats[fourcc.ARGB8888], w: t.s.w, h: t.s.h, view: t.s.view, surf: &t.s}
+	return t.tex, nil
+}
+
 // Dmabuf describes the target's memory for its consumer. Its fd is the
 // target's, open until Close; an offscreen target has none.
 func (t *Target) Dmabuf() dmabuf.Buffer { return t.buf }
@@ -101,6 +122,10 @@ func (t *Target) Close() {
 	d := t.s.d
 	_ = d.idle()
 	delete(d.targets, t)
+	if t.tex != nil {
+		t.tex.closed = true
+		t.tex.release()
+	}
 	t.s.close()
 	if t.offscreen {
 		return

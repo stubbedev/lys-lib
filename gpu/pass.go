@@ -174,6 +174,9 @@ func (p *Pass) DrawTexture(t *Texture, src FRect, dst image.Rectangle, tr Transf
 	case t.d != p.d:
 		p.fail(errors.New("gpu: DrawTexture of another device's texture"))
 		return
+	case t.surf == &p.t.s:
+		p.fail(errors.New("gpu: DrawTexture of the pass's own target"))
+		return
 	case tr < TransformNormal || tr > TransformFlipped270:
 		p.fail(fmt.Errorf("gpu: transform %d is no wl_output transform", tr))
 		return
@@ -324,6 +327,11 @@ func (p *Pass) record(cb vk.CommandBuffer, ct *compTarget) {
 		if op.tex != nil && op.tex.foreign && !slices.Contains(foreign, op.tex) {
 			foreign = append(foreign, op.tex)
 			op.tex.acquireForeign(cb)
+		}
+	}
+	for _, op := range p.ops {
+		if op.tex != nil && op.tex.surf != nil {
+			op.tex.surf.to(cb, vk.ImageLayoutShaderReadOnlyOptimal)
 		}
 	}
 	s.to(cb, vk.ImageLayoutColorAttachmentOptimal)
