@@ -209,6 +209,46 @@ func (p *Pass) FillGradient(r image.Rectangle, g Gradient, m Mask) {
 	p.ops = append(p.ops, passOp{kind: opTexture, dst: r, tex: t, set: set, pipe: p.ct.grad, layout: p.d.comp.layout, dc: dc})
 }
 
+// Kawase draws all of t scaled to dst through one pass of a dual
+// Kawase blur, sampling t linearly at offset source half-pixels from
+// each pixel: four diagonal taps around a centre weighted four (down,
+// for a target smaller than t) or eight taps around it (up, for a
+// larger one). KawaseAt mirrors it in Go.
+func (p *Pass) Kawase(t *Texture, dst image.Rectangle, offset float32, up bool) {
+	if !p.open("Kawase") || dst.Empty() {
+		return
+	}
+	switch {
+	case t == nil || t.closed:
+		p.fail(errors.New("gpu: Kawase of a closed texture"))
+		return
+	case t.d != p.d:
+		p.fail(errors.New("gpu: Kawase of another device's texture"))
+		return
+	case t.surf == &p.t.s:
+		p.fail(errors.New("gpu: Kawase of the pass's own target"))
+		return
+	case t.ycbcr != nil:
+		p.fail(errors.New("gpu: Kawase of a YCbCr texture"))
+		return
+	case !(offset >= 0) || math.IsInf(float64(offset), 0):
+		p.fail(fmt.Errorf("gpu: Kawase offset %v is not zero or more", offset))
+		return
+	}
+	set, err := t.set(filterLinear)
+	if err != nil {
+		p.fail(err)
+		return
+	}
+	mode := float32(0)
+	if up {
+		mode = 1
+	}
+	dc := drawConstants{target: [4]float32{2: 1}, extra: [2][4]float32{{0, 0, 1, 0}, {0, 1, 1, 1}}}
+	dc.keep = [4]float32{0.5 / float32(t.w) * offset, 0.5 / float32(t.h) * offset, mode}
+	p.ops = append(p.ops, passOp{kind: opTexture, dst: dst, tex: t, set: set, pipe: p.ct.kawase, layout: p.d.comp.layout, dc: dc})
+}
+
 // DrawTexture blends src of t, scaled to dst and turned by tr, at
 // alpha over dst's damaged part within m. tr is the buffer transform of the
 // texture's content: under Transform90, dst's x runs along src's y and

@@ -8,9 +8,11 @@ import (
 	"math"
 )
 
-// MaskGLSL is the GLSL of Mask.Coverage, maskCoverage, and of
-// GradientAt's texture coordinate, gradientUV, valid as GLSL 4.50 and
-// as GLSL ES 1.00, for renderers outside this package to share.
+// MaskGLSL is the GLSL of Mask.Coverage, maskCoverage, of GradientAt's
+// texture coordinate, gradientUV, and, when SAMPLE names the sampling
+// function (texture or texture2D), of KawaseAt's kawaseDown and
+// kawaseUp, valid as GLSL 4.50 and as GLSL ES 1.00, for renderers
+// outside this package to share.
 //
 //go:embed shaders/mask.glsl
 var MaskGLSL string
@@ -98,4 +100,54 @@ func GradientAt(from, to [2]float32, stops []color.RGBA, px, py float32) color.R
 	a, b := stops[i], stops[i+1]
 	mix := func(x, y uint8) uint8 { return uint8(math.Round(float64(float32(x) + (float32(y)-float32(x))*f))) }
 	return color.RGBA{mix(a.R, b.R), mix(a.G, b.G), mix(a.B, b.B), mix(a.A, b.A)}
+}
+
+// Bilinear samples pix, w x h premultiplied BGRA pixels stride bytes a
+// row, at texture coordinate (u, v) as a linear sampler clamped to its
+// edges does, returning B, G, R, A in 0..255.
+func Bilinear(pix []byte, stride, w, h int, u, v float32) [4]float32 {
+	x, y := u*float32(w)-0.5, v*float32(h)-0.5
+	x0, y0 := int(math.Floor(float64(x))), int(math.Floor(float64(y)))
+	fx, fy := x-float32(x0), y-float32(y0)
+	at := func(i, j int) []byte {
+		i, j = min(max(i, 0), w-1), min(max(j, 0), h-1)
+		return pix[j*stride+i*4:]
+	}
+	var out [4]float32
+	a, b, c, d := at(x0, y0), at(x0+1, y0), at(x0, y0+1), at(x0+1, y0+1)
+	for k := range out {
+		top := float32(a[k]) + (float32(b[k])-float32(a[k]))*fx
+		bottom := float32(c[k]) + (float32(d[k])-float32(c[k]))*fx
+		out[k] = top + (bottom-top)*fy
+	}
+	return out
+}
+
+// KawaseAt is Kawase's colour at texture coordinate (u, v) of a
+// texture sample samples, with taps h source texels apart in texture
+// coordinates.
+func KawaseAt(sample func(u, v float32) [4]float32, up bool, u, v, hx, hy float32) [4]float32 {
+	var sum [4]float32
+	add := func(du, dv, weight float32) {
+		s := sample(u+du, v+dv)
+		for k := range sum {
+			sum[k] += s[k] * weight
+		}
+	}
+	total := float32(8)
+	if up {
+		total = 12
+		for _, t := range [8][3]float32{{-2 * hx, 0, 1}, {-hx, hy, 2}, {0, 2 * hy, 1}, {hx, hy, 2}, {2 * hx, 0, 1}, {hx, -hy, 2}, {0, -2 * hy, 1}, {-hx, -hy, 2}} {
+			add(t[0], t[1], t[2])
+		}
+	} else {
+		add(0, 0, 4)
+		for _, t := range [4][2]float32{{-hx, -hy}, {hx, hy}, {hx, -hy}, {-hx, hy}} {
+			add(t[0], t[1], 1)
+		}
+	}
+	for k := range sum {
+		sum[k] /= total
+	}
+	return sum
 }

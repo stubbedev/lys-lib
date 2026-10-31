@@ -131,8 +131,8 @@ func TestMaskGLSLIsGLSLES(t *testing.T) {
 	if _, err := exec.LookPath("glslangValidator"); err != nil {
 		t.Skip("no glslangValidator: run inside the dev shell")
 	}
-	src := "#version 100\nprecision highp float;\nuniform vec4 keep;\nuniform vec4 cut;\nuniform vec4 radii;\n" + MaskGLSL +
-		"void main() { gl_FragColor = vec4(maskCoverage(gl_FragCoord.xy, keep, cut, radii), gradientUV(gl_FragCoord.xy, keep, 3.0), 1.0); }\n"
+	src := "#version 100\nprecision highp float;\n#define SAMPLE texture2D\nuniform sampler2D tex;\nuniform vec4 keep;\nuniform vec4 cut;\nuniform vec4 radii;\n" + MaskGLSL +
+		"void main() { gl_FragColor = vec4(maskCoverage(gl_FragCoord.xy, keep, cut, radii), gradientUV(gl_FragCoord.xy, keep, 3.0), 1.0) + kawaseDown(tex, keep.xy, cut.xy) + kawaseUp(tex, keep.xy, cut.xy); }\n"
 	path := filepath.Join(t.TempDir(), "mask.frag")
 	if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
 		t.Fatal(err)

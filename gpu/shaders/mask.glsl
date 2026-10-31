@@ -32,3 +32,26 @@ vec2 gradientUV(vec2 p, vec4 line, float stops) {
     float t = clamp(dot(p - line.xy, d) / dot(d, d), 0.0, 1.0);
     return vec2((t * (stops - 1.0) + 0.5) / stops, 0.5);
 }
+
+#ifdef SAMPLE
+vec4 kawaseDown(sampler2D tex, vec2 uv, vec2 h) {
+    vec4 s = SAMPLE(tex, uv) * 4.0;
+    s += SAMPLE(tex, uv - h);
+    s += SAMPLE(tex, uv + h);
+    s += SAMPLE(tex, uv + vec2(h.x, -h.y));
+    s += SAMPLE(tex, uv - vec2(h.x, -h.y));
+    return s / 8.0;
+}
+
+vec4 kawaseUp(sampler2D tex, vec2 uv, vec2 h) {
+    vec4 s = SAMPLE(tex, uv + vec2(-h.x * 2.0, 0.0));
+    s += SAMPLE(tex, uv + vec2(-h.x, h.y)) * 2.0;
+    s += SAMPLE(tex, uv + vec2(0.0, h.y * 2.0));
+    s += SAMPLE(tex, uv + vec2(h.x, h.y)) * 2.0;
+    s += SAMPLE(tex, uv + vec2(h.x * 2.0, 0.0));
+    s += SAMPLE(tex, uv + vec2(h.x, -h.y)) * 2.0;
+    s += SAMPLE(tex, uv + vec2(0.0, -h.y * 2.0));
+    s += SAMPLE(tex, uv + vec2(-h.x, -h.y)) * 2.0;
+    return s / 12.0;
+}
+#endif
