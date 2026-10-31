@@ -7,6 +7,7 @@ import (
 	"image"
 
 	"github.com/stubbedev/lys-lib/fourcc"
+	"github.com/stubbedev/lys-lib/intconv"
 	"github.com/stubbedev/lys-lib/third_party/wayland/wl"
 )
 
@@ -227,7 +228,7 @@ func convertRow32(dst, src []byte, f Format) {
 			dst, src = dst[8:], src[8:]
 		}
 		if len(src) >= 4 && len(dst) >= 4 {
-			binary.LittleEndian.PutUint32(dst, uint32(swapRB(uint64(binary.LittleEndian.Uint32(src))))|opaque)
+			binary.LittleEndian.PutUint32(dst, intconv.Must[uint32](swapRB(uint64(binary.LittleEndian.Uint32(src))))|opaque)
 		}
 	case FormatARGB2101010, FormatXRGB2101010:
 		for len(src) >= 4 && len(dst) >= 4 {
