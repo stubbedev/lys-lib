@@ -1339,3 +1339,32 @@ func TestBlendPropertyPairs(t *testing.T) {
 		}
 	}
 }
+
+func TestOverClampedMatchesPerChannelReference(t *testing.T) {
+	ch := func(s, d, keep uint32) uint32 { return min(s+(d*keep+127)/255, 255) }
+	for sa := range uint32(256) {
+		keep := 255 - sa
+		for s := range uint32(256) {
+			src := Color(sa<<24 | s<<16 | (255-s)<<8 | (s ^ 0x5a))
+			for d := range uint32(256) {
+				dst := Color(d<<24 | (d^0xa5)<<16 | d<<8 | (255 - d))
+				want := Color(ch(sa, d, keep)<<24 | ch(s, d^0xa5, keep)<<16 | ch(255-s, d, keep)<<8 | ch(s^0x5a, 255-d, keep))
+				if got := src.overClamped(dst); got != want {
+					t.Fatalf("%08x over %08x = %08x, want %08x", uint32(src), uint32(dst), uint32(got), uint32(want))
+				}
+			}
+		}
+	}
+}
+
+func TestCoverageScaleMatchesPerChannelReference(t *testing.T) {
+	for c := range uint32(256) {
+		col := Color(c<<24 | (255-c)<<16 | (c^0x5a)<<8 | (c ^ 0xa5))
+		for cov := range uint32(256) {
+			want := Color((c*cov/255)<<24 | ((255-c)*cov/255)<<16 | ((c^0x5a)*cov/255)<<8 | (c^0xa5)*cov/255)
+			if got := coverageScale(col, cov); got != want {
+				t.Fatalf("coverageScale(%08x, %d) = %08x, want %08x", uint32(col), cov, uint32(got), uint32(want))
+			}
+		}
+	}
+}

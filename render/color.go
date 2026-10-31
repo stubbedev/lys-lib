@@ -1,5 +1,7 @@
 package render
 
+import "math"
+
 // Color is a premultiplied ARGB8888 pixel value, laid out as 0xAARRGGBB.
 // Premultiplied is the native format of both the wl_shm buffers and Go's
 // image.RGBA, so colors pass through blending without conversion.
@@ -65,6 +67,22 @@ func (src Color) over(dst Color) Color {
 		(uint32(src.R())+dr)<<16 |
 		(uint32(src.G())+dg)<<8 |
 		(uint32(src.B()) + db))
+}
+
+const (
+	lanes     = 0x00ff_00ff_00ff_00ff
+	lanesOne  = 0x0001_0001_0001_0001
+	lanesHalf = 0x0080_0080_0080_0080
+)
+
+func (c Color) spread() uint64 { return (uint64(c) | uint64(c)<<24) & lanes }
+
+func gather(l uint64) Color { return Color(uint32((l | l>>24) & math.MaxUint32)) }
+
+func (src Color) overClamped(dst Color) Color {
+	l := dst.spread()*uint64(255-src.A()) + lanesHalf
+	l = (l+l>>8&lanes)>>8&lanes + src.spread()
+	return gather((l | l>>8&lanesOne*0xff) & lanes)
 }
 
 // lerp32 is the color f of the way from a to b, each channel

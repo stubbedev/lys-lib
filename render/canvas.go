@@ -267,14 +267,9 @@ func (c *Canvas) blendRun(x0, x1, y int, src Color) {
 		}
 		return
 	}
-	keep := 255 - uint32(src.A())
-	sb, sg, sr, sa := uint32(src.B()), uint32(src.G()), uint32(src.R()), uint32(src.A())
 	for o := 0; o < len(row); o += 4 {
 		p := row[o : o+4 : o+4]
-		p[0] = uint8(min(sb+(uint32(p[0])*keep+127)/255, 255))
-		p[1] = uint8(min(sg+(uint32(p[1])*keep+127)/255, 255))
-		p[2] = uint8(min(sr+(uint32(p[2])*keep+127)/255, 255))
-		p[3] = uint8(min(sa+(uint32(p[3])*keep+127)/255, 255))
+		binary.LittleEndian.PutUint32(p, uint32(src.overClamped(Color(binary.LittleEndian.Uint32(p)))))
 	}
 }
 
@@ -301,26 +296,29 @@ func (c *Canvas) shade(src Color) (Color, bool) {
 // m)) a row at a time, the byte arithmetic inline while no brightness
 // or opacity applies. Callers keep the row inside the canvas and clip.
 func (c *Canvas) blendMask(x0, y int, mask []uint8, col Color) {
-	ca, cr, cg, cb := uint32(col.A()), uint32(col.R()), uint32(col.G()), uint32(col.B())
-	plain := (c.bright == 0 || c.bright == 1) && c.alphaScale == 255
+	if (c.bright != 0 && c.bright != 1) || c.alphaScale != 255 {
+		for i, m := range mask {
+			if m != 0 {
+				c.blend(x0+i, y, coverageScale(col, uint32(m)))
+			}
+		}
+		return
+	}
+	opaque := col.A() == 0xff
 	base := y*c.stride + x0*4
-	for i, mb := range mask {
-		m := uint32(mb)
+	row := c.data[base : base+len(mask)*4]
+	for i, m := range mask {
 		if m == 0 {
 			continue
 		}
-		sa, sr, sg, sb := ca*m/255, cr*m/255, cg*m/255, cb*m/255
-		if !plain {
-			c.blend(x0+i, y, Color(sa<<24|sr<<16|sg<<8|sb))
+		c.touched++
+		p := row[i*4 : i*4+4 : i*4+4]
+		if m == 0xff && opaque {
+			binary.LittleEndian.PutUint32(p, uint32(col))
 			continue
 		}
-		c.touched++
-		p := c.data[base+i*4 : base+i*4+4 : base+i*4+4]
-		keep := 255 - sa
-		p[0] = uint8(min(sb+(uint32(p[0])*keep+127)/255, 255))
-		p[1] = uint8(min(sg+(uint32(p[1])*keep+127)/255, 255))
-		p[2] = uint8(min(sr+(uint32(p[2])*keep+127)/255, 255))
-		p[3] = uint8(min(sa+(uint32(p[3])*keep+127)/255, 255))
+		dst := Color(binary.LittleEndian.Uint32(p))
+		binary.LittleEndian.PutUint32(p, uint32(coverageScale(col, uint32(m)).overClamped(dst)))
 	}
 }
 
@@ -546,10 +544,8 @@ func sdRoundRect(px, py float32, r Rect, radius float32) float32 {
 // dropping the source's own alpha would paint translucent fills
 // opaque, unlike FillRect.
 func coverageScale(col Color, cov uint32) Color {
-	return Color((uint32(col.A())*cov/255)<<24 |
-		(uint32(col.R())*cov/255)<<16 |
-		(uint32(col.G())*cov/255)<<8 |
-		(uint32(col.B())*cov)/255)
+	l := col.spread()*uint64(cov) + lanesOne
+	return gather((l + l>>8&lanes) >> 8 & lanes)
 }
 
 // lineSpan is the device rect Line visits: the segment's box grown
