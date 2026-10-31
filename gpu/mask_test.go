@@ -30,6 +30,10 @@ func TestMaskCoverage(t *testing.T) {
 		{Mask{Cut: r}, 20.5, 15.5, 0, 0},
 		{Mask{Cut: r}, 5, 5, 1, 1},
 		{Mask{Keep: RoundRect{Rect: image.Rect(8, 8, 32, 22), Radius: 6}, Cut: r}, 9.5, 15.5, 1, 1},
+		{Mask{Keep: r, Falloff: Falloff{Range: 8, Power: 2}}, 20.5, 15.5, 1, 1},
+		{Mask{Keep: r, Falloff: Falloff{Range: 8, Power: 2}}, 34, 15.5, 0.25, 0.25},
+		{Mask{Keep: r, Falloff: Falloff{Range: 8, Power: 1}}, 36, 15.5, 0.25, 0.25},
+		{Mask{Keep: r, Falloff: Falloff{Range: 8, Power: 2}}, 39, 15.5, 0, 0},
 	}
 	for _, c := range cases {
 		if got := c.m.Coverage(c.x, c.y); got < c.lo || got > c.hi {
@@ -54,10 +58,13 @@ func TestPassMasksFillsAndTexturesLikeTheCoverage(t *testing.T) {
 	tx := newTexture(t, d, fourcc.XRGB8888, 1, 1, [][4]byte{{0, 0xc8, 0, 0}})
 	window := Mask{Keep: RoundRect{Rect: image.Rect(4, 4, 24, 28), Radius: 6}}
 	ring := Mask{Keep: RoundRect{Rect: image.Rect(26, 2, 46, 30), Radius: 8}, Cut: RoundRect{Rect: image.Rect(29, 5, 43, 27), Radius: 5}}
+	shadow := Mask{Keep: RoundRect{Rect: image.Rect(36, 26, 44, 30), Radius: 2}, Cut: RoundRect{Rect: image.Rect(38, 27, 42, 29), Radius: 1}, Falloff: Falloff{Range: 3, Power: 2.5}}
+	shadowArea := image.Rect(33, 23, 47, 32)
 	runPass(t, d, tg, []image.Rectangle{{Max: tg.Size()}}, func(p *Pass) {
 		p.Clear(color.RGBA{})
 		p.DrawTexture(tx, FRect{W: 1, H: 1}, window.Keep.Rect, TransformNormal, 1, window)
 		p.FillRect(ring.Keep.Rect, red, ring)
+		p.FillRect(shadowArea, color.RGBA{0, 0, 0, 200}, shadow)
 	})
 	img := readTarget(t, tg)
 	green := color.RGBA{0, 0xc8, 0, 255}
@@ -72,6 +79,13 @@ func TestPassMasksFillsAndTexturesLikeTheCoverage(t *testing.T) {
 			case pt.In(ring.Keep.Rect):
 				want = premultiply(red, ring.Coverage(px, py))
 			}
+			if image.Pt(x, y).In(shadowArea) {
+				k := shadow.Coverage(px, py)
+				s := premultiply(color.RGBA{0, 0, 0, 200}, k)
+				inv := 255 - int(s.A)
+				blendc := func(src, dst uint8) uint8 { return uint8(int(src) + (int(dst)*inv+127)/255) }
+				want = color.RGBA{blendc(s.R, want.R), blendc(s.G, want.G), blendc(s.B, want.B), blendc(s.A, want.A)}
+			}
 			if got := img.RGBAAt(x, y); !within(got, want, 1) {
 				if bad < 10 {
 					t.Errorf("(%d,%d): %v, want %v", x, y, got, want)
@@ -82,6 +96,17 @@ func TestPassMasksFillsAndTexturesLikeTheCoverage(t *testing.T) {
 	}
 	if bad > 0 {
 		t.Fatalf("%d pixels differ from Mask.Coverage", bad)
+	}
+}
+
+func TestMaskCheckRefusesBadFalloffs(t *testing.T) {
+	for _, f := range []Falloff{{Range: -1, Power: 1}, {Range: 4}, {Range: 4, Power: -2}, {Range: float32(math.Inf(1)), Power: 1}} {
+		if err := (Mask{Falloff: f}).Check(); err == nil {
+			t.Errorf("%+v accepted", f)
+		}
+	}
+	if err := (Mask{Falloff: Falloff{Range: 4, Power: 3}}).Check(); err != nil {
+		t.Error(err)
 	}
 }
 
@@ -106,7 +131,7 @@ func TestMaskGLSLIsGLSLES(t *testing.T) {
 	if _, err := exec.LookPath("glslangValidator"); err != nil {
 		t.Skip("no glslangValidator: run inside the dev shell")
 	}
-	src := "#version 100\nprecision highp float;\nuniform vec4 keep;\nuniform vec4 cut;\nuniform vec2 radii;\n" + MaskGLSL +
+	src := "#version 100\nprecision highp float;\nuniform vec4 keep;\nuniform vec4 cut;\nuniform vec4 radii;\n" + MaskGLSL +
 		"void main() { gl_FragColor = vec4(maskCoverage(gl_FragCoord.xy, keep, cut, radii)); }\n"
 	path := filepath.Join(t.TempDir(), "mask.frag")
 	if err := os.WriteFile(path, []byte(src), 0o600); err != nil {

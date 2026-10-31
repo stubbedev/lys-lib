@@ -5,5 +5,5 @@
 layout(location = 0) out vec4 color;
 
 void main() {
-    color = draw.extra[0] * maskCoverage(gl_FragCoord.xy, draw.keep, draw.cut, draw.radii.xy);
+    color = draw.extra[0] * maskCoverage(gl_FragCoord.xy, draw.keep, draw.cut, draw.radii);
 }

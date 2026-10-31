@@ -136,7 +136,7 @@ func (dc *drawConstants) setMask(m Mask) {
 	rect := func(r image.Rectangle) [4]float32 {
 		return [4]float32{float32(r.Min.X), float32(r.Min.Y), float32(r.Max.X), float32(r.Max.Y)}
 	}
-	dc.keep, dc.cut, dc.radii = rect(m.Keep.Rect), rect(m.Cut.Rect), [4]float32{m.Keep.Radius, m.Cut.Radius}
+	dc.keep, dc.cut, dc.radii = rect(m.Keep.Rect), rect(m.Cut.Rect), [4]float32{m.Keep.Radius, m.Cut.Radius, m.Falloff.Range, m.Falloff.Power}
 }
 
 // FillRect blends c, premultiplied, over r's damaged part within m.
