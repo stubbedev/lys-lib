@@ -4,11 +4,13 @@ import (
 	_ "embed" // the mask's GLSL below
 	"fmt"
 	"image"
+	"image/color"
 	"math"
 )
 
-// MaskGLSL is the GLSL of Mask.Coverage, valid as GLSL 4.50 and as
-// GLSL ES 1.00, for renderers outside this package to share.
+// MaskGLSL is the GLSL of Mask.Coverage, maskCoverage, and of
+// GradientAt's texture coordinate, gradientUV, valid as GLSL 4.50 and
+// as GLSL ES 1.00, for renderers outside this package to share.
 //
 //go:embed shaders/mask.glsl
 var MaskGLSL string
@@ -82,4 +84,18 @@ func (m Mask) Coverage(px, py float32) float32 {
 		k *= 1 - edgeCoverage(roundRectDistance(px, py, m.Cut.Rect, m.Cut.Radius))
 	}
 	return k
+}
+
+// GradientAt is the premultiplied colour FillGradient gives the pixel
+// whose centre is (px, py), for stops spread from from to to, as the
+// shader computes it.
+func GradientAt(from, to [2]float32, stops []color.RGBA, px, py float32) color.RGBA {
+	lx, ly := to[0]-from[0], to[1]-from[1]
+	t := min(max(((px-from[0])*lx+(py-from[1])*ly)/(lx*lx+ly*ly), 0), 1)
+	u := t * float32(len(stops)-1)
+	i := min(int(u), len(stops)-2)
+	f := u - float32(i)
+	a, b := stops[i], stops[i+1]
+	mix := func(x, y uint8) uint8 { return uint8(math.Round(float64(float32(x) + (float32(y)-float32(x))*f))) }
+	return color.RGBA{mix(a.R, b.R), mix(a.G, b.G), mix(a.B, b.B), mix(a.A, b.A)}
 }

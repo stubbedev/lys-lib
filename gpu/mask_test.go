@@ -132,12 +132,61 @@ func TestMaskGLSLIsGLSLES(t *testing.T) {
 		t.Skip("no glslangValidator: run inside the dev shell")
 	}
 	src := "#version 100\nprecision highp float;\nuniform vec4 keep;\nuniform vec4 cut;\nuniform vec4 radii;\n" + MaskGLSL +
-		"void main() { gl_FragColor = vec4(maskCoverage(gl_FragCoord.xy, keep, cut, radii)); }\n"
+		"void main() { gl_FragColor = vec4(maskCoverage(gl_FragCoord.xy, keep, cut, radii), gradientUV(gl_FragCoord.xy, keep, 3.0), 1.0); }\n"
 	path := filepath.Join(t.TempDir(), "mask.frag")
 	if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if out, err := exec.Command("glslangValidator", path).CombinedOutput(); err != nil {
 		t.Fatalf("MaskGLSL is not GLSL ES 1.00: %v\n%s", err, out)
+	}
+}
+
+func TestPassFillsGradientsLikeGradientAt(t *testing.T) {
+	d := openDevice(t)
+	tg, err := d.NewOffscreen(40, 24)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tg.Close()
+	stops := []color.RGBA{{200, 0, 0, 255}, {0, 180, 0, 255}, {0, 0, 120, 120}}
+	px := make([][4]byte, len(stops))
+	for i, c := range stops {
+		px[i] = [4]byte{c.B, c.G, c.R, c.A}
+	}
+	tx := newTexture(t, d, fourcc.ARGB8888, len(stops), 1, px)
+	ring := Mask{Keep: RoundRect{Rect: image.Rect(2, 2, 38, 22), Radius: 6}, Cut: RoundRect{Rect: image.Rect(6, 6, 34, 18), Radius: 3}}
+	from, to := [2]float32{4, 20}, [2]float32{36, 3}
+	runPass(t, d, tg, []image.Rectangle{{Max: tg.Size()}}, func(p *Pass) {
+		p.Clear(color.RGBA{})
+		p.FillGradient(ring.Keep.Rect, Gradient{Stops: tx, From: from, To: to, Alpha: 0.75}, ring)
+	})
+	img := readTarget(t, tg)
+	bad := 0
+	for y := range 24 {
+		for x := range 40 {
+			cx, cy := float32(x)+0.5, float32(y)+0.5
+			want := color.RGBA{}
+			if image.Pt(x, y).In(ring.Keep.Rect) {
+				want = premultiply(GradientAt(from, to, stops, cx, cy), 0.75*ring.Coverage(cx, cy))
+			}
+			if got := img.RGBAAt(x, y); !within(got, want, 2) {
+				if bad < 10 {
+					t.Errorf("(%d,%d): %v, want %v", x, y, got, want)
+				}
+				bad++
+			}
+		}
+	}
+	if bad > 0 {
+		t.Fatalf("%d pixels differ from GradientAt", bad)
+	}
+	p, err := d.Begin(tg, []image.Rectangle{{Max: tg.Size()}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	p.FillGradient(ring.Keep.Rect, Gradient{Stops: tx, From: from, To: from, Alpha: 1}, Mask{})
+	if err := p.End(); err == nil {
+		t.Fatal("a gradient without a direction was accepted")
 	}
 }

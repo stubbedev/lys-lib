@@ -19,15 +19,15 @@ type compositor struct {
 	layout   vk.PipelineLayout
 	samplers [2]vk.Sampler
 	vert     vk.ShaderModule
-	frags    [2]vk.ShaderModule
+	frags    [3]vk.ShaderModule
 	sets     setPools
 	targets  map[vk.Format]*compTarget
 	ycbcr    map[ycbcrKey]*ycbcrKind
 }
 
 type compTarget struct {
-	pass      vk.RenderPass
-	tex, fill vk.Pipeline
+	pass            vk.RenderPass
+	tex, fill, grad vk.Pipeline
 }
 
 type drawConstants struct {
@@ -66,7 +66,7 @@ func (d *Device) createComp() error {
 	if c.vert, err = d.shaderModule(compVert); err != nil {
 		return err
 	}
-	for i, spv := range [2][]byte{compFrag, fillFrag} {
+	for i, spv := range [3][]byte{compFrag, fillFrag, gradFrag} {
 		if c.frags[i], err = d.shaderModule(spv); err != nil {
 			return err
 		}
@@ -104,7 +104,9 @@ func (d *Device) compTargetOf(format vk.Format) (*compTarget, error) {
 	var err error
 	if ct.pass, err = d.renderPass(format); err == nil {
 		if ct.tex, err = d.graphicsPipeline([2]vk.ShaderModule{c.vert, c.frags[0]}, c.layout, ct.pass, blendOver); err == nil {
-			ct.fill, err = d.graphicsPipeline([2]vk.ShaderModule{c.vert, c.frags[1]}, c.layout, ct.pass, blendOver)
+			if ct.fill, err = d.graphicsPipeline([2]vk.ShaderModule{c.vert, c.frags[1]}, c.layout, ct.pass, blendOver); err == nil {
+				ct.grad, err = d.graphicsPipeline([2]vk.ShaderModule{c.vert, c.frags[2]}, c.layout, ct.pass, blendOver)
+			}
 		}
 	}
 	if err != nil {
@@ -116,7 +118,7 @@ func (d *Device) compTargetOf(format vk.Format) (*compTarget, error) {
 }
 
 func (ct *compTarget) destroy(d *Device) {
-	for _, p := range []vk.Pipeline{ct.tex, ct.fill} {
+	for _, p := range []vk.Pipeline{ct.tex, ct.fill, ct.grad} {
 		if p != 0 {
 			d.cmds.DestroyPipeline(d.device, p, nil)
 		}
@@ -199,7 +201,7 @@ func (d *Device) destroyComp() {
 		k.destroy(d)
 	}
 	c.sets.destroy(d)
-	for _, m := range []vk.ShaderModule{c.vert, c.frags[0], c.frags[1]} {
+	for _, m := range []vk.ShaderModule{c.vert, c.frags[0], c.frags[1], c.frags[2]} {
 		if m != 0 {
 			d.cmds.DestroyShaderModule(dev, m, nil)
 		}

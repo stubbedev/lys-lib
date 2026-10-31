@@ -26,3 +26,9 @@ float maskCoverage(vec2 p, vec4 keep, vec4 cut, vec4 radii) {
     }
     return k;
 }
+
+vec2 gradientUV(vec2 p, vec4 line, float stops) {
+    vec2 d = line.zw - line.xy;
+    float t = clamp(dot(p - line.xy, d) / dot(d, d), 0.0, 1.0);
+    return vec2((t * (stops - 1.0) + 0.5) / stops, 0.5);
+}

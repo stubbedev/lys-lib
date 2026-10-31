@@ -158,6 +158,57 @@ func (p *Pass) FillRect(r image.Rectangle, c color.RGBA, m Mask) {
 	p.ops = append(p.ops, passOp{kind: opFill, dst: r, pipe: p.ct.fill, layout: p.d.comp.layout, dc: dc})
 }
 
+// Gradient is a linear gradient from From to To, in target pixels:
+// Stops, an N x 1 texture of N >= 2 premultiplied colours, spread
+// evenly from From (the first) to To (the last), each pixel taking the
+// colour at its projection onto the line, clamped at the ends, the
+// stops between interpolated linearly, all of it at Alpha.
+type Gradient struct {
+	Stops    *Texture
+	From, To [2]float32
+	Alpha    float32
+}
+
+// FillGradient blends g over r's damaged part within m.
+func (p *Pass) FillGradient(r image.Rectangle, g Gradient, m Mask) {
+	if !p.open("FillGradient") || r.Empty() {
+		return
+	}
+	t := g.Stops
+	switch {
+	case t == nil || t.closed:
+		p.fail(errors.New("gpu: FillGradient with closed stops"))
+		return
+	case t.d != p.d:
+		p.fail(errors.New("gpu: FillGradient with another device's stops"))
+		return
+	case t.h != 1 || t.w < 2 || t.ycbcr != nil:
+		p.fail(fmt.Errorf("gpu: gradient stops are an RGB texture N x 1 with N >= 2, not %dx%d", t.w, t.h))
+		return
+	case t.surf == &p.t.s:
+		p.fail(errors.New("gpu: FillGradient with the pass's own target as stops"))
+		return
+	case g.From == g.To:
+		p.fail(fmt.Errorf("gpu: a gradient from %v to itself has no direction", g.From))
+		return
+	case !(g.Alpha >= 0 && g.Alpha <= 1):
+		p.fail(fmt.Errorf("gpu: gradient alpha %v outside [0, 1]", g.Alpha))
+		return
+	}
+	if err := m.Check(); err != nil {
+		p.fail(err)
+		return
+	}
+	set, err := t.set(filterLinear)
+	if err != nil {
+		p.fail(err)
+		return
+	}
+	dc := drawConstants{extra: [2][4]float32{{g.From[0], g.From[1], g.To[0], g.To[1]}, {float32(t.w), g.Alpha}}}
+	dc.setMask(m)
+	p.ops = append(p.ops, passOp{kind: opTexture, dst: r, tex: t, set: set, pipe: p.ct.grad, layout: p.d.comp.layout, dc: dc})
+}
+
 // DrawTexture blends src of t, scaled to dst and turned by tr, at
 // alpha over dst's damaged part within m. tr is the buffer transform of the
 // texture's content: under Transform90, dst's x runs along src's y and
