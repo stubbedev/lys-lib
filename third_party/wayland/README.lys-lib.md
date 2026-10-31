@@ -93,3 +93,16 @@ panic (lys-lib#26). `wl/read_test.go` holds its tests and benchmark.
 github.com/yalue/native_endian, which kept a dependency for what the
 standard library has had since Go 1.21. This is a lys-lib integration
 choice rather than an upstream bug.
+
+### Dispatching what is pending without blocking
+
+`wl/event.go`, `Context.Buffered` and `Context.ReadReady`: `Run` reads
+one event and blocks when none is buffered, and nothing else could
+tell a caller whether it would, so a loop could only dispatch one
+event per pass. As libwayland's `wl_display_dispatch_pending` and
+`wl_display_prepare_read` pair lets a client do, `Buffered` reports a
+whole event already read, and `ReadReady` polls the socket with a zero
+timeout and reads once when it has data. A loop drains a burst with
+them in one pass and a bounded number of reads (lys-ui#432).
+`wl/pending_test.go` holds the tests. This is a lys-lib integration
+choice rather than an upstream bug.
