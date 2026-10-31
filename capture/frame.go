@@ -207,28 +207,50 @@ func (f *Frame) check() error {
 	return nil
 }
 
-// convertRow32 unpacks one row of 32-bit little-endian pixels into
-// RGBA bytes.
 func convertRow32(dst, src []byte, f Format) {
-	alpha := f.hasAlpha()
-	for i := 0; i+3 < len(src); i += 4 {
-		px := binary.LittleEndian.Uint32(src[i:])
-		var r, g, b, a uint8
-		switch f {
-		case FormatARGB8888, FormatXRGB8888:
-			r, g, b, a = src[i+2], src[i+1], src[i], src[i+3]
-		case FormatABGR8888, FormatXBGR8888:
-			r, g, b, a = src[i], src[i+1], src[i+2], src[i+3]
-		case FormatARGB2101010, FormatXRGB2101010:
-			r, g, b, a = ten(px>>20), ten(px>>10), ten(px), two(px>>30)
-		case FormatABGR2101010, FormatXBGR2101010:
-			r, g, b, a = ten(px), ten(px>>10), ten(px>>20), two(px>>30)
-		}
-		if !alpha {
-			a = 0xff
-		}
-		dst[i], dst[i+1], dst[i+2], dst[i+3] = r, g, b, a
+	var opaque uint32
+	if !f.hasAlpha() {
+		opaque = 0xff << 24
 	}
+	switch f {
+	case FormatABGR8888:
+		copy(dst, src)
+	case FormatXBGR8888:
+		for len(src) >= 4 && len(dst) >= 4 {
+			binary.LittleEndian.PutUint32(dst, binary.LittleEndian.Uint32(src)|opaque)
+			dst, src = dst[4:], src[4:]
+		}
+	case FormatARGB8888, FormatXRGB8888:
+		opaque2 := uint64(opaque)<<32 | uint64(opaque)
+		for len(src) >= 8 && len(dst) >= 8 {
+			binary.LittleEndian.PutUint64(dst, swapRB(binary.LittleEndian.Uint64(src))|opaque2)
+			dst, src = dst[8:], src[8:]
+		}
+		if len(src) >= 4 && len(dst) >= 4 {
+			binary.LittleEndian.PutUint32(dst, uint32(swapRB(uint64(binary.LittleEndian.Uint32(src))))|opaque)
+		}
+	case FormatARGB2101010, FormatXRGB2101010:
+		for len(src) >= 4 && len(dst) >= 4 {
+			px := binary.LittleEndian.Uint32(src)
+			binary.LittleEndian.PutUint32(dst, rgba(ten(px>>20), ten(px>>10), ten(px), two(px>>30))|opaque)
+			dst, src = dst[4:], src[4:]
+		}
+	case FormatABGR2101010, FormatXBGR2101010:
+		for len(src) >= 4 && len(dst) >= 4 {
+			px := binary.LittleEndian.Uint32(src)
+			binary.LittleEndian.PutUint32(dst, rgba(ten(px), ten(px>>10), ten(px>>20), two(px>>30))|opaque)
+			dst, src = dst[4:], src[4:]
+		}
+	}
+}
+
+func swapRB(px uint64) uint64 {
+	const rb, ga = 0x000000ff_000000ff, 0xff00ff00_ff00ff00
+	return px>>16&rb | px&ga | px&rb<<16
+}
+
+func rgba(r, g, b, a uint8) uint32 {
+	return uint32(r) | uint32(g)<<8 | uint32(b)<<16 | uint32(a)<<24
 }
 
 // convertRow24 unpacks one row of 24-bit little-endian pixels into

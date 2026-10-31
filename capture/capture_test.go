@@ -385,3 +385,27 @@ func TestClientCheckPrefersTheCompositorVerdict(t *testing.T) {
 		t.Fatal("a closed client is usable")
 	}
 }
+
+func TestFrameImageOddWidthRow(t *testing.T) {
+	for _, f := range []Format{FormatXRGB8888, FormatARGB8888, FormatXBGR8888, FormatABGR8888} {
+		var data []byte
+		for _, px := range []uint32{0x80_10_20_30, 0x40_50_60_70, 0xc0_90_a0_b0} {
+			data = append(data, pixel32(px)...)
+		}
+		fr := Frame{Width: 3, Height: 1, Stride: len(data), Format: f, Data: data}
+		img, err := fr.Image()
+		if err != nil {
+			t.Fatal(err)
+		}
+		for x := range 3 {
+			one := Frame{Width: 1, Height: 1, Stride: 4, Format: f, Data: data[x*4 : x*4+4]}
+			want, err := one.Image()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := img.RGBAAt(x, 0); got != want.RGBAAt(0, 0) {
+				t.Errorf("%s pixel %d = %v, want %v", f, x, got, want.RGBAAt(0, 0))
+			}
+		}
+	}
+}
