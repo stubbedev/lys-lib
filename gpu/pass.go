@@ -209,6 +209,49 @@ func (p *Pass) FillGradient(r image.Rectangle, g Gradient, m Mask) {
 	p.ops = append(p.ops, passOp{kind: opTexture, dst: r, tex: t, set: set, pipe: p.ct.grad, layout: p.d.comp.layout, dc: dc})
 }
 
+// Goo is two rounded rectangles merged into one blob: their distance
+// fields joined by a smooth minimum that melts them together where
+// they come within Smooth pixels of each other, as metaballs do; zero
+// Smooth is their plain union. GooCoverage mirrors it in Go.
+type Goo struct {
+	A, B   RoundRect
+	Smooth float32
+}
+
+func (g Goo) check() error {
+	for _, v := range [3]float32{g.A.Radius, g.B.Radius, g.Smooth} {
+		if !(v >= 0) || math.IsInf(float64(v), 0) {
+			return fmt.Errorf("gpu: goo radius or smoothing %v is not zero or more", v)
+		}
+	}
+	if g.A.Rect.Empty() || g.B.Rect.Empty() {
+		return fmt.Errorf("gpu: goo of an empty rectangle (%v, %v)", g.A.Rect, g.B.Rect)
+	}
+	return nil
+}
+
+// FillGoo blends c, premultiplied, over the blob g covers within r's
+// damaged part.
+func (p *Pass) FillGoo(r image.Rectangle, c color.RGBA, g Goo) {
+	if !p.open("FillGoo") || r.Empty() {
+		return
+	}
+	col, err := premultiplied(c)
+	if err != nil {
+		p.fail(err)
+		return
+	}
+	if err := g.check(); err != nil {
+		p.fail(err)
+		return
+	}
+	rect := func(r image.Rectangle) [4]float32 {
+		return [4]float32{float32(r.Min.X), float32(r.Min.Y), float32(r.Max.X), float32(r.Max.Y)}
+	}
+	dc := drawConstants{extra: [2][4]float32{col}, keep: rect(g.A.Rect), merge: rect(g.B.Rect), radii: [4]float32{g.A.Radius, g.B.Radius, g.Smooth}}
+	p.ops = append(p.ops, passOp{kind: opFill, dst: r, pipe: p.ct.goo, layout: p.d.comp.layout, dc: dc})
+}
+
 // Kawase draws all of t scaled to dst through one pass of a dual
 // Kawase blur, sampling t linearly at offset source half-pixels from
 // each pixel: four diagonal taps around a centre weighted four (down,

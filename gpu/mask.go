@@ -151,3 +151,16 @@ func KawaseAt(sample func(u, v float32) [4]float32, up bool, u, v, hx, hy float3
 	}
 	return sum
 }
+
+// GooCoverage is the fraction of the pixel whose centre is (px, py)
+// that FillGoo covers for g, as the shader computes it.
+func GooCoverage(g Goo, px, py float32) float32 {
+	a := roundRectDistance(px, py, g.A.Rect, g.A.Radius)
+	b := roundRectDistance(px, py, g.B.Rect, g.B.Radius)
+	d := min(a, b)
+	if g.Smooth > 0 {
+		h := max(g.Smooth-float32(math.Abs(float64(a-b))), 0) / g.Smooth
+		d -= h * h * g.Smooth * 0.25
+	}
+	return edgeCoverage(d)
+}

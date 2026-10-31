@@ -132,7 +132,7 @@ func TestMaskGLSLIsGLSLES(t *testing.T) {
 		t.Skip("no glslangValidator: run inside the dev shell")
 	}
 	src := "#version 100\nprecision highp float;\n#define SAMPLE texture2D\nuniform sampler2D tex;\nuniform vec4 keep;\nuniform vec4 cut;\nuniform vec4 radii;\n" + MaskGLSL +
-		"void main() { gl_FragColor = vec4(maskCoverage(gl_FragCoord.xy, keep, cut, radii), gradientUV(gl_FragCoord.xy, keep, 3.0), 1.0) + kawaseDown(tex, keep.xy, cut.xy) + kawaseUp(tex, keep.xy, cut.xy); }\n"
+		"void main() { gl_FragColor = vec4(maskCoverage(gl_FragCoord.xy, keep, cut, radii), gradientUV(gl_FragCoord.xy, keep, 3.0), 1.0) + kawaseDown(tex, keep.xy, cut.xy) + kawaseUp(tex, keep.xy, cut.xy) + vec4(gooCoverage(gl_FragCoord.xy, keep, cut, radii.xyz)); }\n"
 	path := filepath.Join(t.TempDir(), "mask.frag")
 	if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
 		t.Fatal(err)
@@ -188,5 +188,39 @@ func TestPassFillsGradientsLikeGradientAt(t *testing.T) {
 	p.FillGradient(ring.Keep.Rect, Gradient{Stops: tx, From: from, To: from, Alpha: 1}, Mask{})
 	if err := p.End(); err == nil {
 		t.Fatal("a gradient without a direction was accepted")
+	}
+}
+
+func TestPassFillsGooLikeGooCoverage(t *testing.T) {
+	d := openDevice(t)
+	tg, err := d.NewOffscreen(48, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tg.Close()
+	g := Goo{A: RoundRect{Rect: image.Rect(4, 6, 20, 26), Radius: 6}, B: RoundRect{Rect: image.Rect(26, 4, 44, 18), Radius: 4}, Smooth: 10}
+	col := color.RGBA{0x40, 0x80, 0xc0, 0xff}
+	runPass(t, d, tg, []image.Rectangle{{Max: tg.Size()}}, func(p *Pass) {
+		p.Clear(color.RGBA{})
+		p.FillGoo(image.Rect(0, 0, 48, 32), col, g)
+	})
+	img := readTarget(t, tg)
+	bridged := false
+	for y := range 32 {
+		for x := range 48 {
+			k := GooCoverage(g, float32(x)+0.5, float32(y)+0.5)
+			if x >= 21 && x < 25 && k > 0 {
+				bridged = true
+			}
+			if got, want := img.RGBAAt(x, y), premultiply(col, k); !within(got, want, 1) {
+				t.Fatalf("(%d,%d): %v, want %v", x, y, got, want)
+			}
+		}
+	}
+	if !bridged {
+		t.Fatal("the smooth union left a gap between the two rectangles")
+	}
+	if err := (Goo{A: g.A, B: g.B, Smooth: -1}).check(); err == nil {
+		t.Fatal("a negative smoothing was accepted")
 	}
 }

@@ -16,6 +16,18 @@ float falloffCoverage(float d, vec2 falloff) {
     return pow(clamp(1.0 - d / falloff.x, 0.0, 1.0), falloff.y);
 }
 
+float smoothMin(float a, float b, float k) {
+    if (k <= 0.0) {
+        return min(a, b);
+    }
+    float h = max(k - abs(a - b), 0.0) / k;
+    return min(a, b) - h * h * k * 0.25;
+}
+
+float gooCoverage(vec2 p, vec4 a, vec4 b, vec3 shape) {
+    return edgeCoverage(smoothMin(roundRectDistance(p, a, shape.x), roundRectDistance(p, b, shape.y), shape.z));
+}
+
 float maskCoverage(vec2 p, vec4 keep, vec4 cut, vec4 radii) {
     float k = 1.0;
     if (keep.z > keep.x && keep.w > keep.y) {
