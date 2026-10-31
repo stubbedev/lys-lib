@@ -101,6 +101,8 @@ func subpixelBucket(frac float64) uint8 {
 	return uint8(b)
 }
 
+func penBucket(pen float64) uint8 { return subpixelBucket(pen - math.Floor(pen)) }
+
 // bucketOffset is the fractional pen offset a bucket's mask is
 // rasterized at: the bucket's lower edge. The mask is a pure function
 // of its key, so a cached glyph looks the same whichever pen in the
@@ -117,8 +119,8 @@ func cachedOutlineRaster(t *Typeface, gid font.GID, scale, penX, penY float64) (
 		face:  t,
 		scale: scale,
 		gid:   gid,
-		fx:    subpixelBucket(penX - math.Floor(penX)),
-		fy:    subpixelBucket(penY - math.Floor(penY)),
+		fx:    penBucket(penX),
+		fy:    penBucket(penY),
 	}
 	if g, ok := glyphs.get(key); ok {
 		if g == nil {

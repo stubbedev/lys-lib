@@ -1,11 +1,14 @@
 package render
 
 import (
+	"bytes"
 	"math"
 	"strings"
 	"testing"
 
 	"golang.org/x/image/font/gofont/goregular"
+
+	"github.com/stubbedev/lys-lib/text"
 )
 
 func testTypeface(tb testing.TB) *Typeface {
@@ -404,5 +407,48 @@ func TestObliqueLeans(t *testing.T) {
 	ot, ob2 := lean(ob)
 	if d := ot - ob2; d < 4 {
 		t.Errorf("oblique l leans %.1fpx, want several pixels right at its top", d)
+	}
+}
+
+func TestShapedTextDrawMatchesPerGlyphDrawAcrossPhases(t *testing.T) {
+	tf := testTypeface(t)
+	col := RGBA(230, 120, 40, 200)
+	for _, sc := range [][2]int{{1, 1}, {2, 1}, {5, 4}, {3, 2}, {7, 6}} {
+		s := tf.shapeUncached("Wavy fig, ffi & 0.5", 13, text.DirectionAuto)
+		for step, at := range [][2]int{{3, 20}, {3, 20}, {4, 21}, {3, 20}, {5, 22}, {5, 22}, {5, 22}, {6, 23}, {6, 23}} {
+			if step == 6 {
+				glyphs.dropAll()
+			}
+			const w, h = 200, 60
+			got := make([]byte, Stride(w)*h)
+			want := make([]byte, Stride(w)*h)
+			s.Draw(NewScaled(got, Stride(w), w, h, sc[0], sc[1]), at[0], at[1], col)
+			ref := NewScaled(want, Stride(w), w, h, sc[0], sc[1])
+			dev := float64(sc[0]) / float64(sc[1])
+			for _, p := range s.pens(float64(at[0])*dev, float64(at[1])*dev, dev) {
+				ref.DrawGlyph(p.face, p.gid, p.scale, p.x, p.y, col)
+			}
+			if !bytes.Equal(got, want) {
+				t.Fatalf("scale %d/%d, draw %d at %v: Draw differs from per-glyph drawing", sc[0], sc[1], step, at)
+			}
+		}
+	}
+}
+
+func TestShapedTextDrawAtAlternatingPhasesAllocatesNothing(t *testing.T) {
+	tf := testTypeface(t)
+	s := tf.shapeUncached("the quick brown fox", 14, text.DirectionAuto)
+	const w, h = 200, 40
+	cv := NewScaled(make([]byte, Stride(w)*h), Stride(w), w, h, 5, 4)
+	x := 0
+	draw := func() {
+		s.Draw(cv, x, 20+x, RGB(255, 255, 255))
+		x = (x + 1) % 4
+	}
+	for range 8 {
+		draw()
+	}
+	if allocs := testing.AllocsPerRun(100, draw); allocs != 0 {
+		t.Fatalf("Draw at alternating subpixel phases allocates %v per call, want 0", allocs)
 	}
 }

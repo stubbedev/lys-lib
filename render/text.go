@@ -7,8 +7,10 @@ import (
 	"image"
 	"image/color"
 	"image/png"
+	"iter"
 	"math"
 	"strings"
+	"sync"
 	"unicode/utf8"
 
 	"golang.org/x/image/math/fixed"
@@ -282,6 +284,8 @@ type ShapedText struct {
 	// carets is the per-rune-boundary x table carets() serves, built
 	// once at shape time so repeated paint passes never rebuild it.
 	carets []float64
+	planMu sync.Mutex
+	plan   glyphPlan
 }
 
 // RTL reports whether the line lays out right to left: the resolved
@@ -659,24 +663,118 @@ func (s *ShapedText) Draw(cv *Canvas, x, baselineY int, col Color) {
 		return
 	}
 	dev := float64(cv.num) / float64(cv.denom)
-	dotX := float64(x) * dev
-	base := float64(baselineY) * dev
-	for i := range s.runs {
-		r := &s.runs[i]
-		scale := s.px * dev / r.face.upem
-		penX := dotX
-		// The shaped positions are logical pixels and the outlines
-		// carry their own side bearing: the pen walks the advances at
-		// the device scale and each glyph draws at its origin, its
-		// offset y-up (a mark below the base sits below the baseline).
-		for j := range r.out.Glyphs {
-			g := &r.out.Glyphs[j]
-			drawGlyph(cv, clip, r.face, g.GlyphID, scale,
-				penX+f64(g.XOffset)*dev,
-				base-f64(g.YOffset)*dev, col)
-			penX += f64(g.Advance) * dev
+	if cv.rec != nil {
+		for _, p := range s.pens(float64(x)*dev, float64(baselineY)*dev, dev) {
+			drawGlyph(cv, clip, p.face, p.gid, p.scale, p.x, p.y, col)
 		}
-		dotX += f64(r.out.Advance) * dev
+		return
+	}
+	s.planMu.Lock()
+	defer s.planMu.Unlock()
+	plan := s.planAt(cv.num, cv.denom)
+	for k, p := range s.pens(float64(x)*dev, float64(baselineY)*dev, dev) {
+		fx, fy := penBucket(p.x), penBucket(p.y)
+		rg := &plan[k]
+		if !rg.at(fx, fy) {
+			*rg = resolveGlyph(p, fx, fy)
+		}
+		rg.draw(cv, clip, p, col)
+	}
+}
+
+type glyphPen struct {
+	face        *Typeface
+	gid         font.GID
+	scale, x, y float64
+}
+
+func (s *ShapedText) pens(dotX, base, dev float64) iter.Seq2[int, glyphPen] {
+	return func(yield func(int, glyphPen) bool) {
+		k := 0
+		for i := range s.runs {
+			r := &s.runs[i]
+			scale := s.px * dev / r.face.upem
+			penX := dotX
+			for j := range r.out.Glyphs {
+				g := &r.out.Glyphs[j]
+				if !yield(k, glyphPen{face: r.face, gid: g.GlyphID, scale: scale, x: penX + f64(g.XOffset)*dev, y: base - f64(g.YOffset)*dev}) {
+					return
+				}
+				k++
+				penX += f64(g.Advance) * dev
+			}
+			dotX += f64(r.out.Advance) * dev
+		}
+	}
+}
+
+func (s *ShapedText) glyphCount() int {
+	n := 0
+	for i := range s.runs {
+		n += len(s.runs[i].out.Glyphs)
+	}
+	return n
+}
+
+type glyphPlan struct {
+	num, denom int
+	glyphs     []resolvedGlyph
+}
+
+func (s *ShapedText) planAt(num, denom int) []resolvedGlyph {
+	gp := &s.plan
+	switch {
+	case gp.glyphs == nil:
+		gp.glyphs = make([]resolvedGlyph, s.glyphCount())
+	case gp.num != num || gp.denom != denom:
+		clear(gp.glyphs)
+	}
+	gp.num, gp.denom = num, denom
+	return gp.glyphs
+}
+
+type glyphSource uint8
+
+const (
+	glyphUnresolved glyphSource = iota
+	glyphBlank
+	glyphOutline
+	glyphOther
+)
+
+type resolvedGlyph struct {
+	mask   *GlyphMask
+	source glyphSource
+	fx, fy uint8
+}
+
+func (rg resolvedGlyph) at(fx, fy uint8) bool {
+	return rg.source != glyphUnresolved && rg.fx == fx && rg.fy == fy
+}
+
+func resolveGlyph(p glyphPen, fx, fy uint8) resolvedGlyph {
+	rg := resolvedGlyph{source: glyphOther, fx: fx, fy: fy}
+	if p.face.colorOf(p.gid) != colorNone {
+		return rg
+	}
+	if g, ok := cachedOutlineRaster(p.face, p.gid, p.scale, p.x, p.y); ok {
+		rg.source, rg.mask = glyphOutline, g
+		return rg
+	}
+	if _, _, ok := bitmapPlacement(p.face, p.gid, p.scale, p.x, p.y); !ok {
+		rg.source = glyphBlank
+	}
+	return rg
+}
+
+func (rg resolvedGlyph) draw(cv *Canvas, clip Rect, p glyphPen, col Color) {
+	switch rg.source {
+	case glyphOutline:
+		at := rg.mask.bounds(p.x, p.y)
+		blitMask(cv, clip, rg.mask, at.X, at.Y, col)
+	case glyphOther:
+		drawGlyph(cv, clip, p.face, p.gid, p.scale, p.x, p.y, col)
+	case glyphUnresolved, glyphBlank:
 	}
 }
 

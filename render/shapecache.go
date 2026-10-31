@@ -16,6 +16,7 @@ import (
 	"slices"
 	"sync"
 	"unicode/utf8"
+	"unsafe"
 
 	"github.com/stubbedev/lys-lib/text"
 )
@@ -188,11 +189,8 @@ func runeLineHash(font Font, px float64, rs []rune, d text.Direction) uint64 {
 // shapedCost estimates an entry's memory: the string, the caret table,
 // and one row per shaped glyph.
 func shapedCost(s *ShapedText) int {
-	glyphs := 0
-	for i := range s.runs {
-		glyphs += len(s.runs[i].out.Glyphs)
-	}
-	return shapeOverhead + len(s.text) + glyphBytesPerRun*glyphs +
+	return shapeOverhead + int(unsafe.Sizeof(glyphPlan{})) + len(s.text) +
+		(glyphBytesPerRun+int(unsafe.Sizeof(resolvedGlyph{})))*s.glyphCount() +
 		8*(utf8.RuneCountInString(s.text)+1)
 }
 
