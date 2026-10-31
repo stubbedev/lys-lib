@@ -122,7 +122,7 @@ func drawYUV(t *testing.T, d *Device, b dmabuf.Buffer, c *YCbCr) color.RGBA {
 	}
 	defer tg.Close()
 	runPass(t, d, tg, []image.Rectangle{{Max: tg.Size()}}, func(p *Pass) {
-		p.DrawTexture(tx, FRect{W: float64(b.Width), H: float64(b.Height)}, image.Rectangle{Max: tg.Size()}, TransformNormal, 1)
+		p.DrawTexture(tx, FRect{W: float64(b.Width), H: float64(b.Height)}, image.Rectangle{Max: tg.Size()}, TransformNormal, 1, Mask{})
 	})
 	return readTarget(t, tg).RGBAAt(b.Width/2, b.Height/2)
 }

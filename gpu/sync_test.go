@@ -36,9 +36,9 @@ func heavyPass(t *testing.T, d *Device, tg *Target, last color.RGBA) {
 	t.Helper()
 	runPass(t, d, tg, []image.Rectangle{{Max: tg.Size()}}, func(p *Pass) {
 		for i := range 200 {
-			p.FillRect(image.Rectangle{Max: tg.Size()}, color.RGBA{uint8(i), 0, 0, 255})
+			p.FillRect(image.Rectangle{Max: tg.Size()}, color.RGBA{uint8(i), 0, 0, 255}, Mask{})
 		}
-		p.FillRect(image.Rect(0, 0, 4, 4), last)
+		p.FillRect(image.Rect(0, 0, 4, 4), last, Mask{})
 	})
 }
 
@@ -145,7 +145,7 @@ func TestWaitSyncFileOrdersAnotherDevicesWork(t *testing.T) {
 			t.Fatal(err)
 		}
 		runPass(t, b, dst, []image.Rectangle{{Max: dst.Size()}}, func(p *Pass) {
-			p.DrawTexture(tx, FRect{X: 1, Y: 1, W: 1, H: 1}, image.Rect(0, 0, 1, 1), TransformNormal, 1)
+			p.DrawTexture(tx, FRect{X: 1, Y: 1, W: 1, H: 1}, image.Rect(0, 0, 1, 1), TransformNormal, 1, Mask{})
 		})
 		if got := readTarget(t, dst).RGBAAt(0, 0); got != want {
 			t.Errorf("the waiting device sampled %v, want %v", got, want)

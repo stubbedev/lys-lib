@@ -132,8 +132,15 @@ func (p *Pass) Clear(c color.RGBA) {
 	p.ops = append(p.ops, passOp{kind: opClear, dc: drawConstants{extra: [2][4]float32{col}}})
 }
 
-// FillRect blends c, premultiplied, over r's damaged part.
-func (p *Pass) FillRect(r image.Rectangle, c color.RGBA) {
+func (dc *drawConstants) setMask(m Mask) {
+	rect := func(r image.Rectangle) [4]float32 {
+		return [4]float32{float32(r.Min.X), float32(r.Min.Y), float32(r.Max.X), float32(r.Max.Y)}
+	}
+	dc.keep, dc.cut, dc.radii = rect(m.Keep.Rect), rect(m.Cut.Rect), [4]float32{m.Keep.Radius, m.Cut.Radius}
+}
+
+// FillRect blends c, premultiplied, over r's damaged part within m.
+func (p *Pass) FillRect(r image.Rectangle, c color.RGBA, m Mask) {
 	if !p.open("FillRect") || r.Empty() {
 		return
 	}
@@ -142,15 +149,21 @@ func (p *Pass) FillRect(r image.Rectangle, c color.RGBA) {
 		p.fail(err)
 		return
 	}
-	p.ops = append(p.ops, passOp{kind: opFill, dst: r, pipe: p.ct.fill, layout: p.d.comp.layout, dc: drawConstants{extra: [2][4]float32{col}}})
+	if err := m.Check(); err != nil {
+		p.fail(err)
+		return
+	}
+	dc := drawConstants{extra: [2][4]float32{col}}
+	dc.setMask(m)
+	p.ops = append(p.ops, passOp{kind: opFill, dst: r, pipe: p.ct.fill, layout: p.d.comp.layout, dc: dc})
 }
 
 // DrawTexture blends src of t, scaled to dst and turned by tr, at
-// alpha over dst's damaged part. tr is the buffer transform of the
+// alpha over dst's damaged part within m. tr is the buffer transform of the
 // texture's content: under Transform90, dst's x runs along src's y and
 // dst's y against src's x. A draw that maps whole source pixels one to
 // one samples them as they are; any other samples bilinearly.
-func (p *Pass) DrawTexture(t *Texture, src FRect, dst image.Rectangle, tr Transform, alpha float32) {
+func (p *Pass) DrawTexture(t *Texture, src FRect, dst image.Rectangle, tr Transform, alpha float32, m Mask) {
 	if !p.open("DrawTexture") {
 		return
 	}
@@ -171,6 +184,10 @@ func (p *Pass) DrawTexture(t *Texture, src FRect, dst image.Rectangle, tr Transf
 		p.fail(fmt.Errorf("gpu: source %+v outside a %dx%d texture", src, t.w, t.h))
 		return
 	}
+	if err := m.Check(); err != nil {
+		p.fail(err)
+		return
+	}
 	if dst.Empty() || alpha == 0 {
 		return
 	}
@@ -184,6 +201,7 @@ func (p *Pass) DrawTexture(t *Texture, src FRect, dst image.Rectangle, tr Transf
 		return
 	}
 	dc := drawConstants{target: [4]float32{2: alpha}}
+	dc.setMask(m)
 	h, v := tr.axes()
 	for i, corner := range [4][2]float64{{0, 0}, {1, 0}, {0, 1}, {1, 1}} {
 		var s [2]float64

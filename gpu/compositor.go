@@ -31,8 +31,9 @@ type compTarget struct {
 }
 
 type drawConstants struct {
-	rect, target [4]float32
-	extra        [2][4]float32
+	rect, target     [4]float32
+	extra            [2][4]float32
+	keep, cut, radii [4]float32
 }
 
 const compPoolSets = 256

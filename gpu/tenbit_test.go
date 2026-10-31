@@ -73,7 +73,7 @@ func TestTenBitTexturesDrawUnrounded(t *testing.T) {
 		tg := tenBitTarget(t, d, c.target, 2, 1)
 		runPass(t, d, tg, []image.Rectangle{{Max: tg.Size()}}, func(p *Pass) {
 			p.Clear(color.RGBA{})
-			p.DrawTexture(tx, FRect{W: 1, H: 1}, image.Rect(0, 0, 1, 1), TransformNormal, 1)
+			p.DrawTexture(tx, FRect{W: 1, H: 1}, image.Rect(0, 0, 1, 1), TransformNormal, 1, Mask{})
 		})
 		got := targetBytes(t, tg)
 		if [4]byte(got) != c.want {
@@ -98,7 +98,7 @@ func TestTenBitImportedTexture(t *testing.T) {
 	defer tx.Close()
 	tg := tenBitTarget(t, d, fourcc.ABGR2101010, 1, 1)
 	runPass(t, d, tg, []image.Rectangle{{Max: tg.Size()}}, func(p *Pass) {
-		p.DrawTexture(tx, FRect{W: 1, H: 1}, image.Rect(0, 0, 1, 1), TransformNormal, 1)
+		p.DrawTexture(tx, FRect{W: 1, H: 1}, image.Rect(0, 0, 1, 1), TransformNormal, 1, Mask{})
 	})
 	if got := targetBytes(t, tg); [4]byte(got) != px {
 		t.Errorf("imported %#x drew %#x", binary.LittleEndian.Uint32(px[:]), binary.LittleEndian.Uint32(got))

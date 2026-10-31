@@ -52,7 +52,7 @@ func TestImportTargetDrawsIntoAUdmabuf(t *testing.T) {
 	damage := image.Rect(2, 2, 6, 5)
 	runPass(t, d, tg, []image.Rectangle{damage}, func(p *Pass) {
 		p.Clear(color.RGBA{0, 0, 255, 255})
-		p.FillRect(image.Rect(4, 0, 16, 8), color.RGBA{0, 255, 0, 255})
+		p.FillRect(image.Rect(4, 0, 16, 8), color.RGBA{0, 255, 0, 255}, Mask{})
 	})
 	at := func(x, y int) [4]byte {
 		if err := d.Finish(); err != nil {
@@ -75,7 +75,7 @@ func TestImportTargetDrawsIntoAUdmabuf(t *testing.T) {
 		}
 	}
 	runPass(t, d, tg, []image.Rectangle{{Max: tg.Size()}}, func(p *Pass) {
-		p.FillRect(image.Rect(0, 0, 1, 1), color.RGBA{0, 0, 0, 255})
+		p.FillRect(image.Rect(0, 0, 1, 1), color.RGBA{0, 0, 0, 255}, Mask{})
 	})
 	if got := at(3, 3); got != [4]byte{255, 0, 0, 255} {
 		t.Errorf("a second pass lost the first's pixels: %v", got)
@@ -128,7 +128,7 @@ func TestImportTextureSamplesAUdmabuf(t *testing.T) {
 	defer tg.Close()
 	draw := func() color.RGBA {
 		runPass(t, d, tg, []image.Rectangle{{Max: tg.Size()}}, func(p *Pass) {
-			p.DrawTexture(tx, FRect{W: w, H: h}, image.Rect(0, 0, w, h), TransformNormal, 1)
+			p.DrawTexture(tx, FRect{W: w, H: h}, image.Rect(0, 0, w, h), TransformNormal, 1, Mask{})
 		})
 		return readTarget(t, tg).RGBAAt(3, 1)
 	}
@@ -166,7 +166,7 @@ func TestImportRoundTripsAnExportedTarget(t *testing.T) {
 		}
 		runPass(t, d, src, []image.Rectangle{{Max: src.Size()}}, func(p *Pass) {
 			p.Clear(color.RGBA{255, 0, 0, 255})
-			p.FillRect(image.Rect(0, 4, 8, 8), color.RGBA{0, 0, 255, 255})
+			p.FillRect(image.Rect(0, 4, 8, 8), color.RGBA{0, 0, 255, 255}, Mask{})
 		})
 		into, err := d.ImportTarget(src.Dmabuf())
 		if err != nil {
@@ -182,7 +182,7 @@ func TestImportRoundTripsAnExportedTarget(t *testing.T) {
 			t.Fatal(err)
 		}
 		runPass(t, d, dst, []image.Rectangle{{Max: dst.Size()}}, func(p *Pass) {
-			p.DrawTexture(tx, FRect{W: 8, H: 8}, image.Rect(0, 0, 8, 8), TransformNormal, 1)
+			p.DrawTexture(tx, FRect{W: 8, H: 8}, image.Rect(0, 0, 8, 8), TransformNormal, 1, Mask{})
 		})
 		img := readTarget(t, dst)
 		for _, c := range []struct {

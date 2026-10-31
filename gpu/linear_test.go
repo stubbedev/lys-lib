@@ -38,7 +38,7 @@ func TestCopyToLinearWritesAUdmabuf(t *testing.T) {
 	t.Logf("copying from a target in modifier %s", exported.Dmabuf().Modifier)
 	runPass(t, d, src, []image.Rectangle{{Max: src.Size()}}, func(p *Pass) {
 		p.Clear(color.RGBA{0, 0, 255, 255})
-		p.FillRect(image.Rect(8, 4, 24, 12), color.RGBA{0, 255, 0, 255})
+		p.FillRect(image.Rect(8, 4, 24, 12), color.RGBA{0, 255, 0, 255}, Mask{})
 	})
 	const stride = 256
 	u := newUdmabuf(t, 1<<20)

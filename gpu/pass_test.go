@@ -79,7 +79,7 @@ func TestPassDrawsThroughEveryTransform(t *testing.T) {
 		}
 		runPass(t, d, tg, []image.Rectangle{{Max: tg.Size()}}, func(p *Pass) {
 			p.Clear(color.RGBA{})
-			p.DrawTexture(tx, FRect{W: 3, H: 2}, image.Rect(1, 1, 1+w, 1+h), tr, 1)
+			p.DrawTexture(tx, FRect{W: 3, H: 2}, image.Rect(1, 1, 1+w, 1+h), tr, 1, Mask{})
 		})
 		img := readTarget(t, tg)
 		for y, row := range want {
@@ -105,7 +105,7 @@ func TestPassSamplesAFractionalSourceBilinearly(t *testing.T) {
 	}
 	defer tg.Close()
 	runPass(t, d, tg, []image.Rectangle{{Max: tg.Size()}}, func(p *Pass) {
-		p.DrawTexture(tx, FRect{X: 0.5, W: 1, H: 1}, image.Rect(0, 0, 1, 1), TransformNormal, 1)
+		p.DrawTexture(tx, FRect{X: 0.5, W: 1, H: 1}, image.Rect(0, 0, 1, 1), TransformNormal, 1, Mask{})
 	})
 	if got := readTarget(t, tg).RGBAAt(0, 0); !within(got, color.RGBA{128, 128, 128, 255}, 1) {
 		t.Errorf("the fractional source sampled %v, want midway grey", got)
@@ -122,8 +122,8 @@ func TestPassBlendsAtAlpha(t *testing.T) {
 	defer tg.Close()
 	runPass(t, d, tg, []image.Rectangle{{Max: tg.Size()}}, func(p *Pass) {
 		p.Clear(color.RGBA{0, 0, 255, 255})
-		p.DrawTexture(tx, FRect{W: 1, H: 1}, image.Rect(0, 0, 1, 1), TransformNormal, 0.5)
-		p.DrawTexture(tx, FRect{W: 1, H: 1}, image.Rect(1, 0, 2, 1), TransformNormal, 1)
+		p.DrawTexture(tx, FRect{W: 1, H: 1}, image.Rect(0, 0, 1, 1), TransformNormal, 0.5, Mask{})
+		p.DrawTexture(tx, FRect{W: 1, H: 1}, image.Rect(1, 0, 2, 1), TransformNormal, 1, Mask{})
 	})
 	img := readTarget(t, tg)
 	if got := img.RGBAAt(0, 0); !within(got, color.RGBA{128, 0, 127, 255}, 1) {
@@ -147,8 +147,8 @@ func TestPassChangesOnlyTheDamage(t *testing.T) {
 	tx := newTexture(t, d, fourcc.ARGB8888, 1, 1, [][4]byte{{0, 0, 0, 128}})
 	runPass(t, d, tg, []image.Rectangle{a, b, image.Rect(-4, -4, 100, 0)}, func(p *Pass) {
 		p.Clear(color.RGBA{255, 0, 0, 255})
-		p.FillRect(image.Rect(0, 0, 8, 8), color.RGBA{0, 0, 0, 128})
-		p.DrawTexture(tx, FRect{W: 1, H: 1}, image.Rect(0, 0, 8, 8), TransformNormal, 1)
+		p.FillRect(image.Rect(0, 0, 8, 8), color.RGBA{0, 0, 0, 128}, Mask{})
+		p.DrawTexture(tx, FRect{W: 1, H: 1}, image.Rect(0, 0, 8, 8), TransformNormal, 1, Mask{})
 	})
 	img := readTarget(t, tg)
 	inside := color.RGBA{63, 0, 0, 255}
@@ -180,7 +180,7 @@ func TestPassIntoADmabufTarget(t *testing.T) {
 	for range 2 {
 		runPass(t, d, tg, []image.Rectangle{{Max: tg.Size()}}, func(p *Pass) {
 			p.Clear(color.RGBA{0, 0, 255, 255})
-			p.FillRect(image.Rect(4, 4, 8, 8), color.RGBA{255, 255, 255, 255})
+			p.FillRect(image.Rect(4, 4, 8, 8), color.RGBA{255, 255, 255, 255}, Mask{})
 		})
 	}
 	img := readTarget(t, tg)
@@ -208,13 +208,15 @@ func TestPassFailsOnBadCalls(t *testing.T) {
 	whole := []image.Rectangle{{Max: tg.Size()}}
 	for name, call := range map[string]func(p *Pass){
 		"unpremultiplied clear": func(p *Pass) { p.Clear(color.RGBA{255, 0, 0, 128}) },
-		"unpremultiplied fill":  func(p *Pass) { p.FillRect(image.Rect(0, 0, 1, 1), color.RGBA{0, 9, 0, 8}) },
-		"transform":             func(p *Pass) { p.DrawTexture(tx, FRect{W: 1, H: 1}, image.Rect(0, 0, 1, 1), 8, 1) },
-		"alpha":                 func(p *Pass) { p.DrawTexture(tx, FRect{W: 1, H: 1}, image.Rect(0, 0, 1, 1), 0, 1.5) },
-		"NaN alpha":             func(p *Pass) { p.DrawTexture(tx, FRect{W: 1, H: 1}, image.Rect(0, 0, 1, 1), 0, float32(math.NaN())) },
-		"source outside":        func(p *Pass) { p.DrawTexture(tx, FRect{X: 1.5, W: 1, H: 1}, image.Rect(0, 0, 1, 1), 0, 1) },
-		"empty source":          func(p *Pass) { p.DrawTexture(tx, FRect{W: 0, H: 1}, image.Rect(0, 0, 1, 1), 0, 1) },
-		"closed texture":        func(p *Pass) { p.DrawTexture(closed, FRect{W: 1, H: 1}, image.Rect(0, 0, 1, 1), 0, 1) },
+		"unpremultiplied fill":  func(p *Pass) { p.FillRect(image.Rect(0, 0, 1, 1), color.RGBA{0, 9, 0, 8}, Mask{}) },
+		"transform":             func(p *Pass) { p.DrawTexture(tx, FRect{W: 1, H: 1}, image.Rect(0, 0, 1, 1), 8, 1, Mask{}) },
+		"alpha":                 func(p *Pass) { p.DrawTexture(tx, FRect{W: 1, H: 1}, image.Rect(0, 0, 1, 1), 0, 1.5, Mask{}) },
+		"NaN alpha": func(p *Pass) {
+			p.DrawTexture(tx, FRect{W: 1, H: 1}, image.Rect(0, 0, 1, 1), 0, float32(math.NaN()), Mask{})
+		},
+		"source outside": func(p *Pass) { p.DrawTexture(tx, FRect{X: 1.5, W: 1, H: 1}, image.Rect(0, 0, 1, 1), 0, 1, Mask{}) },
+		"empty source":   func(p *Pass) { p.DrawTexture(tx, FRect{W: 0, H: 1}, image.Rect(0, 0, 1, 1), 0, 1, Mask{}) },
+		"closed texture": func(p *Pass) { p.DrawTexture(closed, FRect{W: 1, H: 1}, image.Rect(0, 0, 1, 1), 0, 1, Mask{}) },
 	} {
 		p, err := d.Begin(tg, whole)
 		if err != nil {
