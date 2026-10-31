@@ -131,8 +131,8 @@ func TestMaskGLSLIsGLSLES(t *testing.T) {
 	if _, err := exec.LookPath("glslangValidator"); err != nil {
 		t.Skip("no glslangValidator: run inside the dev shell")
 	}
-	src := "#version 100\nprecision highp float;\n#define SAMPLE texture2D\nuniform sampler2D tex;\nuniform vec4 keep;\nuniform vec4 cut;\nuniform vec4 radii;\n" + MaskGLSL +
-		"void main() { gl_FragColor = vec4(maskCoverage(gl_FragCoord.xy, keep, cut, radii), gradientUV(gl_FragCoord.xy, keep, 3.0), 1.0) + kawaseDown(tex, keep.xy, cut.xy) + kawaseUp(tex, keep.xy, cut.xy) + vec4(gooCoverage(gl_FragCoord.xy, keep, cut, radii.xyz)); }\n"
+	src := "#version 100\nprecision highp float;\n#define SAMPLE texture2D\nuniform sampler2D tex;\nuniform vec4 keep;\nuniform vec4 cut;\nuniform vec4 radii;\nuniform vec4 merge;\n" + MaskGLSL +
+		"void main() { gl_FragColor = vec4(maskCoverage(gl_FragCoord.xy, keep, cut, radii, merge, 2.0), gradientUV(gl_FragCoord.xy, keep, 3.0), 1.0) + kawaseDown(tex, keep.xy, cut.xy) + kawaseUp(tex, keep.xy, cut.xy) + vec4(gooCoverage(gl_FragCoord.xy, keep, cut, radii.xyz)); }\n"
 	path := filepath.Join(t.TempDir(), "mask.frag")
 	if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
 		t.Fatal(err)
@@ -221,6 +221,41 @@ func TestPassFillsGooLikeGooCoverage(t *testing.T) {
 		t.Fatal("the smooth union left a gap between the two rectangles")
 	}
 	if err := (Goo{A: g.A, B: g.B, Smooth: -1}).check(); err == nil {
+		t.Fatal("a negative smoothing was accepted")
+	}
+}
+
+func TestPassMergesASecondRectangleIntoAMask(t *testing.T) {
+	d := openDevice(t)
+	tg, err := d.NewOffscreen(48, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tg.Close()
+	tx := newTexture(t, d, fourcc.XRGB8888, 1, 1, [][4]byte{{0x80, 0x40, 0xc0, 0}})
+	m := Mask{Keep: RoundRect{Rect: image.Rect(4, 4, 20, 28), Radius: 5}, Merge: image.Rect(26, 8, 44, 20), Smooth: 12}
+	runPass(t, d, tg, []image.Rectangle{{Max: tg.Size()}}, func(p *Pass) {
+		p.Clear(color.RGBA{})
+		p.DrawTexture(tx, FRect{W: 1, H: 1}, image.Rect(0, 0, 48, 32), TransformNormal, 1, m)
+	})
+	img := readTarget(t, tg)
+	col := color.RGBA{0xc0, 0x40, 0x80, 0xff}
+	bridged := false
+	for y := range 32 {
+		for x := range 48 {
+			k := m.Coverage(float32(x)+0.5, float32(y)+0.5)
+			if x >= 21 && x < 25 && k > 0 {
+				bridged = true
+			}
+			if got, want := img.RGBAAt(x, y), premultiply(col, k); !within(got, want, 1) {
+				t.Fatalf("(%d,%d): %v, want %v", x, y, got, want)
+			}
+		}
+	}
+	if !bridged {
+		t.Fatal("the merge left a gap between the two rectangles")
+	}
+	if err := (Mask{Smooth: -1}).Check(); err == nil {
 		t.Fatal("a negative smoothing was accepted")
 	}
 }

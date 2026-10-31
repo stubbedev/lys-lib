@@ -33,17 +33,21 @@ type Falloff struct {
 
 // Mask limits a draw to the pixels inside Keep and outside Cut, each
 // edge anti-aliased by its signed distance at the pixel centre, Keep's
-// softened by Falloff. An empty Keep keeps everything; an empty Cut
-// cuts nothing.
+// softened by Falloff. A non-empty Merge melts a second rectangle with
+// Keep's radius into Keep as Goo does, over Smooth pixels. An empty
+// Keep keeps everything; an empty Cut cuts nothing.
 type Mask struct {
 	Keep, Cut RoundRect
 	Falloff   Falloff
+	Merge     image.Rectangle
+	Smooth    float32
 }
 
-// Check reports a radius or falloff range that is negative, infinite
-// or NaN, and a falloff with a range whose power is not positive.
+// Check reports a radius, falloff range or smoothing that is negative,
+// infinite or NaN, and a falloff with a range whose power is not
+// positive.
 func (m Mask) Check() error {
-	for _, v := range [3]float32{m.Keep.Radius, m.Cut.Radius, m.Falloff.Range} {
+	for _, v := range [4]float32{m.Keep.Radius, m.Cut.Radius, m.Falloff.Range, m.Smooth} {
 		if !(v >= 0) || math.IsInf(float64(v), 0) {
 			return fmt.Errorf("gpu: mask radius or falloff %v is not zero or more", v)
 		}
@@ -80,7 +84,11 @@ func (f Falloff) coverage(d float32) float32 {
 func (m Mask) Coverage(px, py float32) float32 {
 	k := float32(1)
 	if !m.Keep.Rect.Empty() {
-		k = m.Falloff.coverage(roundRectDistance(px, py, m.Keep.Rect, m.Keep.Radius))
+		d := roundRectDistance(px, py, m.Keep.Rect, m.Keep.Radius)
+		if !m.Merge.Empty() {
+			d = smoothMin(d, roundRectDistance(px, py, m.Merge, m.Keep.Radius), m.Smooth)
+		}
+		k = m.Falloff.coverage(d)
 	}
 	if !m.Cut.Rect.Empty() {
 		k *= 1 - edgeCoverage(roundRectDistance(px, py, m.Cut.Rect, m.Cut.Radius))
@@ -155,12 +163,14 @@ func KawaseAt(sample func(u, v float32) [4]float32, up bool, u, v, hx, hy float3
 // GooCoverage is the fraction of the pixel whose centre is (px, py)
 // that FillGoo covers for g, as the shader computes it.
 func GooCoverage(g Goo, px, py float32) float32 {
-	a := roundRectDistance(px, py, g.A.Rect, g.A.Radius)
-	b := roundRectDistance(px, py, g.B.Rect, g.B.Radius)
+	return edgeCoverage(smoothMin(roundRectDistance(px, py, g.A.Rect, g.A.Radius), roundRectDistance(px, py, g.B.Rect, g.B.Radius), g.Smooth))
+}
+
+func smoothMin(a, b, k float32) float32 {
 	d := min(a, b)
-	if g.Smooth > 0 {
-		h := max(g.Smooth-float32(math.Abs(float64(a-b))), 0) / g.Smooth
-		d -= h * h * g.Smooth * 0.25
+	if k > 0 {
+		h := max(k-float32(math.Abs(float64(a-b))), 0) / k
+		d -= h * h * k * 0.25
 	}
-	return edgeCoverage(d)
+	return d
 }

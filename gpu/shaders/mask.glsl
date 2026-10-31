@@ -28,10 +28,14 @@ float gooCoverage(vec2 p, vec4 a, vec4 b, vec3 shape) {
     return edgeCoverage(smoothMin(roundRectDistance(p, a, shape.x), roundRectDistance(p, b, shape.y), shape.z));
 }
 
-float maskCoverage(vec2 p, vec4 keep, vec4 cut, vec4 radii) {
+float maskCoverage(vec2 p, vec4 keep, vec4 cut, vec4 radii, vec4 merge, float smoothing) {
     float k = 1.0;
     if (keep.z > keep.x && keep.w > keep.y) {
-        k = falloffCoverage(roundRectDistance(p, keep, radii.x), radii.zw);
+        float d = roundRectDistance(p, keep, radii.x);
+        if (merge.z > merge.x && merge.w > merge.y) {
+            d = smoothMin(d, roundRectDistance(p, merge, radii.x), smoothing);
+        }
+        k = falloffCoverage(d, radii.zw);
     }
     if (cut.z > cut.x && cut.w > cut.y) {
         k *= 1.0 - edgeCoverage(roundRectDistance(p, cut, radii.y));
