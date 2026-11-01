@@ -41,6 +41,12 @@
             # libxkbcommon, the reference the xkb package's differential
             # tests and keysym table generator hold it to.
             pkgs.libxkbcommon
+            # A private X server, the keymap compiler that uploads to it and
+            # libxcb, for the X11 keymap import tests against
+            # libxkbcommon-x11.
+            pkgs.xvfb
+            pkgs.xkbcomp
+            pkgs.setxkbmap
           ]
           ++ [
             # The test compositor's private session bus.
@@ -96,6 +102,7 @@
             pkgs.pipewire
             pkgs.libei
             pkgs.libxkbcommon
+            pkgs.libxcb
           ]);
         # The xkb package's tests: the data libxkbcommon and the package
         # both compile from, and the header its keysym tables come from.
