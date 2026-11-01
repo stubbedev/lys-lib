@@ -4,6 +4,7 @@ import (
 	"image"
 	"image/color"
 	"math"
+	"slices"
 	"testing"
 
 	"github.com/stubbedev/lys-lib/fourcc"
@@ -243,5 +244,64 @@ func TestPassFailsOnBadCalls(t *testing.T) {
 	p.Clear(color.RGBA{})
 	if p.err == nil {
 		t.Error("a call after End went unnoticed")
+	}
+}
+
+func TestDisjointCoversTheDamageOnce(t *testing.T) {
+	var s rectScratch
+	bounds := image.Rect(0, 0, 40, 40)
+	damage := []image.Rectangle{
+		image.Rect(0, 0, 20, 20), image.Rect(10, 10, 30, 30), image.Rect(12, 12, 14, 14),
+		image.Rect(35, 35, 90, 90), image.Rect(50, 50, 60, 60), image.Rect(5, 25, 35, 28),
+	}
+	rects := s.disjoint(damage, bounds)
+	for y := range bounds.Dy() {
+		for x := range bounds.Dx() {
+			p := image.Pt(x, y)
+			want := 0
+			if slices.ContainsFunc(damage, p.In) {
+				want = 1
+			}
+			got := 0
+			for _, r := range rects {
+				if p.In(r) {
+					got++
+				}
+			}
+			if got != want {
+				t.Fatalf("pixel %v is covered %d times, want %d", p, got, want)
+			}
+		}
+	}
+}
+
+func TestASteadyPassAllocatesOnlyItself(t *testing.T) {
+	if raceEnabled {
+		t.Skip("the race detector allocates on its own")
+	}
+	d := openDevice(t)
+	tg, err := d.NewOffscreen(32, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tg.Close()
+	tx := newTexture(t, d, fourcc.ARGB8888, 2, 2, [][4]byte{{1, 2, 3, 255}, {1, 2, 3, 255}, {1, 2, 3, 255}, {1, 2, 3, 255}})
+	damage := []image.Rectangle{image.Rect(0, 0, 16, 16), image.Rect(8, 8, 32, 32)}
+	pass := func() {
+		p, err := d.Begin(tg, damage)
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.FillRect(image.Rect(0, 0, 32, 32), color.RGBA{A: 255}, Mask{})
+		p.DrawTexture(tx, FRect{W: 2, H: 2}, image.Rect(0, 0, 32, 32), TransformNormal, 1, Mask{})
+		if err := p.End(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for range 100 {
+		pass()
+	}
+	if n := testing.AllocsPerRun(100, pass); n > 1 {
+		t.Fatalf("a steady pass allocated %v times", n)
 	}
 }

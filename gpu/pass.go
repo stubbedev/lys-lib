@@ -9,7 +9,6 @@ import (
 	"slices"
 	"unsafe"
 
-	"github.com/stubbedev/lys-lib/render"
 	"github.com/stubbedev/lys-lib/third_party/vk"
 )
 
@@ -68,35 +67,55 @@ func (d *Device) Begin(t *Target, damage []image.Rectangle) (*Pass, error) {
 	if err := t.s.ready(); err != nil {
 		return nil, err
 	}
-	p := &Pass{d: d, t: t, ct: ct, damage: disjoint(damage, image.Rectangle{Max: t.Size()})}
+	p := &Pass{d: d, t: t, ct: ct, damage: d.passRects.disjoint(damage, image.Rectangle{Max: t.Size()}), ops: d.passOps[:0]}
 	d.active = p
 	return p, nil
 }
 
-func disjoint(rects []image.Rectangle, bounds image.Rectangle) []image.Rectangle {
-	var out []render.Rect
+// rectScratch is the storage disjoint keeps between frames.
+type rectScratch struct {
+	out, pieces, next []image.Rectangle
+}
+
+// disjoint is rects clipped to bounds and cut so none overlap. The
+// result is valid until the next call.
+func (s *rectScratch) disjoint(rects []image.Rectangle, bounds image.Rectangle) []image.Rectangle {
+	s.out = s.out[:0]
 	for _, r := range rects {
 		r = r.Intersect(bounds)
 		if r.Empty() {
 			continue
 		}
-		pieces := []render.Rect{{X: r.Min.X, Y: r.Min.Y, W: r.Dx(), H: r.Dy()}}
-		for _, o := range out {
-			var next []render.Rect
-			for _, p := range pieces {
-				next = append(next, p.Subtract(o)...)
+		s.pieces = append(s.pieces[:0], r)
+		for _, o := range s.out {
+			s.next = s.next[:0]
+			for _, p := range s.pieces {
+				s.next = appendSubtracted(s.next, p, o)
 			}
-			pieces = next
+			s.pieces, s.next = s.next, s.pieces
 		}
-		out = append(out, pieces...)
+		s.out = append(s.out, s.pieces...)
 	}
-	rs := make([]image.Rectangle, 0, len(out))
-	for _, r := range out {
-		if !r.Empty() {
-			rs = append(rs, rectOf(r))
+	return s.out
+}
+
+// appendSubtracted appends what is left of r outside o to out.
+func appendSubtracted(out []image.Rectangle, r, o image.Rectangle) []image.Rectangle {
+	c := r.Intersect(o)
+	if c.Empty() {
+		return append(out, r)
+	}
+	for _, p := range [4]image.Rectangle{
+		{Min: r.Min, Max: image.Pt(r.Max.X, c.Min.Y)},
+		{Min: image.Pt(r.Min.X, c.Min.Y), Max: image.Pt(c.Min.X, c.Max.Y)},
+		{Min: image.Pt(c.Max.X, c.Min.Y), Max: image.Pt(r.Max.X, c.Max.Y)},
+		{Min: image.Pt(r.Min.X, c.Max.Y), Max: r.Max},
+	} {
+		if !p.Empty() {
+			out = append(out, p)
 		}
 	}
-	return rs
+	return out
 }
 
 func (p *Pass) fail(err error) {
@@ -431,8 +450,15 @@ func (p *Pass) End() error {
 		return errors.New("gpu: End of an ended pass")
 	}
 	p.ended = true
+	p.d.active = nil
+	err := p.submit()
+	clear(p.ops)
+	p.d.passOps, p.ops = p.ops[:0], nil
+	return err
+}
+
+func (p *Pass) submit() error {
 	d := p.d
-	d.active = nil
 	if p.err != nil {
 		return p.err
 	}
@@ -471,10 +497,10 @@ func (p *Pass) record(cb vk.CommandBuffer, ct *compTarget) {
 	}
 	s.to(cb, vk.ImageLayoutColorAttachmentOptimal)
 	area := vk.Rect2D{Extent: extent2D(s.w, s.h)}
-	bi := vk.RenderPassBeginInfo{SType: vk.StructureTypeRenderPassBeginInfo, RenderPass: ct.pass, Framebuffer: s.fb, RenderArea: area}
-	d.cmds.CmdBeginRenderPass(cb, &bi, vk.SubpassContentsInline)
-	vp := vk.Viewport{Width: float32(s.w), Height: float32(s.h), MaxDepth: 1}
-	d.cmds.CmdSetViewport(cb, 0, 1, &vp)
+	d.args.passBegin = vk.RenderPassBeginInfo{SType: vk.StructureTypeRenderPassBeginInfo, RenderPass: ct.pass, Framebuffer: s.fb, RenderArea: area}
+	d.cmds.CmdBeginRenderPass(cb, &d.args.passBegin, vk.SubpassContentsInline)
+	d.args.viewport = vk.Viewport{Width: float32(s.w), Height: float32(s.h), MaxDepth: 1}
+	d.cmds.CmdSetViewport(cb, 0, 1, &d.args.viewport)
 	stages := vk.ShaderStageFlags(vk.ShaderStageVertexBit | vk.ShaderStageFragmentBit)
 	var bound vk.Pipeline
 	var set vk.DescriptorSet
@@ -500,8 +526,8 @@ func (p *Pass) record(cb vk.CommandBuffer, ct *compTarget) {
 			if clip.Empty() {
 				continue
 			}
-			sc := rect2D(clip)
-			d.cmds.CmdSetScissor(cb, 0, 1, &sc)
+			d.args.scissor = rect2D(clip)
+			d.cmds.CmdSetScissor(cb, 0, 1, &d.args.scissor)
 			d.cmds.CmdDraw(cb, 4, 1, 0, 0)
 		}
 	}

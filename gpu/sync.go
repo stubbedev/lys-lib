@@ -38,6 +38,31 @@ type timing struct {
 	done       uint64
 	doneAt     time.Duration
 	doneErr    error
+	// spareFences and spareBuffers are the fences and command buffers
+	// of finished submissions, for the next ones.
+	spareFences  []vk.Fence
+	spareBuffers []vk.CommandBuffer
+	// args is what commands point C at. C reads a pointer argument only
+	// during the call, and one on the stack would escape to the heap,
+	// so the device keeps one of each.
+	args callArgs
+}
+
+// callArgs holds the pointer arguments of the commands every frame runs.
+type callArgs struct {
+	fence     vk.Fence
+	cb        vk.CommandBuffer
+	begin     vk.CommandBufferBeginInfo
+	submit    vk.SubmitInfo
+	barrier   vk.ImageMemoryBarrier
+	region    vk.BufferImageCopy
+	passBegin vk.RenderPassBeginInfo
+	viewport  vk.Viewport
+	scissor   vk.Rect2D
+	timestamp uint64
+	infos     [2]vk.CalibratedTimestampInfoKHR
+	now       [2]uint64
+	deviation uint64
 }
 
 type inflight struct {
@@ -46,6 +71,10 @@ type inflight struct {
 	sems  []vk.Semaphore
 	query int
 	pass  uint64
+	// staged marks a submission reading the staging ring up to
+	// stagingEnd.
+	staged     bool
+	stagingEnd int
 }
 
 func (d *Device) probeTiming(p vk.PhysicalDevice, have map[string]bool, props *vk.PhysicalDeviceProperties, fam vk.QueueFamilyProperties) []string {
@@ -179,7 +208,7 @@ func (d *Device) queue1(cb vk.CommandBuffer, signal []vk.Semaphore, query int, p
 			return err
 		}
 	}
-	fence, err := d.fence()
+	fence, err := d.spareFence()
 	if err != nil {
 		return err
 	}
@@ -188,17 +217,19 @@ func (d *Device) queue1(cb vk.CommandBuffer, signal []vk.Semaphore, query int, p
 	for i := range stages {
 		stages[i] = vk.PipelineStageFlags(vk.PipelineStageAllCommandsBit)
 	}
-	si := vk.SubmitInfo{SType: vk.StructureTypeSubmitInfo}
+	si := &d.args.submit
+	*si = vk.SubmitInfo{SType: vk.StructureTypeSubmitInfo}
 	if len(waits) > 0 {
 		si.WaitSemaphoreCount, si.PWaitSemaphores, si.PWaitDstStageMask = count(waits), &waits[0], &stages[0]
 	}
 	if cb != 0 {
-		si.CommandBufferCount, si.PCommandBuffers = 1, &cb
+		d.args.cb = cb
+		si.CommandBufferCount, si.PCommandBuffers = 1, &d.args.cb
 	}
 	if len(signal) > 0 {
 		si.SignalSemaphoreCount, si.PSignalSemaphores = count(signal), &signal[0]
 	}
-	r := d.cmds.QueueSubmit(d.queue, 1, &si, fence)
+	r := d.cmds.QueueSubmit(d.queue, 1, si, fence)
 	runtime.KeepAlive(stages)
 	if r != vk.Success {
 		d.cmds.DestroyFence(d.device, fence, nil)
@@ -215,18 +246,18 @@ func (d *Device) queue1(cb vk.CommandBuffer, signal []vk.Semaphore, query int, p
 }
 
 func (d *Device) submitAsync(record func(cb vk.CommandBuffer), pass bool) error {
-	cb, err := d.commandBuffer(d.pool)
+	cb, err := d.spareBuffer()
 	if err != nil {
 		return err
 	}
 	if err := begin(d, cb); err != nil {
-		d.cmds.FreeCommandBuffers(d.device, d.pool, 1, &cb)
+		d.spareBuffers = append(d.spareBuffers, cb)
 		return err
 	}
 	query := -1
 	if pass && d.calibrated {
 		if err := d.ensureQueries(); err != nil {
-			d.cmds.FreeCommandBuffers(d.device, d.pool, 1, &cb)
+			d.spareBuffers = append(d.spareBuffers, cb)
 			return err
 		}
 		query = int(d.nextQuery)
@@ -238,14 +269,34 @@ func (d *Device) submitAsync(record func(cb vk.CommandBuffer), pass bool) error 
 		d.cmds.CmdWriteTimestamp(cb, vk.PipelineStageBottomOfPipeBit, d.queries, intconv.Must[uint32](query))
 	}
 	if r := d.cmds.EndCommandBuffer(cb); r != vk.Success {
-		d.cmds.FreeCommandBuffers(d.device, d.pool, 1, &cb)
+		d.spareBuffers = append(d.spareBuffers, cb)
 		return fmt.Errorf("gpu: vkEndCommandBuffer: %d", r)
 	}
 	if err := d.queue1(cb, nil, query, pass); err != nil {
-		d.cmds.FreeCommandBuffers(d.device, d.pool, 1, &cb)
+		d.spareBuffers = append(d.spareBuffers, cb)
 		return err
 	}
 	return nil
+}
+
+// spareBuffer is a command buffer for begin to overwrite.
+func (d *Device) spareBuffer() (vk.CommandBuffer, error) {
+	if n := len(d.spareBuffers); n > 0 {
+		cb := d.spareBuffers[n-1]
+		d.spareBuffers = d.spareBuffers[:n-1]
+		return cb, nil
+	}
+	return d.commandBuffer(d.pool)
+}
+
+// spareFence is an unsignalled fence.
+func (d *Device) spareFence() (vk.Fence, error) {
+	if n := len(d.spareFences); n > 0 {
+		f := d.spareFences[n-1]
+		d.spareFences = d.spareFences[:n-1]
+		return f, nil
+	}
+	return d.fence()
 }
 
 func (d *Device) ensureQueries() error {
@@ -280,12 +331,19 @@ func (d *Device) reap(all bool) {
 			d.doneAt, d.doneErr = d.frameTime(f.query)
 		}
 		if f.cb != 0 {
-			d.cmds.FreeCommandBuffers(d.device, d.pool, 1, &f.cb)
+			d.spareBuffers = append(d.spareBuffers, f.cb)
+		}
+		if f.staged {
+			d.uploads.release(f.stagingEnd)
 		}
 		for _, s := range f.sems {
 			d.cmds.DestroySemaphore(d.device, s, nil)
 		}
-		d.cmds.DestroyFence(d.device, f.fence, nil)
+		if resetFence(d, f.fence) == nil {
+			d.spareFences = append(d.spareFences, f.fence)
+		} else {
+			d.cmds.DestroyFence(d.device, f.fence, nil)
+		}
 	}
 	clear(d.inflight[len(keep):])
 	d.inflight = keep
@@ -307,25 +365,23 @@ func (d *Device) frameTime(query int) (time.Duration, error) {
 	if query < 0 {
 		return 0, ErrNoFrameTime
 	}
-	var ts uint64
-	if r := d.cmds.GetQueryPoolResults(d.device, d.queries, intconv.Must[uint32](query), 1, 8, unsafe.Pointer(&ts), 8, vk.QueryResultFlags(vk.QueryResult64Bit)); r != vk.Success {
+	a := &d.args
+	if r := d.cmds.GetQueryPoolResults(d.device, d.queries, intconv.Must[uint32](query), 1, 8, unsafe.Pointer(&a.timestamp), 8, vk.QueryResultFlags(vk.QueryResult64Bit)); r != vk.Success {
 		return 0, fmt.Errorf("gpu: vkGetQueryPoolResults (timestamp): %d", r)
 	}
-	infos := [2]vk.CalibratedTimestampInfoKHR{
+	a.infos = [2]vk.CalibratedTimestampInfoKHR{
 		{SType: vk.StructureTypeCalibratedTimestampInfoKhr, TimeDomain: vk.TimeDomainDeviceKhr},
 		{SType: vk.StructureTypeCalibratedTimestampInfoKhr, TimeDomain: vk.TimeDomainClockMonotonicKhr},
 	}
-	var now [2]uint64
-	var deviation uint64
-	if r := d.cmds.GetCalibratedTimestampsKHR(d.device, 2, &infos[0], &now[0], &deviation); r != vk.Success {
+	if r := d.cmds.GetCalibratedTimestampsKHR(d.device, 2, &a.infos[0], &a.now[0], &a.deviation); r != vk.Success {
 		return 0, fmt.Errorf("gpu: vkGetCalibratedTimestampsKHR: %d", r)
 	}
 	mask := ^uint64(0)
 	if d.validBits < 64 {
 		mask = 1<<d.validBits - 1
 	}
-	ago := time.Duration(float64((now[0]-ts)&mask) * d.period)
-	return time.Duration(intconv.Must[int64](now[1])) - ago, nil
+	ago := time.Duration(float64((a.now[0]-a.timestamp)&mask) * d.period)
+	return time.Duration(intconv.Must[int64](a.now[1])) - ago, nil
 }
 
 // FrameDone reports when the last ended Pass finished on the GPU, on
@@ -344,6 +400,10 @@ func (d *Device) FrameDone() (time.Duration, bool, error) {
 
 func (d *Device) closeTiming() {
 	d.reap(true)
+	for _, f := range d.spareFences {
+		d.cmds.DestroyFence(d.device, f, nil)
+	}
+	d.spareFences, d.spareBuffers = nil, nil
 	for _, s := range d.waits {
 		d.cmds.DestroySemaphore(d.device, s, nil)
 	}

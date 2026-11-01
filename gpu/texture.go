@@ -134,34 +134,67 @@ func (t *Texture) Update(r image.Rectangle, stride int, pix []byte) error {
 		return fmt.Errorf("gpu: %d bytes for %v at stride %d, want %d", len(pix), r, stride, n)
 	}
 	d := t.d
-	if err := d.fitUpload(n); err != nil {
+	at, err := d.reserveUpload(n)
+	if err != nil {
 		return err
 	}
-	copy(d.upload.mapped, pix[:n])
-	return d.submit(func(cb vk.CommandBuffer) {
+	copy(d.upload.mapped[at:], pix[:n])
+	err = d.submitAsync(func(cb vk.CommandBuffer) {
 		fullBarrier(d, cb, t.image, vk.ImageLayoutShaderReadOnlyOptimal, vk.ImageLayoutTransferDstOptimal, vk.QueueFamilyIgnored, vk.QueueFamilyIgnored)
-		region := vk.BufferImageCopy{
+		region := &d.args.region
+		*region = vk.BufferImageCopy{
+			BufferOffset:     intconv.Must[vk.DeviceSize](at),
 			BufferRowLength:  intconv.Must[uint32](stride / px),
 			ImageSubresource: vk.ImageSubresourceLayers{AspectMask: vk.ImageAspectFlags(vk.ImageAspectColorBit), LayerCount: 1},
 			ImageOffset:      offset3D(r.Min),
 			ImageExtent:      extent3D(r.Dx(), r.Dy()),
 		}
-		d.cmds.CmdCopyBufferToImage(cb, d.upload.buf, t.image, vk.ImageLayoutTransferDstOptimal, 1, &region)
+		d.cmds.CmdCopyBufferToImage(cb, d.upload.buf, t.image, vk.ImageLayoutTransferDstOptimal, 1, region)
 		fullBarrier(d, cb, t.image, vk.ImageLayoutTransferDstOptimal, vk.ImageLayoutShaderReadOnlyOptimal, vk.QueueFamilyIgnored, vk.QueueFamilyIgnored)
-	})
-}
-
-func (d *Device) fitUpload(n int) error {
-	if d.upload != nil {
-		var err error
-		d.upload, err = d.upload.fit(n)
-		return err
-	}
-	b, err := d.newBuffer(max(n, stagingMin), vk.BufferUsageTransferSrcBit)
+	}, false)
 	if err != nil {
 		return err
 	}
-	d.upload = b
+	f := &d.inflight[len(d.inflight)-1]
+	f.staged, f.stagingEnd = true, d.uploads.head
+	d.uploads.pending++
+	return nil
+}
+
+// reserveUpload is the offset of n free bytes in the staging ring,
+// waiting for earlier uploads only when the ring is full and for the
+// device to idle only when n outgrows it.
+func (d *Device) reserveUpload(n int) (int, error) {
+	d.reap(false)
+	if d.upload == nil || len(d.upload.mapped) < n {
+		if err := d.idle(); err != nil {
+			return 0, err
+		}
+		if err := d.growUpload(n); err != nil {
+			return 0, err
+		}
+	}
+	for {
+		if at, ok := d.uploads.reserve(n); ok {
+			return at, nil
+		}
+		if err := d.waitOldest(); err != nil {
+			return 0, err
+		}
+	}
+}
+
+func (d *Device) growUpload(n int) error {
+	var err error
+	if d.upload != nil {
+		d.upload, err = d.upload.fit(n)
+	} else {
+		d.upload, err = d.newBuffer(max(2*n, stagingMin), vk.BufferUsageTransferSrcBit)
+	}
+	if err != nil {
+		return err
+	}
+	d.uploads = stagingRing{size: len(d.upload.mapped)}
 	return nil
 }
 

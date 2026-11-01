@@ -1,8 +1,10 @@
 package gpu
 
 import (
+	"image"
 	"testing"
 
+	"github.com/stubbedev/lys-lib/fourcc"
 	"github.com/stubbedev/lys-lib/render"
 )
 
@@ -91,5 +93,29 @@ func BenchmarkResizeCPU(b *testing.B) {
 		w, h := 1200+i%40*20, 900+i%40*5
 		i++
 		paint(render.New(make([]byte, render.Stride(w)*h), render.Stride(w), w, h))
+	}
+}
+
+func BenchmarkTextureUpdate(b *testing.B) {
+	d := openDevice(b)
+	const w, h = 1280, 800
+	textures := make([]*Texture, 4)
+	for i := range textures {
+		tx, err := d.NewTexture(fourcc.ARGB8888, w, h)
+		if err != nil {
+			b.Fatal(err)
+		}
+		defer tx.Close()
+		textures[i] = tx
+	}
+	pix := make([]byte, w*h*4)
+	b.ReportAllocs()
+	b.SetBytes(int64(len(pix)))
+	i := 0
+	for b.Loop() {
+		if err := textures[i%len(textures)].Update(image.Rect(0, 0, w, h), w*4, pix); err != nil {
+			b.Fatal(err)
+		}
+		i++
 	}
 }

@@ -39,7 +39,8 @@ func (d *Device) fence() (vk.Fence, error) {
 }
 
 func resetFence(d *Device, f vk.Fence) error {
-	if r := d.cmds.ResetFences(d.device, 1, &f); r != vk.Success {
+	d.args.fence = f
+	if r := d.cmds.ResetFences(d.device, 1, &d.args.fence); r != vk.Success {
 		return fmt.Errorf("gpu: vkResetFences: %d", r)
 	}
 	return nil
@@ -47,8 +48,8 @@ func resetFence(d *Device, f vk.Fence) error {
 
 // begin starts recording cb, once, over whatever it held.
 func begin(d *Device, cb vk.CommandBuffer) error {
-	cbi := vk.CommandBufferBeginInfo{SType: vk.StructureTypeCommandBufferBeginInfo, Flags: vk.CommandBufferUsageFlags(vk.CommandBufferUsageOneTimeSubmitBit)}
-	if r := d.cmds.BeginCommandBuffer(cb, &cbi); r != vk.Success {
+	d.args.begin = vk.CommandBufferBeginInfo{SType: vk.StructureTypeCommandBufferBeginInfo, Flags: vk.CommandBufferUsageFlags(vk.CommandBufferUsageOneTimeSubmitBit)}
+	if r := d.cmds.BeginCommandBuffer(cb, &d.args.begin); r != vk.Success {
 		return fmt.Errorf("gpu: vkBeginCommandBuffer: %d", r)
 	}
 	return nil

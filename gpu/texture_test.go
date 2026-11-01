@@ -147,3 +147,98 @@ func TestDeviceCloseClosesTextures(t *testing.T) {
 	}
 	tx.Close()
 }
+
+func TestManyUpdatesInARowLandInOrder(t *testing.T) {
+	d := openDevice(t)
+	tx, err := d.NewTexture(fourcc.ARGB8888, 64, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Close()
+	pix := make([]byte, 64*64*4)
+	for i := range 500 {
+		v := byte(i)
+		for j := range pix {
+			pix[j] = v
+		}
+		if err := tx.Update(image.Rect(0, 0, 64, 64), 64*4, pix); err != nil {
+			t.Fatal(err)
+		}
+		clear(pix)
+	}
+	want := byte(499 % 256)
+	for i, b := range textureBytes(t, tx) {
+		if b != want {
+			t.Fatalf("byte %d is %d, want the last update's %d", i, b, want)
+		}
+	}
+}
+
+func TestAnUpdateLargerThanTheRingGrowsIt(t *testing.T) {
+	d := openDevice(t)
+	small, err := d.NewTexture(fourcc.ARGB8888, 8, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer small.Close()
+	large, err := d.NewTexture(fourcc.ARGB8888, 512, 512)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer large.Close()
+	a, b := [4]byte{1, 2, 3, 4}, [4]byte{9, 8, 7, 6}
+	if err := small.Update(image.Rect(0, 0, 8, 8), 32, fill(8, 8, 32, a)); err != nil {
+		t.Fatal(err)
+	}
+	if err := large.Update(image.Rect(0, 0, 512, 512), 2048, fill(512, 512, 2048, b)); err != nil {
+		t.Fatal(err)
+	}
+	if px := [4]byte(textureBytes(t, small)); px != a {
+		t.Errorf("the small texture holds %v, want %v", px, a)
+	}
+	if px := [4]byte(textureBytes(t, large)); px != b {
+		t.Errorf("the large texture holds %v, want %v", px, b)
+	}
+}
+
+func TestASteadyUpdateDoesNotWaitOrAllocate(t *testing.T) {
+	if raceEnabled {
+		t.Skip("the race detector allocates on its own")
+	}
+	d := openDevice(t)
+	tx, err := d.NewTexture(fourcc.ARGB8888, 64, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Close()
+	pix := make([]byte, 64*64*4)
+	update := func() {
+		if err := tx.Update(image.Rect(0, 0, 64, 64), 64*4, pix); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for range 100 {
+		update()
+	}
+	if n := testing.AllocsPerRun(100, update); n != 0 {
+		t.Fatalf("a steady update allocated %v times", n)
+	}
+}
+
+func TestAnUpdateLeavesItsWorkInFlight(t *testing.T) {
+	d := openDevice(t)
+	tx, err := d.NewTexture(fourcc.ARGB8888, 8, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Close()
+	if err := d.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Update(image.Rect(0, 0, 8, 8), 32, make([]byte, 8*8*4)); err != nil {
+		t.Fatal(err)
+	}
+	if len(d.inflight) == 0 {
+		t.Fatal("Update waited for the GPU instead of returning")
+	}
+}

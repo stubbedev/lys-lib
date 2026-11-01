@@ -125,13 +125,14 @@ func (s *surface) barrier(cb vk.CommandBuffer, layout vk.ImageLayout, src, dst u
 // synchronization2.
 func fullBarrier(d *Device, cb vk.CommandBuffer, img vk.Image, from, to vk.ImageLayout, src, dst uint32) {
 	all := vk.AccessFlags(vk.AccessMemoryReadBit | vk.AccessMemoryWriteBit)
-	b := vk.ImageMemoryBarrier{
+	b := &d.args.barrier
+	*b = vk.ImageMemoryBarrier{
 		SType: vk.StructureTypeImageMemoryBarrier, SrcAccessMask: all, DstAccessMask: all,
 		OldLayout: from, NewLayout: to,
 		SrcQueueFamilyIndex: src, DstQueueFamilyIndex: dst, Image: img, SubresourceRange: colorRange,
 	}
 	stages := vk.PipelineStageFlags(vk.PipelineStageAllCommandsBit)
-	d.cmds.CmdPipelineBarrier(cb, stages, stages, 0, 0, nil, 0, nil, 1, &b)
+	d.cmds.CmdPipelineBarrier(cb, stages, stages, 0, 0, nil, 0, nil, 1, b)
 }
 
 // download records copying s's region r into b at offset, rows tight.

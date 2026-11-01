@@ -91,6 +91,11 @@ type Device struct {
 	pipelines
 	scratch
 	timing
+	// uploads tracks the free part of upload.
+	uploads stagingRing
+	// passOps and passRects are the storage of the open pass.
+	passOps   []passOp
+	passRects rectScratch
 }
 
 // Open picks the first Vulkan device with a graphics queue that
@@ -341,11 +346,12 @@ func (d *Device) open() error {
 		d.cmds.GetDeviceQueue(d.device, d.video.family, 0, &d.video.queue)
 	}
 	d.cmds.GetPhysicalDeviceMemoryProperties(d.phys, &d.memProps)
-	pci := vk.CommandPoolCreateInfo{SType: vk.StructureTypeCommandPoolCreateInfo, QueueFamilyIndex: d.family}
-	if r := d.cmds.CreateCommandPool(d.device, &pci, nil, &d.pool); r != vk.Success {
+	pool, err := d.commandPool(d.family)
+	if err != nil {
 		d.cmds.DestroyDevice(d.device, nil)
-		return fmt.Errorf("%s: vkCreateCommandPool: %d", d.name, r)
+		return fmt.Errorf("%s: %w", d.name, err)
 	}
+	d.pool = pool
 	return nil
 }
 
