@@ -2,6 +2,10 @@ name: docs
 on:
   push:
     branches: [main]
+    paths:
+      - "docs/**"
+      - ".github/workflows/docs.yml"
+      - "third_party/*/README.lys-lib.md"
   workflow_dispatch:
 permissions:
   contents: read
