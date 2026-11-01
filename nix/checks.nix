@@ -22,7 +22,7 @@
           };
           # Pins the module dependencies in go.sum. When they change, set this
           # to lib.fakeHash, build the check and put the reported got: hash here.
-          vendorHash = "sha256-tTQEOolzX0ZehVqJsmravq+a/7RBx7m2HJrEE80GyDk=";
+          vendorHash = "sha256-XavC89rwJFFPodHsZMiOLksp5totD6qMvbeFLzZRerA=";
           buildPhase = ''
             runHook preBuild
             go test -c -o drm.test ./drm
