@@ -1,5 +1,5 @@
 // Package clib is the shared purego plumbing for the native libraries
-// the lys family binds without cgo (lys-shell's libpam and libgstreamer,
+// the lys family binds without cgo (lys-login's libpam at run time, and
 // the reference libpipewire and libei the tests here drive): dlopen over
 // a candidate list and C string copies.
 package clib
