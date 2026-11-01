@@ -127,11 +127,22 @@ func rowReader(src image.Image, r image.Rectangle) func(y int) []uint8 {
 		}
 	case *image.YCbCr:
 		return func(y int) []uint8 {
-			for x := range w {
-				yi := s.YOffset(r.Min.X+x, r.Min.Y+y)
-				ci := s.COffset(r.Min.X+x, r.Min.Y+y)
-				buf[x*4], buf[x*4+1], buf[x*4+2] = color.YCbCrToRGB(s.Y[yi], s.Cb[ci], s.Cr[ci])
-				buf[x*4+3] = 0xff
+			ys := s.Y[s.YOffset(r.Min.X, r.Min.Y+y):]
+			switch s.SubsampleRatio {
+			case image.YCbCrSubsampleRatio420, image.YCbCrSubsampleRatio422:
+				ci := s.COffset(r.Min.X, r.Min.Y+y)
+				parity := r.Min.X & 1
+				for x := range w {
+					c := ci + (x+parity)>>1
+					buf[x*4], buf[x*4+1], buf[x*4+2] = color.YCbCrToRGB(ys[x], s.Cb[c], s.Cr[c])
+					buf[x*4+3] = 0xff
+				}
+			default:
+				for x := range w {
+					ci := s.COffset(r.Min.X+x, r.Min.Y+y)
+					buf[x*4], buf[x*4+1], buf[x*4+2] = color.YCbCrToRGB(ys[x], s.Cb[ci], s.Cr[ci])
+					buf[x*4+3] = 0xff
+				}
 			}
 			return buf
 		}
@@ -227,15 +238,29 @@ func cubicScale(dst *image.RGBA, rows rowSource) {
 		}
 		line, out := rows.row(y), ring[slot]
 		for dx, t := range xt {
-			var acc [4]float32
-			for i, wgt := range t.w {
-				o := min(max(t.first+i, 0), rows.w-1) * 4
-				acc[0] += wgt * float32(line[o])
-				acc[1] += wgt * float32(line[o+1])
-				acc[2] += wgt * float32(line[o+2])
-				acc[3] += wgt * float32(line[o+3])
+			var a0, a1, a2, a3 float32
+			if t.first >= 0 && t.first+len(t.w) <= rows.w {
+				px := line[t.first*4:]
+				for _, wgt := range t.w {
+					p := px[:4:4]
+					a0 += wgt * float32(p[0])
+					a1 += wgt * float32(p[1])
+					a2 += wgt * float32(p[2])
+					a3 += wgt * float32(p[3])
+					px = px[4:]
+				}
+			} else {
+				for i, wgt := range t.w {
+					o := min(max(t.first+i, 0), rows.w-1) * 4
+					p := line[o : o+4 : o+4]
+					a0 += wgt * float32(p[0])
+					a1 += wgt * float32(p[1])
+					a2 += wgt * float32(p[2])
+					a3 += wgt * float32(p[3])
+				}
 			}
-			copy(out[dx*4:dx*4+4], acc[:])
+			q := out[dx*4 : dx*4+4 : dx*4+4]
+			q[0], q[1], q[2], q[3] = a0, a1, a2, a3
 		}
 		ringRow[slot] = y
 		return out
@@ -247,30 +272,30 @@ func cubicScale(dst *image.RGBA, rows rowSource) {
 		clear(sums)
 		for i, wgt := range t.w {
 			line := filtered(clampRow(t.first + i))
+			acc := sums[:len(line)]
 			for x, v := range line {
-				sums[x] += wgt * v
+				acc[x] += wgt * v
 			}
 		}
-		for x := 0; x < dw*4; x += 4 {
-			a := byteOf(sums[x+3])
-			row[x+3] = a
-			row[x] = min(byteOf(sums[x]), a)
-			row[x+1] = min(byteOf(sums[x+1]), a)
-			row[x+2] = min(byteOf(sums[x+2]), a)
+		for x := 0; x+3 < dw*4; x += 4 {
+			v, p := sums[x:x+4:x+4], row[x:x+4:x+4]
+			a := byteOf(v[3])
+			p[3] = a
+			p[0] = min(byteOf(v[0]), a)
+			p[1] = min(byteOf(v[1]), a)
+			p[2] = min(byteOf(v[2]), a)
 		}
 	}
 }
 
-// byteOf rounds an accumulated channel into a byte.
-func byteOf(v float32) uint8 { return uint8(min(clamp8(math.Round(float64(v))), 255)) }
-
-// clamp8 bounds a channel to [0, 255].
-func clamp8(v float64) uint32 {
-	if v < 0 {
+// byteOf rounds an accumulated channel to the nearest byte, half up,
+// clamped.
+func byteOf(v float32) uint8 {
+	switch {
+	case v <= 0:
 		return 0
-	}
-	if v > 255 {
+	case v >= 255:
 		return 255
 	}
-	return uint32(v)
+	return uint8(float64(v) + 0.5)
 }
