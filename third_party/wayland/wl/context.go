@@ -45,6 +45,10 @@ type Context struct {
 	sendMu   sync.Mutex
 	sendCond *sync.Cond
 	unsent   map[ProxyId]struct{}
+	// out and outOOB are requests encoded but not yet written, under
+	// sendMu; see CommitDeferred.
+	out    []byte
+	outOOB []byte
 }
 
 // markUnsent records a freshly allocated client id as not yet on the wire.

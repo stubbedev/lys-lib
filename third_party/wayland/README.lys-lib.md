@@ -80,3 +80,19 @@ timeout and reads once when it has data. A loop drains a burst with
 them in one pass and a bounded number of reads (lys-ui#432).
 `wl/pending_test.go` holds the tests. This is a lys-lib integration
 choice rather than an upstream bug.
+
+### Requests are buffered until something can depend on them
+
+`wl/request.go`: every request was a `sendmsg` of its own, waking the
+compositor to read one message, and an allocation per argument. A
+window's frame (attach, damage, frame, commit) took four of each.
+Requests now encode into one buffer on the context; a proxy implementing
+`CommitDeferred` names the requests that only set state a later request
+applies (`wl_surface`'s other than commit and destroy, `wp_viewport`'s
+in `wlr`), and those stay in the buffer. Nothing can wait on them, so a
+client needs no flush call as libwayland's do; any other request carries
+them ahead of itself, in order. `Request` and `BytePool` are gone. A
+`[]int32` argument now states its length in bytes, as the protocol says.
+A write larger than the socket takes at once continues rather than
+failing. `wl/request_test.go` holds the tests. This is a lys-lib
+integration choice rather than an upstream bug.
