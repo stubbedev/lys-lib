@@ -6,7 +6,7 @@
 package oksvg
 
 import (
-	"github.com/srwiley/rasterx"
+	"github.com/stubbedev/lys-lib/third_party/rasterx"
 )
 
 // SvgIcon holds data from parsed SVGs.

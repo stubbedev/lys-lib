@@ -11,7 +11,7 @@ import (
 	"math"
 	"unicode"
 
-	"github.com/srwiley/rasterx"
+	"github.com/stubbedev/lys-lib/third_party/rasterx"
 
 	"golang.org/x/image/math/fixed"
 )

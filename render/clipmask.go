@@ -5,7 +5,7 @@ import (
 	"image/draw"
 	"math"
 
-	"golang.org/x/image/vector"
+	"github.com/stubbedev/lys-lib/third_party/vector"
 )
 
 // The clip-path machinery: a CSS clip shape becomes a Path (inset with

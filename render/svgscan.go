@@ -5,9 +5,9 @@ import (
 	"image/draw"
 	"math"
 
-	"github.com/srwiley/rasterx"
+	"github.com/stubbedev/lys-lib/third_party/rasterx"
 	"golang.org/x/image/math/fixed"
-	"golang.org/x/image/vector"
+	"github.com/stubbedev/lys-lib/third_party/vector"
 )
 
 // svgScanner rasterizes each path over the box it covers, where

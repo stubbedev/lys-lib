@@ -16,7 +16,7 @@ import (
 	"math"
 
 	"golang.org/x/image/draw"
-	"golang.org/x/image/vector"
+	"github.com/stubbedev/lys-lib/third_party/vector"
 
 	"github.com/stubbedev/lys-lib/third_party/typesetting/font"
 	ot "github.com/stubbedev/lys-lib/third_party/typesetting/font/opentype"

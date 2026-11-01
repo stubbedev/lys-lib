@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/srwiley/rasterx"
+	"github.com/stubbedev/lys-lib/third_party/rasterx"
 )
 
 // parseSVGTransform parses an SVG transform list into the matrix it
