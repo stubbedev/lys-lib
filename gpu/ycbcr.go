@@ -13,13 +13,21 @@ import (
 // DRM's other YUV formats have no Vulkan format with their layout: the
 // 10-bit packed NV15, NV20, NV30, P030, P230 and T430, the 4x subsampled
 // YUV410 and YUV411 and their swaps, the low-bit-aligned S0xx planes and
-// the 24-bit VUY888.
+// the compressed-only VUY101010. yuv444Formats sample without one.
 var ycbcrFormats = []fourcc.Format{
 	fourcc.NV12, fourcc.NV21, fourcc.NV16, fourcc.NV61, fourcc.NV24, fourcc.NV42,
 	fourcc.P010, fourcc.P012, fourcc.P016, fourcc.P210,
 	fourcc.YUV420, fourcc.YVU420, fourcc.YUV422, fourcc.YVU422, fourcc.YUV444, fourcc.YVU444,
 	fourcc.Q410, fourcc.Q401,
 	fourcc.YUYV, fourcc.YVYU, fourcc.UYVY, fourcc.VYUY, fourcc.Y210, fourcc.Y212, fourcc.Y216,
+}
+
+// yuv444Formats are the packed 4:4:4 formats: Vulkan has no YCbCr format
+// for them, and ycbcr444.frag converts what an RGB format samples.
+var yuv444Formats = []fourcc.Format{
+	fourcc.AYUV, fourcc.XYUV8888, fourcc.AVUY8888, fourcc.XVUY8888, fourcc.VUY888,
+	fourcc.Y410, fourcc.XVYU2101010, fourcc.XVUY2101010,
+	fourcc.Y412, fourcc.XVYU121616, fourcc.Y416, fourcc.XVYU16161616,
 }
 
 // YCbCr is how a YUV buffer's samples become RGB: the colour hints a

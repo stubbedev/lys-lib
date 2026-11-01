@@ -214,6 +214,11 @@ func TestEveryConvertedFormatHasALayoutAndAYUVName(t *testing.T) {
 			t.Errorf("%s: YUV %v, ycbcr %v, %d planes against %d", f, f.YUV(), pf.ycbcr, f.Planes(), pf.planes)
 		}
 	}
+	for _, f := range yuv444Formats {
+		if pf := pixelFormats[f]; !f.YUV() || pf.yuvBits == 0 || f.Planes() != 1 {
+			t.Errorf("%s: YUV %v, %d bits, %d planes", f, f.YUV(), pf.yuvBits, f.Planes())
+		}
+	}
 }
 
 func TestP010Converts(t *testing.T) {
@@ -251,6 +256,98 @@ func TestYCbCrRefusesUnknownHints(t *testing.T) {
 		if tx, err := d.ImportTextureYCbCr(yuvPlanes{format: fourcc.NV12, w: 8, h: 8}.buffer(t, 1, 2, 3), c); err == nil {
 			tx.Close()
 			t.Errorf("NV12 took %+v", c)
+		}
+	}
+}
+
+// packed444 encodes one pixel as the kernel's drm_fourcc.h lays it out,
+// given 16-bit samples.
+func packed444(f fourcc.Format, y, u, v, a uint16) []byte {
+	le16 := func(vals ...uint16) []byte {
+		var b []byte
+		for _, val := range vals {
+			b = binary.LittleEndian.AppendUint16(b, val)
+		}
+		return b
+	}
+	eight := func(vals ...uint16) []byte {
+		b := make([]byte, len(vals))
+		for i, val := range vals {
+			b[i] = byte(val >> 8)
+		}
+		return b
+	}
+	ten := func(hi, top, mid, low uint16) []byte {
+		return binary.LittleEndian.AppendUint32(nil, uint32(hi>>14)<<30|uint32(top>>6)<<20|uint32(mid>>6)<<10|uint32(low>>6))
+	}
+	switch f {
+	case fourcc.AYUV, fourcc.XYUV8888:
+		return eight(v, u, y, a)
+	case fourcc.AVUY8888, fourcc.XVUY8888:
+		return eight(y, u, v, a)
+	case fourcc.VUY888:
+		return eight(y, u, v)
+	case fourcc.Y410, fourcc.XVYU2101010:
+		return ten(a, v, y, u)
+	case fourcc.XVUY2101010:
+		return ten(a, v, u, y)
+	case fourcc.Y412, fourcc.XVYU121616:
+		return le16(u&0xfff0, y&0xfff0, v&0xfff0, a&0xfff0)
+	case fourcc.Y416, fourcc.XVYU16161616:
+		return le16(u, y, v, a)
+	}
+	panic("no layout for " + f.String())
+}
+
+func TestPacked444ConvertsWhereTheDriverOffersIt(t *testing.T) {
+	for _, f := range yuv444Formats {
+		t.Run(f.String(), func(t *testing.T) {
+			d := exportingDevice(t)
+			linearOrSkip(t, d, d.TextureModifiers, f)
+			bits := pixelFormats[f].yuvBits
+			const y, u, v = 120 << 8, 90 << 8, 200 << 8
+			scale := math.Exp2(float64(bits - 16))
+			px := packed444(f, y, u, v, 0xffff)
+			mem := newUdmabuf(t, 1<<20)
+			for row := range 8 {
+				for x := range 8 {
+					copy(mem.Mem[row*linearStride+x*len(px):], px)
+				}
+			}
+			for _, r := range []YCbCrRange{LimitedRange, FullRange} {
+				for _, m := range []YCbCrMatrix{BT601, BT709, BT2020} {
+					got := drawYUV(t, d, dmabuf.Buffer{Width: 8, Height: 8, Format: f, Modifier: fourcc.Linear, Planes: []dmabuf.Plane{{FD: mem.FD, Stride: linearStride}}}, &YCbCr{Matrix: m, Range: r})
+					if want := expectRGB(y*scale, u*scale, v*scale, bits, m, r); !within(got, want, 3) {
+						t.Errorf("matrix %d range %d: %v, want %v", m, r, got, want)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestPacked444KeepsItsAlphaOrIgnoresPadding(t *testing.T) {
+	d := exportingDevice(t)
+	for f, want := range map[fourcc.Format]uint8{fourcc.AYUV: 0x80, fourcc.XYUV8888: 0xff} {
+		linearOrSkip(t, d, d.TextureModifiers, f)
+		mem := newUdmabuf(t, 1<<20)
+		for row := range 8 {
+			for x := range 8 {
+				copy(mem.Mem[row*linearStride+x*4:], packed444(f, 16<<8, 128<<8, 128<<8, 0x8080))
+			}
+		}
+		tx, err := d.ImportTexture(dmabuf.Buffer{Width: 8, Height: 8, Format: f, Modifier: fourcc.Linear, Planes: []dmabuf.Plane{{FD: mem.FD, Stride: linearStride}}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tx.Close()
+		tg := filled(t, d, image.Pt(8, 8), color.RGBA{})
+		runPass(t, d, tg, []image.Rectangle{{Max: tg.Size()}}, func(p *Pass) {
+			p.DrawTexture(tx, FRect{W: 8, H: 8}, image.Rect(0, 0, 8, 8), TransformNormal, 1, Mask{})
+		})
+		got := readTarget(t, tg).RGBAAt(4, 4)
+		if !within(color.RGBA{A: got.A}, color.RGBA{A: want}, 2) {
+			t.Errorf("%s drew alpha %#x, want %#x", f, got.A, want)
 		}
 	}
 }

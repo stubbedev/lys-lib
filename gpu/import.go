@@ -39,10 +39,10 @@ var (
 )
 
 func (d *Device) importFormats() []fourcc.Format {
+	out := append(slices.Clone(textureFormats), yuv444Formats...)
 	if !d.ycbcr {
-		return textureFormats
+		return out
 	}
-	out := slices.Clone(textureFormats)
 	for _, f := range ycbcrFormats {
 		if !pixelFormats[f].core13 || d.vulkan13 {
 			out = append(out, f)
@@ -323,6 +323,13 @@ func (d *Device) ImportTextureYCbCr(b dmabuf.Buffer, c YCbCr) (*Texture, error) 
 			t.release()
 			return nil, err
 		}
+	}
+	if im.pf.yuvBits != 0 {
+		if t.yuv444, err = d.yuv444KindOf(im.pf, c); err != nil {
+			t.release()
+			return nil, err
+		}
+		t.nearest = features&vk.FormatFeatureFlags(vk.FormatFeatureSampledImageFilterLinearBit) == 0
 	}
 	if err := t.createView(); err != nil {
 		t.release()

@@ -60,6 +60,8 @@ const (
 	XVYU121616   Format = 'X' | 'V'<<8 | '3'<<16 | '6'<<24
 	Y416         Format = 'Y' | '4'<<8 | '1'<<16 | '6'<<24
 	XVYU16161616 Format = 'X' | 'V'<<8 | '4'<<16 | '8'<<24
+	XVUY2101010  Format = 'X' | 'Y'<<8 | '3'<<16 | '0'<<24
+	VUY888       Format = 'V' | 'U'<<8 | '2'<<16 | '4'<<24
 
 	Linear  Modifier = 0
 	Invalid Modifier = 0x00ffffffffffffff
@@ -82,6 +84,7 @@ var yuvPlanes = map[Format][]int{
 	YUYV: {1}, YVYU: {1}, UYVY: {1}, VYUY: {1}, Y210: {1}, Y212: {1}, Y216: {1},
 	AYUV: {1}, XYUV8888: {1}, AVUY8888: {1}, XVUY8888: {1},
 	Y410: {1}, XVYU2101010: {1}, Y412: {1}, XVYU121616: {1}, Y416: {1}, XVYU16161616: {1},
+	XVUY2101010: {1}, VUY888: {1},
 }
 
 // YUV reports whether f is one of the YUV formats named here.

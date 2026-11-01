@@ -199,12 +199,18 @@ var blendOver = vk.PipelineColorBlendAttachmentState{
 }
 
 func (d *Device) graphicsPipeline(modules [2]vk.ShaderModule, layout vk.PipelineLayout, pass vk.RenderPass, blend vk.PipelineColorBlendAttachmentState) (vk.Pipeline, error) {
+	return d.specializedPipeline(modules, layout, pass, blend, nil)
+}
+
+// specializedPipeline is graphicsPipeline with the fragment shader's
+// constants set by spec (nil for their defaults).
+func (d *Device) specializedPipeline(modules [2]vk.ShaderModule, layout vk.PipelineLayout, pass vk.RenderPass, blend vk.PipelineColorBlendAttachmentState, spec *vk.SpecializationInfo) (vk.Pipeline, error) {
 	var pin runtime.Pinner
 	defer pin.Unpin()
 	main := cstr(&pin, "main")
 	stages := [2]vk.PipelineShaderStageCreateInfo{
 		{SType: vk.StructureTypePipelineShaderStageCreateInfo, Stage: vk.ShaderStageVertexBit, Module: modules[0], PName: main},
-		{SType: vk.StructureTypePipelineShaderStageCreateInfo, Stage: vk.ShaderStageFragmentBit, Module: modules[1], PName: main},
+		{SType: vk.StructureTypePipelineShaderStageCreateInfo, Stage: vk.ShaderStageFragmentBit, Module: modules[1], PName: main, PSpecializationInfo: spec},
 	}
 	vin := vk.PipelineVertexInputStateCreateInfo{SType: vk.StructureTypePipelineVertexInputStateCreateInfo}
 	asm := vk.PipelineInputAssemblyStateCreateInfo{SType: vk.StructureTypePipelineInputAssemblyStateCreateInfo, Topology: vk.PrimitiveTopologyTriangleStrip}

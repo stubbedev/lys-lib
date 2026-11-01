@@ -11,6 +11,7 @@ import _ "embed" // the compiled shaders below
 //go:generate glslangValidator -V --quiet -o shaders/grad.frag.spv shaders/grad.frag
 //go:generate glslangValidator -V --quiet -o shaders/kawase.frag.spv shaders/kawase.frag
 //go:generate glslangValidator -V --quiet -o shaders/goo.frag.spv shaders/goo.frag
+//go:generate glslangValidator -V --quiet -o shaders/ycbcr444.frag.spv shaders/ycbcr444.frag
 
 //go:embed shaders/prim.vert.spv
 var primVert []byte
@@ -38,3 +39,6 @@ var kawaseFrag []byte
 
 //go:embed shaders/goo.frag.spv
 var gooFrag []byte
+
+//go:embed shaders/ycbcr444.frag.spv
+var ycbcr444Frag []byte

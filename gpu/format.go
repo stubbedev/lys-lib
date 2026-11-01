@@ -20,8 +20,19 @@ type pixelFormat struct {
 	swapped bool
 	// core13 marks a format Vulkan 1.3 added to core.
 	core13 bool
-	size   int
+	// yuvBits is the depth of a packed 4:4:4 YUV format's samples, which
+	// an RGB format holds; view moves them to R (Y), G (Cb) and B (Cr).
+	yuvBits int
+	view    vk.ComponentMapping
+	size    int
 }
+
+// The views of packed 4:4:4 formats whose samples are not already in Y,
+// Cb, Cr order.
+var (
+	viewCrCbY = vk.ComponentMapping{R: vk.ComponentSwizzleB, B: vk.ComponentSwizzleR}
+	viewCbYCr = vk.ComponentMapping{R: vk.ComponentSwizzleG, G: vk.ComponentSwizzleR}
+)
 
 var pixelFormats = map[fourcc.Format]pixelFormat{
 	fourcc.ARGB8888:    {vk: vk.FormatB8g8r8a8Unorm, planes: 1, size: 4},
@@ -57,6 +68,19 @@ var pixelFormats = map[fourcc.Format]pixelFormat{
 	fourcc.Y210:        {vk: vk.FormatG10x6b10x6g10x6r10x6422Unorm4pack16, planes: 1, ycbcr: true},
 	fourcc.Y212:        {vk: vk.FormatG12x4b12x4g12x4r12x4422Unorm4pack16, planes: 1, ycbcr: true},
 	fourcc.Y216:        {vk: vk.FormatG16b16g16r16422Unorm, planes: 1, ycbcr: true},
+
+	fourcc.AYUV:         {vk: vk.FormatR8g8b8a8Unorm, planes: 1, yuvBits: 8, view: viewCrCbY},
+	fourcc.XYUV8888:     {vk: vk.FormatR8g8b8a8Unorm, planes: 1, yuvBits: 8, view: viewCrCbY, opaque: true},
+	fourcc.AVUY8888:     {vk: vk.FormatR8g8b8a8Unorm, planes: 1, yuvBits: 8},
+	fourcc.XVUY8888:     {vk: vk.FormatR8g8b8a8Unorm, planes: 1, yuvBits: 8, opaque: true},
+	fourcc.VUY888:       {vk: vk.FormatR8g8b8Unorm, planes: 1, yuvBits: 8},
+	fourcc.Y410:         {vk: vk.FormatA2b10g10r10UnormPack32, planes: 1, yuvBits: 10, view: viewCbYCr},
+	fourcc.XVYU2101010:  {vk: vk.FormatA2b10g10r10UnormPack32, planes: 1, yuvBits: 10, view: viewCbYCr, opaque: true},
+	fourcc.XVUY2101010:  {vk: vk.FormatA2b10g10r10UnormPack32, planes: 1, yuvBits: 10, opaque: true},
+	fourcc.Y412:         {vk: vk.FormatR16g16b16a16Unorm, planes: 1, yuvBits: 16, view: viewCbYCr},
+	fourcc.XVYU121616:   {vk: vk.FormatR16g16b16a16Unorm, planes: 1, yuvBits: 16, view: viewCbYCr, opaque: true},
+	fourcc.Y416:         {vk: vk.FormatR16g16b16a16Unorm, planes: 1, yuvBits: 16, view: viewCbYCr},
+	fourcc.XVYU16161616: {vk: vk.FormatR16g16b16a16Unorm, planes: 1, yuvBits: 16, view: viewCbYCr, opaque: true},
 }
 
 func pixelFormatOf(format fourcc.Format) (pixelFormat, error) {
@@ -76,10 +100,11 @@ var textureFormats = []fourcc.Format{
 func (d *Device) TextureFormats() []fourcc.Format { return slices.Clone(textureFormats) }
 
 func (pf pixelFormat) components() vk.ComponentMapping {
+	m := pf.view
 	if pf.opaque {
-		return vk.ComponentMapping{A: vk.ComponentSwizzleOne}
+		m.A = vk.ComponentSwizzleOne
 	}
-	return vk.ComponentMapping{}
+	return m
 }
 
 func decode(vf vk.Format, px [4]byte) (r, g, b, a uint8) {

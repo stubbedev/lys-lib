@@ -204,7 +204,7 @@ func (p *Pass) FillGradient(r image.Rectangle, g Gradient, m Mask) {
 	case t.d != p.d:
 		p.fail(errors.New("gpu: FillGradient with another device's stops"))
 		return
-	case t.h != 1 || t.w < 2 || t.ycbcr != nil:
+	case t.h != 1 || t.w < 2 || t.yuv():
 		p.fail(fmt.Errorf("gpu: gradient stops are an RGB texture N x 1 with N >= 2, not %dx%d", t.w, t.h))
 		return
 	case t.surf == &p.t.s:
@@ -293,7 +293,7 @@ func (p *Pass) Kawase(t *Texture, dst image.Rectangle, offset float32, up bool) 
 	case t.surf == &p.t.s:
 		p.fail(errors.New("gpu: Kawase of the pass's own target"))
 		return
-	case t.ycbcr != nil:
+	case t.yuv():
 		p.fail(errors.New("gpu: Kawase of a YCbCr texture"))
 		return
 	case !(offset >= 0) || math.IsInf(float64(offset), 0):
@@ -351,7 +351,7 @@ func (p *Pass) DrawTexture(t *Texture, src FRect, dst image.Rectangle, tr Transf
 		return
 	}
 	f := filterLinear
-	if whole(src) && transformSize(tr, image.Pt(int(src.W), int(src.H))) == dst.Size() {
+	if t.nearest || whole(src) && transformSize(tr, image.Pt(int(src.W), int(src.H))) == dst.Size() {
 		f = filterNearest
 	}
 	set, err := t.set(f)
@@ -376,6 +376,12 @@ func (p *Pass) DrawTexture(t *Texture, src FRect, dst image.Rectangle, tr Transf
 			return
 		}
 		op.layout = t.ycbcr.layout
+	}
+	if t.yuv444 != nil {
+		if op.pipe, err = t.yuv444.pipeline(p.d, p.t.s.vf); err != nil {
+			p.fail(err)
+			return
+		}
 	}
 	p.ops = append(p.ops, op)
 }
@@ -427,6 +433,8 @@ func flip(f float64, reversed bool) float64 {
 	}
 	return f
 }
+
+func (t *Texture) yuv() bool { return t.ycbcr != nil || t.yuv444 != nil }
 
 func (t *Texture) set(f filter) (vk.DescriptorSet, error) {
 	sp, sampler := &t.d.comp.sets, t.d.comp.samplers[f]

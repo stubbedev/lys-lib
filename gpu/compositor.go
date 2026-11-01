@@ -19,11 +19,15 @@ type compositor struct {
 	layout   vk.PipelineLayout
 	samplers [2]vk.Sampler
 	vert     vk.ShaderModule
-	frags    [5]vk.ShaderModule
+	frags    [6]vk.ShaderModule
 	sets     setPools
 	targets  map[vk.Format]*compTarget
 	ycbcr    map[ycbcrKey]*ycbcrKind
+	yuv444   map[yuv444Key]*yuv444Kind
 }
+
+// fragYCbCr444 is ycbcr444.frag's place in a compositor's frags.
+const fragYCbCr444 = 5
 
 type compTarget struct {
 	pass                         vk.RenderPass
@@ -54,6 +58,7 @@ func (d *Device) createComp() error {
 	c := &d.comp
 	c.targets = map[vk.Format]*compTarget{}
 	c.ycbcr = map[ycbcrKey]*ycbcrKind{}
+	c.yuv444 = map[yuv444Key]*yuv444Kind{}
 	for i, f := range [2]vk.Filter{vk.FilterNearest, vk.FilterLinear} {
 		sci := vk.SamplerCreateInfo{
 			SType: vk.StructureTypeSamplerCreateInfo, MagFilter: f, MinFilter: f, MipmapMode: vk.SamplerMipmapModeNearest,
@@ -67,7 +72,7 @@ func (d *Device) createComp() error {
 	if c.vert, err = d.shaderModule(compVert); err != nil {
 		return err
 	}
-	for i, spv := range [5][]byte{compFrag, fillFrag, gradFrag, kawaseFrag, gooFrag} {
+	for i, spv := range [len(c.frags)][]byte{compFrag, fillFrag, gradFrag, kawaseFrag, gooFrag, fragYCbCr444: ycbcr444Frag} {
 		if c.frags[i], err = d.shaderModule(spv); err != nil {
 			return err
 		}
@@ -202,11 +207,14 @@ func (d *Device) destroyComp() {
 	for _, ct := range c.targets {
 		ct.destroy(d)
 	}
+	for _, k := range c.yuv444 {
+		k.destroy(d)
+	}
 	for _, k := range c.ycbcr {
 		k.destroy(d)
 	}
 	c.sets.destroy(d)
-	for _, m := range []vk.ShaderModule{c.vert, c.frags[0], c.frags[1], c.frags[2], c.frags[3], c.frags[4]} {
+	for _, m := range append([]vk.ShaderModule{c.vert}, c.frags[:]...) {
 		if m != 0 {
 			d.cmds.DestroyShaderModule(dev, m, nil)
 		}

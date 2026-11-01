@@ -28,8 +28,11 @@ type Texture struct {
 	sets    [2]textureSet
 	layout  vk.ImageLayout
 	ycbcr   *ycbcrKind
+	yuv444  *yuv444Kind
 	surf    *surface
 	foreign bool
+	// nearest marks a texture its driver filters no other way.
+	nearest bool
 	closed  bool
 }
 
