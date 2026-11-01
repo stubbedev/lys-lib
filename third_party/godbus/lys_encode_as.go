@@ -29,7 +29,7 @@ func (enc *encoder) encodeAs(v reflect.Value, sig string, depth int) {
 		enc.align(8)
 		fields, i := sig[1:len(sig)-1], 0
 		for fields != "" {
-			err, rem := validSingle(fields, &depthCounter{})
+			err, rem := validSingle(fields, depthCounter{})
 			if err != nil {
 				panic(err)
 			}
@@ -87,8 +87,12 @@ func (enc *encoder) encodeArray(depth, elemAlign int, fill func(*encoder)) {
 // sigAlignment is the wire alignment of a single complete type.
 func sigAlignment(sig string) int {
 	switch sig[0] {
-	case '(', '{':
+	case 'n', 'q':
+		return 2
+	case 'b', 'i', 'u', 's', 'o', 'a', 'h':
+		return 4
+	case 'x', 't', 'd', '(', '{':
 		return 8
 	}
-	return alignment(typeFor(sig))
+	return 1
 }

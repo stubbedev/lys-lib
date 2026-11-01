@@ -34,7 +34,7 @@ type Signature struct {
 func SignatureOf(vs ...any) Signature {
 	var s strings.Builder
 	for _, v := range vs {
-		s.WriteString(getSignature(reflect.TypeOf(v), &depthCounter{}))
+		s.WriteString(getSignature(reflect.TypeOf(v), depthCounter{}))
 	}
 	return Signature{s.String()}
 }
@@ -42,11 +42,11 @@ func SignatureOf(vs ...any) Signature {
 // SignatureOfType returns the signature of the given type. It panics if the
 // type is not representable in D-Bus.
 func SignatureOfType(t reflect.Type) Signature {
-	return Signature{getSignature(t, &depthCounter{})}
+	return Signature{getSignature(t, depthCounter{})}
 }
 
 // getSignature returns the signature of the given type and panics on unknown types.
-func getSignature(t reflect.Type, depth *depthCounter) (sig string) {
+func getSignature(t reflect.Type, depth depthCounter) (sig string) {
 	if !depth.Valid() {
 		panic("container nesting too deep")
 	}
@@ -132,7 +132,7 @@ func ParseSignature(s string) (sig Signature, err error) {
 	}
 	sig.str = s
 	for err == nil && len(s) != 0 {
-		err, s = validSingle(s, &depthCounter{})
+		err, s = validSingle(s, depthCounter{})
 	}
 	if err != nil {
 		sig = Signature{""}
@@ -158,7 +158,7 @@ func (s Signature) Empty() bool {
 
 // Single returns whether the signature represents a single, complete type.
 func (s Signature) Single() bool {
-	err, r := validSingle(s.str, &depthCounter{})
+	err, r := validSingle(s.str, depthCounter{})
 	return err != nil && r == ""
 }
 
@@ -182,30 +182,30 @@ type depthCounter struct {
 	arrayDepth, structDepth, dictEntryDepth int
 }
 
-func (cnt *depthCounter) Valid() bool {
+func (cnt depthCounter) Valid() bool {
 	return cnt.arrayDepth <= 32 && cnt.structDepth <= 32 && cnt.dictEntryDepth <= 32
 }
 
-func (cnt depthCounter) EnterArray() *depthCounter {
+func (cnt depthCounter) EnterArray() depthCounter {
 	cnt.arrayDepth++
-	return &cnt
+	return cnt
 }
 
-func (cnt depthCounter) EnterStruct() *depthCounter {
+func (cnt depthCounter) EnterStruct() depthCounter {
 	cnt.structDepth++
-	return &cnt
+	return cnt
 }
 
-func (cnt depthCounter) EnterDictEntry() *depthCounter {
+func (cnt depthCounter) EnterDictEntry() depthCounter {
 	cnt.dictEntryDepth++
-	return &cnt
+	return cnt
 }
 
 // Try to read a single type from this string. If it was successful, err is nil
 // and rem is the remaining unparsed part. Otherwise, err is a non-nil
 // SignatureError and rem is "". depth is the current recursion depth which may
 // not be greater than 64 and should be given as 0 on the first call.
-func validSingle(s string, depth *depthCounter) (err error, rem string) { //nolint:staticcheck // Ignore "ST1008: error should be returned as the last argument".
+func validSingle(s string, depth depthCounter) (err error, rem string) { //nolint:staticcheck // Ignore "ST1008: error should be returned as the last argument".
 	if s == "" {
 		return SignatureError{Sig: s, Reason: "empty signature"}, ""
 	}
@@ -277,7 +277,7 @@ func findMatching(s string, left, right rune) int {
 // typeFor returns the type of the given signature. It ignores any left over
 // characters and panics if s doesn't start with a valid type signature.
 func typeFor(s string) (t reflect.Type) {
-	err, _ := validSingle(s, &depthCounter{})
+	err, _ := validSingle(s, depthCounter{})
 	if err != nil {
 		panic(err)
 	}

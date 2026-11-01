@@ -78,7 +78,7 @@ func (dec *decoder) Decode(sig Signature) (vs []any, err error) {
 	vs = make([]any, 0)
 	s := sig.str
 	for s != "" {
-		err, rem := validSingle(s, &depthCounter{})
+		err, rem := validSingle(s, depthCounter{})
 		if err != nil {
 			return nil, err
 		}
@@ -157,7 +157,7 @@ func (dec *decoder) decodeU() uint32 {
 }
 
 func (dec *decoder) decode(s string, depth int) any {
-	dec.align(alignment(typeFor(s)))
+	dec.align(sigAlignment(s))
 	switch s[0] {
 	case 'y':
 		if _, err := dec.in.Read(dec.y[:]); err != nil {
@@ -229,7 +229,7 @@ func (dec *decoder) decode(s string, depth int) any {
 		if len(sig.str) == 0 {
 			panic(FormatError("variant signature is empty"))
 		}
-		err, rem := validSingle(sig.str, &depthCounter{})
+		err, rem := validSingle(sig.str, depthCounter{})
 		if err != nil {
 			panic(err)
 		}
@@ -299,7 +299,7 @@ func (dec *decoder) decode(s string, depth int) any {
 		}
 		v := reflect.MakeSlice(reflect.SliceOf(elem), 0, capacity)
 		// Even for empty arrays, the correct padding must be included
-		align := alignment(typeFor(s[1:]))
+		align := sigAlignment(s[1:])
 		if len(s) > 1 && s[1] == '(' {
 			// Special case for arrays of structs
 			// structs decode as a slice of interface{} values
@@ -325,7 +325,7 @@ func (dec *decoder) decode(s string, depth int) any {
 		v := make([]any, 0)
 		s = s[1 : len(s)-1]
 		for s != "" {
-			err, rem := validSingle(s, &depthCounter{})
+			err, rem := validSingle(s, depthCounter{})
 			if err != nil {
 				panic(err)
 			}
