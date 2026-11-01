@@ -75,13 +75,14 @@ type Device struct {
 	// va is what the VA-API driver encodes, probed on first use.
 	va *vaEncoders
 	// targets and buffers are the live ones, closed with the device.
-	targets  map[*Target]struct{}
-	buffers  map[*Buffer]struct{}
-	textures map[*Texture]struct{}
-	linears  map[*Linear]struct{}
-	upload   *buffer
-	comp     compositor
-	active   *Pass
+	targets   map[*Target]struct{}
+	buffers   map[*Buffer]struct{}
+	textures  map[*Texture]struct{}
+	linears   map[*Linear]struct{}
+	readbacks map[*Readback]struct{}
+	upload    *buffer
+	comp      compositor
+	active    *Pass
 	// closed marks a device Close released.
 	closed bool
 	// pixels holds the CPU scratch canvases off the Go heap: the
@@ -93,7 +94,8 @@ type Device struct {
 	timing
 	// uploads tracks the free part of upload.
 	uploads stagingRing
-	// passOps and passRects are the storage of the open pass.
+	// reused, passOps and passRects are the storage of the open pass.
+	reused    Pass
 	passOps   []passOp
 	passRects rectScratch
 }
@@ -187,7 +189,10 @@ func open(node *drmNode) (*Device, error) {
 	if err != nil {
 		return nil, err
 	}
-	d := &Device{cmds: cmds, instance: instance, targets: map[*Target]struct{}{}, buffers: map[*Buffer]struct{}{}, textures: map[*Texture]struct{}{}, linears: map[*Linear]struct{}{}}
+	d := &Device{cmds: cmds, instance: instance, targets: map[*Target]struct{}{}, buffers: map[*Buffer]struct{}{}, textures: map[*Texture]struct{}{}, linears: map[*Linear]struct{}{}, readbacks: map[*Readback]struct{}{}}
+	d.inflight = make([]inflight, 0, queryRing)
+	d.spareFences = make([]vk.Fence, 0, queryRing)
+	d.spareBuffers = make([]vk.CommandBuffer, 0, queryRing)
 	n := physicalDeviceCount(d.cmds, d.instance)
 	phys := make([]vk.PhysicalDevice, n)
 	if n > 0 {
@@ -401,6 +406,9 @@ func (d *Device) Close() {
 	}
 	for l := range d.linears {
 		l.Close()
+	}
+	for r := range d.readbacks {
+		r.Close()
 	}
 	d.closeDevice()
 }

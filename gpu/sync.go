@@ -74,26 +74,29 @@ type timing struct {
 
 // callArgs holds the pointer arguments of the commands every frame runs.
 type callArgs struct {
-	fence      vk.Fence
-	cb         vk.CommandBuffer
-	signal     vk.Semaphore
-	stages     []vk.PipelineStageFlags
-	begin      vk.CommandBufferBeginInfo
-	submit     vk.SubmitInfo
-	imp        vk.ImportSemaphoreFdInfoKHR
-	getFd      vk.SemaphoreGetFdInfoKHR
-	fd         int32
-	barrier    vk.ImageMemoryBarrier
-	region     vk.BufferImageCopy
-	passBegin  vk.RenderPassBeginInfo
-	viewport   vk.Viewport
-	scissor    vk.Rect2D
-	clear      vk.ClearAttachment
-	clearRects []vk.ClearRect
-	timestamp  uint64
-	infos      [2]vk.CalibratedTimestampInfoKHR
-	now        [2]uint64
-	deviation  uint64
+	fence       vk.Fence
+	cb          vk.CommandBuffer
+	signal      vk.Semaphore
+	stages      []vk.PipelineStageFlags
+	begin       vk.CommandBufferBeginInfo
+	submit      vk.SubmitInfo
+	imp         vk.ImportSemaphoreFdInfoKHR
+	getFd       vk.SemaphoreGetFdInfoKHR
+	fd          int32
+	barrier     vk.ImageMemoryBarrier
+	memory      vk.MemoryBarrier
+	allocCB     vk.CommandBufferAllocateInfo
+	createFence vk.FenceCreateInfo
+	region      vk.BufferImageCopy
+	passBegin   vk.RenderPassBeginInfo
+	viewport    vk.Viewport
+	scissor     vk.Rect2D
+	clear       vk.ClearAttachment
+	clearRects  []vk.ClearRect
+	timestamp   uint64
+	infos       [2]vk.CalibratedTimestampInfoKHR
+	now         [2]uint64
+	deviation   uint64
 }
 
 type inflight struct {

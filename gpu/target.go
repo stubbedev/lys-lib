@@ -231,6 +231,7 @@ func (t *Target) ReadPixels() (*image.RGBA, error) {
 	return t.s.d.readPixels(w, h, t.s.vf, false, func(cb vk.CommandBuffer, staging *buffer) {
 		t.acquire(cb)
 		t.s.download(cb, image.Rect(0, 0, w, h), staging, 0)
+		t.s.d.hostReadBarrier(cb)
 		t.release(cb)
 	})
 }
