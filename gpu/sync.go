@@ -218,8 +218,9 @@ func (d *Device) WaitSyncFile(fd int) error {
 
 // SyncFile returns a sync_file, the caller's to close, that signals
 // once everything submitted to the device so far has finished: a
-// pass's out-fence for KMS or a linux-drm-syncobj release point. It
-// costs a submission only when nothing submitted can answer: the newest
+// pass's out-fence for KMS or a linux-drm-syncobj release point. -1 with
+// no error means it has all finished already: there is nothing to wait
+// on, as for WaitSyncFile. It costs a submission only when nothing submitted can answer: the newest
 // pass signals a semaphore once SyncFile has been asked for, and until
 // the next submission every later call shares that one fence.
 func (d *Device) SyncFile() (int, error) {
@@ -235,9 +236,7 @@ func (d *Device) SyncFile() (int, error) {
 			if err != nil {
 				return -1, err
 			}
-			if fd >= 0 {
-				return d.keepSyncFile(fd)
-			}
+			return d.keepSyncFile(fd)
 		}
 	}
 	s, err := d.spareSemaphore()
@@ -262,10 +261,6 @@ func (d *Device) SyncFile() (int, error) {
 		d.forgetSignal()
 		return -1, err
 	}
-	if fd < 0 {
-		d.forgetSignal()
-		return -1, errors.New("gpu: the driver exported no sync_file for a pending signal")
-	}
 	return d.keepSyncFile(fd)
 }
 
@@ -278,8 +273,7 @@ func (d *Device) exportSemaphore(s vk.Semaphore) (int, error) {
 	return int(d.args.fd), nil
 }
 
-// exportFrameSignal exports the newest pass's signal, -1 from a driver
-// that reports it signalled instead, and files its semaphore with the
+// exportFrameSignal exports the newest pass's signal, and files its semaphore with the
 // submission that signals it. Nothing has been submitted since that
 // pass, so the newest in flight is that pass, or it has finished.
 func (d *Device) exportFrameSignal() (int, error) {
@@ -302,8 +296,17 @@ func (d *Device) exportFrameSignal() (int, error) {
 }
 
 // keepSyncFile holds fd for later calls and returns a duplicate for the
-// caller to own.
+// caller to own. The spec lets a driver export -1 for a signal that has
+// completed, and lavapipe without a device node exports it for a pending
+// one, so -1 waits for the queue and then is true on either driver.
 func (d *Device) keepSyncFile(fd int) (int, error) {
+	if fd < 0 {
+		if err := d.idle(); err != nil {
+			return -1, err
+		}
+		d.lastSyncFile, d.lastSyncFileSet = -1, true
+		return -1, nil
+	}
 	out, err := dupSyncFile(fd)
 	if err != nil {
 		_ = unix.Close(fd)
@@ -314,6 +317,9 @@ func (d *Device) keepSyncFile(fd int) (int, error) {
 }
 
 func dupSyncFile(fd int) (int, error) {
+	if fd < 0 {
+		return -1, nil
+	}
 	out, err := unix.FcntlInt(uintptr(fd), unix.F_DUPFD_CLOEXEC, 0)
 	if err != nil {
 		return -1, fmt.Errorf("gpu: duplicating sync_file %d: %w", fd, err)
@@ -321,15 +327,19 @@ func dupSyncFile(fd int) (int, error) {
 	return out, nil
 }
 
+func (d *Device) closeLastSyncFile() {
+	if d.lastSyncFileSet && d.lastSyncFile >= 0 {
+		_ = unix.Close(d.lastSyncFile)
+	}
+	d.lastSyncFileSet = false
+}
+
 // retireSyncFile forgets what SyncFile could answer from, for a new
 // submission that it would not cover. A pass nobody asked about has its
 // signal consumed, and the next pass signals nothing until SyncFile is
 // called again.
 func (d *Device) retireSyncFile() error {
-	if d.lastSyncFileSet {
-		_ = unix.Close(d.lastSyncFile)
-		d.lastSyncFileSet = false
-	}
+	d.closeLastSyncFile()
 	if d.frameSignal == 0 {
 		return nil
 	}
@@ -695,10 +705,7 @@ func (d *Device) closeTiming() {
 		d.cmds.DestroySemaphore(d.device, d.frameSignal, nil)
 		d.frameSignal = 0
 	}
-	if d.lastSyncFileSet {
-		_ = unix.Close(d.lastSyncFile)
-		d.lastSyncFileSet = false
-	}
+	d.closeLastSyncFile()
 	d.waits, d.spareSemaphores = nil, nil
 	if d.queries != 0 {
 		d.cmds.DestroyQueryPool(d.device, d.queries, nil)

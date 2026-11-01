@@ -44,6 +44,9 @@ func heavyPass(t *testing.T, d *Device, tg *Target, last color.RGBA) {
 
 func waitReadable(t *testing.T, fd int) {
 	t.Helper()
+	if fd < 0 {
+		return
+	}
 	pfd := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
 	n, err := unix.Poll(pfd, 10000)
 	if err != nil || n != 1 {
@@ -333,6 +336,12 @@ func syncFile(t *testing.T, d *Device) int {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if fd < 0 {
+		if len(d.inflight) != 0 {
+			t.Fatalf("SyncFile says all finished with %d submissions in flight", len(d.inflight))
+		}
+		return fd
+	}
 	t.Cleanup(func() { _ = unix.Close(fd) })
 	return fd
 }
@@ -362,13 +371,15 @@ func TestSyncFilesComeFromThePassTheyFollow(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := unix.Close(third); err != nil {
-		t.Fatal(err)
+	if third >= 0 {
+		if err := unix.Close(third); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if n := len(d.inflight); n > 1 {
 		t.Errorf("%d submissions for a pass and three sync_files, want the pass's only", n)
 	}
-	if first == second || first == third || second == third {
+	if first >= 0 && (first == second || first == third || second == third) {
 		t.Errorf("sync_files share a descriptor: %d, %d, %d", first, second, third)
 	}
 	waitReadable(t, first)
@@ -456,7 +467,12 @@ func TestASyncFileCoversWhatCameBeforeIt(t *testing.T) {
 	if d.batch != 0 {
 		t.Error("a sync_file left an upload unsubmitted")
 	}
+	clearPass(t, d, tg)
 	wait := syncFile(t, d)
+	if wait < 0 {
+		t.Logf("%s exports no sync_files: waits not checked", d.Name())
+		return
+	}
 	dup, err := unix.FcntlInt(uintptr(wait), unix.F_DUPFD_CLOEXEC, 0)
 	if err != nil {
 		t.Fatal(err)
@@ -511,5 +527,25 @@ func TestDeviceCloseWithAFrameSignal(t *testing.T) {
 	}
 	if _, err := unix.FcntlInt(uintptr(kept), unix.F_GETFD, 0); err != unix.EBADF {
 		t.Errorf("the kept sync_file %d is still open: %v", kept, err)
+	}
+}
+
+// -1 from SyncFile is a promise that nothing is left to wait for, on a
+// driver that exports it or one that never does.
+func TestASyncFileOfMinusOneMeansAllFinished(t *testing.T) {
+	d := lavapipeSyncDevice(t)
+	tg, err := d.NewOffscreen(8, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tg.Close()
+	for range 8 {
+		heavyPass(t, d, tg, color.RGBA{0, 255, 0, 255})
+		fd := syncFile(t, d)
+		if fd < 0 {
+			if got := readTarget(t, tg).RGBAAt(1, 1); got != (color.RGBA{0, 255, 0, 255}) {
+				t.Fatalf("all finished, but the pass drew %v", got)
+			}
+		}
 	}
 }

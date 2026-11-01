@@ -175,8 +175,10 @@ func benchCompositor(b *testing.B, windows, updates, retires int) {
 				if err != nil {
 					b.Fatal(err)
 				}
-				if err := unix.Close(fd); err != nil {
-					b.Fatal(err)
+				if fd >= 0 {
+					if err := unix.Close(fd); err != nil {
+						b.Fatal(err)
+					}
 				}
 			}
 			fd, err := d.SyncFile()
