@@ -164,7 +164,7 @@ func (kind *ycbcrKind) create(d *Device, k ycbcrKey) error {
 		XChromaOffset: k.x, YChromaOffset: k.y, ChromaFilter: k.filter,
 	}
 	if r := d.cmds.CreateSamplerYcbcrConversion(d.device, &cci, nil, &kind.conv); r != vk.Success {
-		return fmt.Errorf("gpu: vkCreateSamplerYcbcrConversion: %d", r)
+		return fmt.Errorf("gpu: vkCreateSamplerYcbcrConversion: %w", resultError(r))
 	}
 	info := vk.SamplerYcbcrConversionInfo{SType: vk.StructureTypeSamplerYcbcrConversionInfo, Conversion: kind.conv}
 	sci := vk.SamplerCreateInfo{
@@ -175,7 +175,7 @@ func (kind *ycbcrKind) create(d *Device, k ycbcrKey) error {
 	r := d.cmds.CreateSampler(d.device, &sci, nil, &kind.sampler)
 	runtime.KeepAlive(&info)
 	if r != vk.Success {
-		return fmt.Errorf("gpu: vkCreateSampler (YCbCr): %d", r)
+		return fmt.Errorf("gpu: vkCreateSampler (YCbCr): %w", resultError(r))
 	}
 	return d.samplerLayouts(&kind.sampler, 3, &kind.sets, &kind.layout)
 }

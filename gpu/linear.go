@@ -79,7 +79,7 @@ func (l *Linear) create(fd int, size int64) error {
 	r := d.cmds.CreateBuffer(d.device, &bci, nil, &l.buf)
 	runtime.KeepAlive(&ext)
 	if r != vk.Success {
-		return fmt.Errorf("gpu: vkCreateBuffer importing a %d-byte dmabuf: %d", size, r)
+		return fmt.Errorf("gpu: vkCreateBuffer importing a %d-byte dmabuf: %w", size, resultError(r))
 	}
 	var req vk.MemoryRequirements
 	d.cmds.GetBufferMemoryRequirements(d.device, l.buf, &req)
@@ -89,7 +89,7 @@ func (l *Linear) create(fd int, size int64) error {
 	}
 	l.memory = mem
 	if r := d.cmds.BindBufferMemory(d.device, l.buf, l.memory, 0); r != vk.Success {
-		return fmt.Errorf("gpu: vkBindBufferMemory (dmabuf): %d", r)
+		return fmt.Errorf("gpu: vkBindBufferMemory (dmabuf): %w", resultError(r))
 	}
 	return nil
 }

@@ -90,7 +90,7 @@ func (vb *vulkanBackend) createCommands() error {
 		s.ready = vk.SemaphoreSubmitInfo{SType: vk.StructureTypeSemaphoreSubmitInfo, StageMask: vk.PipelineStageFlags2(vk.PipelineStage2AllCommandsBit)}
 		sci := vk.SemaphoreCreateInfo{SType: vk.StructureTypeSemaphoreCreateInfo}
 		if r := d.cmds.CreateSemaphore(d.device, &sci, nil, &s.ready.Semaphore); r != vk.Success {
-			return fmt.Errorf("gpu: vkCreateSemaphore: %d", r)
+			return fmt.Errorf("gpu: vkCreateSemaphore: %w", resultError(r))
 		}
 	}
 	return nil
@@ -112,7 +112,7 @@ func (vb *vulkanBackend) afterConvert(cb vk.CommandBuffer, slot int, planes vk.B
 func (vb *vulkanBackend) collect(slot int) ([]byte, error) {
 	d, s := vb.d, &vb.slots[slot]
 	if r := d.cmds.WaitForFences(d.device, 1, &s.done, vk.True, ^uint64(0)); r != vk.Success {
-		return nil, fmt.Errorf("wait for an encode: %d", r)
+		return nil, fmt.Errorf("wait for an encode: %w", resultError(r))
 	}
 	var res struct {
 		offset, bytes uint32
@@ -120,7 +120,7 @@ func (vb *vulkanBackend) collect(slot int) ([]byte, error) {
 	}
 	flags := vk.QueryResultFlags(vk.QueryResultWithStatusBitKhr)
 	if r := d.cmds.GetQueryPoolResults(d.device, vb.queries, intconv.Must[uint32](slot), 1, unsafe.Sizeof(res), unsafe.Pointer(&res), vk.DeviceSize(unsafe.Sizeof(res)), flags); r != vk.Success {
-		return nil, fmt.Errorf("vkGetQueryPoolResults (encode feedback): %d", r)
+		return nil, fmt.Errorf("vkGetQueryPoolResults (encode feedback): %w", resultError(r))
 	}
 	if res.status != vk.QueryResultStatusCompleteKhr {
 		return nil, fmt.Errorf("did not encode: status %d", res.status)
@@ -323,11 +323,11 @@ func (vb *vulkanBackend) createSession() error {
 	r := d.cmds.CreateVideoSessionKHR(d.device, &sci, nil, &vb.session)
 	runtime.KeepAlive(vb.profile)
 	if r != vk.Success {
-		return fmt.Errorf("gpu: vkCreateVideoSessionKHR %dx%d: %d", vb.coded[0], vb.coded[1], r)
+		return fmt.Errorf("gpu: vkCreateVideoSessionKHR %dx%d: %w", vb.coded[0], vb.coded[1], resultError(r))
 	}
 	var n uint32
 	if r := d.cmds.GetVideoSessionMemoryRequirementsKHR(d.device, vb.session, &n, nil); r != vk.Success {
-		return fmt.Errorf("gpu: vkGetVideoSessionMemoryRequirementsKHR: %d", r)
+		return fmt.Errorf("gpu: vkGetVideoSessionMemoryRequirementsKHR: %w", resultError(r))
 	}
 	reqs := make([]vk.VideoSessionMemoryRequirementsKHR, n)
 	for i := range reqs {
@@ -335,7 +335,7 @@ func (vb *vulkanBackend) createSession() error {
 	}
 	if n > 0 {
 		if r := d.cmds.GetVideoSessionMemoryRequirementsKHR(d.device, vb.session, &n, &reqs[0]); r != vk.Success {
-			return fmt.Errorf("gpu: vkGetVideoSessionMemoryRequirementsKHR: %d", r)
+			return fmt.Errorf("gpu: vkGetVideoSessionMemoryRequirementsKHR: %w", resultError(r))
 		}
 	}
 	binds := make([]vk.BindVideoSessionMemoryInfoKHR, 0, n)
@@ -354,7 +354,7 @@ func (vb *vulkanBackend) createSession() error {
 	}
 	if len(binds) > 0 {
 		if r := d.cmds.BindVideoSessionMemoryKHR(d.device, vb.session, count(binds), &binds[0]); r != vk.Success {
-			return fmt.Errorf("gpu: vkBindVideoSessionMemoryKHR: %d", r)
+			return fmt.Errorf("gpu: vkBindVideoSessionMemoryKHR: %w", resultError(r))
 		}
 	}
 	return nil
@@ -372,18 +372,18 @@ func (vb *vulkanBackend) createParameters() error {
 	r := d.cmds.CreateVideoSessionParametersKHR(d.device, &pci, nil, &vb.sessionPar)
 	runtime.KeepAlive(vb.codec)
 	if r != vk.Success {
-		return fmt.Errorf("gpu: vkCreateVideoSessionParametersKHR: %d", r)
+		return fmt.Errorf("gpu: vkCreateVideoSessionParametersKHR: %w", resultError(r))
 	}
 	get := vk.VideoEncodeSessionParametersGetInfoKHR{SType: vk.StructureTypeVideoEncodeSessionParametersGetInfoKhr, PNext: (*uintptr)(getNext), VideoSessionParameters: vb.sessionPar}
 	fb := vk.VideoEncodeSessionParametersFeedbackInfoKHR{SType: vk.StructureTypeVideoEncodeSessionParametersFeedbackInfoKhr}
 	var size uintptr
 	if r := d.cmds.GetEncodedVideoSessionParametersKHR(d.device, &get, &fb, &size, nil); r != vk.Success {
-		return fmt.Errorf("gpu: vkGetEncodedVideoSessionParametersKHR (size): %d", r)
+		return fmt.Errorf("gpu: vkGetEncodedVideoSessionParametersKHR (size): %w", resultError(r))
 	}
 	data := make([]byte, size)
 	if size > 0 {
 		if r := d.cmds.GetEncodedVideoSessionParametersKHR(d.device, &get, &fb, &size, (*uintptr)(unsafe.Pointer(&data[0]))); r != vk.Success {
-			return fmt.Errorf("gpu: vkGetEncodedVideoSessionParametersKHR: %d", r)
+			return fmt.Errorf("gpu: vkGetEncodedVideoSessionParametersKHR: %w", resultError(r))
 		}
 	}
 	runtime.KeepAlive(vb.codec)
@@ -401,7 +401,7 @@ func (vb *vulkanBackend) videoFormat(usage vk.ImageUsageFlags) (vk.VideoFormatPr
 	fi := vk.PhysicalDeviceVideoFormatInfoKHR{SType: vk.StructureTypePhysicalDeviceVideoFormatInfoKhr, PNext: (*uintptr)(unsafe.Pointer(&vb.profile.list)), ImageUsage: usage}
 	var n uint32
 	if r := d.cmds.GetPhysicalDeviceVideoFormatPropertiesKHR(d.phys, &fi, &n, nil); r != vk.Success {
-		return vk.VideoFormatPropertiesKHR{}, fmt.Errorf("gpu: vkGetPhysicalDeviceVideoFormatPropertiesKHR: %d", r)
+		return vk.VideoFormatPropertiesKHR{}, fmt.Errorf("gpu: vkGetPhysicalDeviceVideoFormatPropertiesKHR: %w", resultError(r))
 	}
 	props := make([]vk.VideoFormatPropertiesKHR, n)
 	for i := range props {
@@ -409,7 +409,7 @@ func (vb *vulkanBackend) videoFormat(usage vk.ImageUsageFlags) (vk.VideoFormatPr
 	}
 	if n > 0 {
 		if r := d.cmds.GetPhysicalDeviceVideoFormatPropertiesKHR(d.phys, &fi, &n, &props[0]); r != vk.Success {
-			return vk.VideoFormatPropertiesKHR{}, fmt.Errorf("gpu: vkGetPhysicalDeviceVideoFormatPropertiesKHR: %d", r)
+			return vk.VideoFormatPropertiesKHR{}, fmt.Errorf("gpu: vkGetPhysicalDeviceVideoFormatPropertiesKHR: %w", resultError(r))
 		}
 	}
 	runtime.KeepAlive(vb.profile)
@@ -464,7 +464,7 @@ func (vb *vulkanBackend) newVideoImage(vi *videoImage, format vk.VideoFormatProp
 	runtime.KeepAlive(vb.profile)
 	runtime.KeepAlive(families)
 	if r != vk.Success {
-		return fmt.Errorf("vkCreateImage NV12 %dx%d x%d: %d", vb.coded[0], vb.coded[1], layers, r)
+		return fmt.Errorf("vkCreateImage NV12 %dx%d x%d: %w", vb.coded[0], vb.coded[1], layers, resultError(r))
 	}
 	var req vk.MemoryRequirements
 	d.cmds.GetImageMemoryRequirements(d.device, vi.image, &req)
@@ -474,7 +474,7 @@ func (vb *vulkanBackend) newVideoImage(vi *videoImage, format vk.VideoFormatProp
 	}
 	vi.memory = mem
 	if r := d.cmds.BindImageMemory(d.device, vi.image, vi.memory, 0); r != vk.Success {
-		return fmt.Errorf("vkBindImageMemory: %d", r)
+		return fmt.Errorf("vkBindImageMemory: %w", resultError(r))
 	}
 	for l := range layers {
 		vci := vk.ImageViewCreateInfo{
@@ -483,7 +483,7 @@ func (vb *vulkanBackend) newVideoImage(vi *videoImage, format vk.VideoFormatProp
 		}
 		var v vk.ImageView
 		if r := d.cmds.CreateImageView(d.device, &vci, nil, &v); r != vk.Success {
-			return fmt.Errorf("vkCreateImageView NV12 layer %d: %d", l, r)
+			return fmt.Errorf("vkCreateImageView NV12 layer %d: %w", l, resultError(r))
 		}
 		vi.views = append(vi.views, v)
 	}
@@ -534,7 +534,7 @@ func (vb *vulkanBackend) createBuffers() error {
 	runtime.KeepAlive(&feedback)
 	runtime.KeepAlive(vb.profile)
 	if r != vk.Success {
-		return fmt.Errorf("gpu: vkCreateQueryPool (encode feedback): %d", r)
+		return fmt.Errorf("gpu: vkCreateQueryPool (encode feedback): %w", resultError(r))
 	}
 	return nil
 }
@@ -611,7 +611,7 @@ func (vb *vulkanBackend) encode(slot, frame, sinceIDR int, idrs uint16) error {
 	runtime.KeepAlive(&res)
 	runtime.KeepAlive(&bound)
 	if r := d.cmds.EndCommandBuffer(cb); r != vk.Success {
-		return fmt.Errorf("gpu: vkEndCommandBuffer (encode): %d", r)
+		return fmt.Errorf("gpu: vkEndCommandBuffer (encode): %w", resultError(r))
 	}
 	if err := resetFence(d, s.done); err != nil {
 		return err

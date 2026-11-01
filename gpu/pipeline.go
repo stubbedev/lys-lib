@@ -58,7 +58,7 @@ func (d *Device) renderPass(format vk.Format) (vk.RenderPass, error) {
 	rci := vk.RenderPassCreateInfo{SType: vk.StructureTypeRenderPassCreateInfo, AttachmentCount: 1, PAttachments: &att, SubpassCount: 1, PSubpasses: &sub}
 	var pass vk.RenderPass
 	if r := d.cmds.CreateRenderPass(d.device, &rci, nil, &pass); r != vk.Success {
-		return 0, fmt.Errorf("gpu: vkCreateRenderPass: %d", r)
+		return 0, fmt.Errorf("gpu: vkCreateRenderPass: %w", resultError(r))
 	}
 	return pass, nil
 }
@@ -74,18 +74,18 @@ func (d *Device) createLayouts() error {
 	}
 	pci := vk.DescriptorSetLayoutCreateInfo{SType: vk.StructureTypeDescriptorSetLayoutCreateInfo, BindingCount: 2, PBindings: &prim[0]}
 	if r := d.cmds.CreateDescriptorSetLayout(d.device, &pci, nil, &d.primLayout); r != vk.Success {
-		return fmt.Errorf("gpu: vkCreateDescriptorSetLayout (primitives): %d", r)
+		return fmt.Errorf("gpu: vkCreateDescriptorSetLayout (primitives): %w", resultError(r))
 	}
 	tex := vk.DescriptorSetLayoutBinding{Binding: 0, DescriptorType: vk.DescriptorTypeCombinedImageSampler, DescriptorCount: 1, StageFlags: vk.ShaderStageFlags(vk.ShaderStageFragmentBit)}
 	tci := vk.DescriptorSetLayoutCreateInfo{SType: vk.StructureTypeDescriptorSetLayoutCreateInfo, BindingCount: 1, PBindings: &tex}
 	if r := d.cmds.CreateDescriptorSetLayout(d.device, &tci, nil, &d.texLayout); r != vk.Success {
-		return fmt.Errorf("gpu: vkCreateDescriptorSetLayout (texture): %d", r)
+		return fmt.Errorf("gpu: vkCreateDescriptorSetLayout (texture): %w", resultError(r))
 	}
 	sets := [3]vk.DescriptorSetLayout{d.primLayout, d.texLayout, d.texLayout}
 	push := vk.PushConstantRange{StageFlags: both, Size: uint32(unsafe.Sizeof(frameConstants{}))}
 	lci := vk.PipelineLayoutCreateInfo{SType: vk.StructureTypePipelineLayoutCreateInfo, SetLayoutCount: 3, PSetLayouts: &sets[0], PushConstantRangeCount: 1, PPushConstantRanges: &push}
 	if r := d.cmds.CreatePipelineLayout(d.device, &lci, nil, &d.layout); r != vk.Success {
-		return fmt.Errorf("gpu: vkCreatePipelineLayout: %d", r)
+		return fmt.Errorf("gpu: vkCreatePipelineLayout: %w", resultError(r))
 	}
 	return nil
 }
@@ -102,7 +102,7 @@ func (d *Device) createDescriptors() error {
 		AddressModeU: vk.SamplerAddressModeClampToEdge, AddressModeV: vk.SamplerAddressModeClampToEdge, AddressModeW: vk.SamplerAddressModeClampToEdge,
 	}
 	if r := d.cmds.CreateSampler(d.device, &sci, nil, &d.sampler); r != vk.Success {
-		return fmt.Errorf("gpu: vkCreateSampler: %d", r)
+		return fmt.Errorf("gpu: vkCreateSampler: %w", resultError(r))
 	}
 	sizes := [2]vk.DescriptorPoolSize{
 		{Type: vk.DescriptorTypeStorageBuffer, DescriptorCount: 2},
@@ -113,7 +113,7 @@ func (d *Device) createDescriptors() error {
 		MaxSets: maxSurfaces + 1, PoolSizeCount: 2, PPoolSizes: &sizes[0],
 	}
 	if r := d.cmds.CreateDescriptorPool(d.device, &dci, nil, &d.descPool); r != vk.Success {
-		return fmt.Errorf("gpu: vkCreateDescriptorPool: %d", r)
+		return fmt.Errorf("gpu: vkCreateDescriptorPool: %w", resultError(r))
 	}
 	set, err := d.allocateSet(d.primLayout)
 	if err != nil {
@@ -169,7 +169,7 @@ func (d *Device) shaderModule(spv []byte) (vk.ShaderModule, error) {
 	r := d.cmds.CreateShaderModule(d.device, &ci, nil, &m)
 	runtime.KeepAlive(words)
 	if r != vk.Success {
-		return 0, fmt.Errorf("gpu: vkCreateShaderModule: %d", r)
+		return 0, fmt.Errorf("gpu: vkCreateShaderModule: %w", resultError(r))
 	}
 	return m, nil
 }
@@ -224,7 +224,7 @@ func (d *Device) graphicsPipeline(modules [2]vk.ShaderModule, layout vk.Pipeline
 	}
 	var p vk.Pipeline
 	if r := d.cmds.CreateGraphicsPipelines(d.device, 0, 1, &gci, nil, &p); r != vk.Success {
-		return 0, fmt.Errorf("gpu: vkCreateGraphicsPipelines: %d", r)
+		return 0, fmt.Errorf("gpu: vkCreateGraphicsPipelines: %w", resultError(r))
 	}
 	return p, nil
 }

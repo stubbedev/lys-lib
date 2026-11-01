@@ -62,7 +62,7 @@ func (t *Texture) create() error {
 		SharingMode: vk.SharingModeExclusive, InitialLayout: vk.ImageLayoutUndefined,
 	}
 	if r := d.cmds.CreateImage(d.device, &ici, nil, &t.image); r != vk.Success {
-		return fmt.Errorf("gpu: vkCreateImage %dx%d texture: %d", t.w, t.h, r)
+		return fmt.Errorf("gpu: vkCreateImage %dx%d texture: %w", t.w, t.h, resultError(r))
 	}
 	var req vk.MemoryRequirements
 	d.cmds.GetImageMemoryRequirements(d.device, t.image, &req)
@@ -72,7 +72,7 @@ func (t *Texture) create() error {
 	}
 	t.memory = []vk.DeviceMemory{mem}
 	if r := d.cmds.BindImageMemory(d.device, t.image, mem, 0); r != vk.Success {
-		return fmt.Errorf("gpu: vkBindImageMemory: %d", r)
+		return fmt.Errorf("gpu: vkBindImageMemory: %w", resultError(r))
 	}
 	if err := t.createView(); err != nil {
 		return err
@@ -98,7 +98,7 @@ func (t *Texture) createView() error {
 	r := t.d.cmds.CreateImageView(t.d.device, &vci, nil, &t.view)
 	runtime.KeepAlive(&info)
 	if r != vk.Success {
-		return fmt.Errorf("gpu: vkCreateImageView (texture): %d", r)
+		return fmt.Errorf("gpu: vkCreateImageView (texture): %w", resultError(r))
 	}
 	return nil
 }

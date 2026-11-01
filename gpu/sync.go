@@ -30,6 +30,7 @@ type timing struct {
 	calibrated bool
 	period     float64
 	validBits  uint32
+	lost       bool
 	queries    vk.QueryPool
 	nextQuery  uint32
 	inflight   []inflight
@@ -167,7 +168,7 @@ func (d *Device) spareSemaphore() (vk.Semaphore, error) {
 	r := d.cmds.CreateSemaphore(d.device, &sci, nil, &s)
 	runtime.KeepAlive(&exp)
 	if r != vk.Success {
-		return 0, fmt.Errorf("gpu: vkCreateSemaphore: %d", r)
+		return 0, fmt.Errorf("gpu: vkCreateSemaphore: %w", resultError(r))
 	}
 	return s, nil
 }
@@ -210,7 +211,7 @@ func (d *Device) WaitSyncFile(fd int) error {
 	if r := d.cmds.ImportSemaphoreFdKHR(d.device, info); r != vk.Success {
 		d.spareSemaphores = append(d.spareSemaphores, s)
 		_ = unix.Close(fd)
-		return fmt.Errorf("gpu: vkImportSemaphoreFdKHR sync_file %d: %d", fd, r)
+		return fmt.Errorf("gpu: vkImportSemaphoreFdKHR sync_file %d: %w", fd, resultError(r))
 	}
 	d.waits = append(d.waits, s)
 	return nil
@@ -268,7 +269,7 @@ func (d *Device) exportSemaphore(s vk.Semaphore) (int, error) {
 	gi := &d.args.getFd
 	*gi = vk.SemaphoreGetFdInfoKHR{SType: vk.StructureTypeSemaphoreGetFdInfoKhr, Semaphore: s, HandleType: vk.ExternalSemaphoreHandleTypeSyncFdBit}
 	if r := d.cmds.GetSemaphoreFdKHR(d.device, gi, &d.args.fd); r != vk.Success {
-		return -1, fmt.Errorf("gpu: vkGetSemaphoreFdKHR (sync_file): %d", r)
+		return -1, fmt.Errorf("gpu: vkGetSemaphoreFdKHR (sync_file): %w", resultError(r))
 	}
 	return int(d.args.fd), nil
 }
@@ -373,6 +374,9 @@ func (d *Device) queue1(cb vk.CommandBuffer, signal vk.Semaphore, query int, pas
 		return err
 	}
 	d.reap(false)
+	if err := d.checkLost(); err != nil {
+		return err
+	}
 	for len(d.inflight) >= queryRing {
 		if err := d.waitOldest(); err != nil {
 			return err
@@ -411,7 +415,7 @@ func (d *Device) queue1(cb vk.CommandBuffer, signal vk.Semaphore, query int, pas
 		if frame {
 			d.spareSemaphores = append(d.spareSemaphores, signal)
 		}
-		return fmt.Errorf("gpu: vkQueueSubmit: %d", r)
+		return fmt.Errorf("gpu: vkQueueSubmit: %w", resultError(r))
 	}
 	f := inflight{fence: fence, cb: cb, sems: len(d.waits), query: query}
 	if d.batched > 0 {
@@ -455,7 +459,7 @@ func (d *Device) submitAsync(record func(cb vk.CommandBuffer), pass bool) error 
 	}
 	if r := d.cmds.EndCommandBuffer(cb); r != vk.Success {
 		d.dropBatch(cb)
-		return fmt.Errorf("gpu: vkEndCommandBuffer: %d", r)
+		return fmt.Errorf("gpu: vkEndCommandBuffer: %w", resultError(r))
 	}
 	if err := d.queue1(cb, 0, query, pass); err != nil {
 		d.dropBatch(cb)
@@ -493,7 +497,7 @@ func (d *Device) endBatch() (vk.CommandBuffer, error) {
 	d.batch = 0
 	if r := d.cmds.EndCommandBuffer(cb); r != vk.Success {
 		d.dropBatch(cb)
-		return 0, fmt.Errorf("gpu: vkEndCommandBuffer: %d", r)
+		return 0, fmt.Errorf("gpu: vkEndCommandBuffer: %w", resultError(r))
 	}
 	return cb, nil
 }
@@ -547,7 +551,7 @@ func (d *Device) ensureQueries() error {
 	}
 	qci := vk.QueryPoolCreateInfo{SType: vk.StructureTypeQueryPoolCreateInfo, QueryType: vk.QueryTypeTimestamp, QueryCount: queryRing}
 	if r := d.cmds.CreateQueryPool(d.device, &qci, nil, &d.queries); r != vk.Success {
-		return fmt.Errorf("gpu: vkCreateQueryPool (timestamps): %d", r)
+		return fmt.Errorf("gpu: vkCreateQueryPool (timestamps): %w", resultError(r))
 	}
 	return nil
 }
@@ -555,10 +559,10 @@ func (d *Device) ensureQueries() error {
 func (d *Device) waitOldest() error {
 	d.args.fence = d.inflight[0].fence
 	if r := d.cmds.WaitForFences(d.device, 1, &d.args.fence, vk.True, ^uint64(0)); r != vk.Success {
-		return fmt.Errorf("gpu: vkWaitForFences: %d", r)
+		return fmt.Errorf("gpu: vkWaitForFences: %w", resultError(r))
 	}
 	d.reap(false)
-	return nil
+	return d.checkLost()
 }
 
 // finished is how many of the oldest submissions have finished. One
@@ -567,15 +571,34 @@ func (d *Device) waitOldest() error {
 // the walk: asking enters the kernel on most drivers.
 func (d *Device) finished() int {
 	n := len(d.inflight)
-	if n == 0 || d.cmds.GetFenceStatus(d.device, d.inflight[n-1].fence) == vk.Success {
+	if n == 0 || d.fenceFinished(d.inflight[n-1].fence) {
 		return n
 	}
 	for i := range n - 1 {
-		if d.cmds.GetFenceStatus(d.device, d.inflight[i].fence) != vk.Success {
+		if !d.fenceFinished(d.inflight[i].fence) {
 			return i
 		}
 	}
 	return n - 1
+}
+
+// fenceFinished asks whether f signalled. A device lost on the way is
+// remembered for the next call that can report it.
+func (d *Device) fenceFinished(f vk.Fence) bool {
+	r := d.cmds.GetFenceStatus(d.device, f)
+	if r == vk.ErrorDeviceLost {
+		d.lost = true
+	}
+	return r == vk.Success
+}
+
+// checkLost reports a device an earlier fence poll found lost: a driver
+// may go on accepting submissions that never run.
+func (d *Device) checkLost() error {
+	if d.lost {
+		return fmt.Errorf("gpu: a submission's fence: %w", resultError(vk.ErrorDeviceLost))
+	}
+	return nil
 }
 
 func (d *Device) reap(all bool) {
@@ -618,13 +641,12 @@ func (d *Device) idle() error {
 		return err
 	}
 	if len(d.inflight) == 0 {
-		return nil
+		return d.checkLost()
 	}
-	r := d.cmds.QueueWaitIdle(d.queue)
+	if r := d.cmds.QueueWaitIdle(d.queue); r != vk.Success {
+		return fmt.Errorf("gpu: vkQueueWaitIdle: %w", resultError(r))
+	}
 	d.reap(true)
-	if r != vk.Success {
-		return fmt.Errorf("gpu: vkQueueWaitIdle: %d", r)
-	}
 	return nil
 }
 
@@ -634,7 +656,7 @@ func (d *Device) frameTime(query int) (time.Duration, error) {
 	}
 	a := &d.args
 	if r := d.cmds.GetQueryPoolResults(d.device, d.queries, intconv.Must[uint32](query), 1, 8, unsafe.Pointer(&a.timestamp), 8, vk.QueryResultFlags(vk.QueryResult64Bit)); r != vk.Success {
-		return 0, fmt.Errorf("gpu: vkGetQueryPoolResults (timestamp): %d", r)
+		return 0, fmt.Errorf("gpu: vkGetQueryPoolResults (timestamp): %w", resultError(r))
 	}
 	if err := d.calibrate(false); err != nil {
 		return 0, err
@@ -664,7 +686,7 @@ func (d *Device) calibrate(force bool) error {
 		{SType: vk.StructureTypeCalibratedTimestampInfoKhr, TimeDomain: vk.TimeDomainClockMonotonicKhr},
 	}
 	if r := d.cmds.GetCalibratedTimestampsKHR(d.device, 2, &a.infos[0], &a.now[0], &a.deviation); r != vk.Success {
-		return fmt.Errorf("gpu: vkGetCalibratedTimestampsKHR: %d", r)
+		return fmt.Errorf("gpu: vkGetCalibratedTimestampsKHR: %w", resultError(r))
 	}
 	d.clocks = clockSample{device: a.now[0], at: time.Duration(intconv.Must[int64](a.now[1]))}
 	d.clocksAt = now
@@ -679,6 +701,9 @@ func (d *Device) FrameDone() (time.Duration, bool, error) {
 		return 0, false, ErrNoFrameTime
 	}
 	d.reap(false)
+	if err := d.checkLost(); err != nil {
+		return 0, false, err
+	}
 	if d.passes == 0 || d.done < d.passes {
 		return 0, false, nil
 	}

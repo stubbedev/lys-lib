@@ -198,7 +198,7 @@ func (im *imported) create(d *Device, b dmabuf.Buffer, usage vk.ImageUsageFlags,
 	runtime.KeepAlive(&ext)
 	runtime.KeepAlive(layouts)
 	if r != vk.Success {
-		return fmt.Errorf("gpu: vkCreateImage importing a %dx%d %s dmabuf in modifier %s: %d", b.Width, b.Height, b.Format, b.Modifier, r)
+		return fmt.Errorf("gpu: vkCreateImage importing a %dx%d %s dmabuf in modifier %s: %w", b.Width, b.Height, b.Format, b.Modifier, resultError(r))
 	}
 	if create == 0 {
 		var req vk.MemoryRequirements
@@ -209,7 +209,7 @@ func (im *imported) create(d *Device, b dmabuf.Buffer, usage vk.ImageUsageFlags,
 		}
 		im.memory = append(im.memory, mem)
 		if r := d.cmds.BindImageMemory(d.device, im.image, mem, 0); r != vk.Success {
-			return fmt.Errorf("gpu: vkBindImageMemory (import): %d", r)
+			return fmt.Errorf("gpu: vkBindImageMemory (import): %w", resultError(r))
 		}
 		return nil
 	}
@@ -237,7 +237,7 @@ func (im *imported) bindPlanes(d *Device, b dmabuf.Buffer) error {
 	r := d.cmds.BindImageMemory2(d.device, count(binds), &binds[0])
 	runtime.KeepAlive(planes)
 	if r != vk.Success {
-		return fmt.Errorf("gpu: vkBindImageMemory2 (disjoint import): %d", r)
+		return fmt.Errorf("gpu: vkBindImageMemory2 (disjoint import): %w", resultError(r))
 	}
 	return nil
 }
@@ -260,7 +260,7 @@ func (d *Device) importMemory(fd int, req vk.MemoryRequirements, ded *vk.MemoryD
 	}
 	props := vk.MemoryFdPropertiesKHR{SType: vk.StructureTypeMemoryFdPropertiesKhr}
 	if r := d.cmds.GetMemoryFdPropertiesKHR(d.device, vk.ExternalMemoryHandleTypeDmaBufBitExt, intconv.Must[int32](fd), &props); r != vk.Success {
-		return 0, fmt.Errorf("gpu: vkGetMemoryFdPropertiesKHR on dmabuf %d: %d", fd, r)
+		return 0, fmt.Errorf("gpu: vkGetMemoryFdPropertiesKHR on dmabuf %d: %w", fd, resultError(r))
 	}
 	types := req.MemoryTypeBits & props.MemoryTypeBits
 	if types == 0 {
@@ -285,7 +285,7 @@ func (d *Device) importMemory(fd int, req vk.MemoryRequirements, ded *vk.MemoryD
 	runtime.KeepAlive(&imp)
 	if r != vk.Success {
 		_ = unix.Close(dup)
-		return 0, fmt.Errorf("gpu: vkAllocateMemory importing dmabuf %d: %d", fd, r)
+		return 0, fmt.Errorf("gpu: vkAllocateMemory importing dmabuf %d: %w", fd, resultError(r))
 	}
 	return mem, nil
 }

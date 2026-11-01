@@ -193,7 +193,7 @@ func (e *exported) create(d *Device, width, height int, vf vk.Format, planes int
 	runtime.KeepAlive(&ext)
 	runtime.KeepAlive(mods)
 	if r != vk.Success {
-		return fmt.Errorf("gpu: vkCreateImage %dx%d in %d modifiers: %d", width, height, len(mods), r)
+		return fmt.Errorf("gpu: vkCreateImage %dx%d in %d modifiers: %w", width, height, len(mods), resultError(r))
 	}
 	var req vk.MemoryRequirements
 	d.cmds.GetImageMemoryRequirements(d.device, e.image, &req)
@@ -210,17 +210,17 @@ func (e *exported) create(d *Device, width, height int, vf vk.Format, planes int
 	}
 	e.memory = mem
 	if r := d.cmds.BindImageMemory(d.device, e.image, e.memory, 0); r != vk.Success {
-		return fmt.Errorf("gpu: vkBindImageMemory: %d", r)
+		return fmt.Errorf("gpu: vkBindImageMemory: %w", resultError(r))
 	}
 	gfi := vk.MemoryGetFdInfoKHR{SType: vk.StructureTypeMemoryGetFdInfoKhr, Memory: e.memory, HandleType: vk.ExternalMemoryHandleTypeDmaBufBitExt}
 	var fd int32
 	if r := d.cmds.GetMemoryFdKHR(d.device, &gfi, &fd); r != vk.Success {
-		return fmt.Errorf("gpu: vkGetMemoryFdKHR: %d", r)
+		return fmt.Errorf("gpu: vkGetMemoryFdKHR: %w", resultError(r))
 	}
 	mod := vk.ImageDrmFormatModifierPropertiesEXT{SType: vk.StructureTypeImageDrmFormatModifierPropertiesExt}
 	if r := d.cmds.GetImageDrmFormatModifierPropertiesEXT(d.device, e.image, &mod); r != vk.Success {
 		_ = syscall.Close(int(fd))
-		return fmt.Errorf("gpu: vkGetImageDrmFormatModifierPropertiesEXT: %d", r)
+		return fmt.Errorf("gpu: vkGetImageDrmFormatModifierPropertiesEXT: %w", resultError(r))
 	}
 	e.buf = dmabuf.Buffer{Width: width, Height: height, Modifier: fourcc.Modifier(mod.DrmFormatModifier)}
 	var end vk.DeviceSize
@@ -346,7 +346,7 @@ func (b *Buffer) view() (vk.ImageView, error) {
 	}
 	vci := vk.ImageViewCreateInfo{SType: vk.StructureTypeImageViewCreateInfo, Image: b.e.image, ViewType: vk.ImageViewType2d, Format: vf, SubresourceRange: colorRange}
 	if r := b.d.cmds.CreateImageView(b.d.device, &vci, nil, &b.sampled); r != vk.Success {
-		return 0, fmt.Errorf("gpu: vkCreateImageView (buffer): %d", r)
+		return 0, fmt.Errorf("gpu: vkCreateImageView (buffer): %w", resultError(r))
 	}
 	return b.sampled, nil
 }

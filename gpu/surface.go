@@ -43,7 +43,7 @@ func (d *Device) newSurface(w, h int) (*surface, error) {
 		SharingMode: vk.SharingModeExclusive, InitialLayout: vk.ImageLayoutUndefined,
 	}
 	if r := d.cmds.CreateImage(d.device, &ici, nil, &s.image); r != vk.Success {
-		return nil, fmt.Errorf("gpu: vkCreateImage %dx%d: %d", w, h, r)
+		return nil, fmt.Errorf("gpu: vkCreateImage %dx%d: %w", w, h, resultError(r))
 	}
 	var req vk.MemoryRequirements
 	d.cmds.GetImageMemoryRequirements(d.device, s.image, &req)
@@ -55,7 +55,7 @@ func (d *Device) newSurface(w, h int) (*surface, error) {
 	s.memory = mem
 	if r := d.cmds.BindImageMemory(d.device, s.image, s.memory, 0); r != vk.Success {
 		s.close()
-		return nil, fmt.Errorf("gpu: vkBindImageMemory: %d", r)
+		return nil, fmt.Errorf("gpu: vkBindImageMemory: %w", resultError(r))
 	}
 	return s, nil
 }
@@ -80,14 +80,14 @@ func (s *surface) ready() error {
 		SubresourceRange: colorRange,
 	}
 	if r := d.cmds.CreateImageView(d.device, &vci, nil, &s.view); r != vk.Success {
-		return fmt.Errorf("gpu: vkCreateImageView: %d", r)
+		return fmt.Errorf("gpu: vkCreateImageView: %w", resultError(r))
 	}
 	fci := vk.FramebufferCreateInfo{
 		SType: vk.StructureTypeFramebufferCreateInfo, RenderPass: pass, AttachmentCount: 1, PAttachments: &s.view,
 		Width: intconv.Must[uint32](s.w), Height: intconv.Must[uint32](s.h), Layers: 1,
 	}
 	if r := d.cmds.CreateFramebuffer(d.device, &fci, nil, &s.fb); r != vk.Success {
-		return fmt.Errorf("gpu: vkCreateFramebuffer %dx%d: %d", s.w, s.h, r)
+		return fmt.Errorf("gpu: vkCreateFramebuffer %dx%d: %w", s.w, s.h, resultError(r))
 	}
 	set, err := d.textureSet(s.view)
 	if err != nil {

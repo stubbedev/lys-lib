@@ -60,7 +60,7 @@ func (d *Device) createComp() error {
 			AddressModeU: vk.SamplerAddressModeClampToEdge, AddressModeV: vk.SamplerAddressModeClampToEdge, AddressModeW: vk.SamplerAddressModeClampToEdge,
 		}
 		if r := d.cmds.CreateSampler(d.device, &sci, nil, &c.samplers[i]); r != vk.Success {
-			return fmt.Errorf("gpu: vkCreateSampler: %d", r)
+			return fmt.Errorf("gpu: vkCreateSampler: %w", resultError(r))
 		}
 	}
 	var err error
@@ -83,12 +83,12 @@ func (d *Device) samplerLayouts(immutable *vk.Sampler, perSet uint32, sp *setPoo
 	sci := vk.DescriptorSetLayoutCreateInfo{SType: vk.StructureTypeDescriptorSetLayoutCreateInfo, BindingCount: 1, PBindings: &binding}
 	sp.perSet = perSet
 	if r := d.cmds.CreateDescriptorSetLayout(d.device, &sci, nil, &sp.layout); r != vk.Success {
-		return fmt.Errorf("gpu: vkCreateDescriptorSetLayout (compositor): %d", r)
+		return fmt.Errorf("gpu: vkCreateDescriptorSetLayout (compositor): %w", resultError(r))
 	}
 	push := vk.PushConstantRange{StageFlags: vk.ShaderStageFlags(vk.ShaderStageVertexBit | vk.ShaderStageFragmentBit), Size: uint32(unsafe.Sizeof(drawConstants{}))}
 	lci := vk.PipelineLayoutCreateInfo{SType: vk.StructureTypePipelineLayoutCreateInfo, SetLayoutCount: 1, PSetLayouts: &sp.layout, PushConstantRangeCount: 1, PPushConstantRanges: &push}
 	if r := d.cmds.CreatePipelineLayout(d.device, &lci, nil, layout); r != vk.Success {
-		return fmt.Errorf("gpu: vkCreatePipelineLayout (compositor): %d", r)
+		return fmt.Errorf("gpu: vkCreatePipelineLayout (compositor): %w", resultError(r))
 	}
 	return nil
 }
@@ -164,7 +164,7 @@ func (d *Device) allocSet(sp *setPools, view vk.ImageView, sampler vk.Sampler) (
 	}
 	var pool vk.DescriptorPool
 	if r := d.cmds.CreateDescriptorPool(d.device, &dci, nil, &pool); r != vk.Success {
-		return textureSet{}, fmt.Errorf("gpu: vkCreateDescriptorPool (compositor): %d", r)
+		return textureSet{}, fmt.Errorf("gpu: vkCreateDescriptorPool (compositor): %w", resultError(r))
 	}
 	sp.pools = append(sp.pools, pool)
 	set, ok := d.allocateFrom(pool, sp.layout)

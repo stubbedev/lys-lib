@@ -13,7 +13,7 @@ func (d *Device) commandPool(family uint32) (vk.CommandPool, error) {
 	}
 	var p vk.CommandPool
 	if r := d.cmds.CreateCommandPool(d.device, &pci, nil, &p); r != vk.Success {
-		return 0, fmt.Errorf("gpu: vkCreateCommandPool on family %d: %d", family, r)
+		return 0, fmt.Errorf("gpu: vkCreateCommandPool on family %d: %w", family, resultError(r))
 	}
 	return p, nil
 }
@@ -23,7 +23,7 @@ func (d *Device) commandBuffer(pool vk.CommandPool) (vk.CommandBuffer, error) {
 	cai := vk.CommandBufferAllocateInfo{SType: vk.StructureTypeCommandBufferAllocateInfo, CommandPool: pool, Level: vk.CommandBufferLevelPrimary, CommandBufferCount: 1}
 	var cb vk.CommandBuffer
 	if r := d.cmds.AllocateCommandBuffers(d.device, &cai, &cb); r != vk.Success {
-		return 0, fmt.Errorf("gpu: vkAllocateCommandBuffers: %d", r)
+		return 0, fmt.Errorf("gpu: vkAllocateCommandBuffers: %w", resultError(r))
 	}
 	return cb, nil
 }
@@ -33,7 +33,7 @@ func (d *Device) fence() (vk.Fence, error) {
 	fci := vk.FenceCreateInfo{SType: vk.StructureTypeFenceCreateInfo}
 	var f vk.Fence
 	if r := d.cmds.CreateFence(d.device, &fci, nil, &f); r != vk.Success {
-		return 0, fmt.Errorf("gpu: vkCreateFence: %d", r)
+		return 0, fmt.Errorf("gpu: vkCreateFence: %w", resultError(r))
 	}
 	return f, nil
 }
@@ -41,7 +41,7 @@ func (d *Device) fence() (vk.Fence, error) {
 func resetFence(d *Device, f vk.Fence) error {
 	d.args.fence = f
 	if r := d.cmds.ResetFences(d.device, 1, &d.args.fence); r != vk.Success {
-		return fmt.Errorf("gpu: vkResetFences: %d", r)
+		return fmt.Errorf("gpu: vkResetFences: %w", resultError(r))
 	}
 	return nil
 }
@@ -50,7 +50,7 @@ func resetFence(d *Device, f vk.Fence) error {
 func begin(d *Device, cb vk.CommandBuffer) error {
 	d.args.begin = vk.CommandBufferBeginInfo{SType: vk.StructureTypeCommandBufferBeginInfo, Flags: vk.CommandBufferUsageFlags(vk.CommandBufferUsageOneTimeSubmitBit)}
 	if r := d.cmds.BeginCommandBuffer(cb, &d.args.begin); r != vk.Success {
-		return fmt.Errorf("gpu: vkBeginCommandBuffer: %d", r)
+		return fmt.Errorf("gpu: vkBeginCommandBuffer: %w", resultError(r))
 	}
 	return nil
 }
@@ -89,7 +89,7 @@ func submit2(d *Device, queue vk.Queue, cb vk.CommandBuffer, wait, signal *vk.Se
 		si.SignalSemaphoreInfoCount, si.PSignalSemaphoreInfos = 1, signal
 	}
 	if r := d.cmds.QueueSubmit2(queue, 1, &si, done); r != vk.Success {
-		return fmt.Errorf("gpu: vkQueueSubmit2: %d", r)
+		return fmt.Errorf("gpu: vkQueueSubmit2: %w", resultError(r))
 	}
 	return nil
 }

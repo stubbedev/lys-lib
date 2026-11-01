@@ -58,7 +58,7 @@ func (d *Device) newMappedBuffer(size int, usage vk.BufferUsageFlagBits, next un
 	b := &buffer{d: d, usage: usage}
 	bci := vk.BufferCreateInfo{SType: vk.StructureTypeBufferCreateInfo, PNext: (*uintptr)(next), Size: bytes, Usage: flags[vk.BufferUsageFlags](usage), SharingMode: vk.SharingModeExclusive}
 	if r := d.cmds.CreateBuffer(d.device, &bci, nil, &b.buf); r != vk.Success {
-		return nil, fmt.Errorf("gpu: vkCreateBuffer %d bytes: %d", size, r)
+		return nil, fmt.Errorf("gpu: vkCreateBuffer %d bytes: %w", size, resultError(r))
 	}
 	var req vk.MemoryRequirements
 	d.cmds.GetBufferMemoryRequirements(d.device, b.buf, &req)
@@ -70,7 +70,7 @@ func (d *Device) newMappedBuffer(size int, usage vk.BufferUsageFlagBits, next un
 	b.memory, b.flags = mem, flags
 	if r := d.cmds.BindBufferMemory(d.device, b.buf, b.memory, 0); r != vk.Success {
 		b.close()
-		return nil, fmt.Errorf("gpu: vkBindBufferMemory: %d", r)
+		return nil, fmt.Errorf("gpu: vkBindBufferMemory: %w", resultError(r))
 	}
 	// C writes the mapping's address through an integer, so where it
 	// writes is pinned: a stack slot could move before it does.
@@ -80,7 +80,7 @@ func (d *Device) newMappedBuffer(size int, usage vk.BufferUsageFlagBits, next un
 	pin.Pin(ptr)
 	if r := d.cmds.MapMemory(d.device, b.memory, 0, bytes, 0, uintptr(unsafe.Pointer(ptr))); r != vk.Success {
 		b.close()
-		return nil, fmt.Errorf("gpu: vkMapMemory %d bytes: %d", size, r)
+		return nil, fmt.Errorf("gpu: vkMapMemory %d bytes: %w", size, resultError(r))
 	}
 	b.mapped = unsafe.Slice((*byte)(*ptr), size)
 	return b, nil
@@ -108,7 +108,7 @@ func (b *buffer) invalidate() error {
 	}
 	r := vk.MappedMemoryRange{SType: vk.StructureTypeMappedMemoryRange, Memory: b.memory, Size: vk.DeviceSize(vk.WholeSize)}
 	if res := b.d.cmds.InvalidateMappedMemoryRanges(b.d.device, 1, &r); res != vk.Success {
-		return fmt.Errorf("gpu: vkInvalidateMappedMemoryRanges: %d", res)
+		return fmt.Errorf("gpu: vkInvalidateMappedMemoryRanges: %w", resultError(res))
 	}
 	return nil
 }
@@ -146,7 +146,7 @@ func (d *Device) newDeviceBuffer(size int, usage vk.BufferUsageFlagBits) (*devic
 	b := &deviceBuffer{d: d}
 	bci := vk.BufferCreateInfo{SType: vk.StructureTypeBufferCreateInfo, Size: bytes, Usage: flags[vk.BufferUsageFlags](usage), SharingMode: vk.SharingModeExclusive}
 	if r := d.cmds.CreateBuffer(d.device, &bci, nil, &b.buf); r != vk.Success {
-		return nil, fmt.Errorf("gpu: vkCreateBuffer %d bytes: %d", size, r)
+		return nil, fmt.Errorf("gpu: vkCreateBuffer %d bytes: %w", size, resultError(r))
 	}
 	var req vk.MemoryRequirements
 	d.cmds.GetBufferMemoryRequirements(d.device, b.buf, &req)
@@ -158,7 +158,7 @@ func (d *Device) newDeviceBuffer(size int, usage vk.BufferUsageFlagBits) (*devic
 	b.memory = mem
 	if r := d.cmds.BindBufferMemory(d.device, b.buf, b.memory, 0); r != vk.Success {
 		b.close()
-		return nil, fmt.Errorf("gpu: vkBindBufferMemory: %d", r)
+		return nil, fmt.Errorf("gpu: vkBindBufferMemory: %w", resultError(r))
 	}
 	return b, nil
 }

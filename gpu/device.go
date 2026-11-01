@@ -229,7 +229,7 @@ func createInstance(cmds *vk.Commands) (vk.Instance, error) {
 	ici := vk.InstanceCreateInfo{SType: vk.StructureTypeInstanceCreateInfo, PApplicationInfo: &ai}
 	var instance vk.Instance
 	if r := cmds.CreateInstance(&ici, nil, &instance); r != vk.Success {
-		return 0, fmt.Errorf("%w: vkCreateInstance: %d", ErrNoDevice, r)
+		return 0, fmt.Errorf("%w: vkCreateInstance: %w", ErrNoDevice, resultError(r))
 	}
 	if err := cmds.LoadInstance(instance); err != nil {
 		cmds.DestroyInstance(instance, nil)
@@ -335,7 +335,7 @@ func (d *Device) open() error {
 	runtime.KeepAlive(&f13)
 	runtime.KeepAlive(&f11)
 	if r != vk.Success {
-		return fmt.Errorf("%s: vkCreateDevice: %d", d.name, r)
+		return fmt.Errorf("%s: vkCreateDevice: %w", d.name, resultError(r))
 	}
 	if err := d.cmds.LoadDevice(d.device); err != nil {
 		d.cmds.DestroyDevice(d.device, nil)
@@ -460,7 +460,7 @@ func (d *Device) allocateIn(req vk.MemoryRequirements, want vk.MemoryPropertyFla
 	mai := vk.MemoryAllocateInfo{SType: vk.StructureTypeMemoryAllocateInfo, PNext: (*uintptr)(next), AllocationSize: req.Size, MemoryTypeIndex: mt}
 	var mem vk.DeviceMemory
 	if r := d.cmds.AllocateMemory(d.device, &mai, nil, &mem); r != vk.Success {
-		return 0, 0, fmt.Errorf("gpu: vkAllocateMemory %d bytes: %d", req.Size, r)
+		return 0, 0, fmt.Errorf("gpu: vkAllocateMemory %d bytes: %w", req.Size, resultError(r))
 	}
 	return mem, mt, nil
 }

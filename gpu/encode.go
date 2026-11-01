@@ -335,12 +335,12 @@ func (e *Encoder) createPipeline() error {
 	}
 	lci := vk.DescriptorSetLayoutCreateInfo{SType: vk.StructureTypeDescriptorSetLayoutCreateInfo, BindingCount: 3, PBindings: &b[0]}
 	if r := d.cmds.CreateDescriptorSetLayout(d.device, &lci, nil, &e.setLayout); r != vk.Success {
-		return fmt.Errorf("gpu: vkCreateDescriptorSetLayout (NV12): %d", r)
+		return fmt.Errorf("gpu: vkCreateDescriptorSetLayout (NV12): %w", resultError(r))
 	}
 	push := vk.PushConstantRange{StageFlags: comp, Size: uint32(unsafe.Sizeof(nv12Constants{}))}
 	pci := vk.PipelineLayoutCreateInfo{SType: vk.StructureTypePipelineLayoutCreateInfo, SetLayoutCount: 1, PSetLayouts: &e.setLayout, PushConstantRangeCount: 1, PPushConstantRanges: &push}
 	if r := d.cmds.CreatePipelineLayout(d.device, &pci, nil, &e.layout); r != vk.Success {
-		return fmt.Errorf("gpu: vkCreatePipelineLayout (NV12): %d", r)
+		return fmt.Errorf("gpu: vkCreatePipelineLayout (NV12): %w", resultError(r))
 	}
 	m, err := d.shaderModule(nv12Comp)
 	if err != nil {
@@ -356,23 +356,23 @@ func (e *Encoder) createPipeline() error {
 	}
 	r := d.cmds.CreateComputePipelines(d.device, 0, 1, &cpi, nil, &e.pipeline)
 	if r != vk.Success {
-		return fmt.Errorf("gpu: vkCreateComputePipelines (NV12): %d", r)
+		return fmt.Errorf("gpu: vkCreateComputePipelines (NV12): %w", resultError(r))
 	}
 	sci := vk.SamplerCreateInfo{
 		SType: vk.StructureTypeSamplerCreateInfo, MagFilter: vk.FilterLinear, MinFilter: vk.FilterLinear, MipmapMode: vk.SamplerMipmapModeNearest,
 		AddressModeU: vk.SamplerAddressModeClampToEdge, AddressModeV: vk.SamplerAddressModeClampToEdge, AddressModeW: vk.SamplerAddressModeClampToEdge,
 	}
 	if r := d.cmds.CreateSampler(d.device, &sci, nil, &e.linear); r != vk.Success {
-		return fmt.Errorf("gpu: vkCreateSampler (overlay): %d", r)
+		return fmt.Errorf("gpu: vkCreateSampler (overlay): %w", resultError(r))
 	}
 	sizes := [2]vk.DescriptorPoolSize{{Type: vk.DescriptorTypeCombinedImageSampler, DescriptorCount: 2}, {Type: vk.DescriptorTypeStorageBuffer, DescriptorCount: 1}}
 	dci := vk.DescriptorPoolCreateInfo{SType: vk.StructureTypeDescriptorPoolCreateInfo, MaxSets: 1, PoolSizeCount: 2, PPoolSizes: &sizes[0]}
 	if r := d.cmds.CreateDescriptorPool(d.device, &dci, nil, &e.descPool); r != vk.Success {
-		return fmt.Errorf("gpu: vkCreateDescriptorPool (NV12): %d", r)
+		return fmt.Errorf("gpu: vkCreateDescriptorPool (NV12): %w", resultError(r))
 	}
 	ai := vk.DescriptorSetAllocateInfo{SType: vk.StructureTypeDescriptorSetAllocateInfo, DescriptorPool: e.descPool, DescriptorSetCount: 1, PSetLayouts: &e.setLayout}
 	if r := d.cmds.AllocateDescriptorSets(d.device, &ai, &e.set); r != vk.Success {
-		return fmt.Errorf("gpu: vkAllocateDescriptorSets (NV12): %d", r)
+		return fmt.Errorf("gpu: vkAllocateDescriptorSets (NV12): %w", resultError(r))
 	}
 	bi := vk.DescriptorBufferInfo{Buffer: e.planes.buf, Range: intconv.Must[vk.DeviceSize](nv12Bytes(e.coded))}
 	w := vk.WriteDescriptorSet{SType: vk.StructureTypeWriteDescriptorSet, DstSet: e.set, DstBinding: 1, DescriptorCount: 1, DescriptorType: vk.DescriptorTypeStorageBuffer, PBufferInfo: &bi}
@@ -467,7 +467,7 @@ func (e *Encoder) Encode(src *Buffer, pts time.Duration) ([]Packet, error) {
 		return nil, err
 	}
 	if r := e.d.cmds.WaitForFences(e.d.device, 1, &e.gfxDone, vk.True, ^uint64(0)); r != vk.Success {
-		return nil, fmt.Errorf("gpu: wait for the NV12 conversion: %d", r)
+		return nil, fmt.Errorf("gpu: wait for the NV12 conversion: %w", resultError(r))
 	}
 	sinceIDR := e.frames % e.cfg.KeyInterval
 	if err := e.backend.encode(i, e.frames, sinceIDR, e.idrs); err != nil {
@@ -642,7 +642,7 @@ func (e *Encoder) convert(src *Buffer, origin image.Point, slot int) error {
 	barrier2(d, cb, nil, release)
 	signal := e.backend.afterConvert(cb, slot, e.planes.buf)
 	if r := d.cmds.EndCommandBuffer(cb); r != vk.Success {
-		return fmt.Errorf("gpu: vkEndCommandBuffer (NV12): %d", r)
+		return fmt.Errorf("gpu: vkEndCommandBuffer (NV12): %w", resultError(r))
 	}
 	if err := resetFence(d, e.gfxDone); err != nil {
 		return err
