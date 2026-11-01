@@ -321,3 +321,195 @@ func TestFrameDoneReadsTheLastPassOnce(t *testing.T) {
 		last = at
 	}
 }
+
+func clearPass(t *testing.T, d *Device, tg *Target) {
+	t.Helper()
+	runPass(t, d, tg, []image.Rectangle{{Max: tg.Size()}}, func(p *Pass) { p.Clear(color.RGBA{A: 255}) })
+}
+
+func syncFile(t *testing.T, d *Device) int {
+	t.Helper()
+	fd, err := d.SyncFile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = unix.Close(fd) })
+	return fd
+}
+
+// Once SyncFile is in use, a frame's fences come from its pass: no
+// submission of their own, however many surfaces ask, and each caller's
+// fd stands alone.
+func TestSyncFilesComeFromThePassTheyFollow(t *testing.T) {
+	d := lavapipeSyncDevice(t)
+	tg, err := d.NewOffscreen(8, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tg.Close()
+	clearPass(t, d, tg)
+	syncFile(t, d)
+	if err := d.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	clearPass(t, d, tg)
+	if len(d.inflight) != 1 {
+		t.Fatalf("%d submissions after a pass", len(d.inflight))
+	}
+	first := syncFile(t, d)
+	second := syncFile(t, d)
+	third, err := d.SyncFile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := unix.Close(third); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(d.inflight); n > 1 {
+		t.Errorf("%d submissions for a pass and three sync_files, want the pass's only", n)
+	}
+	if first == second || first == third || second == third {
+		t.Errorf("sync_files share a descriptor: %d, %d, %d", first, second, third)
+	}
+	waitReadable(t, first)
+	waitReadable(t, second)
+}
+
+// A sync_file taken after a pass that has finished, and after the fence
+// that answered for it was reaped, still works, and the semaphore comes
+// back unsignalled for the frames after it.
+func TestASyncFileAfterTheFrameFinished(t *testing.T) {
+	d := lavapipeSyncDevice(t)
+	tg, err := d.NewOffscreen(8, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tg.Close()
+	clearPass(t, d, tg)
+	syncFile(t, d)
+	for range 2 * queryRing {
+		clearPass(t, d, tg)
+		if err := d.Finish(); err != nil {
+			t.Fatal(err)
+		}
+		if slices.Contains(d.spareSemaphores, d.frameSignal) {
+			t.Fatal("the signalled semaphore of an unexported pass is among the spares")
+		}
+		waitReadable(t, syncFile(t, d))
+	}
+}
+
+// A pass nobody asks about stops the next ones signalling, consuming
+// what it signalled, and asking again starts over.
+func TestPassesWithNoSyncFileStopSignalling(t *testing.T) {
+	d := lavapipeSyncDevice(t)
+	tg, err := d.NewOffscreen(8, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tg.Close()
+	clearPass(t, d, tg)
+	syncFile(t, d)
+	clearPass(t, d, tg)
+	if d.frameSignal == 0 {
+		t.Fatal("a pass after SyncFile signals nothing")
+	}
+	clearPass(t, d, tg)
+	if d.frameSignal != 0 {
+		t.Error("a pass after an unasked one still signals")
+	}
+	clearPass(t, d, tg)
+	waitReadable(t, syncFile(t, d))
+	if err := d.Finish(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A newer submission is not covered by an older fence, and pending waits
+// and uploads are carried by the fence that covers them.
+func TestASyncFileCoversWhatCameBeforeIt(t *testing.T) {
+	d := lavapipeSyncDevice(t)
+	tg, err := d.NewOffscreen(8, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tg.Close()
+	tx, err := d.NewTexture(fourcc.ARGB8888, 2, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Close()
+	clearPass(t, d, tg)
+	syncFile(t, d)
+	if !d.lastSyncFileSet {
+		t.Fatal("the sync_file is not kept for the next caller")
+	}
+	clearPass(t, d, tg)
+	if d.lastSyncFileSet {
+		t.Error("a new pass left the older sync_file answering")
+	}
+	syncFile(t, d)
+	if err := tx.Update(image.Rect(0, 0, 2, 2), 8, make([]byte, 16)); err != nil {
+		t.Fatal(err)
+	}
+	syncFile(t, d)
+	if d.batch != 0 {
+		t.Error("a sync_file left an upload unsubmitted")
+	}
+	wait := syncFile(t, d)
+	dup, err := unix.FcntlInt(uintptr(wait), unix.F_DUPFD_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	clearPass(t, d, tg)
+	before := len(d.inflight)
+	d.waits = append(d.waits, mustSemaphore(t, d, dup))
+	syncFile(t, d)
+	if len(d.waits) != 0 {
+		t.Errorf("a sync_file left %d waits pending (%d submissions before it)", len(d.waits), before)
+	}
+	if err := d.Finish(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func mustSemaphore(t *testing.T, d *Device, fd int) vk.Semaphore {
+	t.Helper()
+	s, err := d.spareSemaphore()
+	if err != nil {
+		t.Fatal(err)
+	}
+	info := vk.ImportSemaphoreFdInfoKHR{
+		SType: vk.StructureTypeImportSemaphoreFdInfoKhr, Semaphore: s, Flags: vk.SemaphoreImportFlags(vk.SemaphoreImportTemporaryBit),
+		HandleType: vk.ExternalSemaphoreHandleTypeSyncFdBit, Fd: int32(fd),
+	}
+	if r := d.cmds.ImportSemaphoreFdKHR(d.device, &info); r != vk.Success {
+		t.Fatalf("import: %d", r)
+	}
+	return s
+}
+
+// Closing with a pass's signal unconsumed and a sync_file kept leaks
+// neither.
+func TestDeviceCloseWithAFrameSignal(t *testing.T) {
+	d := lavapipeSyncDevice(t)
+	tg, err := d.NewOffscreen(8, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tg.Close()
+	clearPass(t, d, tg)
+	syncFile(t, d)
+	kept := d.lastSyncFile
+	clearPass(t, d, tg)
+	if d.frameSignal == 0 {
+		t.Fatal("no frame signal to close with")
+	}
+	d.Close()
+	if d.frameSignal != 0 || d.lastSyncFileSet {
+		t.Errorf("after Close: signal %d, sync_file kept %v", d.frameSignal, d.lastSyncFileSet)
+	}
+	if _, err := unix.FcntlInt(uintptr(kept), unix.F_GETFD, 0); err != unix.EBADF {
+		t.Errorf("the kept sync_file %d is still open: %v", kept, err)
+	}
+}

@@ -5,6 +5,8 @@ import (
 	"image/color"
 	"testing"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/stubbedev/lys-lib/fourcc"
 	"github.com/stubbedev/lys-lib/render"
 )
@@ -126,7 +128,7 @@ func BenchmarkTextureUpdate(b *testing.B) {
 // redrawn, a client's acquire fence is waited on when the device can,
 // the release fence is exported, and the latch budget samples the
 // previous frame's GPU time.
-func benchCompositor(b *testing.B, windows, updates int) {
+func benchCompositor(b *testing.B, windows, updates, retires int) {
 	d := openDevice(b)
 	const w, h = 256, 256
 	tg, err := d.NewOffscreen(w, h)
@@ -168,6 +170,15 @@ func benchCompositor(b *testing.B, windows, updates int) {
 			b.Fatal(err)
 		}
 		if syncFiles {
+			for range retires {
+				fd, err := d.SyncFile()
+				if err != nil {
+					b.Fatal(err)
+				}
+				if err := unix.Close(fd); err != nil {
+					b.Fatal(err)
+				}
+			}
 			fd, err := d.SyncFile()
 			if err != nil {
 				b.Fatal(err)
@@ -187,6 +198,10 @@ func benchCompositor(b *testing.B, windows, updates int) {
 	}
 }
 
-func BenchmarkCompositorFrame(b *testing.B) { benchCompositor(b, 6, 1) }
+func BenchmarkCompositorFrame(b *testing.B) { benchCompositor(b, 6, 1, 0) }
 
-func BenchmarkCompositorFrameFourUploads(b *testing.B) { benchCompositor(b, 6, 4) }
+func BenchmarkCompositorFrameFourUploads(b *testing.B) { benchCompositor(b, 6, 4, 0) }
+
+// BenchmarkCompositorFrameRetires releases three surfaces a frame, each
+// taking a sync_file as a linux-drm-syncobj release point does.
+func BenchmarkCompositorFrameRetires(b *testing.B) { benchCompositor(b, 6, 1, 3) }

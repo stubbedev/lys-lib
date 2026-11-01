@@ -57,6 +57,14 @@ type timing struct {
 	batch    vk.CommandBuffer
 	batched  int
 	batchEnd int
+	// frameSignal is the semaphore the newest pass signals that no export
+	// has consumed, held out of the spares; passes signal one once
+	// passesExport says SyncFile is in use. lastSyncFile is the sync_file
+	// that covers everything submitted, when lastSyncFileSet.
+	frameSignal     vk.Semaphore
+	passesExport    bool
+	lastSyncFile    int
+	lastSyncFileSet bool
 	// args is what commands point C at. C reads a pointer argument only
 	// during the call, and one on the stack would escape to the heap,
 	// so the device keeps one of each.
@@ -208,10 +216,27 @@ func (d *Device) WaitSyncFile(fd int) error {
 
 // SyncFile returns a sync_file, the caller's to close, that signals
 // once everything submitted to the device so far has finished: a
-// pass's out-fence for KMS or a linux-drm-syncobj release point.
+// pass's out-fence for KMS or a linux-drm-syncobj release point. It
+// costs a submission only when nothing submitted can answer: the newest
+// pass signals a semaphore once SyncFile has been asked for, and until
+// the next submission every later call shares that one fence.
 func (d *Device) SyncFile() (int, error) {
 	if !d.syncFiles {
 		return -1, ErrNoSyncFile
+	}
+	if len(d.waits) == 0 && d.batch == 0 {
+		if d.lastSyncFileSet {
+			return dupSyncFile(d.lastSyncFile)
+		}
+		if d.frameSignal != 0 {
+			fd, err := d.exportFrameSignal()
+			if err != nil {
+				return -1, err
+			}
+			if fd >= 0 {
+				return d.keepSyncFile(fd)
+			}
+		}
 	}
 	s, err := d.spareSemaphore()
 	if err != nil {
@@ -229,17 +254,92 @@ func (d *Device) SyncFile() (int, error) {
 		d.spareSemaphores = append(d.spareSemaphores, s)
 		return -1, err
 	}
-	gi := &d.args.getFd
-	*gi = vk.SemaphoreGetFdInfoKHR{SType: vk.StructureTypeSemaphoreGetFdInfoKhr, Semaphore: s, HandleType: vk.ExternalSemaphoreHandleTypeSyncFdBit}
-	if r := d.cmds.GetSemaphoreFdKHR(d.device, gi, &d.args.fd); r != vk.Success {
+	d.passesExport = true
+	fd, err := d.exportSemaphore(s)
+	if err != nil {
 		d.forgetSignal()
-		return -1, fmt.Errorf("gpu: vkGetSemaphoreFdKHR (sync_file): %d", r)
+		return -1, err
 	}
-	if d.args.fd < 0 {
+	if fd < 0 {
 		d.forgetSignal()
 		return -1, errors.New("gpu: the driver exported no sync_file for a pending signal")
 	}
+	return d.keepSyncFile(fd)
+}
+
+func (d *Device) exportSemaphore(s vk.Semaphore) (int, error) {
+	gi := &d.args.getFd
+	*gi = vk.SemaphoreGetFdInfoKHR{SType: vk.StructureTypeSemaphoreGetFdInfoKhr, Semaphore: s, HandleType: vk.ExternalSemaphoreHandleTypeSyncFdBit}
+	if r := d.cmds.GetSemaphoreFdKHR(d.device, gi, &d.args.fd); r != vk.Success {
+		return -1, fmt.Errorf("gpu: vkGetSemaphoreFdKHR (sync_file): %d", r)
+	}
 	return int(d.args.fd), nil
+}
+
+// exportFrameSignal exports the newest pass's signal, -1 from a driver
+// that reports it signalled instead, and files its semaphore with the
+// submission that signals it. Nothing has been submitted since that
+// pass, so the newest in flight is that pass, or it has finished.
+func (d *Device) exportFrameSignal() (int, error) {
+	s := d.frameSignal
+	d.frameSignal = 0
+	fd, err := d.exportSemaphore(s)
+	if err != nil {
+		_ = d.idle()
+		d.cmds.DestroySemaphore(d.device, s, nil)
+		return -1, err
+	}
+	n := len(d.inflight)
+	if n == 0 {
+		d.spareSemaphores = append(d.spareSemaphores, s)
+		return fd, nil
+	}
+	d.heldSemaphores = append(d.heldSemaphores, s)
+	d.inflight[n-1].sems++
+	return fd, nil
+}
+
+// keepSyncFile holds fd for later calls and returns a duplicate for the
+// caller to own.
+func (d *Device) keepSyncFile(fd int) (int, error) {
+	out, err := dupSyncFile(fd)
+	if err != nil {
+		_ = unix.Close(fd)
+		return -1, err
+	}
+	d.lastSyncFile, d.lastSyncFileSet = fd, true
+	return out, nil
+}
+
+func dupSyncFile(fd int) (int, error) {
+	out, err := unix.FcntlInt(uintptr(fd), unix.F_DUPFD_CLOEXEC, 0)
+	if err != nil {
+		return -1, fmt.Errorf("gpu: duplicating sync_file %d: %w", fd, err)
+	}
+	return out, nil
+}
+
+// retireSyncFile forgets what SyncFile could answer from, for a new
+// submission that it would not cover. A pass nobody asked about has its
+// signal consumed, and the next pass signals nothing until SyncFile is
+// called again.
+func (d *Device) retireSyncFile() error {
+	if d.lastSyncFileSet {
+		_ = unix.Close(d.lastSyncFile)
+		d.lastSyncFileSet = false
+	}
+	if d.frameSignal == 0 {
+		return nil
+	}
+	d.passesExport = false
+	fd, err := d.exportFrameSignal()
+	if err != nil {
+		return err
+	}
+	if fd >= 0 {
+		_ = unix.Close(fd)
+	}
+	return nil
 }
 
 // forgetSignal destroys the semaphore the newest submission signals,
@@ -257,6 +357,9 @@ func (d *Device) forgetSignal() {
 // queue1 submits cb (0 for none) after the pending waits, signalling
 // signal (0 for none).
 func (d *Device) queue1(cb vk.CommandBuffer, signal vk.Semaphore, query int, pass bool) error {
+	if err := d.retireSyncFile(); err != nil {
+		return err
+	}
 	d.reap(false)
 	for len(d.inflight) >= queryRing {
 		if err := d.waitOldest(); err != nil {
@@ -266,6 +369,13 @@ func (d *Device) queue1(cb vk.CommandBuffer, signal vk.Semaphore, query int, pas
 	fence, err := d.spareFence()
 	if err != nil {
 		return err
+	}
+	frame := pass && signal == 0 && d.passesExport
+	if frame {
+		if signal, err = d.spareSemaphore(); err != nil {
+			d.spareFences = append(d.spareFences, fence)
+			return err
+		}
 	}
 	a := &d.args
 	si := &a.submit
@@ -286,6 +396,9 @@ func (d *Device) queue1(cb vk.CommandBuffer, signal vk.Semaphore, query int, pas
 	}
 	if r := d.cmds.QueueSubmit(d.queue, 1, si, fence); r != vk.Success {
 		d.cmds.DestroyFence(d.device, fence, nil)
+		if frame {
+			d.spareSemaphores = append(d.spareSemaphores, signal)
+		}
 		return fmt.Errorf("gpu: vkQueueSubmit: %d", r)
 	}
 	f := inflight{fence: fence, cb: cb, sems: len(d.waits), query: query}
@@ -294,7 +407,10 @@ func (d *Device) queue1(cb vk.CommandBuffer, signal vk.Semaphore, query int, pas
 	}
 	d.heldSemaphores = append(d.heldSemaphores, d.waits...)
 	d.waits = d.waits[:0]
-	if signal != 0 {
+	switch {
+	case frame:
+		d.frameSignal = signal
+	case signal != 0:
 		d.heldSemaphores = append(d.heldSemaphores, signal)
 		f.sems++
 	}
@@ -572,6 +688,14 @@ func (d *Device) closeTiming() {
 	}
 	for _, s := range d.spareSemaphores {
 		d.cmds.DestroySemaphore(d.device, s, nil)
+	}
+	if d.frameSignal != 0 {
+		d.cmds.DestroySemaphore(d.device, d.frameSignal, nil)
+		d.frameSignal = 0
+	}
+	if d.lastSyncFileSet {
+		_ = unix.Close(d.lastSyncFile)
+		d.lastSyncFileSet = false
 	}
 	d.waits, d.spareSemaphores = nil, nil
 	if d.queries != 0 {
