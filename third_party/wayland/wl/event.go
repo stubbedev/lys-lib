@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"sync"
 
 	"golang.org/x/sys/unix"
 
@@ -47,6 +48,10 @@ const (
 
 var controlLen = os.CmsgSpace(libwaylandMaxFDsOut * 4)
 
+// eventPool holds the Event each dispatch decodes from. A handler may run
+// a nested dispatch, so the context cannot keep just one.
+var eventPool = sync.Pool{New: func() any { return new(Event) }}
+
 func (ctx *Context) readEvent() (*Event, error) {
 	if ctx.conn == nil {
 		return nil, ErrContextConnNil
@@ -64,11 +69,13 @@ func (ctx *Context) readEvent() (*Event, error) {
 		return nil, combinedError{ErrReadPayload, err}
 	}
 	ctx.inStart += size
-	return &Event{
+	ev := eventPool.Get().(*Event)
+	*ev = Event{
 		Pid:    ProxyId(binary.NativeEndian.Uint32(msg[0:4])),
 		Opcode: uint32(binary.NativeEndian.Uint16(msg[4:6])),
 		Data:   msg[headerSize:],
-	}, nil
+	}
+	return ev, nil
 }
 
 func (ctx *Context) fill(n int) ([]byte, error) {

@@ -314,6 +314,8 @@ func (ctx *Context) run(cb *Callback) (err error) {
 		if cerr := ev.closeUnclaimedFDs(); cerr != nil {
 			err = errors.Join(err, cerr)
 		}
+		*ev = Event{}
+		eventPool.Put(ev)
 	}()
 	if proxy != nil {
 		if dispatcher, ok := proxy.(Dispatcher); dispatcher != nil && ok {
