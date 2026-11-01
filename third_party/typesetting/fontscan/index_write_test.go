@@ -64,3 +64,47 @@ func TestTheIndexFileIsReplacedWhole(t *testing.T) {
 		t.Errorf("directory holds %v, %v; want only the index", entries, err)
 	}
 }
+
+func TestAnEmptyFontFileDoesNotStopAScan(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "empty.ttf"), nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	index, _, err := scanFontFootprints(discardLogger{}, nil, dir)
+	if err != nil || len(index) != 1 || len(index[0].footprints) != 0 {
+		t.Errorf("index %v, %v; want the file listed with no footprints", index, err)
+	}
+}
+
+func TestAMappedFontScansAndLoadsAsItsBytes(t *testing.T) {
+	path := filepath.Join("..", "..", "..", "render", "testdata", "Cantarell-Regular.ttf")
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	data, err := os.ReadFile(abs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	font := filepath.Join(dir, "c.ttf")
+	if err := os.WriteFile(font, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	index, _, err := scanFontFootprints(discardLogger{}, nil, dir)
+	if err != nil || len(index) != 1 || len(index[0].footprints) != 1 {
+		t.Fatalf("index %v, %v", index, err)
+	}
+	fp := index[0].footprints[0]
+	face, err := fp.loadFromDisk()
+	if err != nil {
+		t.Fatal(err)
+	}
+	gid, ok := face.NominalGlyph('a')
+	if !ok {
+		t.Fatal("the loaded face has no glyph for a")
+	}
+	if adv := face.HorizontalAdvance(gid); adv <= 0 {
+		t.Errorf("a glyph read through the mapping has advance %v", adv)
+	}
+}

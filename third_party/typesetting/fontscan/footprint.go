@@ -1,10 +1,13 @@
 package fontscan
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/stubbedev/lys-lib/third_party/typesetting/font"
 	ot "github.com/stubbedev/lys-lib/third_party/typesetting/font/opentype"
@@ -117,29 +120,48 @@ func (fp *Footprint) isMonoHint() bool {
 }
 
 // loadFromDisk assume the footprint location refers to the file system
-func (fp *Footprint) loadFromDisk() (*font.Face, error) {
-	location := fp.Location
-
-	file, err := os.Open(location.File)
+func mapFontFile(path string) ([]byte, error) {
+	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
 	}
 	defer file.Close()
-
-	loaders, err := ot.NewLoaders(file)
+	info, err := file.Stat()
 	if err != nil {
 		return nil, err
+	}
+	if info.Size() == 0 {
+		return nil, nil
+	}
+	data, err := unix.Mmap(int(file.Fd()), 0, int(info.Size()), unix.PROT_READ, unix.MAP_PRIVATE)
+	if err != nil {
+		return os.ReadFile(path)
+	}
+	return data, nil
+}
+
+func (fp *Footprint) loadFromDisk() (*font.Face, error) {
+	location := fp.Location
+
+	data, err := mapFontFile(location.File)
+	if err != nil {
+		return nil, err
+	}
+
+	loaders, err := ot.NewLoaders(ot.NewMapped(data))
+	if err != nil {
+		return nil, errors.Join(err, unix.Munmap(data))
 	}
 
 	if index := int(location.Index); len(loaders) <= index {
 		// this should only happen if the font file as changed
 		// since the last scan (very unlikely)
-		return nil, fmt.Errorf("invalid font index in collection: %d >= %d", index, len(loaders))
+		return nil, errors.Join(fmt.Errorf("invalid font index in collection: %d >= %d", index, len(loaders)), unix.Munmap(data))
 	}
 
 	ft, err := font.NewFont(loaders[location.Index])
 	if err != nil {
-		return nil, fmt.Errorf("reading font at %s: %s", location.File, err)
+		return nil, errors.Join(fmt.Errorf("reading font at %s: %w", location.File, err), unix.Munmap(data))
 	}
 
 	return font.NewFace(ft), nil

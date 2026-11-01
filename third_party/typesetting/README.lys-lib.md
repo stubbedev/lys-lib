@@ -112,6 +112,13 @@ CPU and raced other starts on the same file. Now it writes only when a file was
 added, removed or rescanned, and through a rename. The directory search error
 now wraps its cause.
 
+### Font files are mapped, not read
+
+A font's tables were parsed through pread on the open file, thousands of small
+reads for a collection such as Inter.ttc. The scanner and loadFromDisk now map
+the file: a scan unmaps it after the footprints, and a loaded face keeps it, as
+its tables stay in place.
+
 ### Import path
 
 Every source imports `github.com/stubbedev/lys-lib/third_party/typesetting`

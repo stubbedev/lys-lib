@@ -11,6 +11,8 @@ import (
 	"sort"
 	"strings"
 
+	"golang.org/x/sys/unix"
+
 	ot "github.com/stubbedev/lys-lib/third_party/typesetting/font/opentype"
 )
 
@@ -245,10 +247,11 @@ func (fa *footprintScanner) consume(path string, info os.FileInfo) error {
 
 	// do the actual scan
 
-	file, err := os.Open(path)
+	data, err := mapFontFile(path)
 	if err != nil {
 		return err
 	}
+	defer func() { _ = unix.Munmap(data) }()
 
 	ff := fileFootprints{
 		path:    path,
@@ -257,7 +260,7 @@ func (fa *footprintScanner) consume(path string, info os.FileInfo) error {
 
 	// fetch the loaders for the given font file, or nil if is not
 	// an Opentype font.
-	loaders, _ := ot.NewLoaders(file)
+	loaders, _ := ot.NewLoaders(ot.NewMapped(data))
 
 	for i, ld := range loaders {
 		var fp Footprint
@@ -273,9 +276,6 @@ func (fa *footprintScanner) consume(path string, info os.FileInfo) error {
 
 		ff.footprints = append(ff.footprints, fp)
 	}
-
-	// newFootprintFromLoader still uses file, do not close earlier
-	file.Close()
 
 	// if the file is not a valid Opentype file,
 	// we store an empty list of footprints but still adds the entry to the index
