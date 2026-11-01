@@ -13,10 +13,11 @@ import (
 // streams over. Its constraints hold until the source resizes, which
 // Capture reports as ErrReconfigured.
 //
-// The session runs on its Client and holds the Client while Capture
-// waits for the source to change, so a share runs its session on a
-// Client of its own. Close may be called from any goroutine and wakes a
-// waiting Capture.
+// The session runs on its Client. While Capture waits for the source to
+// change, the Client's other calls proceed, so a stream can import and
+// destroy buffers around a still window; only one wait runs on a Client
+// at a time, so a share runs its session on a Client of its own. Close
+// may be called from any goroutine and wakes a waiting Capture.
 type DmabufSession struct {
 	client *Client
 	cs     *copySession
@@ -137,7 +138,7 @@ func (s *DmabufSession) Capture(buf *DmabufBuffer) (FrameInfo, error) {
 		return FrameInfo{}, fmt.Errorf("capture: dmabuf %dx%d: %w", buf.Attrs.Width, buf.Attrs.Height, err)
 	}
 	dispatch := func(done func() bool) error {
-		return s.client.dispatchUntil(func() bool { return s.closing.Load() || done() })
+		return s.client.dispatchYielding(func() bool { return s.closing.Load() || done() })
 	}
 	fs, err := s.cs.captureFrame(dispatch, buf.wl, size[0], size[1])
 	if err != nil {

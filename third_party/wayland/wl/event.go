@@ -141,6 +141,24 @@ func (ctx *Context) ReadReady() (bool, error) {
 	return true, nil
 }
 
+// WaitReadable blocks until the socket may have data or is closed; a
+// wakeup with nothing to read is possible. It is the one call that may
+// run alongside the context's others, so a caller can wait for events
+// without holding the lock that serializes them, and needs ReadReady to
+// have been called once.
+func (ctx *Context) WaitReadable() error {
+	polled := false
+	err := ctx.raw.Read(func(uintptr) bool {
+		done := polled
+		polled = true
+		return done
+	})
+	if err != nil {
+		return fmt.Errorf("wl: wait for the socket: %w", err)
+	}
+	return nil
+}
+
 func (ctx *Context) pollReadable(fd uintptr) {
 	ctx.pollFds[0] = unix.PollFd{Fd: int32(fd), Events: unix.POLLIN}
 	for {

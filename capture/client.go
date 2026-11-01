@@ -301,6 +301,34 @@ func (c *Client) dispatchUntil(done func() bool) error {
 	return nil
 }
 
+// dispatchYielding is dispatchUntil for a wait of unbounded length: c.mu,
+// which the caller holds, is given up whenever no event is in, so the
+// Client's other calls run during the wait. Their dispatching may finish
+// the wait; done is read with c.mu held again.
+func (c *Client) dispatchYielding(done func() bool) error {
+	for !done() {
+		if !c.ctx.Buffered() {
+			ready, err := c.ctx.ReadReady()
+			if err != nil {
+				return c.check(err)
+			}
+			if !ready {
+				c.mu.Unlock()
+				err = c.ctx.WaitReadable()
+				c.mu.Lock()
+				if err != nil {
+					return c.check(err)
+				}
+			}
+			continue
+		}
+		if err := c.check(c.ctx.Run()); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 // check prefers the compositor's recorded verdict over the transport
 // error it caused.
 func (c *Client) check(err error) error {

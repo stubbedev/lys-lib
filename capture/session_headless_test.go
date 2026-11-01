@@ -362,3 +362,48 @@ func TestHeadlessDmabufSessionUnsupported(t *testing.T) {
 		t.Fatalf("OpenDmabufSession = %v, want capture.ErrUnsupported", err)
 	}
 }
+
+// TestHeadlessDmabufSessionWaitLeavesTheClientFree pins that a Capture
+// waiting on a still window does not hold up the Client: a stream drops
+// and allocates buffers around that wait, and a still window may never
+// end it.
+func TestHeadlessDmabufSessionWaitLeavesTheClientFree(t *testing.T) {
+	wltest.Require(t)
+	const appID = "dev.stubbe.lys.ui.dmabufwait"
+	c := captureClient(t)
+	win, target := showWindow(t, c, appID, 320, 200)
+	s, formats := openDmabufSession(t, c, target)
+	buf := allocate(t, c, formats)
+	if err := captureRepainting(t, s, buf.imported, win); err != nil {
+		t.Fatalf("first frame: %v", err)
+	}
+	dropped, spare := allocate(t, c, formats), allocate(t, c, formats)
+	err := awaitCapture(t, s, buf.imported, func(<-chan struct{}) {
+		time.Sleep(200 * time.Millisecond)
+		worked := make(chan struct{})
+		go func() {
+			defer close(worked)
+			dropped.imported.Destroy()
+			imported, err := c.ImportDmabuf(spare.buf.Dmabuf())
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			imported.Destroy()
+			if _, err := s.Formats(); err != nil {
+				t.Error(err)
+			}
+		}()
+		select {
+		case <-worked:
+		case <-time.After(5 * time.Second):
+			t.Error("the Client's calls waited on the Capture")
+		}
+		if err := s.Close(); err != nil {
+			t.Error(err)
+		}
+	})
+	if !errors.Is(err, capture.ErrClosed) {
+		t.Fatalf("Capture during Close = %v, want ErrClosed", err)
+	}
+}
