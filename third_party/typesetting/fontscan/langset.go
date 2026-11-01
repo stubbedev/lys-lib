@@ -1,8 +1,6 @@
 package fontscan
 
 import (
-	"encoding/binary"
-	"errors"
 	"strings"
 
 	"github.com/stubbedev/lys-lib/third_party/typesetting/language"
@@ -59,26 +57,4 @@ func (ls LangSet) Contains(l LangID) bool {
 	page := (l & 0b111111111 >> 6)
 	bit := l & 0b111111
 	return ls[page]&(1<<bit) != 0
-}
-
-const langSetSize = 8 * 8
-
-func (ls LangSet) serialize() []byte {
-	var buffer [langSetSize]byte
-	for i, v := range ls {
-		binary.BigEndian.PutUint64(buffer[i*8:], v)
-	}
-	return buffer[:]
-}
-
-// deserializeFrom reads the binary format produced by serializeTo
-// it returns the number of bytes read from `data`
-func (ls *LangSet) deserializeFrom(data []byte) (int, error) {
-	if len(data) < langSetSize {
-		return 0, errors.New("invalid lang set (EOF)")
-	}
-	for i := range ls {
-		ls[i] = binary.BigEndian.Uint64(data[i*8:])
-	}
-	return langSetSize, nil
 }

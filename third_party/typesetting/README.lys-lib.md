@@ -119,6 +119,70 @@ reads for a collection such as Inter.ttc. The scanner and loadFromDisk now map
 the file: a scan unmaps it after the footprints, and a loaded face keeps it, as
 its tables stay in place.
 
+### The system font index is read in place
+
+`fontscan/serialize.go`, `scan.go`, `scandir.go`, `fontmap.go`,
+`fontconfig.go`, `footprint.go`, `rune_coverage.go`, `langset.go`:
+upstream gzips a stream of length-prefixed records, so every start
+gunzips it and allocates each path, family, rune set and script set,
+then walks the font tree and parses a whole font to check that one
+loads, after parsing all of fontconfig's XML. Format 7 is a flat file of
+native-endian tables (`font_index_v7.cache`) mapped privately for the
+life of the process: loading checks the header, a CRC-32 and every
+offset, then points slices and strings into the mapping, one array of
+`Footprint`s being the only table built. A rune set or script set the
+faces of a family share is stored once. The mapping is writable and
+private, so a caller editing a `RuneSet` in place gets what a heap copy
+gave it. The file is only ever replaced by a rename, so a reader keeps
+the file it mapped; truncating it from outside faults, as with a mapped
+font.
+
+An index of another format, byte order or checksum, a truncated one and
+one holding an offset out of range are errors that `refreshSystemFontsIndex`
+logs and answers by rescanning and replacing the file. The previous
+format's file is deleted when the new one is written.
+
+The index also holds what decides whether it is current without a walk:
+the directories walked, a stamp per font file and directory, and the
+parse of the fontconfig configuration with the environment it applies
+to and a stamp per file it read or looked for. A start stats those and
+opens nothing unless one differs; `DefaultFontDirectories` itself still
+parses. A stamp mixes mtime, size and inode, since a Nix store fixes
+every mtime and an upgrade replaces a font at the same path; upstream
+compared the mtime alone. A file whose mtime falls within 2 s of the
+scan is stamped as never matching, since a coarse clock could hide its
+next change, and a file that could not be read forces a walk each
+start. `assertValid` runs only when the index changed, and unmaps what
+it parsed. A failure to write the index, or no cache directory (a
+system user with no home), is logged and scans on every start, where
+upstream returned no fonts at all.
+
+`SystemFonts` returns the shared table instead of a copy, and a
+`FontMap`'s first footprints share it too.
+
+Run by `sysfont.Weighted("sans-serif", ...)` on a warm index:
+
+| faces | | before | after |
+|---|---|---|---|
+| 762 (this host) | time | 21.5 ms | 3.7 ms |
+| | allocations | 111.7k | 31.3k |
+| | bytes | 11.6 MB | 3.0 MB |
+| 1485 in 1000 files (fixture) | time | 19.9 ms | 5.6 ms |
+| | allocations | 120.1k | 32.3k |
+| | bytes | 15.4 MB | 3.8 MB |
+| | openat / getdents64 / read | 261 / 152 / 113 | 159 / 2 / 36 |
+
+The 32k left are parsing the resolved face and lys-ui's two embedded
+ones. Loading the fixture's index alone: gunzip and decode 5.5 ms, 11575
+allocations, 3.4 MB; mapped 0.26 ms, 10 allocations, 0.33 MB, for a file
+of 618 KB instead of 147 KB. Reading it onto the heap instead of mapping
+takes 0.45 ms and 0.95 MB, so it is mapped. Moving the `Footprint` table
+off the heap saves about 100 us of a full GC at this size, not worth a
+dependency here, so the table stays a plain slice. Pinned by
+`fontscan/lys_index_test.go`, which fails if parsing allocates more for
+2000 fonts than for 10.
+
+
 ### Import path
 
 Every source imports `github.com/stubbedev/lys-lib/third_party/typesetting`
@@ -159,4 +223,6 @@ provides, and a varied font now hashes to the same outlines everywhere.
 `fontscan/scandir.go`: `filepath.WalkDir` does not follow links, and a link to a
 directory reached `consume` as a file. A Nix profile links each package's fonts
 that way. Upstream's parse failed softly and those fonts went unindexed; here it is
-walked, once whatever links to it.
+walked, once whatever links to it, and so is a font root that is itself a link.
+A file that is not regular is skipped, and one unreadable font is logged and
+skipped instead of ending the scan.

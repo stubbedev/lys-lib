@@ -119,8 +119,9 @@ func (fp *Footprint) isMonoHint() bool {
 	return strings.Contains(fp.Family, "mono")
 }
 
-// loadFromDisk assume the footprint location refers to the file system
-func mapFontFile(path string) ([]byte, error) {
+// mapFile maps path privately with the given protection, or reads it on
+// a file system that cannot map. An empty file maps to nothing.
+func mapFile(path string, prot int) ([]byte, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return nil, err
@@ -133,36 +134,62 @@ func mapFontFile(path string) ([]byte, error) {
 	if info.Size() == 0 {
 		return nil, nil
 	}
-	data, err := unix.Mmap(int(file.Fd()), 0, int(info.Size()), unix.PROT_READ, unix.MAP_PRIVATE)
+	data, err := unix.Mmap(int(file.Fd()), 0, int(info.Size()), prot, unix.MAP_PRIVATE)
 	if err != nil {
 		return os.ReadFile(path)
 	}
 	return data, nil
 }
 
-func (fp *Footprint) loadFromDisk() (*font.Face, error) {
-	location := fp.Location
+// unmapFile releases what mapFile returned; EINVAL is the buffer of a
+// file that was read rather than mapped, or of an empty one.
+func unmapFile(data []byte) error {
+	if err := unix.Munmap(data); err != nil && !errors.Is(err, unix.EINVAL) {
+		return fmt.Errorf("unmapping font file: %w", err)
+	}
+	return nil
+}
 
-	data, err := mapFontFile(location.File)
+func mapFontFile(path string) ([]byte, error) { return mapFile(path, unix.PROT_READ) }
+
+func (fp *Footprint) parseFont(data []byte) (*font.Font, error) {
+	location := fp.Location
+	loaders, err := ot.NewLoaders(ot.NewMapped(data))
 	if err != nil {
 		return nil, err
 	}
-
-	loaders, err := ot.NewLoaders(ot.NewMapped(data))
-	if err != nil {
-		return nil, errors.Join(err, unix.Munmap(data))
-	}
-
 	if index := int(location.Index); len(loaders) <= index {
 		// this should only happen if the font file as changed
 		// since the last scan (very unlikely)
-		return nil, errors.Join(fmt.Errorf("invalid font index in collection: %d >= %d", index, len(loaders)), unix.Munmap(data))
+		return nil, fmt.Errorf("invalid font index in collection: %d >= %d", index, len(loaders))
 	}
-
 	ft, err := font.NewFont(loaders[location.Index])
 	if err != nil {
-		return nil, errors.Join(fmt.Errorf("reading font at %s: %w", location.File, err), unix.Munmap(data))
+		return nil, fmt.Errorf("reading font at %s: %w", location.File, err)
 	}
+	return ft, nil
+}
 
+// loadFromDisk assume the footprint location refers to the file system.
+// The face keeps its mapping, since its tables stay in place.
+func (fp *Footprint) loadFromDisk() (*font.Face, error) {
+	data, err := mapFontFile(fp.Location.File)
+	if err != nil {
+		return nil, err
+	}
+	ft, err := fp.parseFont(data)
+	if err != nil {
+		return nil, errors.Join(err, unmapFile(data))
+	}
 	return font.NewFace(ft), nil
+}
+
+// checkLoads parses the face and lets it go.
+func (fp *Footprint) checkLoads() error {
+	data, err := mapFontFile(fp.Location.File)
+	if err != nil {
+		return err
+	}
+	_, err = fp.parseFont(data)
+	return errors.Join(err, unmapFile(data))
 }

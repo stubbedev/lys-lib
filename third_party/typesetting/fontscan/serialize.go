@@ -1,308 +1,475 @@
 package fontscan
 
 import (
-	"bytes"
-	"compress/gzip"
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"io"
+	"hash/crc32"
 	"math"
 	"os"
 	"path/filepath"
+	"unsafe"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/stubbedev/lys-lib/third_party/typesetting/font"
+	"github.com/stubbedev/lys-lib/third_party/typesetting/language"
 )
 
-// defines the routines to serialize a font set to
-// the disk
+// The index is a flat file read in place through a private mapping: the
+// tables below are native-endian arrays of fixed-size records, so loading
+// it checks it and points slices and strings into it, decoding nothing.
+// A mapping that outlives every Footprint is the price: an index stays
+// mapped for the life of the process, and is only ever replaced by rename,
+// never rewritten.
 
-// assume len(dst) >= 4
-func serializeFloat(f float32, dst []byte) {
-	binary.BigEndian.PutUint32(dst, math.Float32bits(f))
+const (
+	cacheFormatVersion = 7
+	indexMagic         = "lysfscan"
+	indexByteOrder     = 0x01020304
+	indexTableAlign    = 8
+)
+
+type indexSection struct {
+	offset uint32
+	count  uint32
 }
 
-// assume len(src) >= 4
-func deserializeFloat(src []byte) float32 {
-	return math.Float32frombits(binary.BigEndian.Uint32(src))
+type indexHeader struct {
+	magic      [8]byte
+	byteOrder  uint32
+	version    uint32
+	size       uint64
+	checksum   uint32
+	reserved   uint32
+	files      indexSection
+	footprints indexSection
+	pages      indexSection
+	scripts    indexSection
+	strings    indexSection
+	roots      indexSection
+	dirs       indexSection
+	fcDirs     indexSection
+	fcDeps     indexSection
+	fcKey      indexStringRef
 }
 
-func serializeString(s string) []byte {
-	L := len(s)
-	if L > math.MaxUint16 { // never happen in practice
-		L = math.MaxUint16
-	}
-	buffer := make([]byte, 2+L) // len as uint16 + data
-	binary.BigEndian.PutUint16(buffer, uint16(L))
-	copy(buffer[2:], s)
-	return buffer
+type indexStringRef struct {
+	offset uint32
+	length uint32
 }
 
-func deserializeString(s *string, data []byte) (int, error) {
-	if len(data) < 2 {
-		return 0, errors.New("invalid string (EOF)")
-	}
-	L := int(binary.BigEndian.Uint16(data))
-	if len(data) < 2+L {
-		return 0, errors.New("invalid string length (EOF)")
-	}
-	*s = string(data[2 : 2+L])
-	return 2 + L, nil
+type indexFile struct {
+	path            indexStringRef
+	stamp           fileStamp
+	firstFootprint  uint32
+	footprintsCount uint32
 }
 
-const aspectSize = 1 + 4 + 4
-
-// serializeTo serialize the Aspect in binary format
-func serializeAspect(as font.Aspect) []byte {
-	var buffer [aspectSize]byte
-	buffer[0] = byte(as.Style)
-	serializeFloat(float32(as.Weight), buffer[1:])
-	serializeFloat(float32(as.Stretch), buffer[5:])
-	return buffer[:]
+type indexFootprint struct {
+	langs        LangSet
+	family       indexStringRef
+	firstPage    uint32
+	pagesCount   uint32
+	firstScript  uint32
+	scriptsCount uint32
+	index        uint16
+	instance     uint16
+	style        uint32
+	weight       float32
+	stretch      float32
+	reserved     [2]uint32
 }
 
-// deserializeFrom reads the binary format produced by serializeTo
-// it returns the number of bytes read from `data`
-func deserializeAspectFrom(data []byte, as *font.Aspect) (int, error) {
-	if len(data) < aspectSize {
-		return 0, errors.New("invalid Aspect (EOF)")
-	}
-	as.Style = font.Style(data[0])
-	as.Weight = font.Weight(deserializeFloat(data[1:]))
-	as.Stretch = font.Stretch(deserializeFloat(data[5:]))
-	return aspectSize, nil
+type indexStamped struct {
+	path  indexStringRef
+	stamp fileStamp
 }
 
-// serializeTo serialize the Footprint in binary format,
-// by appending to `dst` and returning the slice
-func (fp Footprint) serializeTo(dst []byte) []byte {
-	dst = append(dst, serializeString(fp.Location.File)...)
+var (
+	_ [36 - unsafe.Sizeof(runePage{})]byte
+	_ [unsafe.Sizeof(runePage{}) - 36]byte
+	_ [112 - unsafe.Sizeof(indexFootprint{})]byte
+	_ [unsafe.Sizeof(indexFootprint{}) - 112]byte
+	_ [24 - unsafe.Sizeof(indexFile{})]byte
+	_ [unsafe.Sizeof(indexFile{}) - 24]byte
+	_ [16 - unsafe.Sizeof(indexStamped{})]byte
+	_ [unsafe.Sizeof(indexStamped{}) - 16]byte
+	_ [4 - unsafe.Sizeof(language.Script(0))]byte
+	_ [unsafe.Sizeof(language.Script(0)) - 4]byte
+)
 
-	var buffer [4]byte
-	binary.BigEndian.PutUint16(buffer[:], fp.Location.Index)
-	binary.BigEndian.PutUint16(buffer[2:], fp.Location.Instance)
-	dst = append(dst, buffer[:]...)
-
-	dst = append(dst, serializeString(fp.Family)...)
-	dst = append(dst, fp.Runes.serialize()...)
-	dst = append(dst, fp.Scripts.serialize()...)
-	dst = append(dst, fp.Langs.serialize()...)
-	dst = append(dst, serializeAspect(fp.Aspect)...)
-
-	return dst
+// indexSnapshot is what the index file holds: the footprints, and what
+// decides whether they are still current without walking the font tree.
+type indexSnapshot struct {
+	fonts systemFontsIndex
+	// roots are the directories the scan started from.
+	roots []string
+	// dirs are the directories it walked: adding, removing or renaming
+	// a font changes one of their stamps.
+	dirs []stampedPath
+	fc   fontconfigResult
 }
 
-// deserializeFrom reads the binary format produced by serializeTo
-// it returns the number of bytes read from `data`
-func (fp *Footprint) deserializeFrom(data []byte) (int, error) {
-	n, err := deserializeString(&fp.Location.File, data)
-	if err != nil {
-		return 0, err
+func sectionTable[T any](data []byte, s indexSection) ([]T, error) {
+	var zero T
+	end := uint64(s.offset) + uint64(s.count)*uint64(unsafe.Sizeof(zero))
+	if s.offset%indexTableAlign != 0 || end > uint64(len(data)) {
+		return nil, fmt.Errorf("table at %d of %d records runs past the %d byte file", s.offset, s.count, len(data))
 	}
-	if len(data) < n+4 {
-		return 0, errors.New("invalid Location (EOF)")
+	if s.count == 0 {
+		return nil, nil
 	}
-	fp.Location.Index = binary.BigEndian.Uint16(data[n:])
-	fp.Location.Instance = binary.BigEndian.Uint16(data[n+2:])
-	n += 4
-
-	read, err := deserializeString(&fp.Family, data[n:])
-	if err != nil {
-		return 0, err
-	}
-	n += read
-	read, err = fp.Runes.deserializeFrom(data[n:])
-	if err != nil {
-		return 0, err
-	}
-	n += read
-	read, err = fp.Scripts.deserializeFrom(data[n:])
-	if err != nil {
-		return 0, err
-	}
-	n += read
-	read, err = fp.Langs.deserializeFrom(data[n:])
-	if err != nil {
-		return 0, err
-	}
-	n += read
-	read, err = deserializeAspectFrom(data[n:], &fp.Aspect)
-	if err != nil {
-		return 0, err
-	}
-	n += read
-
-	return n, nil
+	return unsafe.Slice((*T)(unsafe.Pointer(&data[s.offset])), s.count), nil
 }
 
-// serialize into binary format, appending to `dst` and returning
-// the updated slice
-func serializeFootprintsTo(footprints []Footprint, dst []byte) []byte {
-	for _, fp := range footprints {
-		dst = fp.serializeTo(dst)
+func refString(strs []byte, ref indexStringRef) (string, error) {
+	if uint64(ref.offset)+uint64(ref.length) > uint64(len(strs)) {
+		return "", fmt.Errorf("string at %d of %d bytes runs past the %d byte pool", ref.offset, ref.length, len(strs))
 	}
-	return dst
+	if ref.length == 0 {
+		return "", nil
+	}
+	return unsafe.String(&strs[ref.offset], ref.length), nil
 }
 
-// parses the format written by `serializeFootprints`
-func deserializeFootprints(src []byte) (out []Footprint, err error) {
-	for totalRead := 0; totalRead < len(src); {
-		var fp Footprint
-		read, err := fp.deserializeFrom(src[totalRead:])
-		if err != nil {
-			return nil, fmt.Errorf("invalid footprints: %s", err)
-		}
-		totalRead += read
-
-		out = append(out, fp)
-	}
-
-	return out, nil
-}
-
-func (ff fileFootprints) serializeTo(dst []byte) []byte {
-	dst = append(dst, serializeString(ff.path)...)
-	dst = append(dst, ff.modTime.serialize()...)
-	// end by the variable length footprint list
-	dst = serializeFootprintsTo(ff.footprints, dst)
-	return dst
-}
-
-func (ff *fileFootprints) deserializeFrom(src []byte) error {
-	n, err := deserializeString(&ff.path, src)
-	if err != nil {
-		return err
-	}
-	if len(src) < n+8 {
-		return errors.New("invalid fileFootprints (EOF)")
-	}
-	ff.modTime.deserialize(src[n:])
-	n += 8
-	ff.footprints, err = deserializeFootprints(src[n:])
-	if err != nil {
-		return err
-	}
-	return nil
-}
-
-const cacheFormatVersion = 6
-
-func max(i, j int) int {
-	if i > j {
-		return i
-	}
-	return j
-}
-
-// serialize into binary format, compressed with gzip
-func (index systemFontsIndex) serializeTo(w io.Writer) error {
-	// version as uint16 + len as uint32 + somewhat the minimum size for a footprint
-	buffer := make([]byte, 6, max(6, 4+len(index)*(aspectSize+1+2)))
-	binary.BigEndian.PutUint16(buffer[:], cacheFormatVersion)
-	binary.BigEndian.PutUint32(buffer[2:], uint32(len(index)))
-
-	for _, ff := range index {
-		// add buffer to store the length of the encoded fileFootprints,
-		// needed when decoding from a stream
-		n := len(buffer)
-		buffer = append(buffer, make([]byte, 4)...)
-
-		buffer = ff.serializeTo(buffer)
-
-		size := len(buffer) - n - 4
-		binary.BigEndian.PutUint32(buffer[n:], uint32(size))
-	}
-	wr := gzip.NewWriter(w)
-	_, err := wr.Write(buffer)
-	if err != nil {
-		return fmt.Errorf("serializing font footprints: %s", err)
-	}
-	err = wr.Close()
-	if err != nil {
-		return fmt.Errorf("compressing serialized font footprints: %s", err)
-	}
-	return nil
-}
-
-// parses the format written by `fontIndex.serializeTo`
-func deserializeIndex(src io.Reader) (systemFontsIndex, error) {
-	r, err := gzip.NewReader(src)
-	if err != nil {
-		return nil, fmt.Errorf("invalid compressed index file: %s", err)
-	}
-	defer r.Close()
-
-	var (
-		buf    [6]byte
-		out    systemFontsIndex
-		buffer bytes.Buffer
-	)
-
-	// read the expected length
-	if _, err := io.ReadFull(r, buf[:]); err != nil {
-		return nil, fmt.Errorf("invalid index format: %s", err)
-	}
-	version := binary.BigEndian.Uint16(buf[:])
-	if version != cacheFormatVersion {
-		return nil, fmt.Errorf("different index version format: found %d", version)
-	}
-	L := binary.BigEndian.Uint32(buf[2:])
-	for i := uint32(0); i < L; i++ {
-		// size of the encoded footprint
-		if _, err := io.ReadFull(r, buf[:4]); err != nil {
-			return nil, fmt.Errorf("invalid index: %s", err)
-		}
-		size := binary.BigEndian.Uint32(buf[:4])
-		// buffer the fileFootprints segment
-		buffer.Reset()
-		_, err := io.CopyN(&buffer, r, int64(size))
-		if err != nil {
-			return nil, fmt.Errorf("invalid index: %s", err)
-		}
-
-		var fp fileFootprints
-		err = fp.deserializeFrom(buffer.Bytes())
-		if err != nil {
-			return nil, fmt.Errorf("invalid index: %s", err)
-		}
-
-		out = append(out, fp)
-	}
-
-	return out, nil
-}
-
-func deserializeIndexFile(cachePath string) (systemFontsIndex, error) {
-	f, err := os.Open(cachePath)
+func sectionStrings(data, strs []byte, s indexSection) ([]string, error) {
+	refs, err := sectionTable[indexStringRef](data, s)
 	if err != nil {
 		return nil, err
 	}
-	defer f.Close()
-
-	out, err := deserializeIndex(f)
-	return out, err
+	if len(refs) == 0 {
+		return nil, nil
+	}
+	out := make([]string, len(refs))
+	for i, ref := range refs {
+		if out[i], err = refString(strs, ref); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
 }
 
-func (index systemFontsIndex) serializeToFile(cachePath string) error {
-	dir, _ := filepath.Split(cachePath)
+func sectionStamped(data, strs []byte, s indexSection) ([]stampedPath, error) {
+	records, err := sectionTable[indexStamped](data, s)
+	if err != nil {
+		return nil, err
+	}
+	if len(records) == 0 {
+		return nil, nil
+	}
+	out := make([]stampedPath, len(records))
+	for i, record := range records {
+		path, err := refString(strs, record.path)
+		if err != nil {
+			return nil, err
+		}
+		out[i] = stampedPath{path: path, stamp: record.stamp}
+	}
+	return out, nil
+}
+
+// parseIndex checks data and builds the snapshot over it, which keeps
+// pointing into data. Every offset is checked, so a damaged file is an
+// error here, never a bad read later.
+func parseIndex(data []byte) (indexSnapshot, error) {
+	headerSize := unsafe.Sizeof(indexHeader{})
+	if uintptr(len(data)) < headerSize {
+		return indexSnapshot{}, fmt.Errorf("%d bytes is too short for an index", len(data))
+	}
+	header := (*indexHeader)(unsafe.Pointer(&data[0]))
+	if string(header.magic[:]) != indexMagic {
+		return indexSnapshot{}, errors.New("not a font index")
+	}
+	if header.byteOrder != indexByteOrder {
+		return indexSnapshot{}, errors.New("index written on another byte order")
+	}
+	if header.version != cacheFormatVersion {
+		return indexSnapshot{}, fmt.Errorf("index format %d, want %d", header.version, cacheFormatVersion)
+	}
+	if header.size != uint64(len(data)) {
+		return indexSnapshot{}, fmt.Errorf("index of %d bytes declares %d", len(data), header.size)
+	}
+	if sum := crc32.ChecksumIEEE(data[headerSize:]); sum != header.checksum {
+		return indexSnapshot{}, fmt.Errorf("index checksum %08x, want %08x", sum, header.checksum)
+	}
+
+	files, err := sectionTable[indexFile](data, header.files)
+	if err != nil {
+		return indexSnapshot{}, err
+	}
+	records, err := sectionTable[indexFootprint](data, header.footprints)
+	if err != nil {
+		return indexSnapshot{}, err
+	}
+	pages, err := sectionTable[runePage](data, header.pages)
+	if err != nil {
+		return indexSnapshot{}, err
+	}
+	scripts, err := sectionTable[language.Script](data, header.scripts)
+	if err != nil {
+		return indexSnapshot{}, err
+	}
+	strs, err := sectionTable[byte](data, header.strings)
+	if err != nil {
+		return indexSnapshot{}, err
+	}
+
+	var out indexSnapshot
+	if out.roots, err = sectionStrings(data, strs, header.roots); err != nil {
+		return indexSnapshot{}, err
+	}
+	if out.dirs, err = sectionStamped(data, strs, header.dirs); err != nil {
+		return indexSnapshot{}, err
+	}
+	if out.fc.dirs, err = sectionStrings(data, strs, header.fcDirs); err != nil {
+		return indexSnapshot{}, err
+	}
+	if out.fc.deps, err = sectionStamped(data, strs, header.fcDeps); err != nil {
+		return indexSnapshot{}, err
+	}
+	if out.fc.key, err = refString(strs, header.fcKey); err != nil {
+		return indexSnapshot{}, err
+	}
+
+	if len(files) > 0 {
+		out.fonts = make(systemFontsIndex, len(files))
+	}
+	var footprints []Footprint
+	if len(records) > 0 {
+		footprints = make([]Footprint, len(records))
+	}
+	for i := range files {
+		file := &files[i]
+		path, err := refString(strs, file.path)
+		if err != nil {
+			return indexSnapshot{}, err
+		}
+		end := uint64(file.firstFootprint) + uint64(file.footprintsCount)
+		if end > uint64(len(records)) {
+			return indexSnapshot{}, fmt.Errorf("file %d lists footprints up to %d of %d", i, end, len(records))
+		}
+		out.fonts[i] = fileFootprints{path: path, stamp: file.stamp}
+		if file.footprintsCount == 0 {
+			continue
+		}
+		for j := file.firstFootprint; j < uint32(end); j++ {
+			record := &records[j]
+			family, err := refString(strs, record.family)
+			if err != nil {
+				return indexSnapshot{}, err
+			}
+			pageEnd := uint64(record.firstPage) + uint64(record.pagesCount)
+			scriptEnd := uint64(record.firstScript) + uint64(record.scriptsCount)
+			if pageEnd > uint64(len(pages)) || scriptEnd > uint64(len(scripts)) {
+				return indexSnapshot{}, fmt.Errorf("footprint %d names pages up to %d of %d and scripts up to %d of %d", j, pageEnd, len(pages), scriptEnd, len(scripts))
+			}
+			footprints[j] = Footprint{
+				Location: Location{File: path, Index: record.index, Instance: record.instance},
+				Family:   family,
+				Runes:    RuneSet(pages[record.firstPage:pageEnd:pageEnd]),
+				Scripts:  ScriptSet(scripts[record.firstScript:scriptEnd:scriptEnd]),
+				Langs:    record.langs,
+				Aspect:   font.Aspect{Style: font.Style(record.style), Weight: font.Weight(record.weight), Stretch: font.Stretch(record.stretch)},
+			}
+		}
+		out.fonts[i].footprints = footprints[file.firstFootprint:end:end]
+	}
+	return out, nil
+}
+
+// readIndexFile maps the index at cachePath. A mapped index that parses
+// stays mapped for the life of the process, since its footprints point
+// into it. The mapping is private and writable so that those footprints
+// behave as a heap copy would for a caller editing a RuneSet in place.
+func readIndexFile(cachePath string) (indexSnapshot, error) {
+	data, err := mapFile(cachePath, unix.PROT_READ|unix.PROT_WRITE)
+	if err != nil {
+		return indexSnapshot{}, err
+	}
+	snapshot, err := parseIndex(data)
+	if err != nil {
+		return indexSnapshot{}, errors.Join(err, unmapFile(data))
+	}
+	return snapshot, nil
+}
+
+type indexBuilder struct {
+	strs      []byte
+	stringAt  map[string]indexStringRef
+	pages     []byte
+	pagesAt   map[string]uint32
+	scripts   []byte
+	scriptsAt map[string]uint32
+}
+
+func (b *indexBuilder) addString(s string) indexStringRef {
+	if ref, ok := b.stringAt[s]; ok {
+		return ref
+	}
+	ref := indexStringRef{offset: uint32(len(b.strs)), length: uint32(len(s))}
+	b.strs = append(b.strs, s...)
+	b.stringAt[s] = ref
+	return ref
+}
+
+func (b *indexBuilder) addRunes(rs RuneSet) (first, count uint32) {
+	if len(rs) == 0 {
+		return 0, 0
+	}
+	encoded := make([]byte, 0, len(rs)*int(unsafe.Sizeof(runePage{})))
+	for _, page := range rs {
+		encoded = binary.NativeEndian.AppendUint16(encoded, page.ref)
+		encoded = append(encoded, 0, 0)
+		for _, word := range page.set {
+			encoded = binary.NativeEndian.AppendUint32(encoded, word)
+		}
+	}
+	first, ok := b.pagesAt[string(encoded)]
+	if !ok {
+		first = uint32(len(b.pages) / int(unsafe.Sizeof(runePage{})))
+		b.pages = append(b.pages, encoded...)
+		b.pagesAt[string(encoded)] = first
+	}
+	return first, uint32(len(rs))
+}
+
+func (b *indexBuilder) addScripts(ss ScriptSet) (first, count uint32) {
+	if len(ss) == 0 {
+		return 0, 0
+	}
+	encoded := make([]byte, 0, len(ss)*4)
+	for _, script := range ss {
+		encoded = binary.NativeEndian.AppendUint32(encoded, uint32(script))
+	}
+	first, ok := b.scriptsAt[string(encoded)]
+	if !ok {
+		first = uint32(len(b.scripts) / 4)
+		b.scripts = append(b.scripts, encoded...)
+		b.scriptsAt[string(encoded)] = first
+	}
+	return first, uint32(len(ss))
+}
+
+func appendRecords[T any](dst []byte, section *indexSection, records []T) []byte {
+	for len(dst)%indexTableAlign != 0 {
+		dst = append(dst, 0)
+	}
+	section.offset = uint32(len(dst))
+	section.count = uint32(len(records))
+	if len(records) == 0 {
+		return dst
+	}
+	var zero T
+	return append(dst, unsafe.Slice((*byte)(unsafe.Pointer(&records[0])), len(records)*int(unsafe.Sizeof(zero)))...)
+}
+
+// encode lays the snapshot out as the index file. Every record is built
+// field by field over a zeroed value, so padding is zero and equal
+// snapshots encode to equal bytes. Identical rune and script sets, as
+// the faces of one family have, are stored once.
+func (s indexSnapshot) encode() ([]byte, error) {
+	b := indexBuilder{
+		stringAt:  map[string]indexStringRef{},
+		pagesAt:   map[string]uint32{},
+		scriptsAt: map[string]uint32{},
+	}
+	files := make([]indexFile, len(s.fonts))
+	var footprints []indexFootprint
+	for i, file := range s.fonts {
+		files[i] = indexFile{
+			path:            b.addString(file.path),
+			stamp:           file.stamp,
+			firstFootprint:  uint32(len(footprints)),
+			footprintsCount: uint32(len(file.footprints)),
+		}
+		for _, fp := range file.footprints {
+			record := indexFootprint{
+				langs:    fp.Langs,
+				family:   b.addString(fp.Family),
+				index:    fp.Location.Index,
+				instance: fp.Location.Instance,
+				style:    uint32(fp.Aspect.Style),
+				weight:   float32(fp.Aspect.Weight),
+				stretch:  float32(fp.Aspect.Stretch),
+			}
+			record.firstPage, record.pagesCount = b.addRunes(fp.Runes)
+			record.firstScript, record.scriptsCount = b.addScripts(fp.Scripts)
+			footprints = append(footprints, record)
+		}
+	}
+	stringRefs := func(ss []string) []indexStringRef {
+		refs := make([]indexStringRef, len(ss))
+		for i, value := range ss {
+			refs[i] = b.addString(value)
+		}
+		return refs
+	}
+	stamped := func(paths []stampedPath) []indexStamped {
+		records := make([]indexStamped, len(paths))
+		for i, path := range paths {
+			records[i] = indexStamped{path: b.addString(path.path), stamp: path.stamp}
+		}
+		return records
+	}
+	roots, dirs := stringRefs(s.roots), stamped(s.dirs)
+	fcDirs, fcDeps := stringRefs(s.fc.dirs), stamped(s.fc.deps)
+
+	var header indexHeader
+	copy(header.magic[:], indexMagic)
+	header.byteOrder = indexByteOrder
+	header.version = cacheFormatVersion
+	header.fcKey = b.addString(s.fc.key)
+
+	data := make([]byte, unsafe.Sizeof(header))
+	data = appendRecords(data, &header.files, files)
+	data = appendRecords(data, &header.footprints, footprints)
+	data = appendRecords(data, &header.roots, roots)
+	data = appendRecords(data, &header.dirs, dirs)
+	data = appendRecords(data, &header.fcDirs, fcDirs)
+	data = appendRecords(data, &header.fcDeps, fcDeps)
+	data = appendRecords(data, &header.pages, b.pages)
+	header.pages.count /= uint32(unsafe.Sizeof(runePage{}))
+	data = appendRecords(data, &header.scripts, b.scripts)
+	header.scripts.count /= 4
+	data = appendRecords(data, &header.strings, b.strs)
+	if len(data) > math.MaxUint32 {
+		return nil, fmt.Errorf("font index of %d bytes exceeds the format's limit", len(data))
+	}
+
+	header.size = uint64(len(data))
+	header.checksum = crc32.ChecksumIEEE(data[unsafe.Sizeof(header):])
+	copy(data, unsafe.Slice((*byte)(unsafe.Pointer(&header)), unsafe.Sizeof(header)))
+	return data, nil
+}
+
+// writeIndexFile replaces the index at cachePath whole, through a rename,
+// so a concurrent reader sees the old file or the new one. A mapping of
+// the old one stays valid.
+func (s indexSnapshot) writeIndexFile(cachePath string) error {
+	data, err := s.encode()
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(cachePath)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("unable to create system font cache dir %q: %w", dir, err)
 	}
 	f, err := os.CreateTemp(dir, filepath.Base(cachePath)+".*")
 	if err != nil {
-		return err
+		return fmt.Errorf("creating font index in %q: %w", dir, err)
 	}
 	defer os.Remove(f.Name())
 
-	err = index.serializeTo(f)
-	if err != nil {
+	if _, err := f.Write(data); err != nil {
 		f.Close()
-		return err
+		return fmt.Errorf("writing font index %q: %w", f.Name(), err)
 	}
-
-	err = f.Close()
-	if err != nil {
-		return err
+	if err := f.Close(); err != nil {
+		return fmt.Errorf("writing font index %q: %w", f.Name(), err)
 	}
-	return os.Rename(f.Name(), cachePath)
+	if err := os.Rename(f.Name(), cachePath); err != nil {
+		return fmt.Errorf("replacing font index %q: %w", cachePath, err)
+	}
+	return nil
 }

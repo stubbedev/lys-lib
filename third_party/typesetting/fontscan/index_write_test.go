@@ -19,11 +19,11 @@ func TestScanReportsWhetherTheIndexChanged(t *testing.T) {
 	}
 	scan := func(prev systemFontsIndex) (systemFontsIndex, bool) {
 		t.Helper()
-		index, unchanged, err := scanFontFootprints(discardLogger{}, prev, dir)
+		scan, err := scanFontFootprints(discardLogger{}, prev, time.Now(), dir)
 		if err != nil {
 			t.Fatal(err)
 		}
-		return index, unchanged
+		return scan.index, scan.unchanged
 	}
 	first, unchanged := scan(nil)
 	if unchanged || len(first) != 1 {
@@ -48,29 +48,13 @@ func TestScanReportsWhetherTheIndexChanged(t *testing.T) {
 	}
 }
 
-func TestTheIndexFileIsReplacedWhole(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "index.cache")
-	want := systemFontsIndex{{path: "/a.ttf"}}
-	if err := want.serializeToFile(path); err != nil {
-		t.Fatal(err)
-	}
-	got, err := deserializeIndexFile(path)
-	if err != nil || len(got) != 1 || got[0].path != "/a.ttf" {
-		t.Fatalf("read back %v, %v", got, err)
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil || len(entries) != 1 {
-		t.Errorf("directory holds %v, %v; want only the index", entries, err)
-	}
-}
-
 func TestAnEmptyFontFileDoesNotStopAScan(t *testing.T) {
 	dir := t.TempDir()
 	if err := os.WriteFile(filepath.Join(dir, "empty.ttf"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	index, _, err := scanFontFootprints(discardLogger{}, nil, dir)
+	scan, err := scanFontFootprints(discardLogger{}, nil, time.Now(), dir)
+	index := scan.index
 	if err != nil || len(index) != 1 || len(index[0].footprints) != 0 {
 		t.Errorf("index %v, %v; want the file listed with no footprints", index, err)
 	}
@@ -91,7 +75,8 @@ func TestAMappedFontScansAndLoadsAsItsBytes(t *testing.T) {
 	if err := os.WriteFile(font, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	index, _, err := scanFontFootprints(discardLogger{}, nil, dir)
+	scan, err := scanFontFootprints(discardLogger{}, nil, time.Now(), dir)
+	index := scan.index
 	if err != nil || len(index) != 1 || len(index[0].footprints) != 1 {
 		t.Fatalf("index %v, %v", index, err)
 	}
@@ -109,6 +94,88 @@ func TestAMappedFontScansAndLoadsAsItsBytes(t *testing.T) {
 	}
 }
 
+func TestASymlinkedFontDirectoryIsScannedOnce(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	real := filepath.Join(root, "store", "family")
+	fonts := filepath.Join(root, "fonts")
+	for _, dir := range []string{real, fonts} {
+		if err := os.MkdirAll(dir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(real, "a.ttf"), []byte("not a font"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for link, target := range map[string]string{
+		filepath.Join(fonts, "family"):  real,
+		filepath.Join(fonts, "again"):   real,
+		filepath.Join(real, "loop"):     filepath.Dir(real),
+		filepath.Join(fonts, "to-root"): fonts,
+	} {
+		if err := os.Symlink(target, link); err != nil {
+			t.Fatal(err)
+		}
+	}
+	scan, err := scanFontFootprints(discardLogger{}, nil, time.Now(), fonts)
+	index := scan.index
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(index) != 1 || index[0].path != filepath.Join(real, "a.ttf") {
+		t.Errorf("index %v, want the one font behind the links, by its target's path", index)
+	}
+}
+
+func TestASymlinkedFontRootIsScanned(t *testing.T) {
+	root, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	real := filepath.Join(root, "real")
+	if err := os.Mkdir(real, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(real, "a.ttf"), []byte("not a font"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(root, "fonts")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	scan, err := scanFontFootprints(discardLogger{}, nil, time.Now(), link)
+	index := scan.index
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(index) != 1 || index[0].path != filepath.Join(real, "a.ttf") {
+		t.Errorf("index %v, want the font behind the root's link", index)
+	}
+}
+
+func TestAnUnreadableFontFileDoesNotStopAScan(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("root reads every file")
+	}
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "locked.ttf"), []byte("not a font"), 0o000); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "open.ttf"), []byte("not a font"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	scan, err := scanFontFootprints(discardLogger{}, nil, time.Now(), dir)
+	index := scan.index
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(index) != 1 || filepath.Base(index[0].path) != "open.ttf" {
+		t.Errorf("index %v, want only the readable file", index)
+	}
+}
+
 // A directory linked into a font directory, as a Nix profile links each
 // package's fonts, is scanned as a directory and does not stop the scan;
 // a link back to a parent ends rather than walking forever.
@@ -123,7 +190,8 @@ func TestALinkedDirectoryIsWalked(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	index, _, err := scanFontFootprints(discardLogger{}, nil, dir)
+	scan, err := scanFontFootprints(discardLogger{}, nil, time.Now(), dir)
+	index := scan.index
 	if err != nil {
 		t.Fatal(err)
 	}

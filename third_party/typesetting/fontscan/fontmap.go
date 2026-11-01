@@ -1,10 +1,14 @@
 package fontscan
 
 import (
+	"errors"
 	"fmt"
 	"log"
+	"os"
 	"path/filepath"
+	"slices"
 	"sync"
+	"time"
 
 	"github.com/stubbedev/lys-lib/third_party/typesetting/font"
 	ot "github.com/stubbedev/lys-lib/third_party/typesetting/font/opentype"
@@ -27,7 +31,8 @@ type Logger interface {
 // and the match algorithm is inspired from Rust font-kit library
 
 // SystemFonts loads the system fonts, using an index stored in [cacheDir].
-// See [FontMap.UseSystemFonts] for more details.
+// See [FontMap.UseSystemFonts] for more details. The returned slice is shared
+// and must not be modified.
 //
 // If [logger] is nil, log.Default() is used.
 func SystemFonts(logger Logger, cacheDir string) ([]Footprint, error) {
@@ -42,7 +47,7 @@ func SystemFonts(logger Logger, cacheDir string) ([]Footprint, error) {
 	}
 
 	// systemFonts is read-only, so may be used concurrently
-	return systemFonts.flatten(), nil
+	return systemFonts, nil
 }
 
 // FontMap provides a mechanism to select a [font.Face] from a font description.
@@ -128,7 +133,7 @@ func (fm *FontMap) UseSystemFonts(cacheDir string) error {
 	}
 
 	// systemFonts is read-only, so may be used concurrently
-	fm.appendFootprints(systemFonts.flatten()...)
+	fm.appendFootprints(systemFonts...)
 
 	fm.built = false
 
@@ -140,7 +145,11 @@ func (fm *FontMap) UseSystemFonts(cacheDir string) error {
 // coverage.
 func (fm *FontMap) appendFootprints(footprints ...Footprint) {
 	startIdx := len(fm.database)
-	fm.database = append(fm.database, footprints...)
+	if startIdx == 0 {
+		fm.database = footprints[:len(footprints):len(footprints)]
+	} else {
+		fm.database = append(fm.database, footprints...)
+	}
 	// Insert entries into scriptMap for each footprint's covered scripts.
 	for i, fp := range footprints {
 		dbIdx := startIdx + i
@@ -154,7 +163,7 @@ func (fm *FontMap) appendFootprints(footprints ...Footprint) {
 // initSystemFontsOnce protects the initial assignment,
 // and `systemFonts` use is then read-only
 var (
-	systemFonts         systemFontsIndex
+	systemFonts         fontSet
 	initSystemFontsOnce sync.Once
 )
 
@@ -174,34 +183,72 @@ func initSystemFonts(logger Logger, userCacheDir string) error {
 	var err error
 
 	initSystemFontsOnce.Do(func() {
-		const cacheFilePattern = "font_index_v%d.cache"
-
-		// load an existing index
-		var dir string
-		dir, err = cacheDir(userCacheDir)
-		if err != nil {
-			return
+		var index systemFontsIndex
+		index, err = refreshSystemFontsIndex(logger, indexPath(logger, userCacheDir), time.Now())
+		if err == nil {
+			systemFonts = index.flatten()
 		}
-
-		cachePath := filepath.Join(dir, fmt.Sprintf(cacheFilePattern, cacheFormatVersion))
-
-		systemFonts, err = refreshSystemFontsIndex(logger, cachePath)
 	})
 
 	return err
 }
 
-func refreshSystemFontsIndex(logger Logger, cachePath string) (systemFontsIndex, error) {
-	fontDirectories, err := DefaultFontDirectories(logger)
+const cacheFilePattern = "font_index_v%d.cache"
+
+// indexPath is where the index lives, "" without a cache directory, as for
+// a system user with no home: the fonts are then scanned on every start.
+func indexPath(logger Logger, userCacheDir string) string {
+	dir, err := cacheDir(userCacheDir)
+	if err != nil {
+		logger.Printf("no font index: %s", err)
+		return ""
+	}
+	return filepath.Join(dir, fmt.Sprintf(cacheFilePattern, cacheFormatVersion))
+}
+
+func removePreviousIndex(logger Logger, cachePath string) {
+	previous := filepath.Join(filepath.Dir(cachePath), fmt.Sprintf(cacheFilePattern, cacheFormatVersion-1))
+	if err := os.Remove(previous); err != nil && !errors.Is(err, os.ErrNotExist) {
+		logger.Printf("removing old font index: %s", err)
+	}
+}
+
+func refreshSystemFontsIndex(logger Logger, cachePath string, now time.Time) (systemFontsIndex, error) {
+	var previous indexSnapshot
+	if cachePath != "" {
+		var err error
+		previous, err = readIndexFile(cachePath)
+		if err != nil && !errors.Is(err, os.ErrNotExist) {
+			logger.Printf("rescanning system fonts: unusable index %q: %s", cachePath, err)
+		}
+	}
+
+	fc := previous.fc
+	fcCurrent := true
+	roots, err := fontDirectories(logger, func() []string {
+		vars := fcVarsFromEnv()
+		if fc.currentFor(vars) {
+			return fc.dirs
+		}
+		var err error
+		fc, err = vars.parseFcConfig(logger, now)
+		if err != nil {
+			logger.Printf("unable to process fontconfig config file: %s", err)
+			return nil
+		}
+		fcCurrent = false
+		return fc.dirs
+	})
 	if err != nil {
 		return nil, fmt.Errorf("searching font directories: %w", err)
 	}
-	logger.Printf("using system font dirs %q", fontDirectories)
 
-	currentIndex, _ := deserializeIndexFile(cachePath)
-	// if an error occured (the cache file does not exists or is invalid), we start from scratch
+	if fcCurrent && previous.isCurrent(roots) {
+		return previous.fonts, nil
+	}
+	logger.Printf("using system font dirs %q", roots)
 
-	updatedIndex, unchanged, err := scanFontFootprints(logger, currentIndex, fontDirectories...)
+	scan, err := scanFontFootprints(logger, previous.fonts, now, roots...)
 	if err != nil {
 		return nil, fmt.Errorf("scanning system fonts: %s", err)
 	}
@@ -209,22 +256,26 @@ func refreshSystemFontsIndex(logger Logger, cachePath string) (systemFontsIndex,
 	// since ResolveFace must always return a valid face, we make sure
 	// at least one font exists and is valid.
 	// Otherwise, the font map is useless; this is an extreme case anyway.
-	err = updatedIndex.assertValid()
-	if err != nil {
-		return nil, fmt.Errorf("loading system fonts: %s", err)
+	// An index that was read unchanged passed this before it was written.
+	if !scan.unchanged || len(scan.index) == 0 {
+		if err := scan.index.assertValid(); err != nil {
+			return nil, fmt.Errorf("loading system fonts: %s", err)
+		}
 	}
 
-	if unchanged {
-		return updatedIndex, nil
+	if cachePath == "" || (scan.unchanged && fcCurrent && slices.Equal(previous.roots, roots) && slices.Equal(previous.dirs, scan.dirs)) {
+		return scan.index, nil
 	}
 
-	// write back the index in the cache file
-	err = updatedIndex.serializeToFile(cachePath)
-	if err != nil {
-		return nil, fmt.Errorf("updating cache: %s", err)
+	// The index only saves work on the next start: failing to write it is
+	// no reason to go without fonts.
+	updated := indexSnapshot{fonts: scan.index, roots: roots, dirs: scan.dirs, fc: fc}
+	if err := updated.writeIndexFile(cachePath); err != nil {
+		logger.Printf("updating font index: %s", err)
+		return scan.index, nil
 	}
-
-	return updatedIndex, nil
+	removePreviousIndex(logger, cachePath)
+	return scan.index, nil
 }
 
 // [AddFont] loads the faces contained in [fontFile] and add them to

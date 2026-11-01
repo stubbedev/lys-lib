@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // fcVars captures the environment configuration that determines how fontconfig resolves configuration
@@ -27,6 +28,59 @@ type fcVars struct {
 	// sysroot is the root directory of the fontconfig system logically. It is prepended
 	// to all other paths, and is usually empty.
 	sysroot string
+	// deps records what a parse read, so its result can be reused.
+	deps *fcDeps
+}
+
+// fcDeps is every path a parse of the configuration depended on, stamped
+// before it was read, absent ones included, since creating one changes
+// the result. usedCwd is a <dir> resolved against the working directory.
+type fcDeps struct {
+	now     time.Time
+	seen    map[string]bool
+	stamped []stampedPath
+	usedCwd bool
+}
+
+func (d *fcDeps) add(path string) {
+	if d.seen[path] {
+		return
+	}
+	d.seen[path] = true
+	d.stamped = append(d.stamped, stampedPath{path: path, stamp: settledStamp(path, d.now)})
+}
+
+// fontconfigResult is a parse of the configuration: the font directories
+// it names, and when it is still good. key identifies the environment it
+// was parsed under.
+type fontconfigResult struct {
+	key  string
+	dirs []string
+	deps []stampedPath
+}
+
+func (f fcVars) environmentKey() string {
+	return strings.Join([]string{f.xdgDataHome, f.xdgConfigHome, f.userHome, f.configFile, strings.Join(f.paths, "\x01"), f.sysroot, ""}, "\x00")
+}
+
+// currentFor reports whether the configuration parsed into r is unchanged
+// and applies under f, without opening any of it.
+func (r fontconfigResult) currentFor(f fcVars) bool {
+	cwd, ok := strings.CutPrefix(r.key, f.environmentKey())
+	if !ok || r.key == "" {
+		return false
+	}
+	if cwd != "" {
+		if got, err := os.Getwd(); err != nil || got != cwd {
+			return false
+		}
+	}
+	for _, dep := range r.deps {
+		if statStamp(dep.path) != dep.stamp {
+			return false
+		}
+	}
+	return true
 }
 
 func fcVarsFromEnv() fcVars {
@@ -67,6 +121,7 @@ func (f fcVars) resolvePath(logger Logger, path string) string {
 		if hasSysroot {
 			candidate = filepath.Join(f.sysroot, candidate)
 		}
+		f.deps.add(candidate)
 		if _, err := os.Stat(candidate); err != nil {
 			continue
 		}
@@ -125,6 +180,7 @@ func (directive *fcDirective) UnmarshalXML(d *xml.Decoder, start xml.StartElemen
 // The file parameter is expected to already be resolved by
 // resolvePath().
 func (fc fcVars) parseFcFile(logger Logger, file, currentWorkingDir string) (fontDirs, includes []string, _ error) {
+	fc.deps.add(file)
 	f, err := os.Open(file)
 	if err != nil {
 		return nil, nil, fmt.Errorf("opening fontconfig config file: %s", err)
@@ -146,6 +202,7 @@ func (fc fcVars) parseFcFile(logger Logger, file, currentWorkingDir string) (fon
 			dir := item.dir.Dir
 			switch item.dir.Prefix {
 			case "default", "cwd":
+				fc.deps.usedCwd = true
 				dir = filepath.Join(currentWorkingDir, dir)
 			case "relative":
 				dir = filepath.Join(filepath.Dir(file), dir)
@@ -171,6 +228,7 @@ func (fc fcVars) parseFcFile(logger Logger, file, currentWorkingDir string) (fon
 // seen is updated with the processed fontconfig files. The dir parameter is
 // expected to already be resolved by resolvePath.
 func (fc fcVars) parseFcDir(logger Logger, dir, currentWorkingDir string, seen map[string]bool) (fontDirs, includes []string, _ error) {
+	fc.deps.add(dir)
 	entries, err := readDir(dir)
 	if err != nil {
 		return nil, nil, fmt.Errorf("reading fontconfig config directory: %s", err)
@@ -200,19 +258,20 @@ func (fc fcVars) parseFcDir(logger Logger, dir, currentWorkingDir string, seen m
 
 // parseFcConfig recursively parses the fontconfig config file at [rootConfig]
 // and its includes, returning the font directories to scan
-func (fc fcVars) parseFcConfig(logger Logger) ([]string, error) {
+func (fc fcVars) parseFcConfig(logger Logger, now time.Time) (fontconfigResult, error) {
+	fc.deps = &fcDeps{now: now, seen: map[string]bool{}}
 	root := fc.resolveRoot(logger)
 	seen := map[string]bool{root: true}
 
 	cwd, err := os.Getwd()
 	if err != nil {
-		return nil, fmt.Errorf("processing fontconfig config file: %s", err)
+		return fontconfigResult{}, fmt.Errorf("processing fontconfig config file: %s", err)
 	}
 
 	// includes is a queue
 	dirs, includes, err := fc.parseFcFile(logger, root, cwd)
 	if err != nil {
-		return nil, err
+		return fontconfigResult{}, err
 	}
 	for i := 0; i < len(includes); i++ {
 		include := includes[i]
@@ -221,6 +280,7 @@ func (fc fcVars) parseFcConfig(logger Logger) ([]string, error) {
 		}
 		seen[include] = true
 
+		fc.deps.add(include)
 		fi, err := os.Stat(include)
 		if err != nil { // gracefully ignore broken includes
 			logger.Printf("missing fontconfig include %s: skipping", include)
@@ -234,12 +294,16 @@ func (fc fcVars) parseFcConfig(logger Logger) ([]string, error) {
 			newDirs, newIncludes, err = fc.parseFcFile(logger, include, cwd)
 		}
 		if err != nil {
-			return nil, err
+			return fontconfigResult{}, err
 		}
 
 		dirs = append(dirs, newDirs...)
 		includes = append(includes, newIncludes...)
 	}
 
-	return dirs, nil
+	key := fc.environmentKey()
+	if fc.deps.usedCwd {
+		key += cwd
+	}
+	return fontconfigResult{key: key, dirs: dirs, deps: fc.deps.stamped}, nil
 }
