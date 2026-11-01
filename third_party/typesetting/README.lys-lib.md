@@ -134,7 +134,7 @@ offset, then points slices and strings into the mapping, one array of
 faces of a family share is stored once. The mapping is writable and
 private, so a caller editing a `RuneSet` in place gets what a heap copy
 gave it. The file is only ever replaced by a rename, so a reader keeps
-the file it mapped; truncating it from outside faults, as with a mapped
+the file it mapped. Truncating it from outside faults, as with a mapped
 font.
 
 An index of another format, byte order or checksum, a truncated one and
@@ -172,8 +172,7 @@ Run by `sysfont.Weighted("sans-serif", ...)` on a warm index:
 | | bytes | 15.4 MB | 3.8 MB |
 | | openat / getdents64 / read | 261 / 152 / 113 | 159 / 2 / 36 |
 
-The 32k left are parsing the resolved face and lys-ui's two embedded
-ones. Loading the fixture's index alone: gunzip and decode 5.5 ms, 11575
+Loading the fixture's index alone: gunzip and decode 5.5 ms, 11575
 allocations, 3.4 MB; mapped 0.26 ms, 10 allocations, 0.33 MB, for a file
 of 618 KB instead of 147 KB. Reading it onto the heap instead of mapping
 takes 0.45 ms and 0.95 MB, so it is mapped. Moving the `Footprint` table
@@ -190,6 +189,14 @@ and hinting may fuse into an FMA on arm64 and not on amd64, so a varied outline
 differed by the last bit between them. An explicit conversion rounds each product
 first, as the Go spec provides, and a varied font now hashes to the same outlines
 everywhere. Pinned by `font/lys_gvar_test.go` and by `just no-fused`.
+
+### FONTCONFIG_PATH is honoured
+
+`fontscan/fontconfig.go`: upstream looked the variable up as `"$FONTCONFIG_PATH"`, with
+the dollar sign, so it was never found and a relative `FONTCONFIG_FILE` or include
+resolved in `/etc/fonts` alone. Its directories are now searched, empty entries skipped,
+then `/etc/fonts`, which fontconfig also always searches last. Pinned by
+`fontscan/lys_fontconfig_test.go`.
 
 ### Import path
 

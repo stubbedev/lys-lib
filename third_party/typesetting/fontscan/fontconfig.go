@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"time"
 )
@@ -23,7 +24,7 @@ type fcVars struct {
 	userHome string
 	// configFile is the name of the configuration file, extracted from $FONTCONFIG_FILE.
 	configFile string
-	// paths is the list of configuration paths, extracted from $FONTCONFIG_PATH
+	// paths is the list of configuration paths: see [fontconfigSearchPath].
 	paths []string
 	// sysroot is the root directory of the fontconfig system logically. It is prepended
 	// to all other paths, and is usually empty.
@@ -83,16 +84,26 @@ func (r fontconfigResult) currentFor(f fcVars) bool {
 	return true
 }
 
+const defaultFontconfigDir = "/etc/fonts"
+
 func fcVarsFromEnv() fcVars {
 	home := os.Getenv("HOME")
 	return fcVars{
 		xdgDataHome:   getEnvWithDefault("XDG_DATA_HOME", filepath.Join(home, ".local", "share")),
 		xdgConfigHome: getEnvWithDefault("XDG_CONFIG_HOME", filepath.Join(home, ".config")),
 		configFile:    getEnvWithDefault("FONTCONFIG_FILE", "fonts.conf"),
-		paths:         filepath.SplitList(getEnvWithDefault("$FONTCONFIG_PATH", "/etc/fonts")),
+		paths:         fontconfigSearchPath(os.Getenv("FONTCONFIG_PATH")),
 		sysroot:       os.Getenv("FONTCONFIG_SYSROOT"),
 		userHome:      home,
 	}
+}
+
+// fontconfigSearchPath is where a relative configuration file is looked
+// for: the directories of $FONTCONFIG_PATH, then the default one, which
+// as in fontconfig is searched whether the variable is set or not.
+func fontconfigSearchPath(env string) []string {
+	paths := slices.DeleteFunc(filepath.SplitList(env), func(dir string) bool { return dir == "" })
+	return append(paths, defaultFontconfigDir)
 }
 
 // resolveRoot returns the path of the root fontconfig file according to the fcVars.
