@@ -17,20 +17,49 @@ type Modifier uint64
 // The pixel formats lys handles, DRM_FORMAT_* by their fourcc codes,
 // and the modifiers DRM_FORMAT_MOD_LINEAR and DRM_FORMAT_MOD_INVALID.
 const (
-	ARGB8888    Format = 'A' | 'R'<<8 | '2'<<16 | '4'<<24
-	XRGB8888    Format = 'X' | 'R'<<8 | '2'<<16 | '4'<<24
-	ABGR8888    Format = 'A' | 'B'<<8 | '2'<<16 | '4'<<24
-	XBGR8888    Format = 'X' | 'B'<<8 | '2'<<16 | '4'<<24
-	ARGB2101010 Format = 'A' | 'R'<<8 | '3'<<16 | '0'<<24
-	XRGB2101010 Format = 'X' | 'R'<<8 | '3'<<16 | '0'<<24
-	ABGR2101010 Format = 'A' | 'B'<<8 | '3'<<16 | '0'<<24
-	XBGR2101010 Format = 'X' | 'B'<<8 | '3'<<16 | '0'<<24
-	NV12        Format = 'N' | 'V'<<8 | '1'<<16 | '2'<<24
-	NV21        Format = 'N' | 'V'<<8 | '2'<<16 | '1'<<24
-	NV16        Format = 'N' | 'V'<<8 | '1'<<16 | '6'<<24
-	P010        Format = 'P' | '0'<<8 | '1'<<16 | '0'<<24
-	YUV420      Format = 'Y' | 'U'<<8 | '1'<<16 | '2'<<24
-	YVU420      Format = 'Y' | 'V'<<8 | '1'<<16 | '2'<<24
+	ARGB8888     Format = 'A' | 'R'<<8 | '2'<<16 | '4'<<24
+	XRGB8888     Format = 'X' | 'R'<<8 | '2'<<16 | '4'<<24
+	ABGR8888     Format = 'A' | 'B'<<8 | '2'<<16 | '4'<<24
+	XBGR8888     Format = 'X' | 'B'<<8 | '2'<<16 | '4'<<24
+	ARGB2101010  Format = 'A' | 'R'<<8 | '3'<<16 | '0'<<24
+	XRGB2101010  Format = 'X' | 'R'<<8 | '3'<<16 | '0'<<24
+	ABGR2101010  Format = 'A' | 'B'<<8 | '3'<<16 | '0'<<24
+	XBGR2101010  Format = 'X' | 'B'<<8 | '3'<<16 | '0'<<24
+	NV12         Format = 'N' | 'V'<<8 | '1'<<16 | '2'<<24
+	NV21         Format = 'N' | 'V'<<8 | '2'<<16 | '1'<<24
+	NV16         Format = 'N' | 'V'<<8 | '1'<<16 | '6'<<24
+	NV61         Format = 'N' | 'V'<<8 | '6'<<16 | '1'<<24
+	NV24         Format = 'N' | 'V'<<8 | '2'<<16 | '4'<<24
+	NV42         Format = 'N' | 'V'<<8 | '4'<<16 | '2'<<24
+	P010         Format = 'P' | '0'<<8 | '1'<<16 | '0'<<24
+	P012         Format = 'P' | '0'<<8 | '1'<<16 | '2'<<24
+	P016         Format = 'P' | '0'<<8 | '1'<<16 | '6'<<24
+	P210         Format = 'P' | '2'<<8 | '1'<<16 | '0'<<24
+	YUV420       Format = 'Y' | 'U'<<8 | '1'<<16 | '2'<<24
+	YVU420       Format = 'Y' | 'V'<<8 | '1'<<16 | '2'<<24
+	YUV422       Format = 'Y' | 'U'<<8 | '1'<<16 | '6'<<24
+	YVU422       Format = 'Y' | 'V'<<8 | '1'<<16 | '6'<<24
+	YUV444       Format = 'Y' | 'U'<<8 | '2'<<16 | '4'<<24
+	YVU444       Format = 'Y' | 'V'<<8 | '2'<<16 | '4'<<24
+	Q410         Format = 'Q' | '4'<<8 | '1'<<16 | '0'<<24
+	Q401         Format = 'Q' | '4'<<8 | '0'<<16 | '1'<<24
+	YUYV         Format = 'Y' | 'U'<<8 | 'Y'<<16 | 'V'<<24
+	YVYU         Format = 'Y' | 'V'<<8 | 'Y'<<16 | 'U'<<24
+	UYVY         Format = 'U' | 'Y'<<8 | 'V'<<16 | 'Y'<<24
+	VYUY         Format = 'V' | 'Y'<<8 | 'U'<<16 | 'Y'<<24
+	Y210         Format = 'Y' | '2'<<8 | '1'<<16 | '0'<<24
+	Y212         Format = 'Y' | '2'<<8 | '1'<<16 | '2'<<24
+	Y216         Format = 'Y' | '2'<<8 | '1'<<16 | '6'<<24
+	AYUV         Format = 'A' | 'Y'<<8 | 'U'<<16 | 'V'<<24
+	XYUV8888     Format = 'X' | 'Y'<<8 | 'U'<<16 | 'V'<<24
+	AVUY8888     Format = 'A' | 'V'<<8 | 'U'<<16 | 'Y'<<24
+	XVUY8888     Format = 'X' | 'V'<<8 | 'U'<<16 | 'Y'<<24
+	Y410         Format = 'Y' | '4'<<8 | '1'<<16 | '0'<<24
+	XVYU2101010  Format = 'X' | 'V'<<8 | '3'<<16 | '0'<<24
+	Y412         Format = 'Y' | '4'<<8 | '1'<<16 | '2'<<24
+	XVYU121616   Format = 'X' | 'V'<<8 | '3'<<16 | '6'<<24
+	Y416         Format = 'Y' | '4'<<8 | '1'<<16 | '6'<<24
+	XVYU16161616 Format = 'X' | 'V'<<8 | '4'<<16 | '8'<<24
 
 	Linear  Modifier = 0
 	Invalid Modifier = 0x00ffffffffffffff
@@ -43,13 +72,47 @@ var withoutAlpha = map[Format]Format{
 	ABGR2101010: XBGR2101010,
 }
 
+// yuvPlanes is each YUV format's color planes, as how many luma rows
+// share one row of the plane.
+var yuvPlanes = map[Format][]int{
+	NV12: {1, 2}, NV21: {1, 2}, NV16: {1, 1}, NV61: {1, 1}, NV24: {1, 1}, NV42: {1, 1},
+	P010: {1, 2}, P012: {1, 2}, P016: {1, 2}, P210: {1, 1},
+	YUV420: {1, 2, 2}, YVU420: {1, 2, 2}, YUV422: {1, 1, 1}, YVU422: {1, 1, 1}, YUV444: {1, 1, 1}, YVU444: {1, 1, 1},
+	Q410: {1, 1, 1}, Q401: {1, 1, 1},
+	YUYV: {1}, YVYU: {1}, UYVY: {1}, VYUY: {1}, Y210: {1}, Y212: {1}, Y216: {1},
+	AYUV: {1}, XYUV8888: {1}, AVUY8888: {1}, XVUY8888: {1},
+	Y410: {1}, XVYU2101010: {1}, Y412: {1}, XVYU121616: {1}, Y416: {1}, XVYU16161616: {1},
+}
+
 // YUV reports whether f is one of the YUV formats named here.
 func (f Format) YUV() bool {
-	switch f {
-	case NV12, NV21, NV16, P010, YUV420, YVU420:
-		return true
+	_, ok := yuvPlanes[f]
+	return ok
+}
+
+// Planes is how many color planes a buffer of f has, or 0 when f is not
+// named here. A modifier may add metadata planes beyond them.
+func (f Format) Planes() int {
+	if _, ok := withoutAlpha[f]; ok {
+		return 1
 	}
-	return false
+	for _, opaque := range withoutAlpha {
+		if opaque == f {
+			return 1
+		}
+	}
+	return len(yuvPlanes[f])
+}
+
+// PlaneRows is how many rows plane has in a buffer of f height rows
+// tall: height for a plane that is not subsampled, a metadata plane or a
+// format not named here.
+func (f Format) PlaneRows(plane, height int) int {
+	subs := yuvPlanes[f]
+	if plane >= len(subs) {
+		return height
+	}
+	return (height + subs[plane] - 1) / subs[plane]
 }
 
 // HasAlpha reports whether f is one of the RGB formats named here with

@@ -39,11 +39,21 @@ var (
 )
 
 func (d *Device) importFormats() []fourcc.Format {
-	if d.ycbcr {
-		return append(slices.Clone(textureFormats), ycbcrFormats...)
+	if !d.ycbcr {
+		return textureFormats
 	}
-	return textureFormats
+	out := slices.Clone(textureFormats)
+	for _, f := range ycbcrFormats {
+		if !pixelFormats[f].core13 || d.vulkan13 {
+			out = append(out, f)
+		}
+	}
+	return out
 }
+
+// ImportFormats are the DRM formats ImportTexture may take: what to ask
+// TextureModifiers about, which is empty for one the driver lacks.
+func (d *Device) ImportFormats() []fourcc.Format { return slices.Clone(d.importFormats()) }
 
 func (d *Device) importFormatOf(format fourcc.Format, use importUse) (pixelFormat, error) {
 	if formats := use.formats(d); !slices.Contains(formats, format) {
@@ -290,9 +300,9 @@ func (d *Device) importMemory(fd int, req vk.MemoryRequirements, ded *vk.MemoryD
 	return mem, nil
 }
 
-// ImportTexture imports b, a client's dmabuf in one of TextureFormats,
-// or NV12 or P010 where the device converts YCbCr (as BT.601 limited
-// range; ImportTextureYCbCr takes the buffer's hints), and a modifier
+// ImportTexture imports b, a client's dmabuf in one of ImportFormats (a
+// YUV one as BT.601 limited range; ImportTextureYCbCr takes the buffer's
+// hints), and a modifier
 // of TextureModifiers, as a texture a Pass samples. Its producer
 // writes it; Update refuses it. b's fds stay the caller's: the texture
 // holds the memory itself until Close.
@@ -300,8 +310,8 @@ func (d *Device) ImportTexture(b dmabuf.Buffer) (*Texture, error) {
 	return d.ImportTextureYCbCr(b, YCbCr{})
 }
 
-// ImportTextureYCbCr is ImportTexture sampling a YUV buffer (NV12 or
-// P010) through c; an RGB buffer ignores c.
+// ImportTextureYCbCr is ImportTexture sampling a YUV buffer through c;
+// an RGB buffer ignores c.
 func (d *Device) ImportTextureYCbCr(b dmabuf.Buffer, c YCbCr) (*Texture, error) {
 	im, features, err := d.importImage(b, textureImport)
 	if err != nil {
@@ -309,7 +319,7 @@ func (d *Device) ImportTextureYCbCr(b dmabuf.Buffer, c YCbCr) (*Texture, error) 
 	}
 	t := &Texture{d: d, format: b.Format, pf: im.pf, w: b.Width, h: b.Height, image: im.image, memory: im.memory, foreign: true, layout: vk.ImageLayoutGeneral}
 	if im.pf.ycbcr {
-		if t.ycbcr, err = d.ycbcrKindOf(im.pf.vk, c, features); err != nil {
+		if t.ycbcr, err = d.ycbcrKindOf(im.pf, c, features); err != nil {
 			t.release()
 			return nil, err
 		}

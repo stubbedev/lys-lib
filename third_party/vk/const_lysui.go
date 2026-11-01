@@ -67,14 +67,29 @@ const (
 
 // Core 1.1 values vk-gen leaves out that sampling YUV buffers names:
 // the sampler YCbCr conversion structures and feature block, the
-// 10-bit two-plane 4:2:0 format (P010) and the chroma format features.
+// YCbCr formats (the 2-plane 4:4:4 ones core in 1.3) and the chroma
+// format features.
 const (
 	StructureTypeSamplerYcbcrConversionCreateInfo            StructureType = 1000156000
 	StructureTypeSamplerYcbcrConversionInfo                  StructureType = 1000156001
 	StructureTypeSamplerYcbcrConversionImageFormatProperties StructureType = 1000156005
 	StructureTypePhysicalDeviceVulkan11Features              StructureType = 49
 
+	FormatG8b8g8r8422Unorm                     Format = 1000156000
+	FormatB8g8r8g8422Unorm                     Format = 1000156001
+	FormatG8B8R83plane420Unorm                 Format = 1000156002
+	FormatG8B8R83plane422Unorm                 Format = 1000156004
+	FormatG8B8r82plane422Unorm                 Format = 1000156005
+	FormatG8B8R83plane444Unorm                 Format = 1000156006
+	FormatG10x6b10x6g10x6r10x6422Unorm4pack16  Format = 1000156010
 	FormatG10x6B10x6r10x62plane420Unorm3pack16 Format = 1000156013
+	FormatG10x6B10x6r10x62plane422Unorm3pack16 Format = 1000156015
+	FormatG10x6B10x6R10x63plane444Unorm3pack16 Format = 1000156016
+	FormatG12x4b12x4g12x4r12x4422Unorm4pack16  Format = 1000156020
+	FormatG12x4B12x4r12x42plane420Unorm3pack16 Format = 1000156023
+	FormatG16b16g16r16422Unorm                 Format = 1000156027
+	FormatG16B16r162plane420Unorm              Format = 1000156030
+	FormatG8B8r82plane444Unorm                 Format = 1000330000
 
 	FormatFeatureMidpointChromaSamplesBit                   FormatFeatureFlagBits = 1 << 17
 	FormatFeatureSampledImageYcbcrConversionLinearFilterBit FormatFeatureFlagBits = 1 << 18

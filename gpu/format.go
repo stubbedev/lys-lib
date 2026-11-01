@@ -14,6 +14,12 @@ type pixelFormat struct {
 	planes int
 	opaque bool
 	ycbcr  bool
+	// swapped marks a YCbCr format that holds Cr where its Vulkan format
+	// holds Cb: Vulkan has no format of its own for it, and the
+	// conversion's swizzle reads it.
+	swapped bool
+	// core13 marks a format Vulkan 1.3 added to core.
+	core13 bool
 	size   int
 }
 
@@ -26,8 +32,31 @@ var pixelFormats = map[fourcc.Format]pixelFormat{
 	fourcc.XRGB2101010: {vk: vk.FormatA2r10g10b10UnormPack32, planes: 1, opaque: true, size: 4},
 	fourcc.ABGR2101010: {vk: vk.FormatA2b10g10r10UnormPack32, planes: 1, size: 4},
 	fourcc.XBGR2101010: {vk: vk.FormatA2b10g10r10UnormPack32, planes: 1, opaque: true, size: 4},
-	fourcc.NV12:        {vk: nv12, planes: 2, ycbcr: true, size: 1},
-	fourcc.P010:        {vk: vk.FormatG10x6B10x6r10x62plane420Unorm3pack16, planes: 2, ycbcr: true, size: 2},
+	fourcc.NV12:        {vk: nv12, planes: 2, ycbcr: true},
+	fourcc.NV21:        {vk: nv12, planes: 2, ycbcr: true, swapped: true},
+	fourcc.NV16:        {vk: vk.FormatG8B8r82plane422Unorm, planes: 2, ycbcr: true},
+	fourcc.NV61:        {vk: vk.FormatG8B8r82plane422Unorm, planes: 2, ycbcr: true, swapped: true},
+	fourcc.NV24:        {vk: vk.FormatG8B8r82plane444Unorm, planes: 2, ycbcr: true, core13: true},
+	fourcc.NV42:        {vk: vk.FormatG8B8r82plane444Unorm, planes: 2, ycbcr: true, swapped: true, core13: true},
+	fourcc.P010:        {vk: vk.FormatG10x6B10x6r10x62plane420Unorm3pack16, planes: 2, ycbcr: true},
+	fourcc.P012:        {vk: vk.FormatG12x4B12x4r12x42plane420Unorm3pack16, planes: 2, ycbcr: true},
+	fourcc.P016:        {vk: vk.FormatG16B16r162plane420Unorm, planes: 2, ycbcr: true},
+	fourcc.P210:        {vk: vk.FormatG10x6B10x6r10x62plane422Unorm3pack16, planes: 2, ycbcr: true},
+	fourcc.YUV420:      {vk: vk.FormatG8B8R83plane420Unorm, planes: 3, ycbcr: true},
+	fourcc.YVU420:      {vk: vk.FormatG8B8R83plane420Unorm, planes: 3, ycbcr: true, swapped: true},
+	fourcc.YUV422:      {vk: vk.FormatG8B8R83plane422Unorm, planes: 3, ycbcr: true},
+	fourcc.YVU422:      {vk: vk.FormatG8B8R83plane422Unorm, planes: 3, ycbcr: true, swapped: true},
+	fourcc.YUV444:      {vk: vk.FormatG8B8R83plane444Unorm, planes: 3, ycbcr: true},
+	fourcc.YVU444:      {vk: vk.FormatG8B8R83plane444Unorm, planes: 3, ycbcr: true, swapped: true},
+	fourcc.Q410:        {vk: vk.FormatG10x6B10x6R10x63plane444Unorm3pack16, planes: 3, ycbcr: true},
+	fourcc.Q401:        {vk: vk.FormatG10x6B10x6R10x63plane444Unorm3pack16, planes: 3, ycbcr: true, swapped: true},
+	fourcc.YUYV:        {vk: vk.FormatG8b8g8r8422Unorm, planes: 1, ycbcr: true},
+	fourcc.YVYU:        {vk: vk.FormatG8b8g8r8422Unorm, planes: 1, ycbcr: true, swapped: true},
+	fourcc.UYVY:        {vk: vk.FormatB8g8r8g8422Unorm, planes: 1, ycbcr: true},
+	fourcc.VYUY:        {vk: vk.FormatB8g8r8g8422Unorm, planes: 1, ycbcr: true, swapped: true},
+	fourcc.Y210:        {vk: vk.FormatG10x6b10x6g10x6r10x6422Unorm4pack16, planes: 1, ycbcr: true},
+	fourcc.Y212:        {vk: vk.FormatG12x4b12x4g12x4r12x4422Unorm4pack16, planes: 1, ycbcr: true},
+	fourcc.Y216:        {vk: vk.FormatG16b16g16r16422Unorm, planes: 1, ycbcr: true},
 }
 
 func pixelFormatOf(format fourcc.Format) (pixelFormat, error) {

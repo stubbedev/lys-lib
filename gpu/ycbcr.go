@@ -9,7 +9,18 @@ import (
 	"github.com/stubbedev/lys-lib/third_party/vk"
 )
 
-var ycbcrFormats = []fourcc.Format{fourcc.NV12, fourcc.P010}
+// ycbcrFormats are the formats a device that converts YCbCr can sample.
+// DRM's other YUV formats have no Vulkan format with their layout: the
+// 10-bit packed NV15, NV20, NV30, P030, P230 and T430, the 4x subsampled
+// YUV410 and YUV411 and their swaps, the low-bit-aligned S0xx planes and
+// the 24-bit VUY888.
+var ycbcrFormats = []fourcc.Format{
+	fourcc.NV12, fourcc.NV21, fourcc.NV16, fourcc.NV61, fourcc.NV24, fourcc.NV42,
+	fourcc.P010, fourcc.P012, fourcc.P016, fourcc.P210,
+	fourcc.YUV420, fourcc.YVU420, fourcc.YUV422, fourcc.YVU422, fourcc.YUV444, fourcc.YVU444,
+	fourcc.Q410, fourcc.Q401,
+	fourcc.YUYV, fourcc.YVYU, fourcc.UYVY, fourcc.VYUY, fourcc.Y210, fourcc.Y212, fourcc.Y216,
+}
 
 // YCbCr is how a YUV buffer's samples become RGB: the colour hints a
 // client gives with it (wp_color_representation, or a video's own).
@@ -60,6 +71,7 @@ const (
 
 type ycbcrKey struct {
 	vf     vk.Format
+	swap   bool
 	model  vk.SamplerYcbcrModelConversion
 	rng    vk.SamplerYcbcrRange
 	x, y   vk.ChromaLocation
@@ -74,8 +86,8 @@ type ycbcrKind struct {
 	pipes   map[vk.Format]vk.Pipeline
 }
 
-func (c YCbCr) key(vf vk.Format, features vk.FormatFeatureFlags) (ycbcrKey, error) {
-	k := ycbcrKey{vf: vf, filter: vk.FilterNearest}
+func (c YCbCr) key(pf pixelFormat, features vk.FormatFeatureFlags) (ycbcrKey, error) {
+	k := ycbcrKey{vf: pf.vk, swap: pf.swapped, filter: vk.FilterNearest}
 	switch c.Matrix {
 	case BT601:
 		k.model = vk.SamplerYcbcrModelConversionYcbcr601
@@ -138,8 +150,8 @@ func (d *Device) probeYCbCr(p vk.PhysicalDevice) bool {
 	return f11.SamplerYcbcrConversion != 0
 }
 
-func (d *Device) ycbcrKindOf(vf vk.Format, c YCbCr, features vk.FormatFeatureFlags) (*ycbcrKind, error) {
-	k, err := c.key(vf, features)
+func (d *Device) ycbcrKindOf(pf pixelFormat, c YCbCr, features vk.FormatFeatureFlags) (*ycbcrKind, error) {
+	k, err := c.key(pf, features)
 	if err != nil {
 		return nil, err
 	}
@@ -162,6 +174,9 @@ func (kind *ycbcrKind) create(d *Device, k ycbcrKey) error {
 	cci := vk.SamplerYcbcrConversionCreateInfo{
 		SType: vk.StructureTypeSamplerYcbcrConversionCreateInfo, Format: k.vf, YcbcrModel: k.model, YcbcrRange: k.rng,
 		XChromaOffset: k.x, YChromaOffset: k.y, ChromaFilter: k.filter,
+	}
+	if k.swap {
+		cci.Components = vk.ComponentMapping{R: vk.ComponentSwizzleB, B: vk.ComponentSwizzleR}
 	}
 	if r := d.cmds.CreateSamplerYcbcrConversion(d.device, &cci, nil, &kind.conv); r != vk.Success {
 		return fmt.Errorf("gpu: vkCreateSamplerYcbcrConversion: %w", resultError(r))
