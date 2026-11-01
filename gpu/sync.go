@@ -37,6 +37,8 @@ type timing struct {
 	passes     uint64
 	done       uint64
 	doneAt     time.Duration
+	clocks     clockSample
+	clocksAt   time.Time
 	doneErr    error
 	// spareFences and spareBuffers are the fences and command buffers
 	// of finished submissions, for the next ones.
@@ -369,19 +371,39 @@ func (d *Device) frameTime(query int) (time.Duration, error) {
 	if r := d.cmds.GetQueryPoolResults(d.device, d.queries, intconv.Must[uint32](query), 1, 8, unsafe.Pointer(&a.timestamp), 8, vk.QueryResultFlags(vk.QueryResult64Bit)); r != vk.Success {
 		return 0, fmt.Errorf("gpu: vkGetQueryPoolResults (timestamp): %d", r)
 	}
+	if err := d.calibrate(false); err != nil {
+		return 0, err
+	}
+	at, near := d.clocks.monotonic(a.timestamp, d.validBits, d.period)
+	if near {
+		return at, nil
+	}
+	if err := d.calibrate(true); err != nil {
+		return 0, err
+	}
+	at, _ = d.clocks.monotonic(a.timestamp, d.validBits, d.period)
+	return at, nil
+}
+
+// calibrate samples the device and monotonic clocks together, unless a
+// sample is still fresh: the call enters the kernel on some drivers and
+// the clocks drift far less than a frame between samples.
+func (d *Device) calibrate(force bool) error {
+	now := time.Now()
+	if !force && !d.clocksAt.IsZero() && now.Sub(d.clocksAt) < clockSampleEvery {
+		return nil
+	}
+	a := &d.args
 	a.infos = [2]vk.CalibratedTimestampInfoKHR{
 		{SType: vk.StructureTypeCalibratedTimestampInfoKhr, TimeDomain: vk.TimeDomainDeviceKhr},
 		{SType: vk.StructureTypeCalibratedTimestampInfoKhr, TimeDomain: vk.TimeDomainClockMonotonicKhr},
 	}
 	if r := d.cmds.GetCalibratedTimestampsKHR(d.device, 2, &a.infos[0], &a.now[0], &a.deviation); r != vk.Success {
-		return 0, fmt.Errorf("gpu: vkGetCalibratedTimestampsKHR: %d", r)
+		return fmt.Errorf("gpu: vkGetCalibratedTimestampsKHR: %d", r)
 	}
-	mask := ^uint64(0)
-	if d.validBits < 64 {
-		mask = 1<<d.validBits - 1
-	}
-	ago := time.Duration(float64((a.now[0]-a.timestamp)&mask) * d.period)
-	return time.Duration(intconv.Must[int64](a.now[1])) - ago, nil
+	d.clocks = clockSample{device: a.now[0], at: time.Duration(intconv.Must[int64](a.now[1]))}
+	d.clocksAt = now
+	return nil
 }
 
 // FrameDone reports when the last ended Pass finished on the GPU, on
