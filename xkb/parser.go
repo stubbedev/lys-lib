@@ -175,9 +175,9 @@ type (
 
 type parser struct {
 	exprDepth int
-	lex  *lexer
-	tok  token
-	next token
+	lex       *lexer
+	tok       token
+	next      token
 }
 
 func newParser(name, src string) (*parser, error) {
