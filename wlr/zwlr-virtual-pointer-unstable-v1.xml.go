@@ -75,6 +75,7 @@ func (p *ZwlrVirtualPointerV1) AxisDiscrete(Time uint32, Axis uint32, Value floa
 
 // Destroy destroy the virtual pointer object
 func (p *ZwlrVirtualPointerV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 8)
 }
@@ -106,6 +107,7 @@ func (p *ZwlrVirtualPointerManagerV1) CreateVirtualPointer(Seat *Seat) (*ZwlrVir
 
 // Destroy destroy the virtual pointer manager
 func (p *ZwlrVirtualPointerManagerV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 1)
 }

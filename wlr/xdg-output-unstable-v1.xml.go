@@ -23,6 +23,7 @@ func NewZxdgOutputManagerV1(ctx *Context) *ZxdgOutputManagerV1 {
 
 // Destroy destroy the xdg_output_manager object
 func (p *ZxdgOutputManagerV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }
@@ -70,6 +71,7 @@ func NewZxdgOutputV1(ctx *Context) *ZxdgOutputV1 {
 
 // Destroy destroy the xdg_output object
 func (p *ZxdgOutputV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }

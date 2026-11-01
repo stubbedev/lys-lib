@@ -35,6 +35,7 @@ func (p *ZwpGesturesV1) GetPinchGesture(Pointer *Pointer) (*ZwpGesturePinchV1, e
 
 // Release destroy the pointer gesture object
 func (p *ZwpGesturesV1) Release() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 2)
 }
@@ -78,6 +79,7 @@ func NewZwpGestureSwipeV1(ctx *Context) *ZwpGestureSwipeV1 {
 
 // Destroy destroy the pointer swipe gesture object
 func (p *ZwpGestureSwipeV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }
@@ -250,6 +252,7 @@ func NewZwpGesturePinchV1(ctx *Context) *ZwpGesturePinchV1 {
 
 // Destroy destroy the pinch gesture object
 func (p *ZwpGesturePinchV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }
@@ -426,6 +429,7 @@ func NewZwpGestureHoldV1(ctx *Context) *ZwpGestureHoldV1 {
 
 // Destroy destroy the hold gesture object
 func (p *ZwpGestureHoldV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }

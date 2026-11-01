@@ -36,6 +36,7 @@ func NewWpViewporter(ctx *Context) *WpViewporter {
 
 // Destroy unbind from the cropping and scaling interface
 func (p *WpViewporter) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }
@@ -67,6 +68,7 @@ func NewWpViewport(ctx *Context) *WpViewport {
 
 // Destroy remove scaling and cropping from the surface
 func (p *WpViewport) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }

@@ -40,6 +40,7 @@ func NewZxdgDecorationManagerV1(ctx *Context) *ZxdgDecorationManagerV1 {
 
 // Destroy destroy the decoration manager object
 func (p *ZxdgDecorationManagerV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }
@@ -79,6 +80,7 @@ func NewZxdgToplevelDecorationV1(ctx *Context) *ZxdgToplevelDecorationV1 {
 
 // Destroy destroy the decoration object
 func (p *ZxdgToplevelDecorationV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }

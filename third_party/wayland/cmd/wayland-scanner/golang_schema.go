@@ -224,9 +224,10 @@ func New`)
 }
 
 type GoMethod struct {
-	Name    string
-	Comment string
-	Args    []*GoArg
+	Name       string
+	Comment    string
+	Args       []*GoArg
+	Destructor bool
 }
 
 func (m *GoMethod) AddEventArg(s *GoArg, t *GoType) {
@@ -278,6 +279,9 @@ func (m *GoMethod) Serialize(num int, s *GoStruct) string {
 	}
 	b.WriteString(`error) {
 	`)
+	if m.Destructor {
+		b.WriteString("defer p.Unregister()\n")
+	}
 	for _, arg := range m.Args {
 		if arg.IsOutput() {
 			b.WriteString("ret")

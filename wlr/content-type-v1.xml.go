@@ -36,6 +36,7 @@ func NewWpContentTypeManagerV1(ctx *Context) *WpContentTypeManagerV1 {
 
 // Destroy destroy the content type manager object
 func (p *WpContentTypeManagerV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }
@@ -67,6 +68,7 @@ func NewWpContentTypeV1(ctx *Context) *WpContentTypeV1 {
 
 // Destroy destroy the content type object
 func (p *WpContentTypeV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }

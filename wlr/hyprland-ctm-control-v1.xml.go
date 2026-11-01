@@ -46,6 +46,7 @@ func (p *CtmControlManagerV1) Commit() error {
 
 // Destroy destroy the manager
 func (p *CtmControlManagerV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 2)
 }

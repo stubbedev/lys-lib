@@ -32,6 +32,7 @@ func (p *ZwlrGammaControlManagerV1) GetGammaControl(Output *Output) (*ZwlrGammaC
 
 // Destroy destroy the manager
 func (p *ZwlrGammaControlManagerV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 1)
 }
@@ -73,6 +74,7 @@ func (p *ZwlrGammaControlV1) SetGamma(Fd uintptr) error {
 
 // Destroy destroy this control
 func (p *ZwlrGammaControlV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 1)
 }

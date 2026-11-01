@@ -214,6 +214,7 @@ func (p *ZwlrForeignToplevelHandleV1) SetRectangle(Surface *Surface, X int32, Y 
 
 // Destroy destroy the zwlr_foreign_toplevel_handle_v1 object
 func (p *ZwlrForeignToplevelHandleV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 7)
 }

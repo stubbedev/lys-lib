@@ -24,6 +24,7 @@ func NewWmDialogV1(ctx *Context) *WmDialogV1 {
 
 // Destroy destroy the dialog manager object
 func (p *WmDialogV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }
@@ -55,6 +56,7 @@ func NewDialogV1(ctx *Context) *DialogV1 {
 
 // Destroy destroy the dialog object
 func (p *DialogV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }

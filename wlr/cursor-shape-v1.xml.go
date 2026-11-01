@@ -132,6 +132,7 @@ func NewWpCursorShapeManagerV1(ctx *Context) *WpCursorShapeManagerV1 {
 
 // Destroy destroy the manager
 func (p *WpCursorShapeManagerV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }
@@ -169,6 +170,7 @@ func NewWpCursorShapeDeviceV1(ctx *Context) *WpCursorShapeDeviceV1 {
 
 // Destroy destroy the cursor shape device
 func (p *WpCursorShapeDeviceV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }

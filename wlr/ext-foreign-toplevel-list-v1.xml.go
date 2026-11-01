@@ -39,6 +39,7 @@ func (p *ForeignToplevelListV1) Stop() error {
 
 // Destroy destroy the ext_foreign_toplevel_list_v1 object
 func (p *ForeignToplevelListV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 1)
 }
@@ -157,6 +158,7 @@ func NewForeignToplevelHandleV1(ctx *Context) *ForeignToplevelHandleV1 {
 
 // Destroy destroy the ext_foreign_toplevel_handle_v1 object
 func (p *ForeignToplevelHandleV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }

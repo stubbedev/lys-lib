@@ -45,6 +45,7 @@ func (p *ZwpKeyboardV1) Modifiers(ModsDepressed uint32, ModsLatched uint32, Mods
 
 // Destroy destroy the virtual keyboard keyboard object
 func (p *ZwpKeyboardV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 3)
 }

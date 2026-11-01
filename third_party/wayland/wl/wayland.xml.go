@@ -969,6 +969,7 @@ func (p *ShmPool) CreateBuffer(Offset int32, Width int32, Height int32, Stride i
 
 // Destroy destroy the pool
 func (p *ShmPool) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 1)
 }
@@ -1014,6 +1015,7 @@ func (p *Shm) CreatePool(Fd uintptr, Size int32) (*ShmPool, error) {
 
 // Release release the shm object
 func (p *Shm) Release() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 1)
 }
@@ -1085,6 +1087,7 @@ func NewBuffer(ctx *Context) *Buffer {
 
 // Destroy destroy a buffer
 func (p *Buffer) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }
@@ -1171,6 +1174,7 @@ func (p *DataOffer) Receive(MimeType string, Fd uintptr) error {
 
 // Destroy destroy data offer
 func (p *DataOffer) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 2)
 }
@@ -1346,6 +1350,7 @@ func (p *DataSource) Offer(MimeType string) error {
 
 // Destroy destroy the data source
 func (p *DataSource) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 1)
 }
@@ -1640,6 +1645,7 @@ func (p *DataDevice) SetSelection(Source *DataSource, Serial uint32) error {
 
 // Release destroy data device
 func (p *DataDevice) Release() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 2)
 }
@@ -2187,6 +2193,7 @@ func NewSurface(ctx *Context) *Surface {
 
 // Destroy delete surface
 func (p *Surface) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }
@@ -2452,6 +2459,7 @@ func (p *Seat) GetTouch() (*Touch, error) {
 
 // Release release the seat object
 func (p *Seat) Release() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 3)
 }
@@ -2587,6 +2595,7 @@ func (p *Pointer) SetCursor(Serial uint32, Surface *Surface, HotspotX int32, Hot
 
 // Release release the pointer object
 func (p *Pointer) Release() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 1)
 }
@@ -3094,6 +3103,7 @@ func NewKeyboard(ctx *Context) *Keyboard {
 
 // Release release the keyboard object
 func (p *Keyboard) Release() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }
@@ -3417,6 +3427,7 @@ func NewTouch(ctx *Context) *Touch {
 
 // Release release the touch object
 func (p *Touch) Release() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }
@@ -3759,6 +3770,7 @@ func NewOutput(ctx *Context) *Output {
 
 // Release release the output object
 func (p *Output) Release() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }
@@ -4039,6 +4051,7 @@ func NewRegion(ctx *Context) *Region {
 
 // Destroy destroy region
 func (p *Region) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }
@@ -4076,6 +4089,7 @@ func NewSubcompositor(ctx *Context) *Subcompositor {
 
 // Destroy unbind from the subcompositor interface
 func (p *Subcompositor) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }
@@ -4107,6 +4121,7 @@ func NewSubsurface(ctx *Context) *Subsurface {
 
 // Destroy remove sub-surface interface
 func (p *Subsurface) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }
@@ -4162,6 +4177,7 @@ func NewFixes(ctx *Context) *Fixes {
 
 // Destroy destroys this object
 func (p *Fixes) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }

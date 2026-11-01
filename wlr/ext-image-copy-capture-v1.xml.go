@@ -65,6 +65,7 @@ func (p *ImageCopyCaptureManagerV1) CreatePointerCursorSession(Source *ImageCapt
 
 // Destroy destroy the manager
 func (p *ImageCopyCaptureManagerV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 2)
 }
@@ -114,6 +115,7 @@ func (p *ImageCopyCaptureSessionV1) CreateFrame() (*ImageCopyCaptureFrameV1, err
 
 // Destroy delete this object
 func (p *ImageCopyCaptureSessionV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 1)
 }
@@ -383,6 +385,7 @@ func NewImageCopyCaptureFrameV1(ctx *Context) *ImageCopyCaptureFrameV1 {
 
 // Destroy destroy this object
 func (p *ImageCopyCaptureFrameV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }
@@ -642,6 +645,7 @@ func NewImageCopyCaptureCursorSessionV1(ctx *Context) *ImageCopyCaptureCursorSes
 
 // Destroy delete this object
 func (p *ImageCopyCaptureCursorSessionV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }

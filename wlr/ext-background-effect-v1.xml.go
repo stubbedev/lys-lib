@@ -40,6 +40,7 @@ func NewExtBackgroundEffectManagerV1(ctx *Context) *ExtBackgroundEffectManagerV1
 
 // Destroy destroy the background effect manager
 func (p *ExtBackgroundEffectManagerV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }
@@ -109,6 +110,7 @@ func NewExtBackgroundEffectSurfaceV1(ctx *Context) *ExtBackgroundEffectSurfaceV1
 
 // Destroy release the blur object
 func (p *ExtBackgroundEffectSurfaceV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }

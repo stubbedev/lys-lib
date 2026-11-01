@@ -225,6 +225,7 @@ func NewWmBase(ctx *Context) *WmBase {
 
 // Destroy destroy xdg_wm_base
 func (p *WmBase) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }
@@ -306,6 +307,7 @@ func NewPositioner(ctx *Context) *Positioner {
 
 // Destroy destroy the xdg_positioner object
 func (p *Positioner) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }
@@ -393,6 +395,7 @@ func NewSurface(ctx *Context) *Surface {
 
 // Destroy destroy the xdg_surface
 func (p *Surface) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }
@@ -494,6 +497,7 @@ func NewToplevel(ctx *Context) *Toplevel {
 
 // Destroy destroy the xdg_toplevel
 func (p *Toplevel) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }
@@ -767,6 +771,7 @@ func NewPopup(ctx *Context) *Popup {
 
 // Destroy remove xdg_popup interface
 func (p *Popup) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }

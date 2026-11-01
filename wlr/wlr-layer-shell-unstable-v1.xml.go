@@ -83,6 +83,7 @@ func (p *ZwlrLayerShellV1) GetLayerSurface(Surface *Surface, Output *Output, Lay
 
 // Destroy destroy the layer_shell object
 func (p *ZwlrLayerShellV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 1)
 }
@@ -160,6 +161,7 @@ func (p *ZwlrLayerSurfaceV1) AckConfigure(Serial uint32) error {
 
 // Destroy destroy the layer_surface
 func (p *ZwlrLayerSurfaceV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 7)
 }

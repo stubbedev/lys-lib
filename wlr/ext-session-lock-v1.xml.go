@@ -50,6 +50,7 @@ func NewSessionLockManagerV1(ctx *Context) *SessionLockManagerV1 {
 
 // Destroy destroy the session lock manager object
 func (p *SessionLockManagerV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }
@@ -91,6 +92,7 @@ func NewSessionLockV1(ctx *Context) *SessionLockV1 {
 
 // Destroy destroy the session lock
 func (p *SessionLockV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }
@@ -103,6 +105,7 @@ func (p *SessionLockV1) GetLockSurface(Surface *Surface, Output *Output) (*Sessi
 
 // UnlockAndDestroy unlock the session, destroying the object
 func (p *SessionLockV1) UnlockAndDestroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 2)
 }
@@ -206,6 +209,7 @@ func NewSessionLockSurfaceV1(ctx *Context) *SessionLockSurfaceV1 {
 
 // Destroy destroy the lock surface object
 func (p *SessionLockSurfaceV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }

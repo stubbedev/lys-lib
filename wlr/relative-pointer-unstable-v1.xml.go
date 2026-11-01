@@ -23,6 +23,7 @@ func NewZwpRelativePointerManagerV1(ctx *Context) *ZwpRelativePointerManagerV1 {
 
 // Destroy destroy the relative pointer manager object
 func (p *ZwpRelativePointerManagerV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }
@@ -62,6 +63,7 @@ func NewZwpRelativePointerV1(ctx *Context) *ZwpRelativePointerV1 {
 
 // Destroy release the relative pointer object
 func (p *ZwpRelativePointerV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }

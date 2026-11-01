@@ -41,6 +41,7 @@ func (p *ZwlrDataControlManagerV1) GetDataDevice(Seat *Seat) (*ZwlrDataControlDe
 
 // Destroy destroy the manager
 func (p *ZwlrDataControlManagerV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 2)
 }
@@ -86,6 +87,7 @@ func (p *ZwlrDataControlDeviceV1) SetSelection(Source *ZwlrDataControlSourceV1) 
 
 // Destroy destroy this data device
 func (p *ZwlrDataControlDeviceV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 1)
 }
@@ -286,6 +288,7 @@ func (p *ZwlrDataControlSourceV1) Offer(MimeType string) error {
 
 // Destroy destroy this source
 func (p *ZwlrDataControlSourceV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 1)
 }
@@ -412,6 +415,7 @@ func (p *ZwlrDataControlOfferV1) Receive(MimeType string, Fd uintptr) error {
 
 // Destroy destroy this offer
 func (p *ZwlrDataControlOfferV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 1)
 }

@@ -36,6 +36,7 @@ func xmlProcess(inputFile, outputFile string) {
 		for _, req := range iface.Request {
 			var m GoMethod
 			m.Name = removePrefixAndCamelCase(req.Name, f.PkgName)
+			m.Destructor = req.Type != nil && *req.Type == "destructor"
 
 			if req.Description != nil {
 				m.Comment = sanitizeSingleLineComment(req.Description.Summary)

@@ -23,6 +23,7 @@ func NewExtIdleNotifierV1(ctx *Context) *ExtIdleNotifierV1 {
 
 // Destroy destroy the manager
 func (p *ExtIdleNotifierV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }
@@ -70,6 +71,7 @@ func NewExtIdleNotificationV1(ctx *Context) *ExtIdleNotificationV1 {
 
 // Destroy destroy the notification object
 func (p *ExtIdleNotificationV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }

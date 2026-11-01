@@ -69,6 +69,7 @@ func NewZwpDmabufV1(ctx *Context) *ZwpDmabufV1 {
 
 // Destroy unbind the factory
 func (p *ZwpDmabufV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }
@@ -204,6 +205,7 @@ func NewZwpBufferParamsV1(ctx *Context) *ZwpBufferParamsV1 {
 
 // Destroy delete this object, used or not
 func (p *ZwpBufferParamsV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }
@@ -340,6 +342,7 @@ func NewZwpDmabufFeedbackV1(ctx *Context) *ZwpDmabufFeedbackV1 {
 
 // Destroy destroy the feedback object
 func (p *ZwpDmabufFeedbackV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }

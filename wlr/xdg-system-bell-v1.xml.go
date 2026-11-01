@@ -21,6 +21,7 @@ func NewXdgSystemBellV1(ctx *Context) *XdgSystemBellV1 {
 
 // Destroy destroy the system bell object
 func (p *XdgSystemBellV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }

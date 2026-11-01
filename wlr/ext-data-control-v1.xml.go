@@ -41,6 +41,7 @@ func (p *DataControlManagerV1) GetDataDevice(Seat *Seat) (*DataControlDeviceV1, 
 
 // Destroy destroy the manager
 func (p *DataControlManagerV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 2)
 }
@@ -86,6 +87,7 @@ func (p *DataControlDeviceV1) SetSelection(Source *DataControlSourceV1) error {
 
 // Destroy destroy this data device
 func (p *DataControlDeviceV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 1)
 }
@@ -286,6 +288,7 @@ func (p *DataControlSourceV1) Offer(MimeType string) error {
 
 // Destroy destroy this source
 func (p *DataControlSourceV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 1)
 }
@@ -412,6 +415,7 @@ func (p *DataControlOfferV1) Receive(MimeType string, Fd uintptr) error {
 
 // Destroy destroy this offer
 func (p *DataControlOfferV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 1)
 }

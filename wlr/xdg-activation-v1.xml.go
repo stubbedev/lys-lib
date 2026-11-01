@@ -26,6 +26,7 @@ func NewActivationV1(ctx *Context) *ActivationV1 {
 
 // Destroy destroy the xdg_activation object
 func (p *ActivationV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }
@@ -95,6 +96,7 @@ func (p *ActivationTokenV1) Commit() error {
 
 // Destroy destroy the xdg_activation_token_v1 object
 func (p *ActivationTokenV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 4)
 }

@@ -26,6 +26,7 @@ func NewWpScaleManagerV1(ctx *Context) *WpScaleManagerV1 {
 
 // Destroy unbind the fractional surface scale interface
 func (p *WpScaleManagerV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }
@@ -65,6 +66,7 @@ func NewWpScaleV1(ctx *Context) *WpScaleV1 {
 
 // Destroy remove surface scale information for surface
 func (p *WpScaleV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }

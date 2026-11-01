@@ -26,6 +26,7 @@ func NewZwpShortcutsInhibitManagerV1(ctx *Context) *ZwpShortcutsInhibitManagerV1
 
 // Destroy destroy the keyboard shortcuts inhibitor object
 func (p *ZwpShortcutsInhibitManagerV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }
@@ -67,6 +68,7 @@ func NewZwpShortcutsInhibitorV1(ctx *Context) *ZwpShortcutsInhibitorV1 {
 
 // Destroy destroy the keyboard shortcuts inhibitor object
 func (p *ZwpShortcutsInhibitorV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }

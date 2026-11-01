@@ -32,6 +32,7 @@ func (p *GlobalShortcutsManagerV1) RegisterShortcut(Id string, AppId string, Des
 
 // Destroy destroy the manager
 func (p *GlobalShortcutsManagerV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 1)
 }
@@ -67,6 +68,7 @@ func NewGlobalShortcutV1(ctx *Context) *GlobalShortcutV1 {
 
 // Destroy delete this object, used or not
 func (p *GlobalShortcutV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }

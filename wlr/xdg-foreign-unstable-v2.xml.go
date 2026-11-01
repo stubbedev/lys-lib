@@ -29,6 +29,7 @@ func NewZxdgExporterV2(ctx *Context) *ZxdgExporterV2 {
 
 // Destroy destroy the xdg_exporter object
 func (p *ZxdgExporterV2) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }
@@ -60,6 +61,7 @@ func NewZxdgImporterV2(ctx *Context) *ZxdgImporterV2 {
 
 // Destroy destroy the xdg_importer object
 func (p *ZxdgImporterV2) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }
@@ -99,6 +101,7 @@ func NewZxdgExportedV2(ctx *Context) *ZxdgExportedV2 {
 
 // Destroy unexport the exported surface
 func (p *ZxdgExportedV2) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }
@@ -170,6 +173,7 @@ func NewZxdgImportedV2(ctx *Context) *ZxdgImportedV2 {
 
 // Destroy destroy the xdg_imported object
 func (p *ZxdgImportedV2) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }

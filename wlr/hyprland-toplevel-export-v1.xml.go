@@ -38,6 +38,7 @@ func (p *ToplevelExportManagerV1) CaptureToplevel(OverlayCursor int32, Handle ui
 
 // Destroy destroy the manager
 func (p *ToplevelExportManagerV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 1)
 }
@@ -95,6 +96,7 @@ func (p *ToplevelExportFrameV1) Copy(Buffer *Buffer, IgnoreDamage int32) error {
 
 // Destroy delete this object, used or not
 func (p *ToplevelExportFrameV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 1)
 }

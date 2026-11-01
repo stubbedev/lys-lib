@@ -92,6 +92,7 @@ func (p *ZwpTabletManagerV2) GetSeat(Seat *Seat) (*ZwpTabletSeatV2, error) {
 
 // Destroy release the memory for the tablet manager object
 func (p *ZwpTabletManagerV2) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 1)
 }
@@ -129,6 +130,7 @@ func NewZwpTabletSeatV2(ctx *Context) *ZwpTabletSeatV2 {
 
 // Destroy release the memory for the tablet seat object
 func (p *ZwpTabletSeatV2) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }
@@ -330,6 +332,7 @@ func (p *ZwpTabletToolV2) SetCursor(Serial uint32, Surface *Surface, HotspotX in
 
 // Destroy destroy the tool object
 func (p *ZwpTabletToolV2) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 1)
 }
@@ -1108,6 +1111,7 @@ func NewZwpTabletV2(ctx *Context) *ZwpTabletV2 {
 
 // Destroy destroy the tablet object
 func (p *ZwpTabletV2) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }
@@ -1340,6 +1344,7 @@ func (p *ZwpTabletPadRingV2) SetFeedback(Description string, Serial uint32) erro
 
 // Destroy destroy the ring object
 func (p *ZwpTabletPadRingV2) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 1)
 }
@@ -1534,6 +1539,7 @@ func (p *ZwpTabletPadStripV2) SetFeedback(Description string, Serial uint32) err
 
 // Destroy destroy the strip object
 func (p *ZwpTabletPadStripV2) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 1)
 }
@@ -1726,6 +1732,7 @@ func NewZwpTabletPadGroupV2(ctx *Context) *ZwpTabletPadGroupV2 {
 
 // Destroy destroy the pad object
 func (p *ZwpTabletPadGroupV2) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }
@@ -2018,6 +2025,7 @@ func (p *ZwpTabletPadV2) SetFeedback(Button uint32, Description string, Serial u
 
 // Destroy destroy the pad object
 func (p *ZwpTabletPadV2) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 1)
 }

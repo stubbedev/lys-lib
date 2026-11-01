@@ -21,6 +21,7 @@ func NewZwpInhibitManagerV1(ctx *Context) *ZwpInhibitManagerV1 {
 
 // Destroy destroy the idle inhibitor object
 func (p *ZwpInhibitManagerV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }
@@ -52,6 +53,7 @@ func NewZwpInhibitorV1(ctx *Context) *ZwpInhibitorV1 {
 
 // Destroy destroy the idle inhibitor object
 func (p *ZwpInhibitorV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }

@@ -21,6 +21,7 @@ func NewImageCaptureSourceV1(ctx *Context) *ImageCaptureSourceV1 {
 
 // Destroy delete this object
 func (p *ImageCaptureSourceV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }
@@ -52,6 +53,7 @@ func (p *OutputImageCaptureSourceManagerV1) CreateSource(Output *Output) (*Image
 
 // Destroy delete this object
 func (p *OutputImageCaptureSourceManagerV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 1)
 }
@@ -83,6 +85,7 @@ func (p *ForeignToplevelImageCaptureSourceManagerV1) CreateSource(ToplevelHandle
 
 // Destroy delete this object
 func (p *ForeignToplevelImageCaptureSourceManagerV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 1)
 }

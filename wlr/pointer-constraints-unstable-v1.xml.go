@@ -32,6 +32,7 @@ func NewZwpPointerConstraintsV1(ctx *Context) *ZwpPointerConstraintsV1 {
 
 // Destroy destroy the pointer constraints manager object
 func (p *ZwpPointerConstraintsV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }
@@ -79,6 +80,7 @@ func NewZwpLockedPointerV1(ctx *Context) *ZwpLockedPointerV1 {
 
 // Destroy destroy the locked pointer object
 func (p *ZwpLockedPointerV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }
@@ -196,6 +198,7 @@ func NewZwpConfinedPointerV1(ctx *Context) *ZwpConfinedPointerV1 {
 
 // Destroy destroy the confined pointer object
 func (p *ZwpConfinedPointerV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }

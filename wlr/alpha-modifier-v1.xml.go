@@ -27,6 +27,7 @@ func NewWpAlphaModifierV1(ctx *Context) *WpAlphaModifierV1 {
 
 // Destroy destroy the alpha modifier manager object
 func (p *WpAlphaModifierV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }
@@ -58,6 +59,7 @@ func NewWpAlphaModifierSurfaceV1(ctx *Context) *WpAlphaModifierSurfaceV1 {
 
 // Destroy destroy the alpha modifier object
 func (p *WpAlphaModifierSurfaceV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }

@@ -42,6 +42,7 @@ func NewToplevelIconManagerV1(ctx *Context) *ToplevelIconManagerV1 {
 
 // Destroy destroy the toplevel icon manager
 func (p *ToplevelIconManagerV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }
@@ -152,6 +153,7 @@ func NewToplevelIconV1(ctx *Context) *ToplevelIconV1 {
 
 // Destroy destroy the icon object
 func (p *ToplevelIconV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }

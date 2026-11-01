@@ -49,6 +49,7 @@ func NewWpPresentation(ctx *Context) *WpPresentation {
 
 // Destroy unbind from the presentation interface
 func (p *WpPresentation) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 0)
 }

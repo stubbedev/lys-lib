@@ -35,6 +35,7 @@ func (p *ZwpPrimarySelectionDeviceManagerV1) GetDevice(Seat *Seat) (*ZwpPrimaryS
 
 // Destroy destroy the primary selection device manager
 func (p *ZwpPrimarySelectionDeviceManagerV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 2)
 }
@@ -76,6 +77,7 @@ func (p *ZwpPrimarySelectionDeviceV1) SetSelection(Source *ZwpPrimarySelectionSo
 
 // Destroy destroy the primary selection device
 func (p *ZwpPrimarySelectionDeviceV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 1)
 }
@@ -195,6 +197,7 @@ func (p *ZwpPrimarySelectionOfferV1) Receive(MimeType string, Fd uintptr) error 
 
 // Destroy destroy the primary selection offer
 func (p *ZwpPrimarySelectionOfferV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 1)
 }
@@ -274,6 +277,7 @@ func (p *ZwpPrimarySelectionSourceV1) Offer(MimeType string) error {
 
 // Destroy destroy the primary selection source
 func (p *ZwpPrimarySelectionSourceV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 1)
 }

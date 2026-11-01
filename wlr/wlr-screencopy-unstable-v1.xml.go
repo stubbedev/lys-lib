@@ -44,6 +44,7 @@ func (p *ZwlrScreencopyManagerV1) CaptureOutputRegion(OverlayCursor int32, Outpu
 
 // Destroy destroy the manager
 func (p *ZwlrScreencopyManagerV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 2)
 }
@@ -95,6 +96,7 @@ func (p *ZwlrScreencopyFrameV1) Copy(Buffer *Buffer) error {
 
 // Destroy delete this object, used or not
 func (p *ZwlrScreencopyFrameV1) Destroy() error {
+	defer p.Unregister()
 
 	return p.Context().SendRequest(p, 1)
 }
