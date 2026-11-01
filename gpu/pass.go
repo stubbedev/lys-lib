@@ -535,11 +535,12 @@ func (p *Pass) record(cb vk.CommandBuffer) {
 }
 
 func (p *Pass) clear(cb vk.CommandBuffer, col [4]float32) {
-	att := vk.ClearAttachment{AspectMask: vk.ImageAspectFlags(vk.ImageAspectColorBit)}
-	copy(att.ClearValue[:], unsafe.Slice((*byte)(unsafe.Pointer(&col[0])), len(att.ClearValue)))
-	rects := make([]vk.ClearRect, len(p.damage))
-	for i, r := range p.damage {
-		rects[i] = vk.ClearRect{Rect: rect2D(r), LayerCount: 1}
+	a := &p.d.args
+	a.clear = vk.ClearAttachment{AspectMask: vk.ImageAspectFlags(vk.ImageAspectColorBit)}
+	copy(a.clear.ClearValue[:], unsafe.Slice((*byte)(unsafe.Pointer(&col[0])), len(a.clear.ClearValue)))
+	a.clearRects = a.clearRects[:0]
+	for _, r := range p.damage {
+		a.clearRects = append(a.clearRects, vk.ClearRect{Rect: rect2D(r), LayerCount: 1})
 	}
-	p.d.cmds.CmdClearAttachments(cb, 1, &att, count(rects), &rects[0])
+	p.d.cmds.CmdClearAttachments(cb, 1, &a.clear, count(a.clearRects), &a.clearRects[0])
 }

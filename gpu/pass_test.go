@@ -292,6 +292,7 @@ func TestASteadyPassAllocatesOnlyItself(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		p.Clear(color.RGBA{A: 255})
 		p.FillRect(image.Rect(0, 0, 32, 32), color.RGBA{A: 255}, Mask{})
 		p.DrawTexture(tx, FRect{W: 2, H: 2}, image.Rect(0, 0, 32, 32), TransformNormal, 1, Mask{})
 		if err := p.End(); err != nil {
