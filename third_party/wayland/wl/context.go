@@ -148,12 +148,19 @@ func (ctx *Context) Unregister(id ProxyId) {
 	ctx.forgetUnsent(id)
 }
 
-type zombieReaper struct{ ctx *Context }
+// idReaper forgets every id wl_display.delete_id retires: the zombie of a
+// proxy the client destroyed, and the proxy of an object the server
+// destroyed, such as the frame callback of a destroyed surface, whose
+// done never comes and whose handlers would otherwise stay reachable.
+type idReaper struct{ ctx *Context }
 
-func (r zombieReaper) HandleDisplayDeleteId(ev DisplayDeleteIdEvent) {
+func (r idReaper) HandleDisplayDeleteId(ev DisplayDeleteIdEvent) {
+	id := ProxyId(ev.Id)
 	r.ctx.mu.Lock()
-	delete(r.ctx.zombies, ProxyId(ev.Id))
+	delete(r.ctx.zombies, id)
+	delete(r.ctx.objects, id)
 	r.ctx.mu.Unlock()
+	r.ctx.forgetUnsent(id)
 }
 
 // LookupProxy looks up a specific proxy by it's Id in the map of all Context objects (proxies)
@@ -199,7 +206,7 @@ func Connect(addr string) (ret *Display, err error) {
 
 func (ctx *Context) newDisplay() *Display {
 	d := NewDisplay(ctx)
-	d.AddDeleteIdHandler(zombieReaper{ctx})
+	d.AddDeleteIdHandler(idReaper{ctx})
 	return d
 }
 
