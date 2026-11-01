@@ -1,6 +1,7 @@
 package pipewire
 
 import (
+	"bytes"
 	"encoding/binary"
 	"slices"
 	"testing"
@@ -40,6 +41,21 @@ func TestWriteDamageTerminates(t *testing.T) {
 		t.Errorf("slots = %v", slots)
 	}
 	writeDamage(nil, []Rect{{1, 1, 1, 1}}) // no room: nothing to write
+}
+
+// The buffers' data types are a Choice of Flags: a consumer that names
+// several types as a plain Int, as OBS does, is otherwise refused when the
+// server allocates the link ("error alloc buffers: Invalid argument").
+func TestBufferDataTypesAreFlags(t *testing.T) {
+	want := append(le32(16+4), le32(typeChoice)...)
+	want = append(want, le32(choiceFlags)...)
+	want = append(want, le32(0)...)
+	want = append(want, le32(4)...)
+	want = append(want, le32(typeInt)...)
+	want = append(want, le32(1<<dataDmaBuf)...)
+	if layout := bufferPodsOf(256, 32, 1<<dataDmaBuf)[0]; !bytes.Contains(layout, want) {
+		t.Errorf("buffer layout %x has no Flags choice of the data types", layout)
+	}
 }
 
 func TestPodLayout(t *testing.T) {

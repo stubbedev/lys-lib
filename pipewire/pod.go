@@ -117,6 +117,7 @@ const (
 const (
 	choiceNone        = 0
 	choiceRange       = 1
+	choiceFlags       = 4
 	propFlagMandatory = 1 << 3
 )
 
@@ -203,6 +204,15 @@ func podIntRange(def, lo, hi int32) pod {
 	return pod{typeChoice, body}
 }
 
+// podIntFlags is a Choice of Flags over an Int mask: the server takes the
+// bits both sides name, where two plain Ints would have to be equal.
+func podIntFlags(mask uint32) pod {
+	body := append(le32(choiceFlags), le32(0)...)
+	body = append(body, append(le32(4), le32(typeInt)...)...)
+	body = append(body, le32(mask)...)
+	return pod{typeChoice, body}
+}
+
 // bytes is the pod with its header, padded to 8 bytes as pods are laid
 // out.
 func (p pod) bytes() []byte {
@@ -275,7 +285,7 @@ func bufferPodsOf(stride, height, dataTypes uint32) [][]byte {
 			prop{key: buffersSize, value: podUint(stride * height)},
 			prop{key: buffersStride, value: podUint(stride)},
 			prop{key: buffersAlign, value: podInt(16)},
-			prop{key: buffersDataType, value: podUint(dataTypes)},
+			prop{key: buffersDataType, value: podIntFlags(dataTypes)},
 		),
 		object(objectParamMeta, paramMeta,
 			prop{key: metaKeyType, value: podID(metaHeader)},
