@@ -633,3 +633,68 @@ func TestIconAtScaleCoversItsLogicalSize(t *testing.T) {
 		t.Error("Tint dropped the raster scale")
 	}
 }
+
+// Rasterizing a nonzero path over its own box paints what rasterx's
+// scanner does over the whole target, either side of the size where
+// x/image/vector changes from fixed to floating point math, and on and
+// off the target's edges.
+func TestSVGScannerNonzeroMatchesTheWholeTarget(t *testing.T) {
+	shapes := [][][2]float64{
+		{{2.6, 5.4}, {28.4, 2.2}, {19.2, 30.8}},
+		{{-6, 8}, {40, 12}, {16, 36}},
+		{{30.5, 20.25}, {34.75, 20.5}, {33, 27.125}},
+		{{50, -9}, {75, 6}, {44, 22}},
+	}
+	for _, size := range [][2]int{{64, 40}, {80, 512}, {513, 40}, {700, 700}, {40, 600}} {
+		w, h := size[0], size[1]
+		for _, pts := range shapes {
+			paint := func(sc rasterx.Scanner) {
+				sc.Clear()
+				sc.SetWinding(true)
+				sc.SetColor(color.NRGBA{0xff, 0xff, 0xff, 0xff})
+				for i, p := range append(pts, pts[0]) {
+					fp := fixed.Point26_6{X: fixed.Int26_6(p[0] * 64), Y: fixed.Int26_6(p[1] * 64)}
+					if i == 0 {
+						sc.Start(fp)
+					} else {
+						sc.Line(fp)
+					}
+				}
+				sc.Draw()
+			}
+			whole, boxed := image.NewRGBA(image.Rect(0, 0, w, h)), image.NewRGBA(image.Rect(0, 0, w, h))
+			paint(rasterx.NewScannerGV(w, h, whole, whole.Bounds()))
+			paint(newSVGScanner(w, h, boxed))
+			worst := 0
+			for i := range whole.Pix {
+				worst = max(worst, abs(int(whole.Pix[i])-int(boxed.Pix[i])))
+			}
+			if worst > 1 {
+				t.Errorf("%dx%d %v: differs from the whole target by %d", w, h, pts, worst)
+			}
+		}
+	}
+}
+
+// BenchmarkLoadSVG rasterizes every reference icon at the size of a
+// large logo.
+func BenchmarkLoadSVG(b *testing.B) {
+	files, err := filepath.Glob("testdata/svgref/*.svg")
+	if err != nil || len(files) == 0 {
+		b.Fatalf("reference icons: %v, %v", files, err)
+	}
+	docs := make([][]byte, len(files))
+	for i, f := range files {
+		if docs[i], err = os.ReadFile(f); err != nil {
+			b.Fatal(err)
+		}
+	}
+	b.ReportAllocs()
+	for b.Loop() {
+		for _, doc := range docs {
+			if _, err := LoadSVG(doc, 256, 256); err != nil {
+				b.Fatal(err)
+			}
+		}
+	}
+}
