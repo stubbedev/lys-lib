@@ -1,6 +1,7 @@
 package eis
 
 import (
+	"errors"
 	"fmt"
 	"slices"
 	"sync"
@@ -10,6 +11,7 @@ import (
 	"unsafe"
 
 	"github.com/ebitengine/purego"
+	"golang.org/x/sys/unix"
 
 	"github.com/stubbedev/lys-lib/clib"
 )
@@ -174,8 +176,10 @@ func drive(t *testing.T, l *libei, fd int, caps []uintptr, want int, timeout tim
 	efd := int(l.getFd(ei))
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) && len(got.devices) < want {
-		pfd := []pollFd{{fd: int32(efd), events: 1}}
-		pollWait(pfd, 100)
+		pfd := []unix.PollFd{{Fd: int32(efd), Events: unix.POLLIN}}
+		if _, err := unix.Poll(pfd, 100); err != nil && !errors.Is(err, unix.EINTR) {
+			t.Fatalf("poll the libei fd: %v", err)
+		}
 		l.dispatch(ei)
 		for ev := l.getEvent(ei); ev != 0; ev = l.getEvent(ei) {
 			switch l.eventType(ev) {
@@ -222,15 +226,6 @@ func emulate(l *libei, ei, dev uintptr) {
 	}
 	l.frame(dev, l.now(ei))
 	l.stopEmulating(dev)
-}
-
-type pollFd struct {
-	fd             int32
-	events, revent int16
-}
-
-func pollWait(fds []pollFd, ms int) {
-	_, _, _ = syscall.Syscall(syscall.SYS_POLL, uintptr(unsafe.Pointer(&fds[0])), uintptr(len(fds)), uintptr(ms))
 }
 
 func TestLibeiSenderEmulatesThroughTheServer(t *testing.T) {
