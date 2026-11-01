@@ -122,11 +122,11 @@ func BenchmarkTextureUpdate(b *testing.B) {
 }
 
 // benchCompositor is one output's frame in a compositor: the windows
-// sit as textures, one has new pixels, two rectangles of damage are
+// sit as textures, some have new pixels, two rectangles of damage are
 // redrawn, a client's acquire fence is waited on when the device can,
 // the release fence is exported, and the latch budget samples the
 // previous frame's GPU time.
-func benchCompositor(b *testing.B, windows int) {
+func benchCompositor(b *testing.B, windows, updates int) {
 	d := openDevice(b)
 	const w, h = 256, 256
 	tg, err := d.NewOffscreen(w, h)
@@ -150,8 +150,10 @@ func benchCompositor(b *testing.B, windows int) {
 	i := 0
 	for b.Loop() {
 		i++
-		if err := textures[i%windows].Update(image.Rect(0, 0, 64, 64), 64*4, pix); err != nil {
-			b.Fatal(err)
+		for j := range updates {
+			if err := textures[(i+j)%windows].Update(image.Rect(0, 0, 64, 64), 64*4, pix); err != nil {
+				b.Fatal(err)
+			}
 		}
 		p, err := d.Begin(tg, damage)
 		if err != nil {
@@ -185,4 +187,6 @@ func benchCompositor(b *testing.B, windows int) {
 	}
 }
 
-func BenchmarkCompositorFrame(b *testing.B) { benchCompositor(b, 6) }
+func BenchmarkCompositorFrame(b *testing.B) { benchCompositor(b, 6, 1) }
+
+func BenchmarkCompositorFrameFourUploads(b *testing.B) { benchCompositor(b, 6, 4) }

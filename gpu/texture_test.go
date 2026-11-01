@@ -3,7 +3,10 @@ package gpu
 import (
 	"bytes"
 	"image"
+	"image/color"
 	"testing"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/stubbedev/lys-lib/fourcc"
 	"github.com/stubbedev/lys-lib/third_party/vk"
@@ -225,7 +228,7 @@ func TestASteadyUpdateDoesNotWaitOrAllocate(t *testing.T) {
 	}
 }
 
-func TestAnUpdateLeavesItsWorkInFlight(t *testing.T) {
+func TestAnUpdateWaitsForNoSubmission(t *testing.T) {
 	d := openDevice(t)
 	tx, err := d.NewTexture(fourcc.ARGB8888, 8, 8)
 	if err != nil {
@@ -238,7 +241,132 @@ func TestAnUpdateLeavesItsWorkInFlight(t *testing.T) {
 	if err := tx.Update(image.Rect(0, 0, 8, 8), 32, make([]byte, 8*8*4)); err != nil {
 		t.Fatal(err)
 	}
-	if len(d.inflight) == 0 {
-		t.Fatal("Update waited for the GPU instead of returning")
+	if d.batched != 1 || len(d.inflight) != 0 {
+		t.Fatalf("after an update: %d uploads batched, %d submissions in flight", d.batched, len(d.inflight))
+	}
+}
+
+// A frame's uploads and the pass that shows them are one submission, and
+// the pass samples what they wrote.
+func TestUploadsTravelWithTheirPass(t *testing.T) {
+	d := openDevice(t)
+	tg, err := d.NewOffscreen(8, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tg.Close()
+	textures := make([]*Texture, 3)
+	for i := range textures {
+		if textures[i], err = d.NewTexture(fourcc.ARGB8888, 2, 2); err != nil {
+			t.Fatal(err)
+		}
+		defer textures[i].Close()
+	}
+	all := []image.Rectangle{{Max: tg.Size()}}
+	runPass(t, d, tg, all, func(p *Pass) { p.Clear(color.RGBA{A: 255}) })
+	if err := d.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	for i, tx := range textures {
+		if err := tx.Update(image.Rect(0, 0, 2, 2), 8, fill(2, 2, 8, [4]byte{0, 0, byte(50 * (i + 1)), 255})); err != nil {
+			t.Fatal(err)
+		}
+	}
+	runPass(t, d, tg, all, func(p *Pass) {
+		for i, tx := range textures {
+			p.DrawTexture(tx, FRect{W: 2, H: 2}, image.Rect(i*2, 0, i*2+2, 8), TransformNormal, 1, Mask{})
+		}
+	})
+	if len(d.inflight) != 1 || d.batch != 0 {
+		t.Errorf("%d submissions for three uploads and a pass, batch %d still open", len(d.inflight), d.batch)
+	}
+	img := readTarget(t, tg)
+	for i := range textures {
+		want := color.RGBA{uint8(50 * (i + 1)), 0, 0, 255}
+		if got := img.RGBAAt(i*2+1, 3); got != want {
+			t.Errorf("window %d shows %v, want %v", i, got, want)
+		}
+	}
+}
+
+// Everything that waits or signals takes the open batch along.
+func TestUploadsLeaveWithTheNextSubmission(t *testing.T) {
+	d := openDevice(t)
+	tx, err := d.NewTexture(fourcc.ARGB8888, 2, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Close()
+	px := fill(2, 2, 8, [4]byte{9, 8, 7, 255})
+	update := func() {
+		t.Helper()
+		if err := tx.Update(image.Rect(0, 0, 2, 2), 8, px); err != nil {
+			t.Fatal(err)
+		}
+	}
+	update()
+	if err := d.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	if d.batch != 0 || d.batched != 0 || d.uploads.pending != 0 {
+		t.Errorf("after Finish: batch %d of %d, %d pending on the ring", d.batch, d.batched, d.uploads.pending)
+	}
+	if !d.SyncFiles() {
+		return
+	}
+	update()
+	fd, err := d.SyncFile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unix.Close(fd)
+	if d.batch != 0 || d.batched != 0 {
+		t.Errorf("after SyncFile: batch %d of %d", d.batch, d.batched)
+	}
+	if err := d.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	if d.uploads.pending != 0 {
+		t.Errorf("after SyncFile and Finish, %d uploads hold the ring", d.uploads.pending)
+	}
+}
+
+// Uploads that outgrow the ring with no pass to carry them submit
+// themselves, in order.
+func TestUploadsWithNoPassOutrunTheRing(t *testing.T) {
+	d := openDevice(t)
+	const w, h = 512, 512
+	tx, err := d.NewTexture(fourcc.ARGB8888, w, h)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Close()
+	var last byte
+	for i := range 200 {
+		last = byte(i)
+		if err := tx.Update(image.Rect(0, 0, w, h), w*4, fill(w, h, w*4, [4]byte{last, 0, 0, 255})); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := textureBytes(t, tx); got[0] != last {
+		t.Errorf("the texture holds %d, want the last update's %d", got[0], last)
+	}
+}
+
+func TestManyTinyUploadsBoundTheBatch(t *testing.T) {
+	d := openDevice(t)
+	tx, err := d.NewTexture(fourcc.ARGB8888, 2, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Close()
+	px := fill(2, 2, 8, [4]byte{1, 2, 3, 255})
+	for range 3 * maxBatchedUploads {
+		if err := tx.Update(image.Rect(0, 0, 2, 2), 8, px); err != nil {
+			t.Fatal(err)
+		}
+		if d.batched >= maxBatchedUploads {
+			t.Fatalf("%d uploads batched, the bound is %d", d.batched, maxBatchedUploads)
+		}
 	}
 }

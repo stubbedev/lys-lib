@@ -50,6 +50,13 @@ type timing struct {
 	spareFences     []vk.Fence
 	spareBuffers    []vk.CommandBuffer
 	spareSemaphores []vk.Semaphore
+	// batch is the open command buffer holding the uploads no submission
+	// carries yet, batched of them in all, ending at batchEnd in the
+	// staging ring. The next submission takes them along, so a frame's
+	// uploads and its pass reach the kernel together.
+	batch    vk.CommandBuffer
+	batched  int
+	batchEnd int
 	// args is what commands point C at. C reads a pointer argument only
 	// during the call, and one on the stack would escape to the heap,
 	// so the device keeps one of each.
@@ -210,7 +217,15 @@ func (d *Device) SyncFile() (int, error) {
 	if err != nil {
 		return -1, err
 	}
-	if err := d.queue1(0, s, -1, false); err != nil {
+	cb, err := d.endBatch()
+	if err != nil {
+		d.spareSemaphores = append(d.spareSemaphores, s)
+		return -1, err
+	}
+	if err := d.queue1(cb, s, -1, false); err != nil {
+		if cb != 0 {
+			d.dropBatch(cb)
+		}
 		d.spareSemaphores = append(d.spareSemaphores, s)
 		return -1, err
 	}
@@ -274,6 +289,9 @@ func (d *Device) queue1(cb vk.CommandBuffer, signal vk.Semaphore, query int, pas
 		return fmt.Errorf("gpu: vkQueueSubmit: %d", r)
 	}
 	f := inflight{fence: fence, cb: cb, sems: len(d.waits), query: query}
+	if d.batched > 0 {
+		f.staged, f.stagingEnd, d.batched = true, d.batchEnd, 0
+	}
 	d.heldSemaphores = append(d.heldSemaphores, d.waits...)
 	d.waits = d.waits[:0]
 	if signal != 0 {
@@ -289,18 +307,14 @@ func (d *Device) queue1(cb vk.CommandBuffer, signal vk.Semaphore, query int, pas
 }
 
 func (d *Device) submitAsync(record func(cb vk.CommandBuffer), pass bool) error {
-	cb, err := d.spareBuffer()
+	cb, err := d.recording()
 	if err != nil {
-		return err
-	}
-	if err := begin(d, cb); err != nil {
-		d.spareBuffers = append(d.spareBuffers, cb)
 		return err
 	}
 	query := -1
 	if pass && d.calibrated {
 		if err := d.ensureQueries(); err != nil {
-			d.spareBuffers = append(d.spareBuffers, cb)
+			d.dropBatch(cb)
 			return err
 		}
 		query = int(d.nextQuery)
@@ -312,14 +326,71 @@ func (d *Device) submitAsync(record func(cb vk.CommandBuffer), pass bool) error 
 		d.cmds.CmdWriteTimestamp(cb, vk.PipelineStageBottomOfPipeBit, d.queries, intconv.Must[uint32](query))
 	}
 	if r := d.cmds.EndCommandBuffer(cb); r != vk.Success {
-		d.spareBuffers = append(d.spareBuffers, cb)
+		d.dropBatch(cb)
 		return fmt.Errorf("gpu: vkEndCommandBuffer: %d", r)
 	}
 	if err := d.queue1(cb, 0, query, pass); err != nil {
-		d.spareBuffers = append(d.spareBuffers, cb)
+		d.dropBatch(cb)
 		return err
 	}
 	return nil
+}
+
+// recording is a command buffer to record into, the open batch's if
+// there is one, which the caller now owns.
+func (d *Device) recording() (vk.CommandBuffer, error) {
+	if d.batch != 0 {
+		cb := d.batch
+		d.batch = 0
+		return cb, nil
+	}
+	cb, err := d.spareBuffer()
+	if err != nil {
+		return 0, err
+	}
+	if err := begin(d, cb); err != nil {
+		d.spareBuffers = append(d.spareBuffers, cb)
+		return 0, err
+	}
+	return cb, nil
+}
+
+// endBatch ends the open batch's command buffer for a submission to
+// carry; 0 when no uploads wait.
+func (d *Device) endBatch() (vk.CommandBuffer, error) {
+	if d.batch == 0 {
+		return 0, nil
+	}
+	cb := d.batch
+	d.batch = 0
+	if r := d.cmds.EndCommandBuffer(cb); r != vk.Success {
+		d.dropBatch(cb)
+		return 0, fmt.Errorf("gpu: vkEndCommandBuffer: %d", r)
+	}
+	return cb, nil
+}
+
+// flushBatch submits the open batch, if any, on its own.
+func (d *Device) flushBatch() error {
+	cb, err := d.endBatch()
+	if err != nil || cb == 0 {
+		return err
+	}
+	if err := d.queue1(cb, 0, -1, false); err != nil {
+		d.dropBatch(cb)
+		return err
+	}
+	return nil
+}
+
+// dropBatch takes back cb, whose submission failed, with the uploads it
+// carried: their staging bytes are free again.
+func (d *Device) dropBatch(cb vk.CommandBuffer) {
+	d.spareBuffers = append(d.spareBuffers, cb)
+	if d.batched > 0 {
+		d.batched = 0
+		d.uploads.pending--
+	}
 }
 
 // spareBuffer is a command buffer for begin to overwrite.
@@ -415,6 +486,9 @@ func (d *Device) reap(all bool) {
 }
 
 func (d *Device) idle() error {
+	if err := d.flushBatch(); err != nil {
+		return err
+	}
 	if len(d.inflight) == 0 {
 		return nil
 	}

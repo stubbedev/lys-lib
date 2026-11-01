@@ -139,33 +139,40 @@ func (t *Texture) Update(r image.Rectangle, stride int, pix []byte) error {
 		return err
 	}
 	copy(d.upload.mapped[at:], pix[:n])
-	err = d.submitAsync(func(cb vk.CommandBuffer) {
-		fullBarrier(d, cb, t.image, vk.ImageLayoutShaderReadOnlyOptimal, vk.ImageLayoutTransferDstOptimal, vk.QueueFamilyIgnored, vk.QueueFamilyIgnored)
-		region := &d.args.region
-		*region = vk.BufferImageCopy{
-			BufferOffset:     intconv.Must[vk.DeviceSize](at),
-			BufferRowLength:  intconv.Must[uint32](stride / px),
-			ImageSubresource: vk.ImageSubresourceLayers{AspectMask: vk.ImageAspectFlags(vk.ImageAspectColorBit), LayerCount: 1},
-			ImageOffset:      offset3D(r.Min),
-			ImageExtent:      extent3D(r.Dx(), r.Dy()),
+	if d.batch == 0 {
+		if d.batch, err = d.recording(); err != nil {
+			return err
 		}
-		d.cmds.CmdCopyBufferToImage(cb, d.upload.buf, t.image, vk.ImageLayoutTransferDstOptimal, 1, region)
-		fullBarrier(d, cb, t.image, vk.ImageLayoutTransferDstOptimal, vk.ImageLayoutShaderReadOnlyOptimal, vk.QueueFamilyIgnored, vk.QueueFamilyIgnored)
-	}, false)
-	if err != nil {
-		return err
+		d.uploads.pending++
 	}
-	f := &d.inflight[len(d.inflight)-1]
-	f.staged, f.stagingEnd = true, d.uploads.head
-	d.uploads.pending++
+	cb := d.batch
+	fullBarrier(d, cb, t.image, vk.ImageLayoutShaderReadOnlyOptimal, vk.ImageLayoutTransferDstOptimal, vk.QueueFamilyIgnored, vk.QueueFamilyIgnored)
+	region := &d.args.region
+	*region = vk.BufferImageCopy{
+		BufferOffset:     intconv.Must[vk.DeviceSize](at),
+		BufferRowLength:  intconv.Must[uint32](stride / px),
+		ImageSubresource: vk.ImageSubresourceLayers{AspectMask: vk.ImageAspectFlags(vk.ImageAspectColorBit), LayerCount: 1},
+		ImageOffset:      offset3D(r.Min),
+		ImageExtent:      extent3D(r.Dx(), r.Dy()),
+	}
+	d.cmds.CmdCopyBufferToImage(cb, d.upload.buf, t.image, vk.ImageLayoutTransferDstOptimal, 1, region)
+	fullBarrier(d, cb, t.image, vk.ImageLayoutTransferDstOptimal, vk.ImageLayoutShaderReadOnlyOptimal, vk.QueueFamilyIgnored, vk.QueueFamilyIgnored)
+	d.batched++
+	d.batchEnd = d.uploads.head
+	if d.batched >= maxBatchedUploads {
+		return d.flushBatch()
+	}
 	return nil
 }
+
+// maxBatchedUploads bounds the command memory an update loop with no
+// pass can pile up.
+const maxBatchedUploads = 64
 
 // reserveUpload is the offset of n free bytes in the staging ring,
 // waiting for earlier uploads only when the ring is full and for the
 // device to idle only when n outgrows it.
 func (d *Device) reserveUpload(n int) (int, error) {
-	d.reap(false)
 	if d.upload == nil || len(d.upload.mapped) < n {
 		if err := d.idle(); err != nil {
 			return 0, err
@@ -174,6 +181,13 @@ func (d *Device) reserveUpload(n int) (int, error) {
 			return 0, err
 		}
 	}
+	if at, ok := d.uploads.reserve(n); ok {
+		return at, nil
+	}
+	if err := d.flushBatch(); err != nil {
+		return 0, err
+	}
+	d.reap(false)
 	for {
 		if at, ok := d.uploads.reserve(n); ok {
 			return at, nil
