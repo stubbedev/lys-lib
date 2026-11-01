@@ -174,6 +174,7 @@ type (
 )
 
 type parser struct {
+	exprDepth int
 	lex  *lexer
 	tok  token
 	next token
@@ -926,12 +927,32 @@ func binaryPrec(kind tokenKind) int {
 	return 0
 }
 
+// maxExprDepth bounds how deep an expression nests, by parentheses, unary
+// operators or operator chains: keymap text is untrusted, and the Go stack
+// overflowing while parsing or evaluating one is fatal, not an error.
+const maxExprDepth = 512
+
+func (p *parser) enterExpr() error {
+	if p.exprDepth >= maxExprDepth {
+		return p.errorf("an expression nested more than %d levels deep", maxExprDepth)
+	}
+	p.exprDepth++
+	return nil
+}
+
 func (p *parser) parseExpr(minPrec int) (expr, error) {
+	if err := p.enterExpr(); err != nil {
+		return nil, err
+	}
+	defer func() { p.exprDepth-- }()
 	left, err := p.parseTerm()
 	if err != nil {
 		return nil, err
 	}
-	for {
+	for links := 0; ; links++ {
+		if links >= maxExprDepth {
+			return nil, p.errorf("an operator chain longer than %d", maxExprDepth)
+		}
 		if p.tok.kind == tokEquals && minPrec <= precAssign {
 			switch left.(type) {
 			case exprIdent, exprField, exprArray:
@@ -965,6 +986,10 @@ func (p *parser) parseExpr(minPrec int) (expr, error) {
 }
 
 func (p *parser) parseTerm() (expr, error) {
+	if err := p.enterExpr(); err != nil {
+		return nil, err
+	}
+	defer func() { p.exprDepth-- }()
 	switch p.tok.kind {
 	case tokMinus, tokPlus, tokExclam, tokInvert:
 		op := p.tok.kind
