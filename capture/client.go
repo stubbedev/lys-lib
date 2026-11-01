@@ -287,14 +287,14 @@ func (c *Client) roundtrip() error {
 	if err != nil {
 		return err
 	}
-	return c.check(dispatchTolerant(func() error { return c.ctx.RunTill(cb) }))
+	return c.check(c.ctx.RunTill(cb))
 }
 
 // dispatchUntil dispatches events one at a time until done reports
 // true.
 func (c *Client) dispatchUntil(done func() bool) error {
 	for !done() {
-		if err := c.check(dispatchTolerant(c.ctx.Run)); err != nil {
+		if err := c.check(c.ctx.Run()); err != nil {
 			return err
 		}
 	}
@@ -311,23 +311,4 @@ func (c *Client) check(err error) error {
 		return fmt.Errorf("capture: dispatch: %w", err)
 	}
 	return c.protoErr
-}
-
-// maxProxyNilRetries bounds how many events for already-destroyed
-// objects one dispatch step skips before giving up.
-const maxProxyNilRetries = 64
-
-// dispatchTolerant runs one dispatch step, skipping events addressed
-// to objects this side already destroyed: a frame the client dropped
-// can still have events in flight, and those abort the step with
-// wl.ErrContextRunProxyNil without meaning anything.
-func dispatchTolerant(run func() error) error {
-	err := run()
-	for i := 0; errors.Is(err, wl.ErrContextRunProxyNil); i++ {
-		if i >= maxProxyNilRetries {
-			return err
-		}
-		err = run()
-	}
-	return err
 }

@@ -177,7 +177,7 @@ func TestUnhandledFDEventLeavesLaterFDsAligned(t *testing.T) {
 		runErr  error
 	}{
 		{name: "no handler"},
-		{name: "destroyed object", destroy: true, runErr: ErrContextRunProxyNil},
+		{name: "destroyed object", destroy: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, sock := newSocketContext(t)

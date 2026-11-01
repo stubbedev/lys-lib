@@ -133,19 +133,25 @@ func (ctx *Context) Register(proxy Proxy) {
 }
 
 // Unregister unregisters a proxy in the map of all Context objects (proxies).
-// Until its id is deleted or reused, fds the compositor still sends it are
-// closed instead of reaching another object's event.
+// Until its id is deleted or reused, events the compositor already sent it
+// are ignored and their fds closed instead of reaching another object's event.
 func (ctx *Context) Unregister(id ProxyId) {
 	ctx.mu.Lock()
-	if c, ok := ctx.objects[id].(fdEvents); ok {
-		if ctx.zombies == nil {
-			ctx.zombies = make(map[ProxyId]fdEvents)
-		}
-		ctx.zombies[id] = c
+	if ctx.zombies == nil {
+		ctx.zombies = make(map[ProxyId]fdEvents)
 	}
+	c, _ := ctx.objects[id].(fdEvents)
+	ctx.zombies[id] = c
 	delete(ctx.objects, id)
 	ctx.mu.Unlock()
 	ctx.forgetUnsent(id)
+}
+
+func (ctx *Context) isZombie(id ProxyId) bool {
+	ctx.mu.RLock()
+	defer ctx.mu.RUnlock()
+	_, ok := ctx.zombies[id]
+	return ok
 }
 
 // idReaper forgets every id wl_display.delete_id retires: the zombie of a
@@ -320,7 +326,7 @@ func (ctx *Context) run(cb *Callback) (err error) {
 		} else {
 			return ErrContextRunNotDispatched
 		}
-	} else {
+	} else if !ctx.isZombie(ev.Pid) {
 		return ErrContextRunProxyNil
 	}
 	return nil

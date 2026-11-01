@@ -332,42 +332,6 @@ func TestFrameStateDamage(t *testing.T) {
 	}
 }
 
-func TestDispatchTolerant(t *testing.T) {
-	t.Run("skips events for destroyed objects", func(t *testing.T) {
-		calls := 0
-		err := dispatchTolerant(func() error {
-			calls++
-			if calls < 3 {
-				return wl.ErrContextRunProxyNil
-			}
-			return nil
-		})
-		if err != nil || calls != 3 {
-			t.Fatalf("err = %v after %d calls", err, calls)
-		}
-	})
-	t.Run("gives up on an endless stream of them", func(t *testing.T) {
-		calls := 0
-		err := dispatchTolerant(func() error {
-			calls++
-			return wl.ErrContextRunProxyNil
-		})
-		if !errors.Is(err, wl.ErrContextRunProxyNil) || calls != maxProxyNilRetries+1 {
-			t.Fatalf("err = %v after %d calls", err, calls)
-		}
-	})
-	t.Run("passes other errors straight through", func(t *testing.T) {
-		calls := 0
-		err := dispatchTolerant(func() error {
-			calls++
-			return wl.ErrContextRunConnectionClosed
-		})
-		if !errors.Is(err, wl.ErrContextRunConnectionClosed) || calls != 1 {
-			t.Fatalf("err = %v after %d calls", err, calls)
-		}
-	})
-}
-
 func TestClientCheckPrefersTheCompositorVerdict(t *testing.T) {
 	c := &Client{}
 	if err := c.check(nil); err != nil {

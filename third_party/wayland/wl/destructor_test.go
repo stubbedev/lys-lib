@@ -2,6 +2,7 @@ package wl
 
 import (
 	"encoding/binary"
+	"errors"
 	"syscall"
 	"testing"
 )
@@ -46,5 +47,59 @@ func TestDeleteIDForgetsAServerDestroyedObject(t *testing.T) {
 	}
 	if ctx.LookupProxy(kept.Id()) == nil {
 		t.Fatal("delete_id forgot another object")
+	}
+}
+
+func sendEvent(t *testing.T, sock int, id ProxyId) {
+	t.Helper()
+	msg := make([]byte, 8)
+	binary.NativeEndian.PutUint32(msg[0:], uint32(id))
+	binary.NativeEndian.PutUint32(msg[4:], uint32(len(msg))<<16)
+	if _, err := syscall.Write(sock, msg); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestAnEventInFlightForADestroyedObjectIsIgnored(t *testing.T) {
+	ctx, sock := newSocketContext(t)
+	ctx.newDisplay()
+	gone := NewCallback(ctx)
+	gone.Unregister()
+	sendEvent(t, sock, gone.Id())
+	if err := ctx.Run(); err != nil {
+		t.Fatalf("an event the compositor sent before it saw the destroy: %v", err)
+	}
+}
+
+func TestRunTillOutlivesAnEventForADestroyedObject(t *testing.T) {
+	ctx, sock := newSocketContext(t)
+	ctx.newDisplay()
+	gone, wanted := NewCallback(ctx), NewCallback(ctx)
+	gone.Unregister()
+	sendEvent(t, sock, gone.Id())
+	sendEvent(t, sock, wanted.Id())
+	if err := ctx.RunTill(wanted); err != nil {
+		t.Fatalf("waiting past an event for a destroyed object: %v", err)
+	}
+}
+
+func TestAnEventForAnUnknownObjectIsStillAnError(t *testing.T) {
+	ctx, sock := newSocketContext(t)
+	ctx.newDisplay()
+	sendEvent(t, sock, 12345)
+	if err := ctx.Run(); !errors.Is(err, ErrContextRunProxyNil) {
+		t.Fatalf("an event for an id nothing ever held: %v, want %v", err, ErrContextRunProxyNil)
+	}
+}
+
+func TestAnEventAfterDeleteIDIsAnError(t *testing.T) {
+	ctx, sock := newSocketContext(t)
+	ctx.newDisplay()
+	gone := NewCallback(ctx)
+	gone.Unregister()
+	idReaper{ctx}.HandleDisplayDeleteId(DisplayDeleteIdEvent{Id: uint32(gone.Id())})
+	sendEvent(t, sock, gone.Id())
+	if err := ctx.Run(); !errors.Is(err, ErrContextRunProxyNil) {
+		t.Fatalf("an event for a retired id: %v, want %v", err, ErrContextRunProxyNil)
 	}
 }
