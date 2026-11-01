@@ -1,14 +1,14 @@
-# github.com/neurlang/wayland v0.4.5, patched for lys-lib
+# github.com/neurlang/wayland v0.4.6, patched for lys-lib
 
-A copy of the packages of github.com/neurlang/wayland at v0.4.5
-(9245b77, MIT, LICENSE) that lys-lib and lys-ui use, their non-test
-sources only: `wl`, `os`, `xdg`, `wlclient`, `wlcursor`,
-`wlcursor/xcursor`, `external/swizzle`, `unstable/text-input-v3`,
+A copy of the packages of github.com/neurlang/wayland at v0.4.6
+(be3122b, MIT, LICENSE) that lys-lib and lys-ui use, with upstream's
+tests: `wl`, `os`, `xdg`, `wlclient`, `wlcursor`, `wlcursor/xcursor`,
+`external/swizzle`, `unstable/text-input-v3`,
 `unstable/xdg-decoration-v1`, and `cmd/wayland-scanner`, which
 generates `wlr`'s bindings (`go tool wayland-scanner`). They are
 carried as packages of the lys-lib module and imported as
-`github.com/stubbedev/lys-lib/third_party/wayland/...`; the only change
-to every file is that import path.
+`github.com/stubbedev/lys-lib/third_party/wayland/...`. A file differs
+from upstream by that import path and the patches below, nothing else.
 
 ## Why it lives inside the module
 
@@ -22,69 +22,43 @@ shares the same `wl` types.
 ## Patches
 
 Each bug fix goes upstream as its own pull request; drop it here once
-merged.
+merged. neurlang/wayland#45 to #49 (a nil object argument, an absolute
+`WAYLAND_DISPLAY`, the fd queue, fd ownership per event, one read per
+burst) are merged and released in v0.4.6, so they are upstream's code
+here now.
 
-### An absolute WAYLAND_DISPLAY connects as is
+### A destructor request unregisters its proxy
 
-Upstream: https://github.com/neurlang/wayland/pull/46
+Not upstream yet.
 
-`wl/context.go`, `Connect`: it always joined `XDG_RUNTIME_DIR` and the
-display name, so an absolute `WAYLAND_DISPLAY`, which lys-wm hands the
-programs it starts, dialed `/run/user/1000//run/user/1000/wayland-0`
-and failed with ENOENT. As in libwayland's `wl_display_connect`, an
-absolute name is the socket's path and `XDG_RUNTIME_DIR` is needed only
-for a relative one (lys-lib#10). `wl/connect_test.go` is the upstream
-pull request's test.
+`cmd/wayland-scanner/golang_schema.go`, `xml_read.go`, and every
+generated binding: a destructor request was a plain send, so a destroyed
+proxy stayed in the client's object table with every handler it held,
+and through those handlers a closed window's whole widget tree stayed
+reachable. As `wl_proxy_destroy` does, the generated method now
+unregisters the proxy once sent. `wl/destructor_test.go` holds the
+tests of this patch and the next two.
 
-### A nil object argument goes out as id 0
+### delete_id forgets objects the server destroyed
 
-Upstream: https://github.com/neurlang/wayland/pull/45
+Not upstream yet.
 
-`wl/request.go`, `SendRequest`: its scan for new ids called `Id()` on
-every proxy argument, so a typed-nil one (`wl_data_device.set_selection`
-with no source, `xdg_toplevel.set_parent` with no parent) panicked with
-the send lock held and deadlocked every later request. `PutProxy`
-already writes a nil proxy as 0; the scan now skips it (lys-lib#13).
-`wl/nil_argument_test.go` is the upstream pull request's test.
+`wl/context.go`, `idReaper`: `wl_display.delete_id` only reaped zombies,
+so an object the server destroyed on its own, such as the frame callback
+of a destroyed surface, stayed registered with its handlers. As in
+libwayland, `delete_id` now drops the proxy too.
 
-### Every received fd reaches its event
+### An event in flight for a destroyed object is ignored
 
-Upstream: https://github.com/neurlang/wayland/pull/47
+Not upstream yet.
 
-`wl/event.go`, `readEvent` and `Event.FD`: libwayland sends the fds of
-every event in one flush together, in one SCM_RIGHTS message, but the
-reader kept control messages and `FD` took only the first fd of each,
-so the second of two `wl_data_source.send` events flushed together got
-`ErrNoControlMsgs` and its fd leaked; its 24-byte control buffer also
-truncated anything past two fds. Received fds now queue in order per
-connection and each fd argument takes the next one; the buffer fits
-libwayland's MAX_FDS_OUT (28), a truncated control message fails the
-read, the payload is read with the same fd-collecting read, and `Close`
-closes the fds no event took (lys-lib#24). `wl/fd_batch_test.go` is
-the test.
-
-Upstream: https://github.com/neurlang/wayland/pull/48
-
-An fd no handler took stayed queued and went to the next fd-carrying
-event, another object's, as did one sent to an object the client had
-already destroyed. As in libwayland, each event now owns the fds its
-signature declares: `cmd/wayland-scanner` emits `EventFDs(opcode)` for
-interfaces with fd events, `Context.run` claims that many before
-dispatch and closes the ones no handler took, and `Unregister` keeps a
-destroyed object as a zombie until `wl_display.delete_id` or its id is
-reused (lys-lib#25).
-
-### One read per burst of events
-
-Upstream: https://github.com/neurlang/wayland/pull/49
-
-`wl/event.go`, `readEvent`: every event cost two `recvmsg` calls, one
-for its header and one for its payload, and pooled header, payload and
-control buffers. As libwayland does, the reader now fills a
-per-connection buffer with one `recvmsg` and parses events from it;
-`Event.Data` aliases that buffer until the next read. A header whose
-size is below the header length is `ErrInvalidMsgSize` instead of a
-panic (lys-lib#26). `wl/read_test.go` holds its tests and benchmark.
+`wl/context.go`, `Unregister`, `Context.run`; `wl/event.go`: with
+destructors unregistering, an event the compositor sent before it saw
+the destroy, such as `wl_buffer.release`, ended `Run` with
+`ErrContextRunProxyNil`. As in libwayland, every destroyed id stays a
+zombie until `delete_id` retires it and `Run` ignores its events, while
+an id nothing holds is still an error (lys-lib#58). `wl/fd_batch_test.go`
+expects no error for the destroyed object accordingly.
 
 ### Byte order comes from encoding/binary
 
