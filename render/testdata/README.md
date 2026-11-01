@@ -1,13 +1,13 @@
 # render/testdata
 
-Fixture assets for render-level and widget-level pixel tests.
+Fixture assets for render-level pixel tests.
 
 ## Cantarell-Regular.ttf
 
-The golden-image harness (`internal/golden`, `render/golden_test.go`,
-`widget/golden_test.go`) shapes and rasterizes every snapshot with this
-font and nothing else, so glyph metrics and pixel output are byte-stable
-on any machine, with or without fonts installed.
+The golden-image harness (`golden`, `render/golden_test.go`) shapes and
+rasterizes every snapshot with this font and nothing else, so glyph
+metrics and pixel output are byte-stable on any machine, with or without
+fonts installed.
 
 - Source: https://github.com/google/fonts/tree/main/ofl/cantarell
   (Cantarell Regular)
@@ -19,7 +19,7 @@ on any machine, with or without fonts installed.
 The file is the font's complete, unmodified regular weight (43 KB — small
 enough to bundle whole, no subsetting step to keep in sync). To refresh
 it, re-download, update the SHA-256 above, regenerate the goldens with
-`UPDATE_GOLDEN=1 go test ./render ./widget`, and review the diff.
+`UPDATE_GOLDEN=1 go test ./render`, and review the diff.
 
 ## NotoSansHebrew-Regular.ttf
 
@@ -39,7 +39,7 @@ The file is the font's complete, unmodified regular weight (26 KB).
 ## Quicksand-VF.ttf
 
 The variable fixture face, read from disk (not embedded) by the
-variation tests in render, internal/sysfont and widget: its wght axis
+variation tests in render and third_party/typesetting/font: its wght axis
 spans 300-700, so the 300/400/700 instance goldens pin real outline
 variation, not synthesized weight.
 
@@ -95,5 +95,5 @@ the departure.
 ## golden/
 
 Committed PNG snapshots. A test fails when its golden is missing, so a
-new widget comes with its snapshots; `just goldens`
-(`UPDATE_GOLDEN=1 go test ./render ./widget`) regenerates them.
+new test comes with its snapshots; `just goldens`
+(`UPDATE_GOLDEN=1 go test ./render`) regenerates them.

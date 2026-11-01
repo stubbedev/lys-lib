@@ -20,14 +20,14 @@
 //     the independent truth a renderer is held to. Anti-aliasing never
 //     agrees byte for byte across renderers, so references compare
 //     within a Tolerance, and UPDATE_GOLDEN never rewrites them.
-//   - A test FAILS when its golden is missing. New widgets must land
+//   - A test FAILS when its golden is missing. New tests must land
 //     with their snapshots, otherwise the golden net has a hole nobody
 //     notices until it misses a real regression.
 //   - Running with UPDATE_GOLDEN=1 in the environment rewrites every
 //     golden the run touches instead of comparing (missing ones are
 //     simply written), which is also how the missing-golden failure is
 //     resolved. After a deliberate visual change, regenerate and review
-//     the diff: `UPDATE_GOLDEN=1 go test ./render ./widget`, then
+//     the diff: `UPDATE_GOLDEN=1 go test ./render`, then
 //     `git diff -- '*testdata/golden*'`. The regeneration round-trip
 //     must leave the tree unchanged when nothing changed.
 package golden

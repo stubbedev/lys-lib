@@ -1,7 +1,7 @@
 package render
 
 // Test-fixture infrastructure shared by the golden-image harness (see
-// internal/golden and the golden_test.go files in render and widget).
+// the golden package and render/golden_test.go).
 // The bundled font pins text metrics and rasterization to one face, so
 // goldens are byte-stable on any machine — with or without fonts
 // installed — instead of tracking whatever sysfont resolves on the
