@@ -199,7 +199,7 @@ func (s *svgScanner) lineTo(bx, by float32) {
 	x := ax
 	y := float32(math.Floor(float64(ay)))
 	yMax := min(by, float32(s.boxH))
-	width := int32(s.boxW)
+	width := int32(max(0, min(s.boxW, math.MaxInt32)))
 	for ; y < yMax; y++ {
 		dy := min(y+1, yMax) - max(y, ay)
 		xNext := x + float32(dy*dxdy)

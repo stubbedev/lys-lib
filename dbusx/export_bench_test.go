@@ -9,7 +9,7 @@ import (
 	dbus "github.com/stubbedev/lys-lib/third_party/godbus"
 )
 
-type benchItem struct{ label string }
+type benchItem struct{}
 
 func (benchItem) Delete() (dbus.ObjectPath, *dbus.Error)                    { return "/", nil }
 func (benchItem) GetSecret(dbus.ObjectPath) (string, *dbus.Error)           { return "", nil }

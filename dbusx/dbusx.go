@@ -315,14 +315,22 @@ func File(fd dbus.UnixFD, name string) (*os.File, error) {
 
 // introspectedMethods is introspect.Methods per type, the result shared
 // and read only: a service may export thousands of objects of one type.
-var introspectedMethods sync.Map
+var (
+	introspectedMu      sync.RWMutex
+	introspectedMethods = map[reflect.Type][]introspect.Method{}
+)
 
 func methodsOf(v any) []introspect.Method {
 	t := reflect.TypeOf(v)
-	if m, ok := introspectedMethods.Load(t); ok {
-		return m.([]introspect.Method)
+	introspectedMu.RLock()
+	m, ok := introspectedMethods[t]
+	introspectedMu.RUnlock()
+	if ok {
+		return m
 	}
-	m := introspect.Methods(v)
-	introspectedMethods.Store(t, m)
+	m = introspect.Methods(v)
+	introspectedMu.Lock()
+	introspectedMethods[t] = m
+	introspectedMu.Unlock()
 	return m
 }
