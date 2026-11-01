@@ -3,6 +3,7 @@ package capture
 import (
 	"errors"
 	"fmt"
+	"image"
 	"slices"
 
 	"github.com/stubbedev/lys-lib/dmabuf"
@@ -40,7 +41,14 @@ type DmabufBuffer struct {
 // does not suit it.
 var ErrDmabufRejected = errors.New("capture: the compositor rejected the dmabuf import")
 
-// dmabufProbe caches one output's probe result: the offered format, or
+// probeTarget is what a dmabuf probe answers for: an output, whole (a zero
+// region) or a region of it.
+type probeTarget struct {
+	output *wl.Output
+	region image.Rectangle
+}
+
+// dmabufProbe caches one target's probe result: the offered format, or
 // the fact that none is offered.
 type dmabufProbe struct {
 	format  DmabufFormat
@@ -56,6 +64,22 @@ type dmabufProbe struct {
 // feedback or screencopy v3, or imports the format in no explicit
 // modifier - stay on the shm path.
 func (c *Client) DmabufFormat(o Output, cursor bool) (DmabufFormat, error) {
+	return c.dmabufFormat(o, nil, cursor)
+}
+
+// DmabufRegionFormat is DmabufFormat for the frames of a region of the
+// output, in its logical coordinates: the size is the region's in buffer
+// pixels. Whether a compositor takes a region's frames in a dmabuf is its
+// own to say, so each region is asked: ErrUnsupported stays on the shm path.
+func (c *Client) DmabufRegionFormat(o Output, region image.Rectangle, cursor bool) (DmabufFormat, error) {
+	if region.Empty() {
+		return DmabufFormat{}, fmt.Errorf("capture: empty region %v", region)
+	}
+	return c.dmabufFormat(o, &region, cursor)
+}
+
+// dmabufFormat probes the output, or the region of it when one is given.
+func (c *Client) dmabufFormat(o Output, region *image.Rectangle, cursor bool) (DmabufFormat, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.dmabuf == nil {
@@ -64,13 +88,17 @@ func (c *Client) DmabufFormat(o Output, cursor bool) (DmabufFormat, error) {
 	if c.screencopy != nil && c.scVersion < 3 {
 		return DmabufFormat{}, fmt.Errorf("%w: %s v3 (linux_dmabuf event)", ErrUnsupported, ifaceScreencopy)
 	}
-	if p, ok := c.dmabufProbe[o.wl]; ok {
+	target := probeTarget{output: o.wl}
+	if region != nil {
+		target.region = *region
+	}
+	if p, ok := c.dmabufProbe[target]; ok {
 		if !p.offered {
 			return DmabufFormat{}, fmt.Errorf("%w: no dmabuf format for output %q", ErrUnsupported, o.Name)
 		}
 		return p.format, nil
 	}
-	st, frame, err := c.startScreencopy(o, nil, cursor)
+	st, frame, err := c.startScreencopy(o, region, cursor)
 	if err != nil {
 		return DmabufFormat{}, err
 	}
@@ -93,7 +121,7 @@ func (c *Client) DmabufFormat(o Output, cursor bool) (DmabufFormat, error) {
 			return DmabufFormat{}, fmt.Errorf("%w: the compositor imports DRM format %s in no explicit modifier", ErrUnsupported, p.format.Fourcc)
 		}
 	}
-	c.dmabufProbe[o.wl] = p
+	c.dmabufProbe[target] = p
 	if !p.offered {
 		return DmabufFormat{}, fmt.Errorf("%w: no dmabuf format for output %q", ErrUnsupported, o.Name)
 	}
@@ -189,7 +217,17 @@ func (b *DmabufBuffer) Destroy() {
 // what a stream filling at its own rate, or a probe of an idle output,
 // needs. CaptureOutputDmabuf waits for damage instead, and reports it.
 func (c *Client) CopyOutputDmabuf(o Output, cursor bool, buf *DmabufBuffer) error {
-	_, err := c.captureDmabuf(o, cursor, buf, false)
+	_, err := c.captureDmabuf(o, nil, cursor, buf, false)
+	return err
+}
+
+// CopyOutputRegionDmabuf is CopyOutputDmabuf for a region of the output, in
+// its logical coordinates, into a buffer of its DmabufRegionFormat.
+func (c *Client) CopyOutputRegionDmabuf(o Output, region image.Rectangle, cursor bool, buf *DmabufBuffer) error {
+	if region.Empty() {
+		return fmt.Errorf("capture: empty region %v", region)
+	}
+	_, err := c.captureDmabuf(o, &region, cursor, buf, false)
 	return err
 }
 
@@ -198,10 +236,10 @@ func (c *Client) CopyOutputDmabuf(o Output, cursor bool, buf *DmabufBuffer) erro
 // returns the frame's damage. Fencing is the caller's: reuse a buffer
 // only after its consumer finished reading it.
 func (c *Client) CaptureOutputDmabuf(o Output, cursor bool, buf *DmabufBuffer) ([]Rect, error) {
-	return c.captureDmabuf(o, cursor, buf, c.scVersion >= 2)
+	return c.captureDmabuf(o, nil, cursor, buf, c.scVersion >= 2)
 }
 
-func (c *Client) captureDmabuf(o Output, cursor bool, buf *DmabufBuffer, withDamage bool) ([]Rect, error) {
+func (c *Client) captureDmabuf(o Output, region *image.Rectangle, cursor bool, buf *DmabufBuffer, withDamage bool) ([]Rect, error) {
 	if buf == nil || buf.client != c {
 		return nil, errors.New("capture: dmabuf buffer is not from this client")
 	}
@@ -210,7 +248,7 @@ func (c *Client) captureDmabuf(o Output, cursor bool, buf *DmabufBuffer, withDam
 	if buf.wl == nil {
 		return nil, errors.New("capture: dmabuf buffer was destroyed")
 	}
-	st, frame, err := c.startScreencopy(o, nil, cursor)
+	st, frame, err := c.startScreencopy(o, region, cursor)
 	if err != nil {
 		return nil, err
 	}

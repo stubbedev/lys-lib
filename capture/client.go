@@ -90,9 +90,9 @@ type Client struct {
 	sessionToplevels map[*wlr.ForeignToplevelHandleV1]struct{}
 
 	// slot is the reusable screencopy target (see shm.go); dmabufProbe
-	// caches each output's advertised dmabuf format.
+	// caches each target's advertised dmabuf format.
 	slot        *shmBuffer
-	dmabufProbe map[*wl.Output]dmabufProbe
+	dmabufProbe map[probeTarget]dmabufProbe
 
 	// protoErr is the compositor's fatal wl_display.error, once one
 	// arrived; every later call fails with it.
@@ -120,7 +120,7 @@ func ConnectTo(socket string) (*Client, error) {
 	c := &Client{
 		display:          display,
 		ctx:              display.Context(),
-		dmabufProbe:      make(map[*wl.Output]dmabufProbe),
+		dmabufProbe:      make(map[probeTarget]dmabufProbe),
 		sessionToplevels: make(map[*wlr.ForeignToplevelHandleV1]struct{}),
 	}
 	display.AddErrorHandler(c)
