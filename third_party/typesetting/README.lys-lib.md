@@ -153,3 +153,10 @@ a mapping that lives as long as the face and a file nobody truncates.
 an FMA on arm64 and not on amd64, so a varied outline differed by the last bit
 between them. An explicit conversion rounds each product first, as the Go spec
 provides, and a varied font now hashes to the same outlines everywhere.
+
+### A directory linked into a font directory is walked
+
+`fontscan/scandir.go`: `filepath.WalkDir` does not follow links, and a link to a
+directory reached `consume` as a file. A Nix profile links each package's fonts
+that way. Upstream's parse failed softly and those fonts went unindexed; here it is
+walked, once whatever links to it.

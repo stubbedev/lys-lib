@@ -36,6 +36,10 @@ func (dst *footprintScanner) scanDirectory(logger Logger, dir string, visited ma
 			return fmt.Errorf("failed to stat %q: %w", path, err)
 		}
 
+		if info.IsDir() {
+			return dst.scanLinkedDirectory(logger, path, visited)
+		}
+
 		// always ignore files which should never be font files
 		if ignoreFontFile(info.Name()) {
 			return nil
@@ -55,4 +59,19 @@ type dirEntry = fs.DirEntry
 
 func readDir(name string) ([]dirEntry, error) {
 	return os.ReadDir(name)
+}
+
+// scanLinkedDirectory scans a directory reached through a symbolic link,
+// which [filepath.WalkDir] does not follow, once whatever links to it.
+func (dst *footprintScanner) scanLinkedDirectory(logger Logger, link string, visited map[string]bool) error {
+	target, err := filepath.EvalSymlinks(link)
+	if err != nil {
+		logger.Printf("skipping unresolvable font directory link %q: %v", link, err)
+		return nil
+	}
+	if visited[target] {
+		return nil
+	}
+	visited[target] = true
+	return dst.scanDirectory(logger, target, visited)
 }

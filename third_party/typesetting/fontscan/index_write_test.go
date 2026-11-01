@@ -108,3 +108,26 @@ func TestAMappedFontScansAndLoadsAsItsBytes(t *testing.T) {
 		t.Errorf("a glyph read through the mapping has advance %v", adv)
 	}
 }
+
+// A directory linked into a font directory, as a Nix profile links each
+// package's fonts, is scanned as a directory and does not stop the scan;
+// a link back to a parent ends rather than walking forever.
+func TestALinkedDirectoryIsWalked(t *testing.T) {
+	dir, linked := t.TempDir(), t.TempDir()
+	font := filepath.Join(linked, "a.ttf")
+	if err := os.WriteFile(font, []byte("not a font"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for link, target := range map[string]string{"package": linked, "loop": dir} {
+		if err := os.Symlink(target, filepath.Join(dir, link)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	index, _, err := scanFontFootprints(discardLogger{}, nil, dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(index) != 1 {
+		t.Fatalf("%d files indexed through the links, want the 1 font: %+v", len(index), index)
+	}
+}
