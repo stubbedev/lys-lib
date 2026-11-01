@@ -51,9 +51,9 @@ svg-refs:
     done
 
 # Compile the GPU renderer's GLSL to the SPIR-V package gpu embeds, and
-# regenerate the Wayland protocol bindings.
+# regenerate the Wayland protocol bindings and the keysym tables.
 generate:
-    go generate ./gpu ./wlr
+    go generate ./gpu ./wlr ./xkb
 
 # Format every Go source in place: gofumpt and gci as configured in
 # .golangci.yml, which also excludes third_party/ (upstream code carried

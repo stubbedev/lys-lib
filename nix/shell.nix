@@ -38,6 +38,9 @@
             pkgs.pipewire
             # libei, the C client the EIS server tests drive.
             pkgs.libei
+            # libxkbcommon, the reference the xkb package's differential
+            # tests and keysym table generator hold it to.
+            pkgs.libxkbcommon
           ]
           ++ [
             # The test compositor's private session bus.
@@ -92,7 +95,13 @@
           ++ [
             pkgs.pipewire
             pkgs.libei
+            pkgs.libxkbcommon
           ]);
+        # The xkb package's tests: the data libxkbcommon and the package
+        # both compile from, and the header its keysym tables come from.
+        XKB_CONFIG_ROOT = "${pkgs.xkeyboard-config}/share/X11/xkb";
+        XLOCALEDIR = "${pkgs.libX11}/share/X11/locale";
+        LYS_XKB_KEYSYMS_H = "${pkgs.libxkbcommon.dev}/include/xkbcommon/xkbcommon-keysyms.h";
         # Mesa's lavapipe, a CPU Vulkan driver: the GPU tests force it
         # (VK_DRIVER_FILES) to run without a GPU, as CI does.
         LYS_TEST_LAVAPIPE = "${pkgs.mesa}/share/vulkan/icd.d/lvp_icd.x86_64.json";
