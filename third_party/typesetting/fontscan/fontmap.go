@@ -194,14 +194,14 @@ func initSystemFonts(logger Logger, userCacheDir string) error {
 func refreshSystemFontsIndex(logger Logger, cachePath string) (systemFontsIndex, error) {
 	fontDirectories, err := DefaultFontDirectories(logger)
 	if err != nil {
-		return nil, fmt.Errorf("searching font directories: %s", err)
+		return nil, fmt.Errorf("searching font directories: %w", err)
 	}
 	logger.Printf("using system font dirs %q", fontDirectories)
 
 	currentIndex, _ := deserializeIndexFile(cachePath)
 	// if an error occured (the cache file does not exists or is invalid), we start from scratch
 
-	updatedIndex, err := scanFontFootprints(logger, currentIndex, fontDirectories...)
+	updatedIndex, unchanged, err := scanFontFootprints(logger, currentIndex, fontDirectories...)
 	if err != nil {
 		return nil, fmt.Errorf("scanning system fonts: %s", err)
 	}
@@ -212,6 +212,10 @@ func refreshSystemFontsIndex(logger Logger, cachePath string) (systemFontsIndex,
 	err = updatedIndex.assertValid()
 	if err != nil {
 		return nil, fmt.Errorf("loading system fonts: %s", err)
+	}
+
+	if unchanged {
+		return updatedIndex, nil
 	}
 
 	// write back the index in the cache file

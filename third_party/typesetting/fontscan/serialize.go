@@ -288,16 +288,21 @@ func (index systemFontsIndex) serializeToFile(cachePath string) error {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("unable to create system font cache dir %q: %w", dir, err)
 	}
-	f, err := os.Create(cachePath)
+	f, err := os.CreateTemp(dir, filepath.Base(cachePath)+".*")
 	if err != nil {
 		return err
 	}
+	defer os.Remove(f.Name())
 
 	err = index.serializeTo(f)
 	if err != nil {
+		f.Close()
 		return err
 	}
 
 	err = f.Close()
-	return err
+	if err != nil {
+		return err
+	}
+	return os.Rename(f.Name(), cachePath)
 }

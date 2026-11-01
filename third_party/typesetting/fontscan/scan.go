@@ -14,6 +14,10 @@ import (
 	ot "github.com/stubbedev/lys-lib/third_party/typesetting/font/opentype"
 )
 
+// ErrNoFontDirectories is DefaultFontDirectories finding no font directory
+// on the system, as in a minimal container.
+var ErrNoFontDirectories = errors.New("no font directories found")
+
 // DefaultFontDirectories return the OS-dependent usual directories for
 // fonts, or an error if no one exists.
 // These are the directories used by `FontMap.UseSystemFonts` to locate fonts.
@@ -112,7 +116,7 @@ func DefaultFontDirectories(logger Logger) ([]string, error) {
 	sort.Strings(validDirs)
 
 	if len(validDirs) == 0 {
-		return nil, errors.New("no font directory found")
+		return nil, ErrNoFontDirectories
 	}
 
 	return validDirs, nil
@@ -206,7 +210,8 @@ type fileFootprints struct {
 type footprintScanner struct {
 	previousIndex map[string]fileFootprints // reference index, to be updated
 
-	dst systemFontsIndex // accumulated footprints
+	dst    systemFontsIndex // accumulated footprints
+	reused int              // files of dst taken from previousIndex
 
 	// used to reduce allocations
 	scanBuffer
@@ -234,6 +239,7 @@ func (fa *footprintScanner) consume(path string, info os.FileInfo) error {
 		// we already have an up to date scan of the file:
 		// skip the scan and add the current footprints
 		fa.dst = append(fa.dst, indexedFile)
+		fa.reused++
 		return nil
 	}
 
@@ -286,7 +292,7 @@ func (fa *footprintScanner) consume(path string, info os.FileInfo) error {
 // `currentIndex` may be passed to avoid scanning font files that are
 // already present in `currentIndex` and up to date, and directly duplicating
 // the footprint in `currentIndex`
-func scanFontFootprints(logger Logger, currentIndex systemFontsIndex, dirs ...string) (systemFontsIndex, error) {
+func scanFontFootprints(logger Logger, currentIndex systemFontsIndex, dirs ...string) (index systemFontsIndex, unchanged bool, err error) {
 	// keep track of visited dirs to avoid double inclusions,
 	// for instance with symbolic links
 	visited := make(map[string]bool)
@@ -295,8 +301,8 @@ func scanFontFootprints(logger Logger, currentIndex systemFontsIndex, dirs ...st
 	for _, dir := range dirs {
 		err := accu.scanDirectory(logger, dir, visited)
 		if err != nil {
-			return nil, err
+			return nil, false, err
 		}
 	}
-	return accu.dst, nil
+	return accu.dst, accu.reused == len(currentIndex) && len(accu.dst) == accu.reused, nil
 }

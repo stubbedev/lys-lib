@@ -104,6 +104,14 @@ fontconfig's dual-width rule (stubbedev/lys-lib#47) extended to
 triple-width glyphs, still within upstream's 1/33 tolerance. Pinned by
 `font/metadata_test.go`.
 
+### The system index is written only when it changed
+
+A start that found every font file up to date left the index alone only after
+gzipping and rewriting it, so each application start paid a fifth of the scan's
+CPU and raced other starts on the same file. Now it writes only when a file was
+added, removed or rescanned, and through a rename. The directory search error
+now wraps its cause.
+
 ### Import path
 
 Every source imports `github.com/stubbedev/lys-lib/third_party/typesetting`
