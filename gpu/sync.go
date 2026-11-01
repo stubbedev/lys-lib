@@ -36,14 +36,20 @@ type timing struct {
 	waits      []vk.Semaphore
 	passes     uint64
 	done       uint64
+	doneQuery  int
+	timed      uint64
 	doneAt     time.Duration
 	clocks     clockSample
 	clocksAt   time.Time
 	doneErr    error
-	// spareFences and spareBuffers are the fences and command buffers
-	// of finished submissions, for the next ones.
-	spareFences  []vk.Fence
-	spareBuffers []vk.CommandBuffer
+	// heldSemaphores are what the submissions in flight wait on and
+	// signal, the oldest submission's first.
+	heldSemaphores []vk.Semaphore
+	// spareFences, spareBuffers and spareSemaphores are the objects of
+	// finished submissions, for the next ones.
+	spareFences     []vk.Fence
+	spareBuffers    []vk.CommandBuffer
+	spareSemaphores []vk.Semaphore
 	// args is what commands point C at. C reads a pointer argument only
 	// during the call, and one on the stack would escape to the heap,
 	// so the device keeps one of each.
@@ -54,8 +60,13 @@ type timing struct {
 type callArgs struct {
 	fence     vk.Fence
 	cb        vk.CommandBuffer
+	signal    vk.Semaphore
+	stages    []vk.PipelineStageFlags
 	begin     vk.CommandBufferBeginInfo
 	submit    vk.SubmitInfo
+	imp       vk.ImportSemaphoreFdInfoKHR
+	getFd     vk.SemaphoreGetFdInfoKHR
+	fd        int32
 	barrier   vk.ImageMemoryBarrier
 	region    vk.BufferImageCopy
 	passBegin vk.RenderPassBeginInfo
@@ -70,7 +81,8 @@ type callArgs struct {
 type inflight struct {
 	fence vk.Fence
 	cb    vk.CommandBuffer
-	sems  []vk.Semaphore
+	// sems counts this submission's share of heldSemaphores.
+	sems  int
 	query int
 	pass  uint64
 	// staged marks a submission reading the staging ring up to
@@ -122,12 +134,18 @@ func (d *Device) monotonicDomain(p vk.PhysicalDevice) bool {
 // SyncFiles reports whether SyncFile and WaitSyncFile work here.
 func (d *Device) SyncFiles() bool { return d.syncFiles }
 
-func (d *Device) semaphore(export bool) (vk.Semaphore, error) {
-	exp := vk.ExportSemaphoreCreateInfo{SType: vk.StructureTypeExportSemaphoreCreateInfo, HandleTypes: vk.ExternalSemaphoreHandleTypeFlags(vk.ExternalSemaphoreHandleTypeSyncFdBit)}
-	sci := vk.SemaphoreCreateInfo{SType: vk.StructureTypeSemaphoreCreateInfo}
-	if export {
-		sci.PNext = (*uintptr)(unsafe.Pointer(&exp))
+// spareSemaphore is an unsignalled binary semaphore that exports
+// sync_files and takes temporary imports. One whose submission finished
+// is unsignalled again: its wait consumed the import, or its export
+// consumed the signal.
+func (d *Device) spareSemaphore() (vk.Semaphore, error) {
+	if n := len(d.spareSemaphores); n > 0 {
+		s := d.spareSemaphores[n-1]
+		d.spareSemaphores = d.spareSemaphores[:n-1]
+		return s, nil
 	}
+	exp := vk.ExportSemaphoreCreateInfo{SType: vk.StructureTypeExportSemaphoreCreateInfo, HandleTypes: vk.ExternalSemaphoreHandleTypeFlags(vk.ExternalSemaphoreHandleTypeSyncFdBit)}
+	sci := vk.SemaphoreCreateInfo{SType: vk.StructureTypeSemaphoreCreateInfo, PNext: (*uintptr)(unsafe.Pointer(&exp))}
 	var s vk.Semaphore
 	r := d.cmds.CreateSemaphore(d.device, &sci, nil, &s)
 	runtime.KeepAlive(&exp)
@@ -141,7 +159,8 @@ func (d *Device) semaphore(export bool) (vk.Semaphore, error) {
 // upload, a copy) wait for the fence in the sync_file fd before it
 // runs: a client's acquire fence, or a DRM syncobj point exported as
 // one. The device takes fd, closing it even on error; -1 is a fence
-// already signalled.
+// already signalled, and one that has signalled costs the submission
+// nothing.
 func (d *Device) WaitSyncFile(fd int) error {
 	if !d.syncFiles {
 		if fd >= 0 {
@@ -149,28 +168,31 @@ func (d *Device) WaitSyncFile(fd int) error {
 		}
 		return ErrNoSyncFile
 	}
-	if fd >= 0 {
-		if _, _, err := drm.SyncFileSignalTime(fd); err != nil {
-			_ = unix.Close(fd)
-			return fmt.Errorf("gpu: fd %d is no sync_file: %w", fd, err)
-		}
+	if fd < 0 {
+		return nil
 	}
-	s, err := d.semaphore(false)
+	signalled, err := drm.SyncFileSignalled(fd)
 	if err != nil {
-		if fd >= 0 {
-			_ = unix.Close(fd)
-		}
+		_ = unix.Close(fd)
+		return fmt.Errorf("gpu: fd %d is no sync_file: %w", fd, err)
+	}
+	if signalled {
+		_ = unix.Close(fd)
+		return nil
+	}
+	s, err := d.spareSemaphore()
+	if err != nil {
+		_ = unix.Close(fd)
 		return err
 	}
-	info := vk.ImportSemaphoreFdInfoKHR{
+	info := &d.args.imp
+	*info = vk.ImportSemaphoreFdInfoKHR{
 		SType: vk.StructureTypeImportSemaphoreFdInfoKhr, Semaphore: s, Flags: vk.SemaphoreImportFlags(vk.SemaphoreImportTemporaryBit),
 		HandleType: vk.ExternalSemaphoreHandleTypeSyncFdBit, Fd: intconv.Must[int32](fd),
 	}
-	if r := d.cmds.ImportSemaphoreFdKHR(d.device, &info); r != vk.Success {
-		d.cmds.DestroySemaphore(d.device, s, nil)
-		if fd >= 0 {
-			_ = unix.Close(fd)
-		}
+	if r := d.cmds.ImportSemaphoreFdKHR(d.device, info); r != vk.Success {
+		d.spareSemaphores = append(d.spareSemaphores, s)
+		_ = unix.Close(fd)
 		return fmt.Errorf("gpu: vkImportSemaphoreFdKHR sync_file %d: %d", fd, r)
 	}
 	d.waits = append(d.waits, s)
@@ -184,26 +206,42 @@ func (d *Device) SyncFile() (int, error) {
 	if !d.syncFiles {
 		return -1, ErrNoSyncFile
 	}
-	s, err := d.semaphore(true)
+	s, err := d.spareSemaphore()
 	if err != nil {
 		return -1, err
 	}
-	if err := d.queue1(0, []vk.Semaphore{s}, -1, false); err != nil {
-		d.cmds.DestroySemaphore(d.device, s, nil)
+	if err := d.queue1(0, s, -1, false); err != nil {
+		d.spareSemaphores = append(d.spareSemaphores, s)
 		return -1, err
 	}
-	gi := vk.SemaphoreGetFdInfoKHR{SType: vk.StructureTypeSemaphoreGetFdInfoKhr, Semaphore: s, HandleType: vk.ExternalSemaphoreHandleTypeSyncFdBit}
-	var fd int32
-	if r := d.cmds.GetSemaphoreFdKHR(d.device, &gi, &fd); r != vk.Success {
+	gi := &d.args.getFd
+	*gi = vk.SemaphoreGetFdInfoKHR{SType: vk.StructureTypeSemaphoreGetFdInfoKhr, Semaphore: s, HandleType: vk.ExternalSemaphoreHandleTypeSyncFdBit}
+	if r := d.cmds.GetSemaphoreFdKHR(d.device, gi, &d.args.fd); r != vk.Success {
+		d.forgetSignal()
 		return -1, fmt.Errorf("gpu: vkGetSemaphoreFdKHR (sync_file): %d", r)
 	}
-	if fd < 0 {
+	if d.args.fd < 0 {
+		d.forgetSignal()
 		return -1, errors.New("gpu: the driver exported no sync_file for a pending signal")
 	}
-	return int(fd), nil
+	return int(d.args.fd), nil
 }
 
-func (d *Device) queue1(cb vk.CommandBuffer, signal []vk.Semaphore, query int, pass bool) error {
+// forgetSignal destroys the semaphore the newest submission signals,
+// whose export failed: nothing consumed the signal, so it cannot be
+// used again.
+func (d *Device) forgetSignal() {
+	f := &d.inflight[len(d.inflight)-1]
+	last := len(d.heldSemaphores) - 1
+	s := d.heldSemaphores[last]
+	d.heldSemaphores, f.sems = d.heldSemaphores[:last], f.sems-1
+	_ = d.idle()
+	d.cmds.DestroySemaphore(d.device, s, nil)
+}
+
+// queue1 submits cb (0 for none) after the pending waits, signalling
+// signal (0 for none).
+func (d *Device) queue1(cb vk.CommandBuffer, signal vk.Semaphore, query int, pass bool) error {
 	d.reap(false)
 	for len(d.inflight) >= queryRing {
 		if err := d.waitOldest(); err != nil {
@@ -214,31 +252,34 @@ func (d *Device) queue1(cb vk.CommandBuffer, signal []vk.Semaphore, query int, p
 	if err != nil {
 		return err
 	}
-	waits := d.waits
-	stages := make([]vk.PipelineStageFlags, len(waits))
-	for i := range stages {
-		stages[i] = vk.PipelineStageFlags(vk.PipelineStageAllCommandsBit)
-	}
-	si := &d.args.submit
+	a := &d.args
+	si := &a.submit
 	*si = vk.SubmitInfo{SType: vk.StructureTypeSubmitInfo}
-	if len(waits) > 0 {
-		si.WaitSemaphoreCount, si.PWaitSemaphores, si.PWaitDstStageMask = count(waits), &waits[0], &stages[0]
+	if n := len(d.waits); n > 0 {
+		for len(a.stages) < n {
+			a.stages = append(a.stages, vk.PipelineStageFlags(vk.PipelineStageAllCommandsBit))
+		}
+		si.WaitSemaphoreCount, si.PWaitSemaphores, si.PWaitDstStageMask = count(d.waits), &d.waits[0], &a.stages[0]
 	}
 	if cb != 0 {
-		d.args.cb = cb
-		si.CommandBufferCount, si.PCommandBuffers = 1, &d.args.cb
+		a.cb = cb
+		si.CommandBufferCount, si.PCommandBuffers = 1, &a.cb
 	}
-	if len(signal) > 0 {
-		si.SignalSemaphoreCount, si.PSignalSemaphores = count(signal), &signal[0]
+	if signal != 0 {
+		a.signal = signal
+		si.SignalSemaphoreCount, si.PSignalSemaphores = 1, &a.signal
 	}
-	r := d.cmds.QueueSubmit(d.queue, 1, si, fence)
-	runtime.KeepAlive(stages)
-	if r != vk.Success {
+	if r := d.cmds.QueueSubmit(d.queue, 1, si, fence); r != vk.Success {
 		d.cmds.DestroyFence(d.device, fence, nil)
 		return fmt.Errorf("gpu: vkQueueSubmit: %d", r)
 	}
-	d.waits = nil
-	f := inflight{fence: fence, cb: cb, sems: append(waits, signal...), query: query}
+	f := inflight{fence: fence, cb: cb, sems: len(d.waits), query: query}
+	d.heldSemaphores = append(d.heldSemaphores, d.waits...)
+	d.waits = d.waits[:0]
+	if signal != 0 {
+		d.heldSemaphores = append(d.heldSemaphores, signal)
+		f.sems++
+	}
 	if pass {
 		d.passes++
 		f.pass = d.passes
@@ -274,7 +315,7 @@ func (d *Device) submitAsync(record func(cb vk.CommandBuffer), pass bool) error 
 		d.spareBuffers = append(d.spareBuffers, cb)
 		return fmt.Errorf("gpu: vkEndCommandBuffer: %d", r)
 	}
-	if err := d.queue1(cb, nil, query, pass); err != nil {
+	if err := d.queue1(cb, 0, query, pass); err != nil {
 		d.spareBuffers = append(d.spareBuffers, cb)
 		return err
 	}
@@ -313,24 +354,44 @@ func (d *Device) ensureQueries() error {
 }
 
 func (d *Device) waitOldest() error {
-	f := d.inflight[0].fence
-	if r := d.cmds.WaitForFences(d.device, 1, &f, vk.True, ^uint64(0)); r != vk.Success {
+	d.args.fence = d.inflight[0].fence
+	if r := d.cmds.WaitForFences(d.device, 1, &d.args.fence, vk.True, ^uint64(0)); r != vk.Success {
 		return fmt.Errorf("gpu: vkWaitForFences: %d", r)
 	}
 	d.reap(false)
 	return nil
 }
 
-func (d *Device) reap(all bool) {
-	keep := d.inflight[:0]
-	for _, f := range d.inflight {
-		if !all && d.cmds.GetFenceStatus(d.device, f.fence) != vk.Success {
-			keep = append(keep, f)
-			continue
+// finished is how many of the oldest submissions have finished. One
+// queue signals its fences in submission order, so the newest fence
+// answers for all of them and otherwise the first unsignalled one ends
+// the walk: asking enters the kernel on most drivers.
+func (d *Device) finished() int {
+	n := len(d.inflight)
+	if n == 0 || d.cmds.GetFenceStatus(d.device, d.inflight[n-1].fence) == vk.Success {
+		return n
+	}
+	for i := range n - 1 {
+		if d.cmds.GetFenceStatus(d.device, d.inflight[i].fence) != vk.Success {
+			return i
 		}
+	}
+	return n - 1
+}
+
+func (d *Device) reap(all bool) {
+	n := len(d.inflight)
+	if !all {
+		n = d.finished()
+	}
+	if n == 0 {
+		return
+	}
+	fences, sems := len(d.spareFences), 0
+	for i := range d.inflight[:n] {
+		f := &d.inflight[i]
 		if f.pass > d.done {
-			d.done = f.pass
-			d.doneAt, d.doneErr = d.frameTime(f.query)
+			d.done, d.doneQuery = f.pass, f.query
 		}
 		if f.cb != 0 {
 			d.spareBuffers = append(d.spareBuffers, f.cb)
@@ -338,17 +399,19 @@ func (d *Device) reap(all bool) {
 		if f.staged {
 			d.uploads.release(f.stagingEnd)
 		}
-		for _, s := range f.sems {
-			d.cmds.DestroySemaphore(d.device, s, nil)
-		}
-		if resetFence(d, f.fence) == nil {
-			d.spareFences = append(d.spareFences, f.fence)
-		} else {
-			d.cmds.DestroyFence(d.device, f.fence, nil)
-		}
+		sems += f.sems
+		d.spareFences = append(d.spareFences, f.fence)
 	}
-	clear(d.inflight[len(keep):])
-	d.inflight = keep
+	d.spareSemaphores = append(d.spareSemaphores, d.heldSemaphores[:sems]...)
+	d.heldSemaphores = slices.Delete(d.heldSemaphores, 0, sems)
+	d.inflight = slices.Delete(d.inflight, 0, n)
+	reset := d.spareFences[fences:]
+	if d.cmds.ResetFences(d.device, count(reset), &reset[0]) != vk.Success {
+		for _, f := range reset {
+			d.cmds.DestroyFence(d.device, f, nil)
+		}
+		d.spareFences = d.spareFences[:fences]
+	}
 }
 
 func (d *Device) idle() error {
@@ -417,6 +480,10 @@ func (d *Device) FrameDone() (time.Duration, bool, error) {
 	if d.passes == 0 || d.done < d.passes {
 		return 0, false, nil
 	}
+	if d.timed != d.done {
+		d.timed = d.done
+		d.doneAt, d.doneErr = d.frameTime(d.doneQuery)
+	}
 	return d.doneAt, d.doneErr == nil, d.doneErr
 }
 
@@ -429,7 +496,10 @@ func (d *Device) closeTiming() {
 	for _, s := range d.waits {
 		d.cmds.DestroySemaphore(d.device, s, nil)
 	}
-	d.waits = nil
+	for _, s := range d.spareSemaphores {
+		d.cmds.DestroySemaphore(d.device, s, nil)
+	}
+	d.waits, d.spareSemaphores = nil, nil
 	if d.queries != 0 {
 		d.cmds.DestroyQueryPool(d.device, d.queries, nil)
 		d.queries = 0

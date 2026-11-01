@@ -62,6 +62,16 @@ func SyncFileSignalTime(fd int) (time.Duration, bool, error) {
 	return time.Duration(last), true, nil
 }
 
+// SyncFileSignalled reports whether every fence in the sync file fd has
+// signalled, in one SYNC_IOC_FILE_INFO that does not read the fences.
+func SyncFileSignalled(fd int) (bool, error) {
+	var info syncFileInfo
+	if err := syncFileIoctl(fd, unsafe.Pointer(&info)); err != nil { //nolint:gosec // the kernel fills this struct during the call
+		return false, fmt.Errorf("drm: SYNC_IOC_FILE_INFO on fd %d: %w", fd, err)
+	}
+	return info.status == fenceSignalled, nil
+}
+
 func syncFileIoctl(fd int, arg unsafe.Pointer) error {
 	for {
 		_, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), ioctlSyncFileInfo, uintptr(arg))

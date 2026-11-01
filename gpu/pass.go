@@ -473,15 +473,11 @@ func (p *Pass) submit() error {
 	if len(p.ops) == 0 || len(p.damage) == 0 {
 		return nil
 	}
-	ct, err := d.compTargetOf(p.t.s.format())
-	if err != nil {
-		return err
-	}
-	return d.submitAsync(func(cb vk.CommandBuffer) { p.record(cb, ct) }, true)
+	return d.submitAsync(p.record, true)
 }
 
-func (p *Pass) record(cb vk.CommandBuffer, ct *compTarget) {
-	d, s := p.d, &p.t.s
+func (p *Pass) record(cb vk.CommandBuffer) {
+	d, s, ct := p.d, &p.t.s, p.ct
 	p.t.acquire(cb)
 	var foreign []*Texture
 	for _, op := range p.ops {

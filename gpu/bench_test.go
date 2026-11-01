@@ -2,6 +2,7 @@ package gpu
 
 import (
 	"image"
+	"image/color"
 	"testing"
 
 	"github.com/stubbedev/lys-lib/fourcc"
@@ -119,3 +120,69 @@ func BenchmarkTextureUpdate(b *testing.B) {
 		i++
 	}
 }
+
+// benchCompositor is one output's frame in a compositor: the windows
+// sit as textures, one has new pixels, two rectangles of damage are
+// redrawn, a client's acquire fence is waited on when the device can,
+// the release fence is exported, and the latch budget samples the
+// previous frame's GPU time.
+func benchCompositor(b *testing.B, windows int) {
+	d := openDevice(b)
+	const w, h = 256, 256
+	tg, err := d.NewOffscreen(w, h)
+	if err != nil {
+		b.Fatal(err)
+	}
+	defer tg.Close()
+	textures := make([]*Texture, windows)
+	for i := range textures {
+		tx, err := d.NewTexture(fourcc.ARGB8888, 64, 64)
+		if err != nil {
+			b.Fatal(err)
+		}
+		defer tx.Close()
+		textures[i] = tx
+	}
+	pix := make([]byte, 64*64*4)
+	damage := []image.Rectangle{image.Rect(0, 0, 64, 64), image.Rect(128, 128, 192, 192)}
+	syncFiles := d.SyncFiles()
+	b.ReportAllocs()
+	i := 0
+	for b.Loop() {
+		i++
+		if err := textures[i%windows].Update(image.Rect(0, 0, 64, 64), 64*4, pix); err != nil {
+			b.Fatal(err)
+		}
+		p, err := d.Begin(tg, damage)
+		if err != nil {
+			b.Fatal(err)
+		}
+		p.Clear(color.RGBA{A: 255})
+		for j, tx := range textures {
+			dst := image.Rect(j*16, j*16, j*16+64, j*16+64)
+			p.DrawTexture(tx, FRect{W: 64, H: 64}, dst, TransformNormal, 1, Mask{})
+		}
+		if err := p.End(); err != nil {
+			b.Fatal(err)
+		}
+		if syncFiles {
+			fd, err := d.SyncFile()
+			if err != nil {
+				b.Fatal(err)
+			}
+			if err := d.WaitSyncFile(fd); err != nil {
+				b.Fatal(err)
+			}
+		}
+		if d.calibrated {
+			if _, _, err := d.FrameDone(); err != nil {
+				b.Fatal(err)
+			}
+		}
+	}
+	if err := d.Finish(); err != nil {
+		b.Fatal(err)
+	}
+}
+
+func BenchmarkCompositorFrame(b *testing.B) { benchCompositor(b, 6) }

@@ -187,3 +187,137 @@ func TestWaitSyncFileTakesTheFD(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func lavapipeSyncDevice(t *testing.T) *Device {
+	t.Helper()
+	d := openDevice(t)
+	if !d.SyncFiles() {
+		t.Skipf("%s has no sync_file semaphores", d.Name())
+	}
+	return d
+}
+
+func TestWaitSyncFileOfASignalledFenceHoldsNoSemaphore(t *testing.T) {
+	d := lavapipeSyncDevice(t)
+	tg, err := d.NewOffscreen(1, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tg.Close()
+	runPass(t, d, tg, []image.Rectangle{{Max: tg.Size()}}, func(p *Pass) { p.Clear(color.RGBA{A: 255}) })
+	fd, err := d.SyncFile()
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitReadable(t, fd)
+	if err := d.WaitSyncFile(fd); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.WaitSyncFile(-1); err != nil {
+		t.Fatal(err)
+	}
+	if len(d.waits) != 0 {
+		t.Errorf("%d semaphores wait on fences already signalled", len(d.waits))
+	}
+	if _, err := unix.FcntlInt(uintptr(fd), unix.F_GETFD, 0); err != unix.EBADF {
+		t.Errorf("the signalled fd is still open: %v", err)
+	}
+}
+
+// Frame after frame, what each frame exports the next waits on, drawing
+// through the same semaphores: every wait really does order, or the
+// colors would land out of order, and the semaphores do not pile up.
+func TestSemaphoresServeFrameAfterFrame(t *testing.T) {
+	d := lavapipeSyncDevice(t)
+	tg, err := d.NewOffscreen(64, 64)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tg.Close()
+	all := []image.Rectangle{{Max: tg.Size()}}
+	for frame := range 3 * queryRing {
+		want := color.RGBA{uint8(frame), 0, 0, 255}
+		runPass(t, d, tg, all, func(p *Pass) {
+			for i := range 20 {
+				p.FillRect(all[0], color.RGBA{uint8(i), 0, 0, 255}, Mask{})
+			}
+			p.FillRect(all[0], want, Mask{})
+		})
+		fd, err := d.SyncFile()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if frame%16 == 0 {
+			if err := d.Finish(); err != nil {
+				t.Fatal(err)
+			}
+			if got := readTarget(t, tg).RGBAAt(3, 3); got != want {
+				t.Fatalf("frame %d drew %v, want %v", frame, got, want)
+			}
+		}
+		if err := d.WaitSyncFile(fd); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := d.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(d.spareSemaphores) + len(d.heldSemaphores); n > 2*queryRing {
+		t.Errorf("%d semaphores for at most %d submissions in flight", n, queryRing)
+	}
+}
+
+func TestASteadyFrameCreatesNoSemaphoreOrFence(t *testing.T) {
+	d := lavapipeSyncDevice(t)
+	tg, err := d.NewOffscreen(8, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tg.Close()
+	all := []image.Rectangle{{Max: tg.Size()}}
+	for range 8 {
+		runPass(t, d, tg, all, func(p *Pass) { p.Clear(color.RGBA{A: 255}) })
+		fd, err := d.SyncFile()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := d.WaitSyncFile(fd); err != nil {
+			t.Fatal(err)
+		}
+		if err := d.Finish(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	sems, fences := len(d.spareSemaphores), len(d.spareFences)
+	if sems > 2 || fences > 2 {
+		t.Errorf("idle after every frame, the device holds %d semaphores and %d fences", sems, fences)
+	}
+}
+
+func TestFrameDoneReadsTheLastPassOnce(t *testing.T) {
+	d := openDevice(t)
+	tg, err := d.NewOffscreen(8, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tg.Close()
+	all := []image.Rectangle{{Max: tg.Size()}}
+	if !d.calibrated {
+		t.Skip("no calibrated timestamps")
+	}
+	var last time.Duration
+	for range 2 * queryRing {
+		runPass(t, d, tg, all, func(p *Pass) { p.Clear(color.RGBA{A: 255}) })
+		if err := d.Finish(); err != nil {
+			t.Fatal(err)
+		}
+		at, ok, err := d.FrameDone()
+		if err != nil || !ok {
+			t.Fatalf("FrameDone after Finish: %v, %v", ok, err)
+		}
+		if at < last {
+			t.Fatalf("frame finished at %v, before the previous at %v", at, last)
+		}
+		last = at
+	}
+}
