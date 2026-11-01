@@ -81,6 +81,13 @@ them in one pass and a bounded number of reads (lys-ui#432).
 `wl/pending_test.go` holds the tests. This is a lys-lib integration
 choice rather than an upstream bug.
 
+### A read deadline wakes a parked loop
+
+Context.SetReadDeadline exposes the socket's read deadline, so a loop parked in
+Run can wake for its own timer without a wl_display.sync round trip through the
+compositor. Run now reports a deadline as ErrContextRunTimeout: upstream's check
+never matched, since the error reaches it wrapped.
+
 ### Requests are buffered until something can depend on them
 
 `wl/request.go`: every request was a `sendmsg` of its own, waking the

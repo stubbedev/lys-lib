@@ -6,6 +6,7 @@ import (
 	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 func BenchmarkRunPointerMotion(b *testing.B) {
@@ -81,5 +82,56 @@ func TestSizeBelowTheHeaderIsAnError(t *testing.T) {
 	}
 	if err := ctx.Run(); !errors.Is(err, ErrInvalidMsgSize) {
 		t.Fatalf("run of a 4-byte message: %v, want %v", err, ErrInvalidMsgSize)
+	}
+}
+
+func TestAReadDeadlineWakesARunWithoutLosingAPartEvent(t *testing.T) {
+	ctx, sock := newSocketContext(t)
+	src := NewDataSource(ctx)
+	var got targetRecorder
+	src.AddTargetHandler(&got)
+	msg := make([]byte, 8+4+4)
+	binary.NativeEndian.PutUint32(msg[0:], uint32(src.Id()))
+	binary.NativeEndian.PutUint32(msg[4:], uint32(len(msg))<<16)
+	binary.NativeEndian.PutUint32(msg[8:], 2)
+	copy(msg[12:], "a\x00")
+	if _, err := syscall.Write(sock, msg[:10]); err != nil {
+		t.Fatal(err)
+	}
+	if err := ctx.SetReadDeadline(time.Now().Add(10 * time.Millisecond)); err != nil {
+		t.Fatal(err)
+	}
+	if err := ctx.Run(); !errors.Is(err, ErrContextRunTimeout) {
+		t.Fatalf("Run past the deadline: %v", err)
+	}
+	if err := ctx.SetReadDeadline(time.Time{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := syscall.Write(sock, msg[10:]); err != nil {
+		t.Fatal(err)
+	}
+	if err := ctx.Run(); err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 1 || got[0] != "a" {
+		t.Errorf("events %q after the deadline split one", got)
+	}
+}
+
+func TestASetDeadlineReachesARunAlreadyParked(t *testing.T) {
+	ctx, _ := newSocketContext(t)
+	done := make(chan error, 1)
+	go func() { done <- ctx.Run() }()
+	time.Sleep(5 * time.Millisecond)
+	if err := ctx.SetReadDeadline(time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case err := <-done:
+		if !errors.Is(err, ErrContextRunTimeout) {
+			t.Errorf("Run: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("a parked Run never woke")
 	}
 }

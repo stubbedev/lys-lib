@@ -299,7 +299,7 @@ func (ctx *Context) run(cb *Callback) (err error) {
 			return ErrContextRunConnectionClosed
 		}
 
-		if neterr, ok := err.(net.Error); ok && neterr.Timeout() {
+		if errors.Is(err, os.ErrDeadlineExceeded) {
 			return ErrContextRunTimeout
 		}
 
@@ -336,6 +336,19 @@ func (ctx *Context) run(cb *Callback) (err error) {
 		return ErrContextRunProxyNil
 	}
 	return nil
+}
+
+// SetReadDeadline makes reads blocked in Run or ReadReady, and later ones,
+// fail with a timeout at t, leaving a partly read event in place for the next
+// read: a loop parked in Run wakes for its own timer without a request to the
+// compositor. A zero t clears it. Safe from any goroutine.
+func (ctx *Context) SetReadDeadline(t time.Time) error {
+	ctx.mu.RLock()
+	defer ctx.mu.RUnlock()
+	if ctx.conn == nil {
+		return ErrContextConnNil
+	}
+	return ctx.conn.SetReadDeadline(t)
 }
 
 // Close (Context Close) closes Wayland connection
