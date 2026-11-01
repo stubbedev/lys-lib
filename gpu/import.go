@@ -1,7 +1,6 @@
 package gpu
 
 import (
-	"errors"
 	"fmt"
 	"math/bits"
 	"runtime"
@@ -39,16 +38,7 @@ var (
 )
 
 func (d *Device) importFormats() []fourcc.Format {
-	out := append(slices.Clone(textureFormats), yuv444Formats...)
-	if !d.ycbcr {
-		return out
-	}
-	for _, f := range ycbcrFormats {
-		if !pixelFormats[f].core13 || d.vulkan13 {
-			out = append(out, f)
-		}
-	}
-	return out
+	return slices.Concat(textureFormats, yuv444Formats, ycbcrFormats)
 }
 
 // ImportFormats are the DRM formats ImportTexture may take: what to ask
@@ -82,6 +72,9 @@ func (d *Device) importModifiers(format fourcc.Format, use importUse) ([]fourcc.
 	if err != nil {
 		return nil, err
 	}
+	if l, ok := yuvImageLayouts[format]; ok {
+		return d.yuvModifiers(format, pf, l), nil
+	}
 	var out []fourcc.Modifier
 	for _, m := range d.formatModifiers(pf.vk) {
 		mod := fourcc.Modifier(m.DrmFormatModifier)
@@ -93,6 +86,22 @@ func (d *Device) importModifiers(format fourcc.Format, use importUse) ([]fourcc.
 		}
 	}
 	return out, nil
+}
+
+// yuvModifiers are the modifiers format imports in, by the device's
+// conversion or through plain images.
+func (d *Device) yuvModifiers(format fourcc.Format, pf pixelFormat, l yuvImageLayout) []fourcc.Modifier {
+	out := d.planesModifiers(l)
+	if !d.ycbcr || pf.core13 && !d.vulkan13 {
+		return out
+	}
+	for _, m := range d.formatModifiers(pf.vk) {
+		mod := fourcc.Modifier(m.DrmFormatModifier)
+		if !slices.Contains(out, mod) && d.driverConverts(format, mod, 0, 0) {
+			out = append(out, mod)
+		}
+	}
+	return out
 }
 
 type imported struct {
@@ -110,32 +119,18 @@ func (im *imported) close(d *Device) {
 }
 
 func (d *Device) importImage(b dmabuf.Buffer, use importUse) (imported, vk.FormatFeatureFlags, error) {
-	if !d.exports {
-		return imported{}, 0, ErrNoDmabuf
-	}
-	if err := b.Validate(); err != nil {
+	if err := d.checkImportable(b); err != nil {
 		return imported{}, 0, err
 	}
 	pf, err := d.importFormatOf(b.Format, use)
 	if err != nil {
 		return imported{}, 0, err
 	}
-	if err := d.checkSize(b.Width, b.Height); err != nil {
-		return imported{}, 0, err
-	}
-	if b.Modifier == fourcc.Invalid {
-		return imported{}, 0, errors.New("gpu: a dmabuf with the implicit modifier does not import into Vulkan")
-	}
-	disjoint, err := disjointPlanes(b.Planes)
+	extra, create, err := importCreateFlags(b.Planes)
 	if err != nil {
 		return imported{}, 0, err
 	}
-	features, create := use.features, vk.ImageCreateFlags(0)
-	if disjoint {
-		features |= vk.FormatFeatureFlags(vk.FormatFeatureDisjointBit)
-		create = vk.ImageCreateFlags(vk.ImageCreateDisjointBit)
-	}
-	have, err := d.checkImport(b, pf, use, features, create)
+	have, err := d.checkImport(b, pf, use, use.features|extra, create)
 	if err != nil {
 		return imported{}, 0, err
 	}
@@ -313,6 +308,18 @@ func (d *Device) ImportTexture(b dmabuf.Buffer) (*Texture, error) {
 // ImportTextureYCbCr is ImportTexture sampling a YUV buffer through c;
 // an RGB buffer ignores c.
 func (d *Device) ImportTextureYCbCr(b dmabuf.Buffer, c YCbCr) (*Texture, error) {
+	if l, ok := yuvImageLayouts[b.Format]; ok {
+		if err := d.checkImportable(b); err != nil {
+			return nil, err
+		}
+		extra, create, err := importCreateFlags(b.Planes)
+		if err != nil {
+			return nil, err
+		}
+		if !d.driverConverts(b.Format, b.Modifier, extra, create) {
+			return d.importPlanes(b, l, c)
+		}
+	}
 	im, features, err := d.importImage(b, textureImport)
 	if err != nil {
 		return nil, err

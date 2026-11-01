@@ -18,19 +18,24 @@ import (
 // imported from its producer (ImportTexture). Close it
 // when done; the device closes the ones still open with it.
 type Texture struct {
-	d       *Device
-	format  fourcc.Format
-	pf      pixelFormat
-	w, h    int
-	image   vk.Image
-	memory  []vk.DeviceMemory
-	view    vk.ImageView
-	sets    [2]textureSet
-	layout  vk.ImageLayout
-	ycbcr   *ycbcrKind
-	yuv444  *yuv444Kind
-	surf    *surface
-	foreign bool
+	d      *Device
+	format fourcc.Format
+	pf     pixelFormat
+	w, h   int
+	image  vk.Image
+	memory []vk.DeviceMemory
+	view   vk.ImageView
+	sets   [2]textureSet
+	layout vk.ImageLayout
+	ycbcr  *ycbcrKind
+	yuv444 *yuv444Kind
+	// planes marks a YUV texture sampled through planeImages: a view each
+	// for Y, Cb and Cr.
+	planes      *planesKind
+	planeImages []vk.Image
+	planeViews  [3]vk.ImageView
+	surf        *surface
+	foreign     bool
 	// nearest marks a texture its driver filters no other way.
 	nearest bool
 	closed  bool
@@ -244,16 +249,34 @@ func (t *Texture) release() {
 		d.cmds.DestroyImage(d.device, t.image, nil)
 		t.image = 0
 	}
+	for i, v := range t.planeViews {
+		if v != 0 {
+			d.cmds.DestroyImageView(d.device, v, nil)
+			t.planeViews[i] = 0
+		}
+	}
+	for _, img := range t.planeImages {
+		d.cmds.DestroyImage(d.device, img, nil)
+	}
+	t.planeImages = nil
 	d.freeMemory(t.memory)
 	t.memory = nil
 }
 
 func (t *Texture) acquireForeign(cb vk.CommandBuffer) {
-	fullBarrier(t.d, cb, t.image, t.layout, vk.ImageLayoutShaderReadOnlyOptimal, vk.QueueFamilyForeignExt, t.d.family)
-	t.layout = vk.ImageLayoutShaderReadOnlyOptimal
+	t.foreignBarrier(cb, vk.ImageLayoutShaderReadOnlyOptimal, vk.QueueFamilyForeignExt, t.d.family)
 }
 
 func (t *Texture) releaseForeign(cb vk.CommandBuffer) {
-	fullBarrier(t.d, cb, t.image, t.layout, vk.ImageLayoutGeneral, t.d.family, vk.QueueFamilyForeignExt)
-	t.layout = vk.ImageLayoutGeneral
+	t.foreignBarrier(cb, vk.ImageLayoutGeneral, t.d.family, vk.QueueFamilyForeignExt)
+}
+
+func (t *Texture) foreignBarrier(cb vk.CommandBuffer, layout vk.ImageLayout, src, dst uint32) {
+	if t.image != 0 {
+		fullBarrier(t.d, cb, t.image, t.layout, layout, src, dst)
+	}
+	for _, img := range t.planeImages {
+		fullBarrier(t.d, cb, img, t.layout, layout, src, dst)
+	}
+	t.layout = layout
 }

@@ -19,15 +19,19 @@ type compositor struct {
 	layout   vk.PipelineLayout
 	samplers [2]vk.Sampler
 	vert     vk.ShaderModule
-	frags    [6]vk.ShaderModule
+	frags    [7]vk.ShaderModule
 	sets     setPools
 	targets  map[vk.Format]*compTarget
 	ycbcr    map[ycbcrKey]*ycbcrKind
 	yuv444   map[yuv444Key]*yuv444Kind
+	planes   map[planesKey]*planesKind
 }
 
-// fragYCbCr444 is ycbcr444.frag's place in a compositor's frags.
-const fragYCbCr444 = 5
+// The YUV shaders' places in a compositor's frags.
+const (
+	fragYCbCr444 = 5 + iota
+	fragYCbCrPlanes
+)
 
 type compTarget struct {
 	pass                         vk.RenderPass
@@ -59,6 +63,7 @@ func (d *Device) createComp() error {
 	c.targets = map[vk.Format]*compTarget{}
 	c.ycbcr = map[ycbcrKey]*ycbcrKind{}
 	c.yuv444 = map[yuv444Key]*yuv444Kind{}
+	c.planes = map[planesKey]*planesKind{}
 	for i, f := range [2]vk.Filter{vk.FilterNearest, vk.FilterLinear} {
 		sci := vk.SamplerCreateInfo{
 			SType: vk.StructureTypeSamplerCreateInfo, MagFilter: f, MinFilter: f, MipmapMode: vk.SamplerMipmapModeNearest,
@@ -72,20 +77,25 @@ func (d *Device) createComp() error {
 	if c.vert, err = d.shaderModule(compVert); err != nil {
 		return err
 	}
-	for i, spv := range [len(c.frags)][]byte{compFrag, fillFrag, gradFrag, kawaseFrag, gooFrag, fragYCbCr444: ycbcr444Frag} {
+	for i, spv := range [len(c.frags)][]byte{compFrag, fillFrag, gradFrag, kawaseFrag, gooFrag, fragYCbCr444: ycbcr444Frag, fragYCbCrPlanes: ycbcrPlanesFrag} {
 		if c.frags[i], err = d.shaderModule(spv); err != nil {
 			return err
 		}
 	}
-	return d.samplerLayouts(nil, 1, &c.sets, &c.layout)
+	return d.samplerLayouts(nil, 1, 1, &c.sets, &c.layout)
 }
 
-func (d *Device) samplerLayouts(immutable *vk.Sampler, perSet uint32, sp *setPools, layout *vk.PipelineLayout) error {
-	binding := vk.DescriptorSetLayoutBinding{
-		Binding: 0, DescriptorType: vk.DescriptorTypeCombinedImageSampler, DescriptorCount: 1,
-		StageFlags: vk.ShaderStageFlags(vk.ShaderStageFragmentBit), PImmutableSamplers: immutable,
+// samplerLayouts makes a set layout of bindings combined image samplers
+// taking perSet descriptors of a pool's in all, and a pipeline layout of it.
+func (d *Device) samplerLayouts(immutable *vk.Sampler, bindings, perSet uint32, sp *setPools, layout *vk.PipelineLayout) error {
+	list := make([]vk.DescriptorSetLayoutBinding, bindings)
+	for i := range list {
+		list[i] = vk.DescriptorSetLayoutBinding{
+			Binding: uint32(i), DescriptorType: vk.DescriptorTypeCombinedImageSampler, DescriptorCount: 1,
+			StageFlags: vk.ShaderStageFlags(vk.ShaderStageFragmentBit), PImmutableSamplers: immutable,
+		}
 	}
-	sci := vk.DescriptorSetLayoutCreateInfo{SType: vk.StructureTypeDescriptorSetLayoutCreateInfo, BindingCount: 1, PBindings: &binding}
+	sci := vk.DescriptorSetLayoutCreateInfo{SType: vk.StructureTypeDescriptorSetLayoutCreateInfo, BindingCount: bindings, PBindings: &list[0]}
 	sp.perSet = perSet
 	if r := d.cmds.CreateDescriptorSetLayout(d.device, &sci, nil, &sp.layout); r != vk.Success {
 		return fmt.Errorf("gpu: vkCreateDescriptorSetLayout (compositor): %w", resultError(r))
@@ -157,9 +167,17 @@ type setPools struct {
 }
 
 func (d *Device) allocSet(sp *setPools, view vk.ImageView, sampler vk.Sampler) (textureSet, error) {
+	s, err := d.allocBareSet(sp)
+	if err != nil {
+		return textureSet{}, err
+	}
+	return d.writeSet(s, view, sampler), nil
+}
+
+func (d *Device) allocBareSet(sp *setPools) (textureSet, error) {
 	for _, pool := range sp.pools {
 		if set, ok := d.allocateFrom(pool, sp.layout); ok {
-			return d.writeSet(textureSet{set: set, pool: pool}, view, sampler), nil
+			return textureSet{set: set, pool: pool}, nil
 		}
 	}
 	size := vk.DescriptorPoolSize{Type: vk.DescriptorTypeCombinedImageSampler, DescriptorCount: compPoolSets * sp.perSet}
@@ -176,7 +194,7 @@ func (d *Device) allocSet(sp *setPools, view vk.ImageView, sampler vk.Sampler) (
 	if !ok {
 		return textureSet{}, errors.New("gpu: a new descriptor pool allocates no set")
 	}
-	return d.writeSet(textureSet{set: set, pool: pool}, view, sampler), nil
+	return textureSet{set: set, pool: pool}, nil
 }
 
 func (d *Device) allocateFrom(pool vk.DescriptorPool, layout vk.DescriptorSetLayout) (vk.DescriptorSet, bool) {
@@ -208,6 +226,9 @@ func (d *Device) destroyComp() {
 		ct.destroy(d)
 	}
 	for _, k := range c.yuv444 {
+		k.destroy(d)
+	}
+	for _, k := range c.planes {
 		k.destroy(d)
 	}
 	for _, k := range c.ycbcr {

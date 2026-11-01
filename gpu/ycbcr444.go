@@ -83,21 +83,7 @@ func (kind *yuv444Kind) pipeline(d *Device, target vk.Format) (vk.Pipeline, erro
 	if p, ok := kind.pipes[target]; ok {
 		return p, nil
 	}
-	ct, err := d.compTargetOf(target)
-	if err != nil {
-		return 0, err
-	}
-	const float = unsafe.Sizeof(float32(0))
-	var entries [unsafe.Sizeof(yuv444Constants{}) / float]vk.SpecializationMapEntry
-	for i := range entries {
-		entries[i] = vk.SpecializationMapEntry{ConstantID: uint32(i), Offset: uint32(uintptr(i) * float), Size: float}
-	}
-	spec := vk.SpecializationInfo{
-		MapEntryCount: count(entries[:]), PMapEntries: &entries[0],
-		DataSize: unsafe.Sizeof(kind.constants), PData: (*uintptr)(unsafe.Pointer(&kind.constants)),
-	}
-	p, err := d.specializedPipeline([2]vk.ShaderModule{d.comp.vert, d.comp.frags[fragYCbCr444]}, d.comp.layout, ct.pass, blendOver, &spec)
-	runtime.KeepAlive(&entries)
+	p, err := d.constantsPipeline(target, fragYCbCr444, d.comp.layout, unsafe.Pointer(&kind.constants), unsafe.Sizeof(kind.constants))
 	runtime.KeepAlive(kind)
 	if err != nil {
 		return 0, err

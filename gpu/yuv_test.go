@@ -124,18 +124,11 @@ func yuvDevice(t *testing.T, f fourcc.Format, disjoint bool) *Device {
 		t.Skip("the validation layer (1.4.363) crashes recording a disjoint DRM-modifier image's plane binds")
 	}
 	d := exportingDevice(t)
-	if !d.ycbcr {
-		t.Skipf("%s converts no YCbCr", d.Name())
-	}
 	linearOrSkip(t, d, d.TextureModifiers, f)
 	if disjoint {
-		i := slices.IndexFunc(d.formatModifiers(pixelFormats[f].vk), func(m vk.DrmFormatModifierPropertiesEXT) bool { return m.DrmFormatModifier == 0 })
-		if d.formatModifiers(pixelFormats[f].vk)[i].DrmFormatModifierTilingFeatures&vk.FormatFeatureFlags(vk.FormatFeatureDisjointBit) == 0 {
-			t.Skipf("%s has no disjoint linear %s", d.Name(), f)
-		}
 		var props vk.PhysicalDeviceProperties
 		d.cmds.GetPhysicalDeviceProperties(d.phys, &props)
-		if props.DeviceType == vk.PhysicalDeviceTypeCpu {
+		if props.DeviceType == vk.PhysicalDeviceTypeCpu && d.driverConverts(f, fourcc.Linear, vk.FormatFeatureFlags(vk.FormatFeatureDisjointBit), vk.ImageCreateFlags(vk.ImageCreateDisjointBit)) {
 			t.Skipf("%s faults sampling a disjoint YCbCr dmabuf", d.Name())
 		}
 	}
@@ -186,13 +179,39 @@ func TestNV12ConvertsUnderEveryMatrixAndRange(t *testing.T) {
 	}
 }
 
-func TestEveryLayoutConvertsWhereTheDriverOffersIt(t *testing.T) {
+func TestEveryFormatsImportRouteIsListed(t *testing.T) {
+	d := exportingDevice(t)
+	for _, f := range d.ImportFormats() {
+		mods, err := d.TextureModifiers(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		pf := pixelFormats[f]
+		converts := 0
+		for _, m := range mods {
+			if d.driverConverts(f, m, 0, 0) {
+				converts++
+			}
+		}
+		t.Logf("%s: %d modifiers, %d by the driver's conversion: %v", f, len(mods), converts, mods)
+		if pf.ycbcr && !slices.Contains(d.ImportFormats(), f) {
+			t.Errorf("%s is not offered", f)
+		}
+	}
+}
+
+func TestEveryLayoutConvertsByTheDriverOrThroughPlainImages(t *testing.T) {
+	for _, route := range []string{"offered", "planes"} {
+		t.Run(route, func(t *testing.T) { everyLayoutConverts(t, route == "planes") })
+	}
+}
+
+func everyLayoutConverts(t *testing.T, planes bool) {
 	for _, f := range ycbcrFormats {
 		t.Run(f.String(), func(t *testing.T) {
-			d := yuvDevice(t, f, false)
-			if !slices.Contains(d.ImportFormats(), f) {
-				t.Skipf("%s is core in a later Vulkan than %s", f, d.Name())
-			}
+			d := exportingDevice(t)
+			d.ycbcr = d.ycbcr && !planes
+			linearOrSkip(t, d, d.TextureModifiers, f)
 			bits := yuvLayouts[f].bits
 			scale := uint16(1) << (bits - 8)
 			y, u, v := 120*scale, 90*scale, 200*scale
@@ -208,6 +227,9 @@ func TestEveryConvertedFormatHasALayoutAndAYUVName(t *testing.T) {
 	for _, f := range ycbcrFormats {
 		if _, ok := yuvLayouts[f]; !ok {
 			t.Errorf("%s has no test layout", f)
+		}
+		if _, ok := yuvImageLayouts[f]; !ok {
+			t.Errorf("%s has no plain image layout", f)
 		}
 		pf := pixelFormats[f]
 		if !f.YUV() || !pf.ycbcr || f.Planes() != pf.planes {

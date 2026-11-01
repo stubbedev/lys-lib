@@ -200,7 +200,7 @@ func (kind *ycbcrKind) create(d *Device, k ycbcrKey) error {
 	if r != vk.Success {
 		return fmt.Errorf("gpu: vkCreateSampler (YCbCr): %w", resultError(r))
 	}
-	return d.samplerLayouts(&kind.sampler, 3, &kind.sets, &kind.layout)
+	return d.samplerLayouts(&kind.sampler, 1, 3, &kind.sets, &kind.layout)
 }
 
 func (kind *ycbcrKind) pipeline(d *Device, target vk.Format) (vk.Pipeline, error) {

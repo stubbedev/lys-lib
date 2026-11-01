@@ -383,6 +383,13 @@ func (p *Pass) DrawTexture(t *Texture, src FRect, dst image.Rectangle, tr Transf
 			return
 		}
 	}
+	if t.planes != nil {
+		if op.pipe, err = t.planes.pipeline(p.d, p.t.s.vf); err != nil {
+			p.fail(err)
+			return
+		}
+		op.layout = t.planes.layout
+	}
 	p.ops = append(p.ops, op)
 }
 
@@ -434,7 +441,7 @@ func flip(f float64, reversed bool) float64 {
 	return f
 }
 
-func (t *Texture) yuv() bool { return t.ycbcr != nil || t.yuv444 != nil }
+func (t *Texture) yuv() bool { return t.ycbcr != nil || t.yuv444 != nil || t.planes != nil }
 
 func (t *Texture) set(f filter) (vk.DescriptorSet, error) {
 	sp, sampler := &t.d.comp.sets, t.d.comp.samplers[f]
@@ -442,7 +449,13 @@ func (t *Texture) set(f filter) (vk.DescriptorSet, error) {
 		f, sp, sampler = filterNearest, &t.ycbcr.sets, t.ycbcr.sampler
 	}
 	if t.sets[f].set == 0 {
-		s, err := t.d.allocSet(sp, t.view, sampler)
+		var s textureSet
+		var err error
+		if t.planes != nil {
+			s, err = t.setPlanes(f)
+		} else {
+			s, err = t.d.allocSet(sp, t.view, sampler)
+		}
 		if err != nil {
 			return 0, err
 		}
