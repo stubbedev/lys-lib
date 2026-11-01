@@ -34,6 +34,8 @@ type fakeCompositor struct {
 	// regions are the regions the screencopy frames asked for.
 	regions []image.Rectangle
 	copies  int
+	// session is the capture session opened last.
+	session uint32
 }
 
 const (
@@ -210,6 +212,9 @@ func (f *fakeCompositor) request(id uint32, opcode uint16, body []byte) {
 		if opcode == 0 {
 			session := u32At(body, 0)
 			f.ifaces[session] = "session"
+			f.mu.Lock()
+			f.session = session
+			f.mu.Unlock()
 			f.send(session, 0, wireU32(320), wireU32(200))
 			f.send(session, 2, wireArray(binary.LittleEndian.AppendUint64(nil, fakeDevice)))
 			f.send(session, 3, wireU32(uint32(fakeFormat)), wireArray(binary.LittleEndian.AppendUint64(nil, uint64(fakeModifier))))
@@ -421,6 +426,58 @@ func TestADmabufSessionWaitLeavesTheClientFree(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		t.Fatal("Close did not wake the Capture")
 	}
+}
+
+// A buffer the source's resize left behind does not hide the source going
+// away: a caller told of the resize and trying again learns the session ended,
+// though no frame reads the connection in between.
+func TestAResizedBufferStillLearnsTheSessionStopped(t *testing.T) {
+	f := startFakeCompositor(t)
+	c, err := Connect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	tops, err := c.Toplevels()
+	if err != nil || len(tops) != 1 {
+		t.Fatalf("toplevels %v, %v", tops, err)
+	}
+	s, err := c.OpenDmabufSession(tops[0], false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+	buf, err := c.ImportDmabuf(fakeDmabuf(t, 320, 200))
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.send(f.sessionID(), 0, wireU32(400), wireU32(300))
+	f.send(f.sessionID(), 4)
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+		if err := c.Refresh(); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.Capture(buf); errors.Is(err, ErrReconfigured) {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the resize was never reported")
+		}
+	}
+	f.send(f.sessionID(), 5)
+	for range 2 {
+		if _, err = s.Capture(buf); errors.Is(err, ErrSessionStopped) {
+			return
+		}
+	}
+	t.Fatalf("Capture after the source went away = %v, want ErrSessionStopped", err)
+}
+
+// sessionID is the open capture session's object id.
+func (f *fakeCompositor) sessionID() uint32 {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.session
 }
 
 // A region's dmabuf layout is asked of the compositor for that region, and

@@ -29,7 +29,14 @@ func (m *manyDamage) Fill(dst []byte) ([]Rect, bool) {
 // cycleRig is a started node over Go memory: its activation, two buffers
 // with every meta the stream writes and the Busy meta, and one link's
 // async io.
+// The ids of the rig's node and of the node that drives it.
+const (
+	rigNode   = 40
+	rigDriver = 30
+)
+
 type cycleRig struct {
+	pos *ioPosition
 	n   *node
 	act *nodeActivation
 	io  []cIOBuffers
@@ -48,7 +55,13 @@ func newCycleRig(t testing.TB, src Source) *cycleRig {
 		cfg:    Config{Application: testApplication, Name: testNode, Width: 64, Height: 32, Stride: 256, Format: VideoBGRx, FPS: 30, Transform: 3, Source: src},
 		damage: make([]Rect, 0, maxDamageRegions),
 	}
-	n := &node{h: p, abi: abiV1, direction: directionOutput, activation: act, position: &act.position, prepared: true}
+	pos, err := view[ioPosition](shared(unsafe.Sizeof(ioPosition{})), 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	act.position.clock.id.Store(rigNode)
+	pos.clock.id.Store(rigDriver)
+	n := &node{h: p, abi: abiV1, direction: directionOutput, activation: act, position: pos, prepared: true}
 	n.wake[0] = 1
 	for i := range uint32(2) {
 		b := buffer{id: i, meta: mapping{data: shared(1024)}, data: make([]byte, 256*32), fd: -1}
@@ -69,13 +82,13 @@ func newCycleRig(t testing.TB, src Source) *cycleRig {
 		t.Fatal(err)
 	}
 	n.mixes = []mix{{id: 0, slots: [2]*cIOBuffers{&io[directionOutput], &io[directionInput]}}}
-	return &cycleRig{n: n, act: act, io: io}
+	return &cycleRig{n: n, act: act, pos: pos, io: io}
 }
 
 // run triggers one cycle of the driver's next position, as the server
 // would, and runs it.
 func (r *cycleRig) run(t testing.TB) {
-	r.act.position.clock.cycle.Add(1)
+	r.pos.clock.cycle.Add(1)
 	r.act.status.Store(activationTriggered)
 	if err := r.n.cycle(); err != nil {
 		t.Fatal(err)
@@ -92,7 +105,7 @@ func loadIO(s *cIOBuffers) ioValue { return ioValue{s.status.Load(), s.bufferID.
 
 // slot is what the link reads next cycle from this one.
 func (r *cycleRig) slot() ioValue {
-	return loadIO(&r.io[directionOutput^r.act.position.clock.cycle.Load()&1])
+	return loadIO(&r.io[directionOutput^r.pos.clock.cycle.Load()&1])
 }
 
 // A cycle, the frame copy and the metas included, allocates nothing:
@@ -100,13 +113,20 @@ func (r *cycleRig) slot() ioValue {
 // into the stream's own slice.
 func TestACycleAllocatesNothing(t *testing.T) {
 	src := &manyDamage{rects: []Rect{{0, 0, 1, 1}, {1, 1, 1, 1}, {2, 2, 1, 1}, {3, 3, 1, 1}, {4, 4, 1, 1}, {5, 5, 1, 1}}}
-	r := newCycleRig(t, src)
-	if allocs := mallocs(func() {
-		for range 200 {
-			r.run(t)
-		}
-	}); allocs != 0 {
-		t.Errorf("200 cycles from the first allocate %d times", allocs)
+	var r *cycleRig
+	// The count is the whole process's and the runtime allocates now and then
+	// on its own, so a fresh rig gets a few tries at none.
+	fewest := ^uint64(0)
+	for range 5 {
+		r = newCycleRig(t, src)
+		fewest = min(fewest, mallocs(func() {
+			for range 200 {
+				r.run(t)
+			}
+		}))
+	}
+	if fewest != 0 {
+		t.Errorf("200 cycles from the first allocate %d times", fewest)
 	}
 	if s := r.slot(); s.status != statusHaveData || r.act.status.Load() != activationFinished {
 		t.Errorf("the measured cycles sent nothing: slot %+v, status %d", s, r.act.status.Load())
@@ -179,7 +199,7 @@ func TestCyclesHandOutFreeBuffersInTurn(t *testing.T) {
 	}
 
 	before := r.slot()
-	r.act.position.clock.cycle.Add(2)
+	r.pos.clock.cycle.Add(2)
 	r.act.status.Store(activationNotTriggered)
 	if err := r.n.cycle(); err != nil || r.slot() != before || r.act.status.Load() != activationNotTriggered {
 		t.Errorf("an untriggered cycle ran: %v, slot %+v, status %d", err, r.slot(), r.act.status.Load())

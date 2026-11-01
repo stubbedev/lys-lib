@@ -131,7 +131,7 @@ func (s *DmabufSession) Capture(buf *DmabufBuffer) (FrameInfo, error) {
 		return FrameInfo{}, errors.New("capture: the dmabuf buffer was destroyed")
 	}
 	if err := s.checkFit(buf); err != nil {
-		return FrameInfo{}, err
+		return FrameInfo{}, s.refused(err)
 	}
 	size, err := int32s(buf.Attrs.Width, buf.Attrs.Height)
 	if err != nil {
@@ -159,6 +159,23 @@ func (s *DmabufSession) Capture(buf *DmabufBuffer) (FrameInfo, error) {
 		return FrameInfo{}, fmt.Errorf("capture: a %dx%d %s dmabuf frame: %w", buf.Attrs.Width, buf.Attrs.Height, buf.Attrs.Format, err)
 	}
 	return fs.info, nil
+}
+
+// refused is why a buffer that does not fit is not captured. A resize takes one
+// roundtrip first: without a frame nothing else reads the connection, and a
+// caller trying again would be told of the resize forever and never of the
+// source going away.
+func (s *DmabufSession) refused(fit error) error {
+	if !errors.Is(fit, ErrReconfigured) {
+		return fit
+	}
+	if err := s.client.roundtrip(); err != nil {
+		return err
+	}
+	if err := s.cs.usable(); err != nil {
+		return err
+	}
+	return fit
 }
 
 // checkFit refuses a buffer the current constraints do not take:

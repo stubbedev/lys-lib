@@ -2,6 +2,7 @@ package capture_test
 
 import (
 	"errors"
+	"image"
 	"slices"
 	"testing"
 	"time"
@@ -440,4 +441,40 @@ func TestHeadlessDmabufSessionWaitLeavesTheClientFree(t *testing.T) {
 	if !errors.Is(err, capture.ErrClosed) {
 		t.Fatalf("Capture during Close = %v, want ErrClosed", err)
 	}
+}
+
+// TestHeadlessRegionDmabuf copies a region of the output into a GPU buffer of
+// the region's layout, on a compositor that offers one.
+func TestHeadlessRegionDmabuf(t *testing.T) {
+	wltest.Require(t)
+	c := captureClient(t)
+	if !c.HasDmabuf() {
+		t.Skip("compositor offers no linux-dmabuf (CPU renderer)")
+	}
+	p := wltest.NewPainter(t)
+	p.Layer(wltest.AnchorTop|wltest.AnchorBottom|wltest.AnchorLeft|wltest.AnchorRight, 0, 0, fillRed)
+	p.Run()
+	out := c.Outputs()[0]
+	region := image.Rect(10, 20, 210, 120)
+	format, err := c.DmabufRegionFormat(out, region, false)
+	if errors.Is(err, capture.ErrUnsupported) {
+		t.Skipf("no dmabuf for a region here: %v", err)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	if format.Width != 200 || format.Height != 100 || len(format.Modifiers) == 0 || format.Device == 0 {
+		t.Fatalf("region format %+v", format)
+	}
+	target := allocate(t, c, []capture.DmabufFormat{format})
+	wltest.Eventually(t, "red region in the dmabuf", func() error {
+		if err := c.CopyOutputRegionDmabuf(out, region, false, target.imported); err != nil {
+			return err
+		}
+		img, err := target.buf.ReadPixels()
+		if err != nil {
+			return err
+		}
+		return wltest.WantColor(img, 100, 50, fillRed)
+	})
 }
