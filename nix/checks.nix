@@ -11,7 +11,7 @@
       src = lib.fileset.toSource {
         root = ../.;
         fileset = lib.fileset.difference (lib.fileset.gitTracked ../.) (
-          lib.fileset.unions [../flake.nix ../flake.lock ../nix]
+          lib.fileset.unions [../flake.nix ../flake.lock ../nix ../docs]
         );
       };
       vendorHash = "sha256-XavC89rwJFFPodHsZMiOLksp5totD6qMvbeFLzZRerA=";
