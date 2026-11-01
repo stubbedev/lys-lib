@@ -1,9 +1,19 @@
-# lys-lib
+<p align="center">
+  <img src="docs/public/lys-lib.svg" width="160" alt="lys-lib">
+</p>
 
-The lys family's building blocks that are not widgets: what
-[lys-ui](https://github.com/stubbedev/lys-ui) draws with and what
-[lys-shell](https://github.com/stubbedev/lys-shell) talks to the system
-through.
+<h1 align="center">lys-lib</h1>
+
+<p align="center">
+  The lys family's building blocks that are not widgets: what
+  <a href="https://github.com/stubbedev/lys-ui">lys-ui</a> draws with and what
+  <a href="https://github.com/stubbedev/lys-shell">lys-shell</a> talks to the
+  system through.
+</p>
+
+<p align="center">
+  <a href="https://stubbedev.github.io/lys-lib/">Documentation</a>
+</p>
 
 - **Rendering:** the 2D canvas and its CPU and Vulkan renderers.
 - **GPU:** Vulkan devices, exportable dmabufs, and H.264/H.265 encoding.
@@ -11,61 +21,64 @@ through.
 - **Wayland:** screen capture, virtual input and the protocol bindings they use.
 - **System services:** the PipeWire native-protocol client, the EIS server, and D-Bus on a patched godbus.
 
-Pure Go, `CGO_ENABLED=0`. Native libraries are dlopened at runtime only
-where the system provides the API: libvulkan.
+Pure Go, `CGO_ENABLED=0`. Native libraries are dlopened at run time only where
+the system provides the API: libvulkan, and optionally libva and libva-drm for
+video encoding.
 
-## Packages
+## Install
 
-| Package | What it is |
-| --- | --- |
-| `render` | The 2D canvas: paths, text (with `text`, shaped by a patched go-text in `third_party/typesetting`), images, SVG, filters and blends, on the CPU |
-| `gpu` | Vulkan devices, the GPU renderer, exportable dmabufs, and H.264/H.265 encoding |
-| `drm`, `fourcc`, `edid` | DRM ioctls in pure Go (KMS resources, atomic commits, dumb buffers, syncobjs), DRM pixel formats and modifiers, and a display's identity from its EDID |
-| `dmabuf`, `dmabufwl`, `udmabuf` | dmabuf descriptions, their linux-dmabuf protocol plumbing, and memfd-backed udmabufs |
-| `capture` | Screen and window capture: wlr-screencopy, ext-image-copy-capture, Hyprland's toplevel export |
-| `dmabufprobe` | Picks the DRM modifier a screencopy into GPU memory uses, trying the compositor's in order until one takes a frame |
-| `vinput` | Virtual pointer and keyboard input (with `keymapfd`) |
-| `wlr` | Wayland protocol bindings beyond the core and xdg-shell |
-| `media/mux`, `media/opus` | MP4 and Matroska muxing, and the Opus encoder |
-| `audiomix` | Sums interleaved 16-bit PCM sources into one stream, with clipping |
-| `v4l2` | Webcam capture from V4L2 nodes, as RGBA frames letterboxed to an aspect; the system's capture nodes |
-| `pipewire` | The ScreenCast video producer: a node over PipeWire's native protocol, no libpipewire |
-| `eis` | An EIS server: the receiving end of libei, replaying what a remote-desktop client emulates |
-| `dbusx`, `third_party/godbus` | D-Bus services: interfaces with live properties, setters and on-demand introspection, well-known names and owner watches, on a patched godbus (`third_party/godbus/README.lys-lib.md`) |
-| `portaldialogs` | The `dev.stubbe.lys.PortalDialogs1` contract: the shell's portal dialogs (Access, Account, app chooser, dynamic launcher, USB, wallpaper, password, administrator authentication) as request types, a `Host` interface, its `Daemon`, an `Emitter` for the authentication signals and a `Client` that also watches them, plus the `Caller` and `Choice` every portal dialog is given |
-| `clib` | dlopen over a candidate list and C string copies, for bindings made with purego |
-| `intconv` | Integer conversions without silent wraparound: checked, panicking, saturating, durations, and two's-complement bit reinterpretation |
-| `atomicfile` | Replaces a file whole and durably: a synced temporary renamed over the target, then the directory synced |
-| `xdg` | The XDG base directories (runtime included), an app's directory under each, and the user directories of `user-dirs.dirs` |
-| `peercred` | The uid of the process at a Unix socket's other end, from SO_PEERCRED |
-| `debug` | The compile-time trace facility (build tag `lysdebug`, categories in `LYS_DEBUG`) |
-| `golden`, `gputest`, `wltest`, `pipewire/pwtest`, `dbustest`, `sockdir` | Test support: golden images, the GPU test driver, Wayland test clients, a private PipeWire daemon with libpipewire consumers, private D-Bus daemons, and directories short enough for Unix sockets |
+```sh
+go get github.com/stubbedev/lys-lib@main
+```
 
-## Development
+## Usage
 
-`nix develop` (or direnv) enters the dev shell; `just` lists the
-recipes. `just gates` runs every gate CI runs: formatting, then `just
-check` (vet, lint, test, build), the race detector, `just gpu` (the GPU
-tests on lavapipe) and `just headless` (the capture and virtual input
-tests against a private headless sway). `just gpu-host` runs every GPU
-path on the host's own GPU.
+Each package is imported on its own. This draws on the CPU and writes a PNG:
 
-`just docker <recipe>` (default `gates`) runs a recipe in a container
-that sees the dev shell's store paths, the checkout, the GPUs' render
-and NVIDIA device nodes and the host's drivers, but no display socket,
-session bus or runtime dir of the desktop session, with memory capped.
-`nix fmt` formats the nix files with alejandra.
+```go
+package main
 
-## CI
+import (
+	"image/png"
+	"log"
+	"os"
 
-`.github/workflows/ci.yml` runs `just gates` in the dev shell.
-`.github/workflows/security.yml` runs CodeQL (Go and GitHub Actions),
-Grype and govulncheck, uploading findings to code scanning; dependency
-review gates pull requests against a licence allow-list. Dependabot
-keeps the module and the workflows current. Every action is pinned to
-a commit.
+	"github.com/stubbedev/lys-lib/render"
+)
 
-The packages moved here from lys-ui and lys-shell with their history;
-issue numbers in that history name their repository
-(`stubbedev/lys-ui#N`, `stubbedev/lys-shell#N`).
+func main() {
+	const width, height = 320, 120
+	stride := render.Stride(width)
+	pixels := make([]byte, stride*height)
 
+	cv := render.New(pixels, stride, width, height)
+	cv.Clear(cv.Rect(), render.RGB(0x1f, 0x21, 0x36))
+	cv.FillRect(render.Rect{X: 40, Y: 40, W: 240, H: 40}, render.RGB(0xff, 0xb4, 0x54))
+
+	out, err := os.Create("out.png")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer out.Close()
+	if err := png.Encode(out, render.NRGBA(pixels, stride, width, height)); err != nil {
+		log.Fatal(err)
+	}
+}
+```
+
+## Documentation
+
+[stubbedev.github.io/lys-lib](https://stubbedev.github.io/lys-lib/) has the
+package map, a page per domain, the third-party patch policy and the development
+gates. The API reference is on
+[pkg.go.dev](https://pkg.go.dev/github.com/stubbedev/lys-lib).
+
+## The lys family
+
+[lys-shell](https://stubbedev.github.io/lys-shell/),
+[lys-wm](https://stubbedev.github.io/lys-wm/),
+[lys-ui](https://stubbedev.github.io/lys-ui/),
+[lys-login](https://stubbedev.github.io/lys-login/),
+[lys-splash](https://stubbedev.github.io/lys-splash/),
+[lys-polkit](https://stubbedev.github.io/lys-polkit/) and
+[lys-secrets](https://stubbedev.github.io/lys-secrets/).
