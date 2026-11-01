@@ -29,8 +29,8 @@
           ]
           # Headless test compositor: sway on WLR_BACKENDS=headless gives
           # the capture and virtual input tests a private Wayland session
-          # without touching the developer's real desktop. Linux only.
-          ++ lib.optionals pkgs.stdenv.hostPlatform.isLinux [
+          # without touching the developer's real desktop.
+          ++ [
             pkgs.sway
             # pwtest's private PipeWire daemon, pw-link, and libpipewire,
             # the reference consumer the producer in pipewire is checked
@@ -92,7 +92,7 @@
         # parse a real font of thousands of glyphs.
         LYS_TEST_DEJAVU_SANS = "${pkgs.dejavu_fonts.minimal}/share/fonts/truetype/DejaVuSans.ttf";
       }
-      // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+      // {
         # The GPU renderer (package gpu) loads libvulkan at runtime, and
         # its VA-API encoder libva; both find the host's drivers
         # (/run/opengl-driver on NixOS). The pipewire and eis tests load

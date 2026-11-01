@@ -28,11 +28,11 @@
       '';
     };
   in {
-    packages = lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+    packages = {
       drm-tests = drmTests;
     };
 
-    checks = lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+    checks = {
       # The KMS tests on a real card: a NixOS VM whose only DRM device is
       # vkms runs the drm package's tests as root, so master handling and
       # CLOSEFB are exercised; on a host without a card they skip. vkms has
