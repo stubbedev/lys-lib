@@ -14,6 +14,7 @@ package ffi
 import (
 	"fmt"
 	"runtime"
+	"sync"
 	"unsafe"
 
 	"github.com/ebitengine/purego"
@@ -84,7 +85,7 @@ func CallFunction(cif *CallInterface, fn unsafe.Pointer, rvalue unsafe.Pointer, 
 	if len(avalue) != len(cif.args) {
 		return 0, fmt.Errorf("ffi: %d arguments for a signature of %d", len(avalue), len(cif.args))
 	}
-	var args [16]uintptr
+	args := argArrays.Get().(*[16]uintptr)
 	for i, kind := range cif.args {
 		switch kind {
 		case UInt32Type:
@@ -102,6 +103,7 @@ func CallFunction(cif *CallInterface, fn unsafe.Pointer, rvalue unsafe.Pointer, 
 		}
 	}
 	r, _, _ := purego.SyscallN(uintptr(fn), args[:len(cif.args)]...)
+	argArrays.Put(args)
 	runtime.KeepAlive(avalue)
 	switch cif.ret {
 	case VoidType:
@@ -116,6 +118,11 @@ func CallFunction(cif *CallInterface, fn unsafe.Pointer, rvalue unsafe.Pointer, 
 	}
 	return 0, nil
 }
+
+// argArrays holds the arrays CallFunction hands to purego.SyscallN,
+// whose arguments escape: one per call would be a heap allocation per
+// Vulkan command.
+var argArrays = sync.Pool{New: func() any { return new([16]uintptr) }}
 
 // onHeap keeps what its argument points at off the goroutine stack.
 // purego.SyscallN takes uintptrs, and only a pointer converted in the

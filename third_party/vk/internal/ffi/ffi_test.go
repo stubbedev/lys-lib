@@ -51,3 +51,38 @@ func fillAt(depth int, cif *CallInterface, memset unsafe.Pointer) uint64 {
 	}
 	return x
 }
+
+func TestACallDoesNotAllocate(t *testing.T) {
+	if raceEnabled {
+		t.Skip("the race detector drops pooled values on purpose")
+	}
+	lib, err := LoadLibrary("libc.so.6")
+	if err != nil {
+		t.Skipf("no libc to call: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := FreeLibrary(lib); err != nil {
+			t.Error(err)
+		}
+	})
+	abs, err := GetSymbol(lib, "abs")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cif CallInterface
+	if err := PrepareCallInterface(&cif, DefaultCall, SInt32TypeDescriptor, []*TypeDescriptor{SInt32TypeDescriptor}); err != nil {
+		t.Fatal(err)
+	}
+	in, out := int32(-7), int32(0)
+	args := []unsafe.Pointer{unsafe.Pointer(&in)}
+	if n := testing.AllocsPerRun(100, func() {
+		if _, err := CallFunction(&cif, abs, unsafe.Pointer(&out), args); err != nil {
+			t.Fatal(err)
+		}
+	}); n != 0 {
+		t.Fatalf("a call allocated %v times", n)
+	}
+	if out != 7 {
+		t.Fatalf("abs(-7) = %d", out)
+	}
+}
