@@ -343,17 +343,26 @@ func TestBadKeymapsFailLoudly(t *testing.T) {
 
 func TestNoDataIsAnError(t *testing.T) {
 	empty := t.TempDir()
-	ctx := NewContext(func(name string) string {
+	getenv := func(name string) string {
 		if name == "XKB_CONFIG_ROOT" || name == "XKB_CONFIG_EXTRA_PATH" {
 			return filepath.Join(empty, "missing")
 		}
 		return ""
-	})
+	}
+	ctx := NewContext(getenv)
+	ctx.legacyRoot = filepath.Join(empty, "legacy")
+	ctx.SetLogLevel(LogCritical)
 	if _, err := ctx.NewKeymapFromNames(Names{}); !errors.Is(err, ErrNoData) {
 		t.Errorf("from names: %v, want ErrNoData", err)
 	}
 	if _, err := ctx.NewKeymapFromString([]byte(wtypeKeymap)); !errors.Is(err, ErrNoData) {
 		t.Errorf("wtype keymap: %v, want ErrNoData", err)
+	}
+	fallback := NewContext(getenv)
+	fallback.legacyRoot = empty
+	fallback.SetLogLevel(LogCritical)
+	if got := fallback.IncludePaths(); !slices.Equal(got, []string{empty}) {
+		t.Errorf("a missing root does not fall back to the legacy one: %v", got)
 	}
 }
 

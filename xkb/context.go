@@ -34,8 +34,8 @@ var rootCandidates = []string{
 }
 
 const (
-	defaultExtraPath = "/etc/xkb"
-	legacyRoot       = "/usr/share/X11/xkb"
+	defaultExtraPath  = "/etc/xkb"
+	defaultLegacyRoot = "/usr/share/X11/xkb"
 )
 
 // ErrNoData reports that no xkeyboard-config data directory was found, so
@@ -118,8 +118,9 @@ type LogFunc func(level LogLevel, message string)
 // Context is where keymaps find their include files and report what they
 // find wrong. Safe for concurrent use.
 type Context struct {
-	getenv func(string) string
-	flags  ContextFlags
+	getenv     func(string) string
+	flags      ContextFlags
+	legacyRoot string
 
 	mu        sync.RWMutex
 	includes  []string
@@ -140,7 +141,7 @@ func NewContext(getenv func(string) string) *Context { return NewContextFlags(ge
 // directories, then $XKB_CONFIG_ROOT or the system's xkeyboard-config data.
 // XKB_LOG_LEVEL and XKB_LOG_VERBOSITY set the logging.
 func NewContextFlags(getenv func(string) string, flags ContextFlags) *Context {
-	c := &Context{flags: flags, pending: flags&ContextNoDefaultIncludes == 0, logLevel: LogError}
+	c := &Context{flags: flags, legacyRoot: defaultLegacyRoot, pending: flags&ContextNoDefaultIncludes == 0, logLevel: LogError}
 	c.getenv = getenv
 	if flags&ContextNoSecureGetenv == 0 && (os.Getuid() != os.Geteuid() || os.Getgid() != os.Getegid()) {
 		c.getenv = func(string) string { return "" }
@@ -344,7 +345,7 @@ func (c *Context) versionedExtensionsPath() string {
 	if defaultVersionedExtensions != "" {
 		return defaultVersionedExtensions
 	}
-	if root := c.systemPath(); root != "" && root != legacyRoot {
+	if root := c.systemPath(); root != "" && root != c.legacyRoot {
 		return root + ".d"
 	}
 	return ""
@@ -358,7 +359,7 @@ func (c *Context) unversionedExtensionsPath() string {
 		return defaultUnversionedExtensions
 	}
 	root := c.systemPath()
-	if i := strings.LastIndexByte(root, '-'); i > 0 && root != legacyRoot && strings.HasPrefix(root[i+1:], "2") {
+	if i := strings.LastIndexByte(root, '-'); i > 0 && root != c.legacyRoot && strings.HasPrefix(root[i+1:], "2") {
 		return root[:i] + ".d"
 	}
 	return ""
@@ -407,8 +408,8 @@ func (c *Context) AppendDefaultIncludePaths() bool {
 	hasRoot := root != "" && c.appendPath(root)
 	ok = hasRoot || ok
 	if !hasRoot && root != "" {
-		c.log(LogWarning, 0, 0, "Root include path failed; fallback to %q. The setup is probably misconfigured. Please ensure that %q is available in the environment.\n", legacyRoot, root)
-		ok = c.appendPath(legacyRoot) || ok
+		c.log(LogWarning, 0, 0, "Root include path failed; fallback to %q. The setup is probably misconfigured. Please ensure that %q is available in the environment.\n", c.legacyRoot, root)
+		ok = c.appendPath(c.legacyRoot) || ok
 	}
 	return ok
 }

@@ -190,12 +190,14 @@ func testData(t testing.TB) *Context {
 	if root == "" {
 		t.Fatal("XKB_CONFIG_ROOT is not set: the dev shell points it at xkeyboard-config")
 	}
-	return NewContext(func(name string) string {
+	ctx := NewContext(func(name string) string {
 		if name == "XKB_CONFIG_ROOT" {
 			return root
 		}
 		return ""
 	})
+	ctx.SetLogLevel(LogCritical)
+	return ctx
 }
 
 func symsSlice(p *uint32, n int32) []uint32 {
