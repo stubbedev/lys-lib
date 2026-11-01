@@ -39,6 +39,7 @@ func syntheticSnapshot(fonts int) indexSnapshot {
 			footprints: []Footprint{{
 				Location: Location{File: path, Index: 0, Instance: uint16(i % 3)},
 				Family:   fmt.Sprintf("family%d", i%40),
+				Aliases:  []string{fmt.Sprintf("alias%d", i%40), "shared"},
 				Runes:    runes,
 				Scripts:  ScriptSet{language.Latin, language.Script(uint32(i))},
 				Langs:    LangSet{uint64(i), 2, 3, 4, 5, 6, 7, 8},
@@ -78,7 +79,7 @@ func sameSnapshot(t *testing.T, got, want indexSnapshot) {
 		}
 		for j := range w.footprints {
 			gf, wf := g.footprints[j], w.footprints[j]
-			if gf.Location != wf.Location || gf.Family != wf.Family || gf.Langs != wf.Langs || gf.Aspect != wf.Aspect ||
+			if gf.Location != wf.Location || gf.Family != wf.Family || !slices.Equal(gf.Aliases, wf.Aliases) || gf.Langs != wf.Langs || gf.Aspect != wf.Aspect ||
 				!slices.Equal(gf.Runes, wf.Runes) || !slices.Equal(gf.Scripts, wf.Scripts) {
 				t.Errorf("file %d face %d: read back %+v, want %+v", i, j, gf, wf)
 			}
@@ -191,7 +192,7 @@ func TestAnIndexWithAValidChecksumIsStillBoundsChecked(t *testing.T) {
 	sections := []uintptr{
 		unsafe.Offsetof(header.files), unsafe.Offsetof(header.footprints), unsafe.Offsetof(header.pages),
 		unsafe.Offsetof(header.scripts), unsafe.Offsetof(header.strings), unsafe.Offsetof(header.roots),
-		unsafe.Offsetof(header.dirs), unsafe.Offsetof(header.fcDirs), unsafe.Offsetof(header.fcDeps),
+		unsafe.Offsetof(header.dirs), unsafe.Offsetof(header.fcDirs), unsafe.Offsetof(header.fcDeps), unsafe.Offsetof(header.aliases),
 	}
 	mutations := map[string]func([]byte){
 		"unaligned table": func(b []byte) { binary.NativeEndian.PutUint32(b[sections[0]:], uint32(fileTable+1)) },
@@ -209,6 +210,9 @@ func TestAnIndexWithAValidChecksumIsStillBoundsChecked(t *testing.T) {
 		},
 		"scripts": func(b []byte) {
 			binary.NativeEndian.PutUint32(b[footprintTable+int(unsafe.Offsetof(indexFootprint{}.firstScript)):], 1<<31)
+		},
+		"aliases": func(b []byte) {
+			binary.NativeEndian.PutUint32(b[footprintTable+int(unsafe.Offsetof(indexFootprint{}.firstAlias)):], 1<<31)
 		},
 		"fontconfig key": func(b []byte) {
 			binary.NativeEndian.PutUint32(b[unsafe.Offsetof(header.fcKey)+4:], 1<<31)

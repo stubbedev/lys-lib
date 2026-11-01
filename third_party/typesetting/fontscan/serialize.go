@@ -24,7 +24,7 @@ import (
 // never rewritten.
 
 const (
-	cacheFormatVersion = 7
+	cacheFormatVersion = 8
 	indexMagic         = "lysfscan"
 	indexByteOrder     = 0x01020304
 	indexTableAlign    = 8
@@ -51,6 +51,7 @@ type indexHeader struct {
 	dirs       indexSection
 	fcDirs     indexSection
 	fcDeps     indexSection
+	aliases    indexSection
 	fcKey      indexStringRef
 }
 
@@ -78,7 +79,8 @@ type indexFootprint struct {
 	style        uint32
 	weight       float32
 	stretch      float32
-	reserved     [2]uint32
+	firstAlias   uint32
+	aliasesCount uint32
 }
 
 type indexStamped struct {
@@ -231,6 +233,10 @@ func parseIndex(data []byte) (indexSnapshot, error) {
 	if out.fc.key, err = refString(strs, header.fcKey); err != nil {
 		return indexSnapshot{}, err
 	}
+	aliases, err := sectionStrings(data, strs, header.aliases)
+	if err != nil {
+		return indexSnapshot{}, err
+	}
 
 	if len(files) > 0 {
 		out.fonts = make(systemFontsIndex, len(files))
@@ -261,12 +267,14 @@ func parseIndex(data []byte) (indexSnapshot, error) {
 			}
 			pageEnd := uint64(record.firstPage) + uint64(record.pagesCount)
 			scriptEnd := uint64(record.firstScript) + uint64(record.scriptsCount)
-			if pageEnd > uint64(len(pages)) || scriptEnd > uint64(len(scripts)) {
-				return indexSnapshot{}, fmt.Errorf("footprint %d names pages up to %d of %d and scripts up to %d of %d", j, pageEnd, len(pages), scriptEnd, len(scripts))
+			aliasEnd := uint64(record.firstAlias) + uint64(record.aliasesCount)
+			if pageEnd > uint64(len(pages)) || scriptEnd > uint64(len(scripts)) || aliasEnd > uint64(len(aliases)) {
+				return indexSnapshot{}, fmt.Errorf("footprint %d names pages up to %d of %d, scripts up to %d of %d and aliases up to %d of %d", j, pageEnd, len(pages), scriptEnd, len(scripts), aliasEnd, len(aliases))
 			}
 			footprints[j] = Footprint{
 				Location: Location{File: path, Index: record.index, Instance: record.instance},
 				Family:   family,
+				Aliases:  aliases[record.firstAlias:aliasEnd:aliasEnd],
 				Runes:    RuneSet(pages[record.firstPage:pageEnd:pageEnd]),
 				Scripts:  ScriptSet(scripts[record.firstScript:scriptEnd:scriptEnd]),
 				Langs:    record.langs,
@@ -376,6 +384,7 @@ func (s indexSnapshot) encode() ([]byte, error) {
 	}
 	files := make([]indexFile, len(s.fonts))
 	var footprints []indexFootprint
+	var aliases []indexStringRef
 	for i, file := range s.fonts {
 		files[i] = indexFile{
 			path:            b.addString(file.path),
@@ -395,6 +404,10 @@ func (s indexSnapshot) encode() ([]byte, error) {
 			}
 			record.firstPage, record.pagesCount = b.addRunes(fp.Runes)
 			record.firstScript, record.scriptsCount = b.addScripts(fp.Scripts)
+			record.firstAlias, record.aliasesCount = uint32(len(aliases)), uint32(len(fp.Aliases))
+			for _, alias := range fp.Aliases {
+				aliases = append(aliases, b.addString(alias))
+			}
 			footprints = append(footprints, record)
 		}
 	}
@@ -428,6 +441,7 @@ func (s indexSnapshot) encode() ([]byte, error) {
 	data = appendRecords(data, &header.dirs, dirs)
 	data = appendRecords(data, &header.fcDirs, fcDirs)
 	data = appendRecords(data, &header.fcDeps, fcDeps)
+	data = appendRecords(data, &header.aliases, aliases)
 	data = appendRecords(data, &header.pages, b.pages)
 	header.pages.count /= uint32(unsafe.Sizeof(runePage{}))
 	data = appendRecords(data, &header.scripts, b.scripts)

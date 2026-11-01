@@ -30,6 +30,10 @@ type Footprint struct {
 	// normalized version of the family name.
 	Family string
 
+	// Aliases are the other normalized family names the font declares, on
+	// any platform and in any language. Set for system fonts only.
+	Aliases []string
+
 	// Runes is the set of runes supported by the font.
 	Runes RuneSet
 
@@ -72,7 +76,7 @@ func newFootprintFromLoader(ld *ot.Loader, buffer scanBuffer) (out Footprint, _ 
 	desc, raw := font.Describe(ld, buffer.tableBuffer)
 	out.Family = font.NormalizeFamily(desc.Family)
 	out.Aspect = desc.Aspect
-	buffer.tableBuffer = raw
+	out.Aliases, buffer.tableBuffer = familyAliases(ld, out.Family, raw)
 	return out, buffer, nil
 }
 

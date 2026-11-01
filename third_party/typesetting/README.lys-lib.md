@@ -126,8 +126,8 @@ its tables stay in place.
 upstream gzips a stream of length-prefixed records, so every start
 gunzips it and allocates each path, family, rune set and script set,
 then walks the font tree and parses a whole font to check that one
-loads, after parsing all of fontconfig's XML. Format 7 is a flat file of
-native-endian tables (`font_index_v7.cache`) mapped privately for the
+loads, after parsing all of fontconfig's XML. Format 8 is a flat file of
+native-endian tables (`font_index_v8.cache`) mapped privately for the
 life of the process: loading checks the header, a CRC-32 and every
 offset, then points slices and strings into the mapping, one array of
 `Footprint`s being the only table built. A rune set or script set the
@@ -135,7 +135,7 @@ faces of a family share is stored once. The mapping is writable and
 private, so a caller editing a `RuneSet` in place gets what a heap copy
 gave it. The file is only ever replaced by a rename, so a reader keeps
 the file it mapped. Truncating it from outside faults, as with a mapped
-font.
+font; see below for why that stays.
 
 An index of another format, byte order or checksum, a truncated one and
 one holding an offset out of range are errors that `refreshSystemFontsIndex`
@@ -181,6 +181,20 @@ dependency here, so the table stays a plain slice. Pinned by
 `fontscan/lys_index_test.go`, which fails if parsing allocates more for
 2000 fonts than for 10.
 
+A mapped index truncated in place from outside the process ends it with
+SIGBUS at the next read of a lost page (tried: to 0 bytes and to half, and the
+same for a mapped font). This is left as it is. fontscan only ever replaces the
+file by a rename, as package managers do fonts, so only someone truncating a cache
+file by hand under a running application gets there, and the next start finds the
+wrong size, rescans and replaces the file. Reading the file onto the heap costs
+every application 0.4 MB more for 0.15 ms more on this host's 404 KB index, and would
+still leave the fonts, which cannot be copied, open to the same fault, so the process
+gains no guarantee from it. Checking the file at load cannot help a truncation that
+comes later. debug.SetPanicOnFault is per goroutine and needs a recover around every
+read of a Footprint, in every caller. fontconfig maps its own caches the same way.
+An in-place rewrite that keeps the length only gives wrong coverage: a slice's bounds
+are the mapping's, so it stays memory safe.
+
 ### Products round the same on every architecture
 
 `font/variations.go`, `font/glyphs.go`, `font/cff/charstring.go`,
@@ -220,6 +234,31 @@ face, so what resolves does not change. A resource that is not a font is still r
 by `AddFont`; one whose tables are damaged is logged when reached and covers nothing,
 where `AddFont` used to refuse it. The resource must stay readable. Pinned by
 `fontscan/lys_lazy_test.go`, which compares answers with fonts parsed when added.
+
+### The index holds every family name of a face
+
+`fontscan/aliases.go`, `serialize.go`, `footprint.go`: fontscan files a face under one English
+family record, so a family fontconfig knows by another record is unknown to it. lys-ui
+looked for those by opening every font file and reading its `name` table, on the first
+lookup of any family not installed. A scan now records them in `Footprint.Aliases`, read
+in place from the index. Decoding `name` moved here from lys-ui. Pinned by
+`fontscan/lys_aliases_test.go` and `fontscan/lys_index_test.go`.
+
+Both, run by a fresh process's first lookup on a warm index, 762 faces on this
+host, with every family, alias and generic at each weight and style resolving as before
+(1460 lookups, same face):
+
+| | | before | after |
+|---|---|---|---|
+| `sysfont.Weighted("sans-serif", ...)` | time | 4.3 ms | 3.4 ms |
+| | allocations | 31.4k | 21.7k |
+| | bytes | 3.0 MB | 2.4 MB |
+| `sysfont.Weighted("No Such Family", ...)` | time | 18.4 ms | 3.4 ms |
+| | allocations | 62.5k | 21.8k |
+| | bytes | 6.4 MB | 2.4 MB |
+| | openat / read / pread64 | 769 / 16083 / 762 | 7 / 5 / 0 |
+
+Most of the 21.7k left is parsing the resolved face, chiefly its GDEF and GPOS.
 
 ### Import path
 
