@@ -53,14 +53,19 @@ type Painter struct {
 
 // painted is one surface the painter fills with color.
 type painted struct {
-	p      *Painter
-	s      *wl.Surface
-	color  color.RGBA
-	layer  *wlr.ZwlrLayerSurfaceV1
-	xs     *xdg.Surface
-	top    *xdg.Toplevel
-	w, h   int32
-	shown  bool
+	p     *Painter
+	s     *wl.Surface
+	color color.RGBA
+	layer *wlr.ZwlrLayerSurfaceV1
+	xs    *xdg.Surface
+	top   *xdg.Toplevel
+	w, h  int32
+	// configW and configH are the latest toplevel configure, applied at
+	// the xdg_surface configure that ends it; 0 leaves an axis as it is.
+	configW, configH int32
+	shown            bool
+	// paints counts the buffers committed.
+	paints int
 	buffer *wl.Buffer
 }
 
@@ -171,11 +176,12 @@ func (p *Painter) Layer(anchor uint32, w, h int32, c color.RGBA) {
 	p.show(s)
 }
 
-// Window is a toplevel a Painter shows, painted at the size the test
-// gives it whatever the compositor configures.
+// Window is a toplevel a Painter shows, painted at the size the compositor
+// configures, as a tiling compositor holds it to whatever the client asks.
 type Window struct{ s *painted }
 
-// Window shows a w x h toplevel of c titled title with app id appID.
+// Window shows a toplevel of c titled title with app id appID, w x h on an
+// axis the compositor leaves to the client (Size is what it took).
 func (p *Painter) Window(appID, title string, w, h int32, c color.RGBA) *Window {
 	p.t.Helper()
 	s := p.newSurface(c)
@@ -191,6 +197,7 @@ func (p *Painter) Window(appID, title string, w, h int32, c color.RGBA) *Window 
 		p.t.Fatalf("wltest: toplevel: %v", err)
 	}
 	s.top = top
+	top.AddConfigureHandler(s)
 	if err := top.SetAppId(appID); err != nil {
 		p.t.Fatal(err)
 	}
@@ -201,27 +208,33 @@ func (p *Painter) Window(appID, title string, w, h int32, c color.RGBA) *Window 
 	return &Window{s: s}
 }
 
-// Resize repaints the window at w x h.
-func (w *Window) Resize(width, height int32) {
-	w.s.p.t.Helper()
-	w.paint(func(s *painted) { s.w, s.h = width, height })
+// Size is the size the window is painted at.
+func (w *Window) Size() (width, height int32) {
+	p := w.s.p
+	p.paintMu.Lock()
+	defer p.paintMu.Unlock()
+	return w.s.w, w.s.h
+}
+
+// Fullscreen asks the compositor to make the window fullscreen; it repaints
+// at the size that configures.
+func (w *Window) Fullscreen() {
+	p := w.s.p
+	p.t.Helper()
+	p.paintMu.Lock()
+	defer p.paintMu.Unlock()
+	if err := w.s.top.SetFullscreen(nil); err != nil {
+		p.t.Fatalf("wltest: fullscreen the window: %v", err)
+	}
 }
 
 // Repaint paints the window again at its size: a change of content the
 // compositor sees, with no change of size.
 func (w *Window) Repaint() {
-	w.s.p.t.Helper()
-	w.paint(func(*painted) {})
-}
-
-// paint applies resize to the window's surface and paints it, under
-// the painter's paint lock.
-func (w *Window) paint(resize func(*painted)) {
 	p := w.s.p
 	p.t.Helper()
 	p.paintMu.Lock()
 	defer p.paintMu.Unlock()
-	resize(w.s)
 	if err := w.s.paint(); err != nil {
 		p.t.Fatalf("wltest: paint the window at %dx%d: %v", w.s.w, w.s.h, err)
 	}
@@ -273,8 +286,16 @@ func (p *Painter) show(s *painted) {
 			p.t.Fatalf("wltest: painting: %v", err)
 		}
 	}
-	if err := p.roundtrip(); err != nil {
-		p.t.Fatalf("wltest: after painting: %v", err)
+	// A compositor answers a first buffer with the size it lays the surface
+	// out at: settled once a roundtrip brings no repaint.
+	for {
+		before := s.paints
+		if err := p.roundtrip(); err != nil {
+			p.t.Fatalf("wltest: after painting: %v", err)
+		}
+		if s.paints == before {
+			return
+		}
 	}
 }
 
@@ -306,7 +327,14 @@ func (s *painted) HandleZwlrLayerSurfaceV1Configure(ev wlr.ZwlrLayerSurfaceV1Con
 	s.p.fail(s.paint())
 }
 
-// HandleSurfaceConfigure paints the toplevel at its size.
+// HandleToplevelConfigure takes the size the compositor asks for.
+func (s *painted) HandleToplevelConfigure(ev xdg.ToplevelConfigureEvent) {
+	s.p.paintMu.Lock()
+	defer s.p.paintMu.Unlock()
+	s.configW, s.configH = ev.Width, ev.Height
+}
+
+// HandleSurfaceConfigure paints the toplevel at its configured size.
 func (s *painted) HandleSurfaceConfigure(ev xdg.SurfaceConfigureEvent) {
 	s.p.paintMu.Lock()
 	defer s.p.paintMu.Unlock()
@@ -314,6 +342,12 @@ func (s *painted) HandleSurfaceConfigure(ev xdg.SurfaceConfigureEvent) {
 		return
 	}
 	s.p.fail(s.xs.AckConfigure(ev.Serial))
+	if s.configW > 0 {
+		s.w = s.configW
+	}
+	if s.configH > 0 {
+		s.h = s.configH
+	}
 	s.p.fail(s.paint())
 }
 
@@ -363,5 +397,6 @@ func (s *painted) paint() error {
 		return err
 	}
 	s.shown = true
+	s.paints++
 	return s.s.Commit()
 }

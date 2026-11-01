@@ -9,7 +9,6 @@ import (
 	"github.com/stubbedev/lys-lib/capture"
 	"github.com/stubbedev/lys-lib/dmabuf"
 	"github.com/stubbedev/lys-lib/gpu"
-	"github.com/stubbedev/lys-lib/intconv"
 	"github.com/stubbedev/lys-lib/wltest"
 )
 
@@ -118,8 +117,8 @@ func wantGreen(t *testing.T, s *capture.DmabufSession, target gpuTarget, win *wl
 	})
 }
 
-// captureRepainting runs one Capture while the window repaints at the
-// buffer's size every 100ms: sway copies a toplevel's frame, a
+// captureRepainting runs one Capture while the window repaints every
+// 100ms: sway copies a toplevel's frame, a
 // session's first one included, only once the window changes.
 func captureRepainting(t *testing.T, s *capture.DmabufSession, buf *capture.DmabufBuffer, win *wltest.Window) error {
 	t.Helper()
@@ -131,7 +130,7 @@ func captureRepainting(t *testing.T, s *capture.DmabufSession, buf *capture.Dmab
 			case <-done:
 				return
 			case <-tick.C:
-				win.Resize(intconv.Clamp[int32](buf.Attrs.Width), intconv.Clamp[int32](buf.Attrs.Height))
+				win.Repaint()
 			}
 		}
 	})
@@ -160,6 +159,47 @@ func awaitCapture(t *testing.T, s *capture.DmabufSession, buf *capture.DmabufBuf
 	}
 }
 
+// wantWindowSize fails unless every format fits the size the window is
+// painted at, in surface pixels or scaled by its output as a compositor that
+// captures in device pixels does, and names a device and modifiers.
+func wantWindowSize(t *testing.T, c *capture.Client, formats []capture.DmabufFormat, win *wltest.Window) {
+	t.Helper()
+	w, h := win.Size()
+	scale := c.Outputs()[0].Scale
+	for _, f := range formats {
+		fits := (f.Width == int(w) && f.Height == int(h)) || (f.Width == int(w*scale) && f.Height == int(h*scale))
+		if !fits || f.Device == 0 || len(f.Modifiers) == 0 {
+			t.Fatalf("session format %+v for a %dx%d window on a scale %d output", f, w, h, scale)
+		}
+	}
+}
+
+// resizeWindow has the compositor change the window's size, which is its to
+// decide: a second window shares a tiling compositor's space, and where that
+// changes nothing, as on a stacking compositor, the window goes fullscreen.
+func resizeWindow(t *testing.T, win *wltest.Window) {
+	t.Helper()
+	w, h := win.Size()
+	resized := func(within time.Duration) bool {
+		for deadline := time.Now().Add(within); time.Now().Before(deadline); time.Sleep(20 * time.Millisecond) {
+			if nw, nh := win.Size(); nw != w || nh != h {
+				return true
+			}
+		}
+		return false
+	}
+	p := wltest.NewPainter(t)
+	p.Window("dev.stubbe.lys.ui.sibling", "sibling", 100, 100, fillRed)
+	p.Run()
+	if resized(time.Second) {
+		return
+	}
+	win.Fullscreen()
+	if !resized(5 * time.Second) {
+		t.Fatalf("the window stayed %dx%d beside a second window and fullscreen", w, h)
+	}
+}
+
 // TestHeadlessToplevelDmabufSession runs a window share's zero-copy
 // path: the toplevel session's dmabuf constraints, a GPU buffer
 // allocated against them, frames copied into it, a resize reported as
@@ -172,11 +212,7 @@ func TestHeadlessToplevelDmabufSession(t *testing.T) {
 	c := captureClient(t)
 	win, target := showWindow(t, c, appID, 320, 200)
 	s, formats := openDmabufSession(t, c, target)
-	for _, f := range formats {
-		if f.Width != 320 || f.Height != 200 || f.Device == 0 || len(f.Modifiers) == 0 {
-			t.Fatalf("session format %+v for a 320x200 window", f)
-		}
-	}
+	wantWindowSize(t, c, formats, win)
 	t.Logf("session formats %+v", formats)
 	first := allocate(t, c, formats)
 	wantGreen(t, s, first, win)
@@ -225,7 +261,7 @@ func TestHeadlessToplevelDmabufSession(t *testing.T) {
 		}
 	})
 	t.Run("a resize is reported and the new constraints taken", func(t *testing.T) {
-		win.Resize(400, 300)
+		resizeWindow(t, win)
 		wltest.Eventually(t, "the resize reported", func() error {
 			err := awaitCapture(t, s, first.imported, nil)
 			if errors.Is(err, capture.ErrReconfigured) {
@@ -237,9 +273,7 @@ func TestHeadlessToplevelDmabufSession(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if resized[0].Width != 400 || resized[0].Height != 300 {
-			t.Fatalf("formats after the resize %+v, want 400x300", resized)
-		}
+		wantWindowSize(t, c, resized, win)
 		wantGreen(t, s, allocate(t, c, resized), win)
 		if err := awaitCapture(t, s, first.imported, nil); !errors.Is(err, capture.ErrReconfigured) {
 			t.Fatalf("the pre-resize buffer again = %v, want ErrReconfigured", err)
