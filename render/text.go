@@ -218,9 +218,11 @@ func (t *Typeface) Oblique() *Typeface {
 // Slanted reports whether the face is a synthetic oblique.
 func (t *Typeface) Slanted() bool { return t.slant != 0 }
 
-// LoadFont parses font data (TTF or OTF).
+// LoadFont parses font data (TTF or OTF), which must stay valid and
+// unchanged for as long as the typeface is used: its tables are read in
+// place.
 func LoadFont(data []byte) (*Typeface, error) {
-	face, err := font.ParseTTF(bytes.NewReader(data))
+	face, err := font.ParseTTF(ot.NewMapped(data))
 	if err != nil {
 		return nil, fmt.Errorf("render: parse font: %w", err)
 	}

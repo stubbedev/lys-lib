@@ -3,6 +3,7 @@
 package opentype
 
 import (
+	"bytes"
 	"compress/zlib"
 	"encoding/binary"
 	"errors"
@@ -45,6 +46,21 @@ type Resource interface {
 	Read([]byte) (int, error)
 	ReadAt([]byte, int64) (int, error)
 	Seek(int64, int) (int64, error)
+}
+
+// Mapped is a Resource over bytes that stay valid and unchanged for as
+// long as anything loaded from them is used, such as a read-only mapping
+// of a font file or an embedded font. An uncompressed table is read as a
+// sub-slice of them instead of a copy, so a face costs only the pages it
+// touches.
+type Mapped struct {
+	*bytes.Reader
+	data []byte
+}
+
+// NewMapped returns the Resource over data.
+func NewMapped(data []byte) *Mapped {
+	return &Mapped{Reader: bytes.NewReader(data), data: data}
 }
 
 // tableSection represents a table within the font file.
@@ -141,6 +157,12 @@ func (pr *Loader) findTableBuffer(s tableSection, dst []byte) ([]byte, error) {
 		if _, err := io.ReadFull(r, dst); err != nil {
 			return nil, err
 		}
+	} else if m, ok := pr.file.(*Mapped); ok && dst == nil {
+		start, end := uint64(s.offset), uint64(s.offset)+uint64(s.length)
+		if end > uint64(len(m.data)) {
+			return nil, fmt.Errorf("table at %d, %d bytes long, is past the %d-byte font", s.offset, s.length, len(m.data))
+		}
+		return m.data[start:end:end], nil
 	} else {
 		if cap(dst) < int(s.length) {
 			dst = make([]byte, s.length)
