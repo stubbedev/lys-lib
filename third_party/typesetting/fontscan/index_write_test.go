@@ -1,6 +1,7 @@
 package fontscan
 
 import (
+	"encoding/binary"
 	"os"
 	"path/filepath"
 	"testing"
@@ -197,5 +198,52 @@ func TestALinkedDirectoryIsWalked(t *testing.T) {
 	}
 	if len(index) != 1 {
 		t.Fatalf("%d files indexed through the links, want the 1 font: %+v", len(index), index)
+	}
+}
+
+func scanOne(t *testing.T, data []byte) Footprint {
+	t.Helper()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "font.ttf"), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	scan, err := scanFontFootprints(discardLogger{}, nil, time.Now(), dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(scan.index) != 1 || len(scan.index[0].footprints) != 1 {
+		t.Fatalf("scanned %+v, want one face", scan.index)
+	}
+	return scan.index[0].footprints[0]
+}
+
+func renderFont(t *testing.T, name string) []byte {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join("..", "..", "..", "render", "testdata", name))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+// renameTable changes a table's tag in a font's directory.
+func renameTable(t *testing.T, data []byte, from, to string) []byte {
+	t.Helper()
+	count := int(binary.BigEndian.Uint16(data[4:]))
+	for i := range count {
+		record := data[12+16*i:]
+		if string(record[:4]) == from {
+			copy(record, to)
+			return data
+		}
+	}
+	t.Fatalf("no %s table", from)
+	return nil
+}
+
+func TestAFaceWithoutOS2Scans(t *testing.T) {
+	fp := scanOne(t, renameTable(t, renderFont(t, "Cantarell-Regular.ttf"), "OS/2", "xS/2"))
+	if fp.Family != "cantarell" || !fp.Runes.Contains('x') {
+		t.Errorf("scanned %q covering x: %v", fp.Family, fp.Runes.Contains('x'))
 	}
 }

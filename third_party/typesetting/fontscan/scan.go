@@ -318,6 +318,8 @@ func (fa *footprintScanner) consume(path string, stamp fileStamp) error {
 
 		ff.footprints = append(ff.footprints, fp)
 	}
+	// it may be a table of the mapping about to go away
+	fa.scanBuffer.tableBuffer = nil
 
 	// if the file is not a valid Opentype file,
 	// we store an empty list of footprints but still adds the entry to the index

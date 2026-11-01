@@ -198,6 +198,16 @@ resolved in `/etc/fonts` alone. Its directories are now searched, empty entries 
 then `/etc/fonts`, which fontconfig also always searches last. Pinned by
 `fontscan/lys_fontconfig_test.go`.
 
+### A table read in place is not a buffer
+
+`font/opentype/reader.go`, `fontscan/scan.go`: a table of a `Mapped` font comes back as a
+sub-slice of the font. Handing that back as the buffer for the next table, as
+`font.Describe` and the scanner do, copied the next table over it: a write into the
+font, a crash on a read-only mapping. Only a smaller table after a larger one did it,
+which a scan's order mostly hid. A buffer inside the font now counts as none, and a
+scan keeps no buffer past the file it mapped. Pinned by
+`font/opentype/lys_mapped_test.go`.
+
 ### Import path
 
 Every source imports `github.com/stubbedev/lys-lib/third_party/typesetting`

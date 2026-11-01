@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"sort"
+	"unsafe"
 )
 
 var (
@@ -61,6 +62,17 @@ type Mapped struct {
 // NewMapped returns the Resource over data.
 func NewMapped(data []byte) *Mapped {
 	return &Mapped{Reader: bytes.NewReader(data), data: data}
+}
+
+// holds reports whether b is memory of the resource: a table read in
+// place, which a later read must not take for a caller's own buffer.
+func (m *Mapped) holds(b []byte) bool {
+	if cap(b) == 0 || len(m.data) == 0 {
+		return false
+	}
+	start := uintptr(unsafe.Pointer(unsafe.SliceData(b)))
+	base := uintptr(unsafe.Pointer(unsafe.SliceData(m.data)))
+	return start >= base && start < base+uintptr(len(m.data))
 }
 
 // tableSection represents a table within the font file.
@@ -142,6 +154,10 @@ func NewLoaders(file Resource) ([]*Loader, error) {
 
 // dst is an optional storage which may be provided to reduce allocations.
 func (pr *Loader) findTableBuffer(s tableSection, dst []byte) ([]byte, error) {
+	m, mapped := pr.file.(*Mapped)
+	if mapped && m.holds(dst) {
+		dst = nil
+	}
 	if s.length != 0 && s.length < s.zLength {
 		zbuf := io.NewSectionReader(pr.file, int64(s.offset), int64(s.length))
 		r, err := zlib.NewReader(zbuf)
@@ -157,7 +173,7 @@ func (pr *Loader) findTableBuffer(s tableSection, dst []byte) ([]byte, error) {
 		if _, err := io.ReadFull(r, dst); err != nil {
 			return nil, err
 		}
-	} else if m, ok := pr.file.(*Mapped); ok && dst == nil {
+	} else if mapped && dst == nil {
 		start, end := uint64(s.offset), uint64(s.offset)+uint64(s.length)
 		if end > uint64(len(m.data)) {
 			return nil, fmt.Errorf("table at %d, %d bytes long, is past the %d-byte font", s.offset, s.length, len(m.data))
