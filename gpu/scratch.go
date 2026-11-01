@@ -70,11 +70,18 @@ type scratch struct {
 	// call reads while it writes the layer, a blur's passes and a
 	// shadow's silhouette, filterW x filterH: at least the target, more
 	// when a silhouette needed it.
-	filterTemp, filterTemp2         *surface
-	prims, words, staging, readback *buffer
-	scratchW, scratchH              int
-	filterW, filterH                int
-	freeLayers                      []*layerSurface
+	filterTemp, filterTemp2 *surface
+	// current is the buffers of the segment recording, spareFrameBuffers
+	// those of finished segments, and frameBufferCount how many exist.
+	current           *frameBuffers
+	spareFrameBuffers []*frameBuffers
+	frameBufferCount  int
+	// readback holds the downloads of a segment, which is waited for
+	// before they are read.
+	readback           *buffer
+	scratchW, scratchH int
+	filterW, filterH   int
+	freeLayers         []*layerSurface
 	// layers are the live layer surfaces, pooled ones included, freed
 	// with the device.
 	layers map[*layerSurface]struct{}
@@ -101,18 +108,8 @@ func (d *Device) ensureScratch(w, h int) error {
 		if err := d.blank.ready(); err != nil {
 			return err
 		}
-		for _, b := range []**buffer{&d.prims, &d.words, &d.staging, &d.readback} {
-			switch b {
-			case &d.staging:
-				*b, err = d.newBuffer(1<<16, vk.BufferUsageTransferSrcBit)
-			case &d.readback:
-				*b, err = d.newReadBuffer(1<<16, vk.BufferUsageTransferDstBit, nil)
-			default:
-				*b, err = d.newBuffer(1<<16, vk.BufferUsageStorageBufferBit)
-			}
-			if err != nil {
-				return err
-			}
+		if d.readback, err = d.newReadBuffer(1<<16, vk.BufferUsageTransferDstBit, nil); err != nil {
+			return err
 		}
 	}
 	if w <= d.scratchW && h <= d.scratchH {
@@ -120,6 +117,9 @@ func (d *Device) ensureScratch(w, h int) error {
 	}
 	d.scratchW, d.scratchH = max(w, d.scratchW), max(h, d.scratchH)
 	if d.page != nil {
+		if err := d.idle(); err != nil {
+			return err
+		}
 		d.page.close()
 	}
 	var err error
@@ -135,27 +135,9 @@ func (d *Device) ensureScratch(w, h int) error {
 	return d.page.ready()
 }
 
-// stagingMin is the staging buffer a device starts with and shrinks
+// stagingMin is the staging buffer a segment starts with and shrinks
 // back to.
 const stagingMin = 1 << 16
-
-// fitStaging shrinks the staging buffer back to twice what a frame
-// needed, at least stagingMin, once it is more than four times that:
-// one large upload (a wallpaper, a 4K sprite) must not keep its
-// buffer for good, while a steady stream of them keeps one.
-func (d *Device) fitStaging(needed int) error {
-	keep := max(2*needed, stagingMin)
-	if len(d.staging.mapped) <= 2*keep {
-		return nil
-	}
-	shrunk, err := d.newBuffer(keep, vk.BufferUsageTransferSrcBit)
-	if err != nil {
-		return fmt.Errorf("gpu: staging buffer of %d bytes: %w", keep, err)
-	}
-	d.staging.close()
-	d.staging = shrunk
-	return nil
-}
 
 // dropScratches frees the scratch canvases; the next frame that needs
 // one allocates it again.
@@ -173,8 +155,8 @@ func (d *Device) dropScratches() error {
 }
 
 // Trim hands back what the device keeps only for speed: the CPU
-// scratch canvases, freed off the Go heap and unmapped, and a staging
-// buffer above its minimum. A device that draws again allocates them
+// scratch canvases, freed off the Go heap and unmapped, and the buffers
+// of finished segments. A device that draws again allocates them
 // anew. Call it when the device has been idle a while, between frames,
 // on the device's goroutine.
 func (d *Device) Trim() error {
@@ -184,19 +166,25 @@ func (d *Device) Trim() error {
 	if err := d.pixels.Trim(); err != nil {
 		return fmt.Errorf("gpu: trim the scratch canvases: %w", err)
 	}
-	if d.staging == nil {
-		return nil
+	if err := d.idle(); err != nil {
+		return err
 	}
-	return d.fitStaging(0)
+	d.closeFrameBuffers()
+	return nil
 }
 
-// fitFilters grows the filter surfaces to hold w x h. Nothing pending
-// may still use them.
+// fitFilters grows the filter surfaces to hold w x h, once nothing
+// pending uses them.
 func (d *Device) fitFilters(w, h int) error {
 	if w <= d.filterW && h <= d.filterH {
 		return nil
 	}
 	d.filterW, d.filterH = max(w, d.filterW), max(h, d.filterH)
+	if d.filterTemp != nil {
+		if err := d.idle(); err != nil {
+			return err
+		}
+	}
 	for _, t := range []**surface{&d.filterTemp, &d.filterTemp2} {
 		if *t != nil {
 			(*t).close()
@@ -330,10 +318,13 @@ func (d *Device) closeScratch() {
 			s.close()
 		}
 	}
-	for _, b := range []*buffer{d.prims, d.words, d.staging, d.readback} {
-		if b != nil {
-			b.close()
-		}
+	if d.current != nil {
+		d.spareFrameBuffers = append(d.spareFrameBuffers, d.current)
+		d.current = nil
+	}
+	d.closeFrameBuffers()
+	if d.readback != nil {
+		d.readback.close()
 	}
 	d.scratch = scratch{}
 	if err := d.pixels.Close(); err != nil {

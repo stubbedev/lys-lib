@@ -72,7 +72,7 @@ func (r *Readback) Copy(src *Target) error {
 		src.s.download(cb, image.Rect(0, 0, r.w, r.h), r.buf, 0)
 		d.hostReadBarrier(cb)
 		src.release(cb)
-	}, false)
+	}, submission{})
 	if err != nil {
 		return err
 	}

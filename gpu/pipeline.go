@@ -24,7 +24,6 @@ type pipelines struct {
 	replace     vk.Pipeline
 	sampler     vk.Sampler
 	descPool    vk.DescriptorPool
-	primSet     vk.DescriptorSet
 	primModules [2]vk.ShaderModule
 }
 
@@ -105,21 +104,16 @@ func (d *Device) createDescriptors() error {
 		return fmt.Errorf("gpu: vkCreateSampler: %w", resultError(r))
 	}
 	sizes := [2]vk.DescriptorPoolSize{
-		{Type: vk.DescriptorTypeStorageBuffer, DescriptorCount: 2},
+		{Type: vk.DescriptorTypeStorageBuffer, DescriptorCount: 2 * maxFrameBuffers},
 		{Type: vk.DescriptorTypeCombinedImageSampler, DescriptorCount: maxSurfaces},
 	}
 	dci := vk.DescriptorPoolCreateInfo{
 		SType: vk.StructureTypeDescriptorPoolCreateInfo, Flags: vk.DescriptorPoolCreateFlags(vk.DescriptorPoolCreateFreeDescriptorSetBit),
-		MaxSets: maxSurfaces + 1, PoolSizeCount: 2, PPoolSizes: &sizes[0],
+		MaxSets: maxSurfaces + maxFrameBuffers, PoolSizeCount: 2, PPoolSizes: &sizes[0],
 	}
 	if r := d.cmds.CreateDescriptorPool(d.device, &dci, nil, &d.descPool); r != vk.Success {
 		return fmt.Errorf("gpu: vkCreateDescriptorPool: %w", resultError(r))
 	}
-	set, err := d.allocateSet(d.primLayout)
-	if err != nil {
-		return err
-	}
-	d.primSet = set
 	return nil
 }
 
@@ -144,16 +138,18 @@ func (d *Device) textureSet(view vk.ImageView) (vk.DescriptorSet, error) {
 	return set, nil
 }
 
-// bindPrims points set 0 at the primitive buffer and the word buffer
-// (gradient stops) primitives index into.
-func (d *Device) bindPrims(prims, words *buffer) {
+// bindPrims points fb's set 0 at its primitive buffer and the word
+// buffer (gradient stops) primitives index into. No submission may hold
+// fb.
+func (d *Device) bindPrims(fb *frameBuffers) {
+	prims, words := fb.prims, fb.words
 	bi := [2]vk.DescriptorBufferInfo{
 		{Buffer: prims.buf, Range: vk.DeviceSize(len(prims.mapped))},
 		{Buffer: words.buf, Range: vk.DeviceSize(len(words.mapped))},
 	}
 	w := [2]vk.WriteDescriptorSet{
-		{SType: vk.StructureTypeWriteDescriptorSet, DstSet: d.primSet, DstBinding: 0, DescriptorCount: 1, DescriptorType: vk.DescriptorTypeStorageBuffer, PBufferInfo: &bi[0]},
-		{SType: vk.StructureTypeWriteDescriptorSet, DstSet: d.primSet, DstBinding: 1, DescriptorCount: 1, DescriptorType: vk.DescriptorTypeStorageBuffer, PBufferInfo: &bi[1]},
+		{SType: vk.StructureTypeWriteDescriptorSet, DstSet: fb.set, DstBinding: 0, DescriptorCount: 1, DescriptorType: vk.DescriptorTypeStorageBuffer, PBufferInfo: &bi[0]},
+		{SType: vk.StructureTypeWriteDescriptorSet, DstSet: fb.set, DstBinding: 1, DescriptorCount: 1, DescriptorType: vk.DescriptorTypeStorageBuffer, PBufferInfo: &bi[1]},
 	}
 	d.cmds.UpdateDescriptorSets(d.device, 2, &w[0], 0, nil)
 }

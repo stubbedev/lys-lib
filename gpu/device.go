@@ -299,6 +299,7 @@ func (d *Device) pick(p vk.PhysicalDevice, exporting bool, node *drmNode) error 
 			d.sync2 = d.probeSync2(p, props.ApiVersion)
 			d.vulkan13 = props.ApiVersion >= vkVersion(1, 3)
 			d.timingExts = d.probeTiming(p, have, &props, f)
+			d.implicitFences = d.syncFiles && exporting && props.VendorID != nvidiaVendor
 			d.ycbcr = d.probeYCbCr(p)
 			d.video, d.videoWhy = d.probeVideo(p, d.sync2, have)
 			return nil
@@ -486,7 +487,7 @@ func (d *Device) freeMemory(mems []vk.DeviceMemory) {
 // submit records one command buffer with record, runs it and waits for
 // it to finish.
 func (d *Device) submit(record func(cb vk.CommandBuffer)) error {
-	if err := d.submitAsync(record, false); err != nil {
+	if err := d.submitAsync(record, submission{}); err != nil {
 		return err
 	}
 	return d.idle()

@@ -177,7 +177,8 @@ func (t *Target) clear(rgba [4]float32) error {
 // targets brings the one it reuses up to date by copying in what
 // changed since it was last shown from the target shown since, instead
 // of drawing it again. src is read where it stands, since it may still
-// be on screen, and both go back to their consumer.
+// be on screen, and both go back to their consumer, without waiting
+// where the device can tell the consumer when dst is done (publish).
 func (d *Device) CopyRects(dst, src *Target, rects []image.Rectangle) error {
 	switch {
 	case dst == src:
@@ -207,7 +208,8 @@ func (d *Device) CopyRects(dst, src *Target, rects []image.Rectangle) error {
 	if len(copies) == 0 {
 		return nil
 	}
-	err := d.submit(func(cb vk.CommandBuffer) {
+	publishes := d.publishes(dst)
+	err := d.submitAsync(func(cb vk.CommandBuffer) {
 		src.acquire(cb)
 		dst.acquire(cb)
 		srcLayout := vk.ImageLayoutGeneral
@@ -219,9 +221,12 @@ func (d *Device) CopyRects(dst, src *Target, rects []image.Rectangle) error {
 		d.cmds.CmdCopyImage(cb, src.s.image, srcLayout, dst.s.image, vk.ImageLayoutTransferDstOptimal, count(copies), &copies[0])
 		dst.release(cb)
 		src.release(cb)
-	})
+	}, submission{signals: publishes})
 	runtime.KeepAlive(copies)
-	return err
+	if err != nil {
+		return err
+	}
+	return d.publish(dst, publishes)
 }
 
 // ReadPixels copies the target back into memory as premultiplied

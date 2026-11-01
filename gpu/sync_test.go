@@ -47,10 +47,17 @@ func waitReadable(t *testing.T, fd int) {
 	if fd < 0 {
 		return
 	}
+	deadline := time.Now().Add(10 * time.Second)
 	pfd := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLIN}}
-	n, err := unix.Poll(pfd, 10000)
-	if err != nil || n != 1 {
-		t.Fatalf("poll on the sync_file: %d, %v", n, err)
+	for {
+		n, err := unix.Poll(pfd, int(time.Until(deadline).Milliseconds()))
+		if errors.Is(err, unix.EINTR) && time.Now().Before(deadline) {
+			continue
+		}
+		if err != nil || n != 1 {
+			t.Fatalf("poll on the sync_file: %d, %v", n, err)
+		}
+		return
 	}
 }
 

@@ -27,22 +27,25 @@ const queryRing = 64
 type timing struct {
 	timingExts []string
 	syncFiles  bool
-	calibrated bool
-	period     float64
-	validBits  uint32
-	lost       bool
-	queries    vk.QueryPool
-	nextQuery  uint32
-	inflight   []inflight
-	waits      []vk.Semaphore
-	passes     uint64
-	done       uint64
-	doneQuery  int
-	timed      uint64
-	doneAt     time.Duration
-	clocks     clockSample
-	clocksAt   time.Time
-	doneErr    error
+	// implicitFences is whether a target's dmabuf carries a fence for its
+	// consumer, so that handing it over does not wait.
+	implicitFences bool
+	calibrated     bool
+	period         float64
+	validBits      uint32
+	lost           bool
+	queries        vk.QueryPool
+	nextQuery      uint32
+	inflight       []inflight
+	waits          []vk.Semaphore
+	passes         uint64
+	done           uint64
+	doneQuery      int
+	timed          uint64
+	doneAt         time.Duration
+	clocks         clockSample
+	clocksAt       time.Time
+	doneErr        error
 	// heldSemaphores are what the submissions in flight wait on and
 	// signal, the oldest submission's first.
 	heldSemaphores []vk.Semaphore
@@ -106,6 +109,8 @@ type inflight struct {
 	sems  int
 	query int
 	pass  uint64
+	// buffers is the frame segment this submission reads, nil for none.
+	buffers *frameBuffers
 	// staged marks a submission reading the staging ring up to
 	// stagingEnd.
 	staged     bool
@@ -252,7 +257,7 @@ func (d *Device) SyncFile() (int, error) {
 		d.spareSemaphores = append(d.spareSemaphores, s)
 		return -1, err
 	}
-	if err := d.queue1(cb, s, -1, false); err != nil {
+	if err := d.queue1(cb, s, -1, submission{}); err != nil {
 		if cb != 0 {
 			d.dropBatch(cb)
 		}
@@ -372,7 +377,7 @@ func (d *Device) forgetSignal() {
 
 // queue1 submits cb (0 for none) after the pending waits, signalling
 // signal (0 for none).
-func (d *Device) queue1(cb vk.CommandBuffer, signal vk.Semaphore, query int, pass bool) error {
+func (d *Device) queue1(cb vk.CommandBuffer, signal vk.Semaphore, query int, sub submission) error {
 	if err := d.retireSyncFile(); err != nil {
 		return err
 	}
@@ -389,7 +394,7 @@ func (d *Device) queue1(cb vk.CommandBuffer, signal vk.Semaphore, query int, pas
 	if err != nil {
 		return err
 	}
-	frame := pass && signal == 0 && d.passesExport
+	frame := signal == 0 && (sub.signals || sub.pass && d.passesExport)
 	if frame {
 		if signal, err = d.spareSemaphore(); err != nil {
 			d.spareFences = append(d.spareFences, fence)
@@ -433,7 +438,7 @@ func (d *Device) queue1(cb vk.CommandBuffer, signal vk.Semaphore, query int, pas
 		d.heldSemaphores = append(d.heldSemaphores, signal)
 		f.sems++
 	}
-	if pass {
+	if sub.pass {
 		d.passes++
 		f.pass = d.passes
 	}
@@ -441,13 +446,20 @@ func (d *Device) queue1(cb vk.CommandBuffer, signal vk.Semaphore, query int, pas
 	return nil
 }
 
-func (d *Device) submitAsync(record func(cb vk.CommandBuffer), pass bool) error {
+// submission is what a submission is besides its commands: a Pass, which
+// FrameDone times, and whether it must signal the frame semaphore for an
+// export right after it.
+type submission struct {
+	pass, signals bool
+}
+
+func (d *Device) submitAsync(record func(cb vk.CommandBuffer), sub submission) error {
 	cb, err := d.recording()
 	if err != nil {
 		return err
 	}
 	query := -1
-	if pass && d.calibrated {
+	if sub.pass && d.calibrated {
 		if err := d.ensureQueries(); err != nil {
 			d.dropBatch(cb)
 			return err
@@ -464,7 +476,7 @@ func (d *Device) submitAsync(record func(cb vk.CommandBuffer), pass bool) error 
 		d.dropBatch(cb)
 		return fmt.Errorf("gpu: vkEndCommandBuffer: %w", resultError(r))
 	}
-	if err := d.queue1(cb, 0, query, pass); err != nil {
+	if err := d.queue1(cb, 0, query, sub); err != nil {
 		d.dropBatch(cb)
 		return err
 	}
@@ -511,7 +523,7 @@ func (d *Device) flushBatch() error {
 	if err != nil || cb == 0 {
 		return err
 	}
-	if err := d.queue1(cb, 0, -1, false); err != nil {
+	if err := d.queue1(cb, 0, -1, submission{}); err != nil {
 		d.dropBatch(cb)
 		return err
 	}
@@ -623,6 +635,9 @@ func (d *Device) reap(all bool) {
 		}
 		if f.staged {
 			d.uploads.release(f.stagingEnd)
+		}
+		if f.buffers != nil {
+			d.retireFrameBuffers(f.buffers)
 		}
 		sems += f.sems
 		d.spareFences = append(d.spareFences, f.fence)

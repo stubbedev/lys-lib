@@ -60,10 +60,9 @@ type frame struct {
 	words   []uint32
 	steps   []step
 	uploads []upload
-	// staged is how many bytes of the device's staging buffer the
-	// segment's uploads fill, and peakStaged the most any segment of
-	// the frame filled.
-	staged, peakStaged int
+	// staged is how many bytes of the segment's staging buffer its
+	// uploads fill.
+	staged int
 	// downloads is how many bytes the segment's downloads take.
 	downloads int
 	// stats counts what the frame drew how, for the gpu debug line.
@@ -73,9 +72,10 @@ type frame struct {
 	err           error
 }
 
-// Render draws l onto t and hands t back to its consumer. l is
-// recorded at t's size; its layers keep their GPU surfaces on this
-// device across frames.
+// Render draws l onto t and hands t back to its consumer, without
+// waiting for the GPU where the device can tell the consumer when it is
+// done (publish). l is recorded at t's size; its layers keep their GPU
+// surfaces on this device across frames.
 func (d *Device) Render(l *render.List, t *Target) error {
 	if t.s.vf != surfaceFormat {
 		return fmt.Errorf("gpu: Render draws into ARGB8888 and XRGB8888 targets, not %s", t.buf.Format)
@@ -86,6 +86,9 @@ func (d *Device) Render(l *render.List, t *Target) error {
 	if err := d.ensureScratch(t.s.w, t.s.h); err != nil {
 		return err
 	}
+	if err := d.takeFrameBuffers(); err != nil {
+		return err
+	}
 	if err := t.s.ready(); err != nil {
 		return err
 	}
@@ -93,7 +96,6 @@ func (d *Device) Render(l *render.List, t *Target) error {
 	f := &d.frame
 	f.d, f.target, f.num, f.denom, f.err = d, t, num, denom, nil
 	f.clear()
-	f.peakStaged = 0
 	f.stats.reset()
 	l.Play(f)
 	if f.err != nil {
@@ -101,9 +103,6 @@ func (d *Device) Render(l *render.List, t *Target) error {
 	}
 	f.stats.prims += len(f.prims)
 	err := f.flush(true)
-	if err == nil {
-		err = d.fitStaging(f.peakStaged)
-	}
 	if debug.Enabled {
 		debug.Log("gpu", "frame %dx%d: %d prims, %d segments, %d readbacks, %d texture uploads, sprite pixels %v", t.s.w, t.s.h, f.stats.prims, f.stats.segments, f.stats.readbacks, f.stats.textureUploads, f.stats.sprites)
 	}
@@ -135,27 +134,26 @@ func (f *frame) fail(err error) {
 	}
 }
 
-// stage reserves the next n bytes of the device's staging buffer for
-// an upload this segment, returning them and their offset; nil after
-// an error. Uploads write straight into the buffer the GPU copies
-// from: no work is in flight while a segment records (submit waits for
-// it), so growing the buffer copies only what this segment staged.
+// stage reserves the next n bytes of the segment's staging buffer for
+// an upload, returning them and their offset; nil after an error.
+// Uploads write straight into the buffer the GPU copies from, which no
+// submission holds while its segment records, so growing it copies only
+// what this segment staged.
 func (f *frame) stage(n int) ([]byte, int) {
-	d := f.d
+	d, fb := f.d, f.d.current
 	at, need := f.staged, f.staged+n
-	if len(d.staging.mapped) < need {
+	if len(fb.staging.mapped) < need {
 		grown, err := d.newBuffer(max(2*need, stagingMin), vk.BufferUsageTransferSrcBit)
 		if err != nil {
 			f.fail(fmt.Errorf("gpu: staging buffer of %d bytes: %w", need, err))
 			return nil, 0
 		}
-		copy(grown.mapped, d.staging.mapped[:at])
-		d.staging.close()
-		d.staging = grown
+		copy(grown.mapped, fb.staging.mapped[:at])
+		fb.staging.close()
+		fb.staging = grown
 	}
 	f.staged = need
-	f.peakStaged = max(f.peakStaged, need)
-	return d.staging.mapped[at:need], at
+	return fb.staging.mapped[at:need], at
 }
 
 // on is the surface s names: the target, or a layer's.
@@ -293,6 +291,9 @@ func (f *frame) cpu(region render.Rect, surfaces []*surface, fn func(cvs []*rend
 	if f.err = f.flush(false); f.err != nil {
 		return
 	}
+	if f.err = f.d.idle(); f.err != nil {
+		return
+	}
 	if f.err = f.d.readback.invalidate(); f.err != nil {
 		return
 	}
@@ -318,27 +319,41 @@ func (f *frame) cpu(region render.Rect, surfaces []*surface, fn func(cvs []*rend
 	}
 }
 
-// flush runs the recorded segment on the GPU and waits for it; final
-// hands the target back to its consumer.
+// flush submits the recorded segment, without waiting for it, with the
+// buffers it read handed to its submission; final hands the target back
+// to its consumer.
 func (f *frame) flush(final bool) error {
-	d := f.d
+	d, fb := f.d, f.d.current
+	prims, words := fb.prims, fb.words
 	var err error
-	if d.prims, err = d.prims.fit(len(f.prims) * primSize); err != nil {
+	if fb.prims, err = fb.prims.fit(len(f.prims) * primSize); err != nil {
 		return err
 	}
-	copy(d.prims.mapped, unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(f.prims))), len(f.prims)*primSize))
-	if d.words, err = d.words.fit(len(f.words) * 4); err != nil {
+	copy(fb.prims.mapped, unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(f.prims))), len(f.prims)*primSize))
+	if fb.words, err = fb.words.fit(len(f.words) * 4); err != nil {
 		return err
 	}
-	copy(d.words.mapped, unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(f.words))), len(f.words)*4))
-	d.bindPrims(d.prims, d.words)
+	copy(fb.words.mapped, unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(f.words))), len(f.words)*4))
+	if fb.prims != prims || fb.words != words {
+		d.bindPrims(fb)
+	}
 	if d.readback, err = d.readback.fit(f.downloads); err != nil {
 		return err
 	}
 	f.stats.segments++
-	err = d.submit(func(cb vk.CommandBuffer) { f.record(cb, final) })
+	fb.staged = f.staged
+	publishes := final && d.publishes(f.target)
+	err = d.submitAsync(func(cb vk.CommandBuffer) { f.record(cb, final) }, submission{signals: publishes})
 	f.clear()
-	return err
+	if err != nil {
+		return err
+	}
+	d.inflight[len(d.inflight)-1].buffers = fb
+	d.current = nil
+	if final {
+		return d.publish(f.target, publishes)
+	}
+	return d.takeFrameBuffers()
 }
 
 // clear empties the recorded segment, keeping its slices' capacity.
@@ -353,7 +368,7 @@ func (f *frame) record(cb vk.CommandBuffer, final bool) {
 	d := f.d
 	f.target.acquire(cb)
 	for _, u := range f.uploads {
-		u.dst.upload(cb, u.region, d.staging, u.offset, u.rowLength)
+		u.dst.upload(cb, u.region, d.current.staging, u.offset, u.rowLength)
 	}
 	var pass *surface
 	var pipe vk.Pipeline
@@ -433,7 +448,7 @@ func (f *frame) begin(cb vk.CommandBuffer, s *surface) {
 	vp := vk.Viewport{Width: float32(s.w), Height: float32(s.h), MaxDepth: 1}
 	d.cmds.CmdSetViewport(cb, 0, 1, &vp)
 	d.cmds.CmdSetScissor(cb, 0, 1, &area)
-	d.cmds.CmdBindDescriptorSets(cb, vk.PipelineBindPointGraphics, d.layout, 0, 1, &d.primSet, 0, nil)
+	d.cmds.CmdBindDescriptorSets(cb, vk.PipelineBindPointGraphics, d.layout, 0, 1, &d.current.set, 0, nil)
 	fc := frameConstants{w: float32(s.w), h: float32(s.h)}
 	d.cmds.CmdPushConstants(cb, d.layout, vk.ShaderStageFlags(vk.ShaderStageVertexBit|vk.ShaderStageFragmentBit), 0, uint32(unsafe.Sizeof(fc)), unsafe.Pointer(&fc))
 }

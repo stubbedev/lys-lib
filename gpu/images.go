@@ -82,6 +82,10 @@ func (f *frame) imageTexture(img *image.RGBA, id render.ImageID, version uint64)
 		ims.limit = maxImages
 	}
 	if len(ims.byImage) >= ims.limit {
+		if err := f.d.idle(); err != nil {
+			f.fail(err)
+			return nil, false
+		}
 		ims.evictLRU()
 	}
 	s, err := f.d.newSurface(b.Dx(), b.Dy())
@@ -120,8 +124,7 @@ func (f *frame) stageImage(s *surface, img *image.RGBA) {
 }
 
 // evictLRU frees the least recently drawn quarter of the textures no
-// draw of this frame refers to. Earlier frames' work has finished (each
-// frame waits for its own), so they are free to go.
+// draw of this frame refers to. Nothing pending may still use them.
 func (ims *images) evictLRU() {
 	keys := make([]imageKey, 0, len(ims.byImage))
 	for key, t := range ims.byImage {
@@ -155,7 +158,7 @@ func (d *Device) Forget(id render.ImageID) {
 	d.forgetMu.Unlock()
 }
 
-// forgetImages frees, after a frame when no work is pending, the
+// forgetImages frees, once the work pending has finished, the
 // textures and mask slots of the rasters Forget named.
 func (d *Device) forgetImages() {
 	d.forgetMu.Lock()
@@ -177,7 +180,7 @@ func (d *Device) forgetImages() {
 }
 
 // retireImages frees the textures no frame drew for imageIdleFrames,
-// at a frame's start, when no work is pending.
+// at a frame's start, once the work pending has finished.
 func (d *Device) retireImages() {
 	ims := &d.images
 	ims.frames++

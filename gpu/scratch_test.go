@@ -22,16 +22,27 @@ func TestStagingShrinksAfterALargeUpload(t *testing.T) {
 	if px, _ := renderImage(t, d, tg, rec); px != red {
 		t.Fatalf("the large upload drew %v, want %v", px, red)
 	}
-	if n := len(d.staging.mapped); n < len(big.Pix) {
+	if n := heldStaging(d); n < len(big.Pix) {
 		t.Fatalf("staging holds %d bytes after a %d-byte upload", n, len(big.Pix))
 	}
 	drawImage(rec, render.NewStillImage(rasterIn(make([]byte, 8*8*4), blue)))
 	if px, _ := renderImage(t, d, tg, rec); px != blue {
 		t.Fatalf("the small upload drew %v, want %v", px, blue)
 	}
-	if n := len(d.staging.mapped); n > 4*stagingMin {
+	if n := heldStaging(d); n > 4*stagingMin {
 		t.Errorf("staging kept %d bytes after a frame that staged 256", n)
 	}
+}
+
+// heldStaging is the largest staging buffer finished segments keep.
+func heldStaging(d *Device) int {
+	held := 0
+	for _, fb := range d.spareFrameBuffers {
+		if fb.staging != nil {
+			held = max(held, len(fb.staging.mapped))
+		}
+	}
+	return held
 }
 
 // Trim frees the scratch canvases off the Go heap; the next frame that

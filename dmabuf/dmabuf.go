@@ -5,7 +5,11 @@
 package dmabuf
 
 import (
+	"errors"
 	"fmt"
+	"unsafe"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/stubbedev/lys-lib/fourcc"
 )
@@ -47,4 +51,37 @@ func (b Buffer) Validate() error {
 		}
 	}
 	return nil
+}
+
+// ErrNoSyncFileImport reports a kernel without
+// DMA_BUF_IOCTL_IMPORT_SYNC_FILE, added in Linux 6.0.
+var ErrNoSyncFileImport = errors.New("dmabuf: the kernel attaches no sync_file to a dmabuf")
+
+// dmaBufIoctlImportSyncFile is DMA_BUF_IOCTL_IMPORT_SYNC_FILE and
+// dmaBufSyncWrite its flag for a fence that writers and readers wait on.
+const (
+	dmaBufIoctlImportSyncFile = 0x40086203
+	dmaBufSyncWrite           = 2
+)
+
+// ImportSyncFile attaches the fence in syncFile to the dmabuf fd as its
+// writer's: whoever uses the dmabuf with implicit synchronization (a
+// compositor, a display) waits for it. syncFile stays the caller's.
+func ImportSyncFile(fd, syncFile int) error {
+	arg := struct {
+		flags uint32
+		fd    int32
+	}{dmaBufSyncWrite, int32(syncFile)} //nolint:gosec // a file descriptor fits an int32
+	for {
+		_, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), dmaBufIoctlImportSyncFile, uintptr(unsafe.Pointer(&arg))) //nolint:gosec // the kernel reads the struct during the call
+		switch errno {
+		case 0:
+			return nil
+		case unix.EINTR, unix.EAGAIN:
+			continue
+		case unix.ENOTTY:
+			return ErrNoSyncFileImport
+		}
+		return fmt.Errorf("dmabuf: DMA_BUF_IOCTL_IMPORT_SYNC_FILE of sync_file %d onto dmabuf %d: %w", syncFile, fd, errno)
+	}
 }

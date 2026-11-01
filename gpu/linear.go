@@ -163,7 +163,7 @@ func (d *Device) CopyToLinear(dst *Linear, src *Target, rects []image.Rectangle)
 		runtime.KeepAlive(copies)
 		dst.barrier(cb, d.family, vk.QueueFamilyForeignExt)
 		src.release(cb)
-	}, false)
+	}, submission{})
 }
 
 func (l *Linear) barrier(cb vk.CommandBuffer, from, to uint32) {

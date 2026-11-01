@@ -496,7 +496,7 @@ func (p *Pass) submit() error {
 	if len(p.ops) == 0 || len(p.damage) == 0 {
 		return nil
 	}
-	return d.submitAsync(p.record, true)
+	return d.submitAsync(p.record, submission{pass: true})
 }
 
 func (p *Pass) record(cb vk.CommandBuffer) {
