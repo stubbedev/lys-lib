@@ -11,10 +11,10 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/stubbedev/lys-lib/third_party/rasterx"
 	"golang.org/x/image/math/fixed"
 
 	"github.com/stubbedev/lys-lib/golden"
+	"github.com/stubbedev/lys-lib/third_party/rasterx"
 )
 
 const testCircleSVG = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20">
@@ -236,7 +236,7 @@ func TestIconDrawClips(t *testing.T) {
 	}
 }
 
-// GTK's symbolic markup (wayle's icon migration writes it) parses: the
+// GTK's symbolic markup parses: the
 // gpa attributes drop, the SVG paint stays, the xlink ones survive.
 func TestLoadSVGGrappaSymbolic(t *testing.T) {
 	const grappa = `<svg width='16' height='16'

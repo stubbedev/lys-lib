@@ -19,7 +19,7 @@ import (
 	dbus "github.com/stubbedev/lys-lib/third_party/godbus"
 )
 
-// D-Bus identity (wayle-ipc portal_dialogs.rs).
+// D-Bus identity.
 const (
 	ServiceName = "dev.stubbe.lys.PortalDialogs1"
 	ServicePath = dbus.ObjectPath("/dev/stubbe/lys/PortalDialogs")
