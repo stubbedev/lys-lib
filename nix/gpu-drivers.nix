@@ -12,7 +12,9 @@
 #   NVIDIA's proprietary driver needs nixGL. Only those: an ICD for
 #   absent hardware can fault while it probes (CI's runners crashed so
 #   with all of them). NixOS keeps its own.
-pkgs: {
+pkgs: let
+  vaDrivers = pkgs.lib.optional pkgs.stdenv.hostPlatform.isx86 pkgs.intel-media-driver ++ [pkgs.mesa];
+in {
   libraries = [
     pkgs.vulkan-loader
     pkgs.libva
@@ -47,7 +49,7 @@ pkgs: {
       export __EGL_VENDOR_LIBRARY_FILENAMES=${pkgs.mesa}/share/glvnd/egl_vendor.d/50_mesa.json
       export GBM_BACKENDS_PATH=${pkgs.mesa}/lib/gbm
       export LIBGL_DRIVERS_PATH=${pkgs.mesa}/lib/dri
-      export LIBVA_DRIVERS_PATH=${pkgs.intel-media-driver}/lib/dri:${pkgs.mesa}/lib/dri
+      export LIBVA_DRIVERS_PATH=${pkgs.lib.makeSearchPath "lib/dri" vaDrivers}
     fi
   '';
 }
