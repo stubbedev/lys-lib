@@ -19,8 +19,11 @@ func (c *Canvas) Arc(cx, cy, radius, width, start, sweep float64, col Color) {
 	box := c.clip.Intersect(c.arcSpan(cx, cy, radius, width))
 	g := ArcOf(cx, cy, radius, width, start, sweep, c.num, c.denom)
 	for y := box.Y; y < box.Y+box.H; y++ {
-		for x := box.X; x < box.X+box.W; x++ {
-			blendCovF(c, x, y, col, g.Coverage(x, y))
+		left, right := g.rowSpans(y, box)
+		for _, span := range [2][2]int{left, right} {
+			for x := span[0]; x < span[1]; x++ {
+				blendCovF(c, x, y, col, g.Coverage(x, y))
+			}
 		}
 	}
 }
@@ -82,4 +85,31 @@ func (c *Canvas) arcSpan(cx, cy, radius, width float64) Rect {
 		X: int(math.Floor(float64(dcx - outer))), Y: int(math.Floor(float64(dcy - outer))),
 		W: int(math.Ceil(float64(2 * outer))), H: int(math.Ceil(float64(2 * outer))),
 	}
+}
+
+// rowSpans are the columns of row y within box the stroke can cover, as
+// half-open ranges: the ring holding the band and both caps, a pixel
+// wider than the half pixel coverage fades over, to spare a ring's
+// inside and outside the per-pixel angle. Its left and right crossings
+// merge where the row misses the hole.
+func (g ArcGeometry) rowSpans(y int, box Rect) (left, right [2]int) {
+	x0, x1 := box.X, box.X+box.W
+	dy := float64(y) + 0.5 - float64(g.CY)
+	r := float64(g.R)
+	outer, inner := r+float64(g.Half)+1.5, r-float64(g.Half)-1.5
+	if math.Abs(dy) >= outer {
+		return left, right
+	}
+	reach := math.Sqrt(outer*outer - dy*dy)
+	cx := float64(g.CX)
+	lo, hi := max(x0, int(math.Floor(cx-reach))), min(x1, int(math.Ceil(cx+reach)))
+	if inner <= 0 || math.Abs(dy) >= inner {
+		return [2]int{lo, hi}, right
+	}
+	hole := math.Sqrt(inner*inner - dy*dy)
+	holeLo, holeHi := int(math.Ceil(cx-hole)), int(math.Floor(cx+hole))
+	if holeLo >= holeHi {
+		return [2]int{lo, hi}, right
+	}
+	return [2]int{lo, min(hi, holeLo)}, [2]int{max(lo, holeHi), hi}
 }

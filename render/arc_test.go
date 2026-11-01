@@ -59,3 +59,49 @@ func TestArcIgnoresDegenerateInput(t *testing.T) {
 		}
 	}
 }
+
+// Skipping what a ring cannot reach changes no pixel: every arc paints
+// what visiting its whole box does, at every scale, clipped or not.
+func TestArcPaintsWhatItsWholeBoxWould(t *testing.T) {
+	const w, h = 96, 80
+	white := RGBA(255, 255, 255, 200)
+	for _, sc := range [][2]int{{1, 1}, {3, 2}, {2, 1}} {
+		for _, a := range [][6]float64{
+			{24, 20, 15, 4, -math.Pi / 2, math.Pi / 2},
+			{24, 20, 15, 4, 0, 2 * math.Pi},
+			{24, 20, 2, 9, 1, 4},
+			{24, 20, 0.5, 30, 0, 6},
+			{0, 0, 18, 3, 0, 1.5},
+			{40, 30, 60, 1, 0.3, 5},
+			{20.25, 17.75, 9.5, 0.5, 2, 3},
+			{24, 20, 15, 4, 6, 0.01},
+		} {
+			got := NewScaled(make([]byte, Stride(w)*h), Stride(w), w, h, sc[0], sc[1])
+			got.Arc(a[0], a[1], a[2], a[3], a[4], a[5], white)
+			want := NewScaled(make([]byte, Stride(w)*h), Stride(w), w, h, sc[0], sc[1])
+			box := want.clip.Intersect(want.arcSpan(a[0], a[1], a[2], a[3]))
+			g := ArcOf(a[0], a[1], a[2], a[3], a[4], a[5], sc[0], sc[1])
+			for y := box.Y; y < box.Y+box.H; y++ {
+				for x := box.X; x < box.X+box.W; x++ {
+					blendCovF(want, x, y, white, g.Coverage(x, y))
+				}
+			}
+			for y := range h {
+				for x := range w {
+					if got.get(x, y) != want.get(x, y) {
+						t.Fatalf("scale %v arc %v: pixel (%d,%d) is %v, want %v", sc, a, x, y, got.get(x, y), want.get(x, y))
+					}
+				}
+			}
+		}
+	}
+}
+
+func BenchmarkArcRing(b *testing.B) {
+	cv := New(make([]byte, Stride(256)*256), Stride(256), 256, 256)
+	white := RGBA(255, 255, 255, 255)
+	b.ReportAllocs()
+	for b.Loop() {
+		cv.Arc(128, 128, 110, 6, -math.Pi/2, 3*math.Pi/2, white)
+	}
+}
