@@ -1,5 +1,5 @@
-// Package text segments text into words for the word-wise editing
-// shared by Entry and TextArea: ctrl+arrow motion, ctrl+backspace and
+// Package text segments text into words for word-wise editing, as
+// lys-ui's Entry and TextArea do: ctrl+arrow motion, ctrl+backspace and
 // ctrl+delete deletion, double-click selection, and the typing-run
 // coalescing in the undo history.
 //
@@ -17,8 +17,8 @@
 // definition of a word, and matches the undo history's typing-run
 // breaks, which already used it.
 //
-// Since #57 the unit under the class rule is the grapheme cluster, not
-// the rune: uniseg's UAX #29 cluster segmentation (grapheme.go) splits
+// Since stubbedev/lys-ui#57 the unit under the class rule is the grapheme
+// cluster, not the rune: uniseg's UAX #29 cluster segmentation (grapheme.go) splits
 // rs into clusters, each cluster classified by its first rune, and
 // words are maximal runs of same-class clusters. A combining mark, a
 // skin-tone modifier, or a ZWJ continuation therefore extends the word

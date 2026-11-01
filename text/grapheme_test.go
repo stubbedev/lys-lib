@@ -114,8 +114,8 @@ func TestContinuesCluster(t *testing.T) {
 	}
 }
 
-// The #56 composition: with clusters as the unit under the word class
-// rule, a combining mark after a word rune no longer reads as a
+// The stubbedev/lys-ui#56 composition: with clusters as the unit under
+// the word class rule, a combining mark after a word rune no longer reads as a
 // boundary — the accented cluster is one word unit for stepping,
 // deletion, and double-click alike.
 func TestWordBoundariesOverClusters(t *testing.T) {

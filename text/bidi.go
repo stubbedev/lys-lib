@@ -1,10 +1,10 @@
-// Bidirectional resolution (UAX #9) for every text path in the toolkit
-// (#68): mixed Hebrew/Arabic + Latin lines resolve into directional
-// runs that the shaper lays out visually correct, and the editable
-// widgets map caret motion through. This package is the single source
-// of truth — render shapes the runs it returns here, and the widgets
-// route their Direction through it, so no consumer forks reorder
-// logic.
+// Bidirectional resolution (UAX #9) for every text path in the family
+// (stubbedev/lys-ui#68): mixed Hebrew/Arabic + Latin lines resolve into
+// directional runs that the shaper lays out visually correct, and the
+// editable widgets of lys-ui map caret motion through. This package is
+// the single source of truth: render shapes the runs it returns here,
+// and those widgets route their Direction through it, so no consumer
+// forks reorder logic.
 //
 // Positions stay rune indexes. BidiRuns returns the runs in visual
 // left-to-right order while the spans it carries stay logical, and

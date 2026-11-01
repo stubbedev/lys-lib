@@ -4,7 +4,7 @@ package text
 // UAX #9 (uppercase letters stand for right-to-left letters, the spec's
 // own convention, realized here as Hebrew), a cross-check against
 // x/text's independent resolution of the same paragraphs, and the
-// visual caret mapping the editable widgets move by.
+// visual caret mapping lys-ui's editable widgets move by.
 
 import (
 	"slices"

@@ -1,5 +1,6 @@
-// Grapheme cluster segmentation (UAX #29) for the editable text
-// widgets: the unit Backspace, Delete, and caret motion move (#57).
+// Grapheme cluster segmentation (UAX #29) for lys-ui's editable text
+// widgets: the unit Backspace, Delete, and caret motion move
+// (stubbedev/lys-ui#57).
 // A cluster is one user-perceived character — an emoji ZWJ family
 // (👨‍👩‍👧, five runes), a flag (two regional indicators), a base
 // rune with its combining marks or skin-tone modifier — and every
@@ -121,8 +122,8 @@ func NextCluster(rs []rune, at int) int {
 // extends prev's grapheme cluster rather than starting a new one — a
 // combining mark completing a base rune, a skin-tone modifier, a ZWJ
 // join. It classifies the undo history's typing-run coalescing
-// (widget/undo.go), where a mark typed after a word rune must not read
-// as a run break. The two-rune test is an approximation at the edges:
+// (lys-ui's widget/undo.go), where a mark typed after a word rune must
+// not read as a run break. The two-rune test is an approximation at the edges:
 // a second regional indicator after a complete flag pair reads as
 // continuing, which only coarsens undo grouping, never text.
 func ContinuesCluster(prev, next rune) bool {
