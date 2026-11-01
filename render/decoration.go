@@ -3,6 +3,7 @@ package render
 import (
 	"math"
 
+	"github.com/stubbedev/lys-lib/third_party/gomath"
 	"github.com/stubbedev/lys-lib/third_party/typesetting/font"
 )
 
@@ -59,7 +60,7 @@ func (s *ShapedText) DrawDecoration(cv *Canvas, x, baseline int, d Decoration, c
 		y    float64
 	}{
 		{Underline, float64(baseline) + m.under},
-		{Overline, float64(baseline) - s.Ascent() + m.thick/2},
+		{Overline, float64(baseline) - s.Ascent() + float64(m.thick/2)},
 		{LineThrough, float64(baseline) - m.strike},
 	} {
 		if d.Lines&l.line != 0 {
@@ -98,20 +99,20 @@ func decorationMetrics(t *Typeface, px float64) decoMetrics {
 func drawDecorationLine(cv *Canvas, x0, x1, y, thick float64, style DecorationStyle, col Color) {
 	t := int(math.Round(thick))
 	rect := func(a, b, cy float64) {
-		cv.FillRect(Rect{X: int(math.Round(a)), Y: int(math.Round(cy - thick/2)), W: int(math.Round(b - a)), H: t}, col)
+		cv.FillRect(Rect{X: int(math.Round(a)), Y: int(math.Round(cy - float64(thick/2))), W: int(math.Round(b - a)), H: t}, col)
 	}
 	switch style {
 	case DecorationDouble:
 		gap := thick * 1.5
-		rect(x0, x1, y-gap/2)
-		rect(x0, x1, y+gap/2)
+		rect(x0, x1, y-float64(gap/2))
+		rect(x0, x1, y+float64(gap/2))
 	case DecorationDotted:
-		for a := x0; a < x1; a += 2 * thick {
+		for a := x0; a < x1; a += float64(2 * thick) {
 			rect(a, math.Min(a+thick, x1), y)
 		}
 	case DecorationDashed:
-		dash := 3 * thick
-		for a := x0; a < x1; a += 2 * dash {
+		dash := float64(3 * thick)
+		for a := x0; a < x1; a += float64(2 * dash) {
 			rect(a, math.Min(a+dash, x1), y)
 		}
 	case DecorationWavy:
@@ -120,7 +121,7 @@ func drawDecorationLine(cv *Canvas, x0, x1, y, thick float64, style DecorationSt
 		amp, half := thick*1.5, thick*3
 		px, py := x0, y
 		for a := x0 + 1; a <= x1; a++ {
-			ny := y + amp*math.Sin((a-x0)*math.Pi/half)
+			ny := y + float64(amp*gomath.Sin((a-x0)*math.Pi/half))
 			cv.Line(int(math.Round(px)), int(math.Round(py)), int(math.Round(a)), int(math.Round(ny)), t, col)
 			px, py = a, ny
 		}

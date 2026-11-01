@@ -1,6 +1,10 @@
 package opus
 
-import "math"
+import (
+	"math"
+
+	"github.com/stubbedev/lys-lib/third_party/gomath"
+)
 
 // bandCoder codes the normalised band shapes of one frame
 // (quant_all_bands, quant_band, quant_partition and quant_band_stereo,
@@ -141,7 +145,7 @@ func (q *bandCoder) stereoBand(i int, x, y []float32, b int) {
 			x2, y2 = y, x
 		}
 		if sbits != 0 {
-			q.rc.bits(b2u(x2[0]*y2[1]-x2[1]*y2[0] < 0), 1)
+			q.rc.bits(b2u(float32(x2[0]*y2[1])-float32(x2[1]*y2[0]) < 0), 1)
 		}
 		q.band(i, x2, mbits)
 		return
@@ -308,7 +312,7 @@ func haar1(x []float32, n0, stride int) {
 	n0 >>= 1
 	for i := range stride {
 		for j := range n0 {
-			a, b := r*x[stride*2*j+i], r*x[stride*(2*j+1)+i]
+			a, b := float32(r*x[stride*2*j+i]), float32(r*x[stride*(2*j+1)+i])
 			x[stride*2*j+i] = a + b
 			x[stride*(2*j+1)+i] = a - b
 		}
@@ -344,10 +348,10 @@ func deinterleaveHadamard(x, tmp []float32, n0, stride int, hadamard bool) {
 // not coded.
 func (q *bandCoder) intensityStereo(i int, x, y []float32) {
 	left, right := q.amp[0][i], q.amp[1][i]
-	norm := 1e-15 + float32(math.Sqrt(float64(1e-15+left*left+right*right)))
+	norm := 1e-15 + float32(math.Sqrt(float64(1e-15+float32(left*left)+float32(right*right))))
 	a1, a2 := left/norm, right/norm
 	for j := range x {
-		x[j] = a1*x[j] + a2*y[j]
+		x[j] = float32(a1*x[j]) + float32(a2*y[j])
 	}
 }
 
@@ -355,7 +359,7 @@ func (q *bandCoder) intensityStereo(i int, x, y []float32) {
 func stereoSplit(x, y []float32) {
 	const r = float32(0.70710678)
 	for j := range x {
-		l, rr := r*x[j], r*y[j]
+		l, rr := float32(r*x[j]), float32(r*y[j])
 		x[j] = l + rr
 		y[j] = rr - l
 	}
@@ -370,12 +374,12 @@ func stereoTheta(x, y []float32, stereo bool) int {
 		if stereo {
 			m, s = x[j]+y[j], x[j]-y[j]
 		}
-		emid += m * m
-		eside += s * s
+		emid += float32(m * m)
+		eside += float32(s * s)
 	}
 	mid := math.Sqrt(float64(emid))
 	side := math.Sqrt(float64(eside))
-	return int(math.Floor(float64(0.5 + 16384*0.63662*float32(math.Atan2(side, mid)))))
+	return int(math.Floor(float64(0.5 + float32(16384*0.63662*float32(gomath.Atan2(side, mid))))))
 }
 
 // exp2Table8 is 2^(i/8) in Q14.

@@ -124,7 +124,7 @@ func l1Metric(x []float32, lm int, bias float32) float32 {
 	for _, v := range x {
 		l1 += abs32(v)
 	}
-	return l1 + float32(lm)*bias*l1
+	return l1 + float32(float32(lm)*bias*l1)
 }
 
 // encodeTF is tf_encode: it codes the per-band bits in res as changes

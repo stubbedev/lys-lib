@@ -73,8 +73,8 @@ func LoadSVG(data []byte, w, h int) (*Icon, error) {
 	}
 
 	scale := math.Min(float64(w)/vb.W, float64(h)/vb.H)
-	fitW := vb.W * scale
-	fitH := vb.H * scale
+	fitW := float64(vb.W * scale)
+	fitH := float64(vb.H * scale)
 	offX := (float64(w) - fitW) / 2
 	offY := (float64(h) - fitH) / 2
 
@@ -248,11 +248,11 @@ func (i *Icon) DrawRotated(cv *Canvas, x, y int, deg float64) {
 // footprint at the edges and corners.
 func (i *Icon) xformSpan(x, y int, m Affine, num, denom int) Rect {
 	w, h := i.LogicalSize()
-	cx := float64(x) + float64(w)/2
-	cy := float64(y) + float64(h)/2
+	cx := float64(x) + float64(float64(w)/2)
+	cy := float64(y) + float64(float64(h)/2)
 	var x0, y0, x1, y1 float64
 	for _, c := range [][2]float64{{0, 0}, {float64(w), 0}, {0, float64(h)}, {float64(w), float64(h)}} {
-		px, py := m.Apply(c[0]-float64(w)/2, c[1]-float64(h)/2)
+		px, py := m.Apply(c[0]-float64(float64(w)/2), c[1]-float64(float64(h)/2))
 		x0 = math.Min(x0, px)
 		y0 = math.Min(y0, py)
 		x1 = math.Max(x1, px)
@@ -298,7 +298,7 @@ func (i *Icon) Xform(x, y int, m Affine, num, denom int) M3 {
 	lw, lh := i.LogicalSize()
 	w, h := float64(lw), float64(lh)
 	f := float64(num) / float64(denom)
-	toDevice := Scale(f, f).Mul(Translate(float64(x)+w/2, float64(y)+h/2))
+	toDevice := Scale(f, f).Mul(Translate(float64(x)+float64(w/2), float64(y)+float64(h/2)))
 	toLogical := Scale(w/float64(pw), h/float64(ph))
 	return Affine3(toDevice.Mul(m).Mul(Translate(-w/2, -h/2)).Mul(toLogical))
 }

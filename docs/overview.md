@@ -88,6 +88,6 @@ are importable from other modules' tests.
 
 ### Third party
 
-[`third_party/`](/third-party/) carries patched copies of godbus, oksvg,
-go-text/typesetting, the Vulkan bindings and the Wayland client library, as
+[`third_party/`](/third-party/) carries patched copies of godbus, Go's `math`, oksvg, rasterx,
+go-text/typesetting, x/image/vector, the Vulkan bindings and the Wayland client library, as
 packages of this module.

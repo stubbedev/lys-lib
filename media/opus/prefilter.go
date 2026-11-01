@@ -50,21 +50,21 @@ func combFilter(y, x []float32, at int, f0, f1 pitchFilter, window []float32) {
 	}
 	for i := range fade {
 		j := at + i
-		f := window[i] * window[i]
+		f := float32(window[i] * window[i])
 		y[i] = x[j] +
-			(1-f)*g0[0]*x[j-t0] +
-			(1-f)*g0[1]*(x[j-t0+1]+x[j-t0-1]) +
-			(1-f)*g0[2]*(x[j-t0+2]+x[j-t0-2]) +
-			f*g1[0]*x[j-t1] +
-			f*g1[1]*(x[j-t1+1]+x[j-t1-1]) +
-			f*g1[2]*(x[j-t1+2]+x[j-t1-2])
+			float32((1-f)*g0[0]*x[j-t0]) +
+			float32((1-f)*g0[1]*(x[j-t0+1]+x[j-t0-1])) +
+			float32((1-f)*g0[2]*(x[j-t0+2]+x[j-t0-2])) +
+			float32(f*g1[0]*x[j-t1]) +
+			float32(f*g1[1]*(x[j-t1+1]+x[j-t1-1])) +
+			float32(f*g1[2]*(x[j-t1+2]+x[j-t1-2]))
 	}
 	for i := fade; i < n; i++ {
 		j := at + i
 		y[i] = x[j] +
-			g1[0]*x[j-t1] +
-			g1[1]*(x[j-t1+1]+x[j-t1-1]) +
-			g1[2]*(x[j-t1+2]+x[j-t1-2])
+			float32(g1[0]*x[j-t1]) +
+			float32(g1[1]*(x[j-t1+1]+x[j-t1-1])) +
+			float32(g1[2]*(x[j-t1+2]+x[j-t1-2]))
 	}
 }
 
@@ -74,23 +74,23 @@ func combFilter(y, x []float32, at int, f0, f1 pitchFilter, window []float32) {
 func pitchDownsample(x [][]float32, lp []float32) {
 	clear(lp)
 	for _, in := range x {
-		lp[0] += 0.25*in[1] + 0.5*in[0]
+		lp[0] += float32(0.25*in[1]) + float32(0.5*in[0])
 		for i := 1; i < len(lp); i++ {
-			lp[i] += 0.25*in[2*i-1] + 0.25*in[2*i+1] + 0.5*in[2*i]
+			lp[i] += float32(0.25*in[2*i-1]) + float32(0.25*in[2*i+1]) + float32(0.5*in[2*i])
 		}
 	}
 	var ac [5]float32
 	for k := range ac {
 		var sum float32
 		for i := k; i < len(lp); i++ {
-			sum += lp[i] * lp[i-k]
+			sum += float32(lp[i] * lp[i-k])
 		}
 		ac[k] = sum
 	}
 	ac[0] *= 1.0001
 	for i := 1; i < len(ac); i++ {
 		w := 0.008 * float32(i)
-		ac[i] -= ac[i] * w * w
+		ac[i] -= float32(ac[i] * w * w)
 	}
 	var lpc [4]float32
 	lpcFromAutocorr(ac[:], lpc[:])
@@ -100,12 +100,12 @@ func pitchDownsample(x [][]float32, lp []float32) {
 		lpc[i] *= g
 	}
 	const c1 = float32(0.8)
-	num := [5]float32{lpc[0] + c1, lpc[1] + c1*lpc[0], lpc[2] + c1*lpc[1], lpc[3] + c1*lpc[2], c1 * lpc[3]}
+	num := [5]float32{lpc[0] + c1, lpc[1] + float32(c1*lpc[0]), lpc[2] + float32(c1*lpc[1]), lpc[3] + float32(c1*lpc[2]), c1 * lpc[3]}
 	var mem [5]float32
 	for i, v := range lp {
 		sum := v
 		for k := range num {
-			sum += num[k] * mem[k]
+			sum += float32(num[k] * mem[k])
 		}
 		copy(mem[1:], mem[:4])
 		mem[0] = v
@@ -124,17 +124,17 @@ func lpcFromAutocorr(ac, lpc []float32) {
 	for i, next := range ac[1:] {
 		var rr float32
 		for j, a := range lpc[:i] {
-			rr += a * ac[i-j]
+			rr += float32(a * ac[i-j])
 		}
 		rr += next
 		r := -rr / errE
 		lpc[i] = r
 		for j := range (i + 1) >> 1 {
 			a, b := lpc[j], lpc[i-1-j]
-			lpc[j] = a + r*b
-			lpc[i-1-j] = b + r*a
+			lpc[j] = a + float32(r*b)
+			lpc[i-1-j] = b + float32(r*a)
 		}
-		errE -= r * r * errE
+		errE -= float32(r * r * errE)
 		if errE <= 0.001*ac[0] {
 			return
 		}
@@ -188,7 +188,7 @@ func findBestPitch(xcorr, y []float32, n int) [2]int {
 	var bestDen [2]float32
 	best := [2]int{0, 1}
 	for _, v := range y[:n] {
-		syy += v * v
+		syy += float32(v * v)
 	}
 	for i, xc := range xcorr {
 		if xc > 0 {
@@ -203,7 +203,7 @@ func findBestPitch(xcorr, y []float32, n int) [2]int {
 				}
 			}
 		}
-		syy = max(1, syy+y[i+n]*y[i+n]-y[i]*y[i])
+		syy = max(1, syy+float32(y[i+n]*y[i+n])-float32(y[i]*y[i]))
 	}
 	return best
 }
@@ -230,7 +230,7 @@ func removeDoubling(x []float32, t int, prev pitchFilter, yyLookup []float32) (i
 	yy := xx
 	yyLookup[0] = xx
 	for i := 1; i <= maxPeriod; i++ {
-		yy += x[at-i]*x[at-i] - x[at+n-i]*x[at+n-i]
+		yy += float32(x[at-i]*x[at-i]) - float32(x[at+n-i]*x[at+n-i])
 		yyLookup[i] = max(0, yy)
 	}
 	yy = yyLookup[t0]
@@ -260,9 +260,9 @@ func removeDoubling(x []float32, t int, prev pitchFilter, yyLookup []float32) (i
 		case d <= 2 && 5*k*k < t0:
 			cont = 0.5 * prev.gain
 		}
-		thresh := max(0.3, 0.7*g0-cont)
+		thresh := max(0.3, float32(0.7*g0)-cont)
 		if t1 < 3*minPeriod {
-			thresh = max(0.4, 0.85*g0-cont)
+			thresh = max(0.4, float32(0.85*g0)-cont)
 		}
 		if g1 > thresh {
 			bestXY, bestYY = xy, yy
@@ -291,13 +291,13 @@ func removeDoubling(x []float32, t int, prev pitchFilter, yyLookup []float32) (i
 
 // pitchGain is the normalised correlation of a lag.
 func pitchGain(xy, xx, yy float32) float32 {
-	return xy / sqrt32(1+xx*yy)
+	return xy / sqrt32(1+float32(xx*yy))
 }
 
 func dot(x, y []float32) float32 {
 	var sum float32
 	for i, v := range x {
-		sum += v * y[i]
+		sum += float32(v * y[i])
 	}
 	return sum
 }
@@ -371,8 +371,8 @@ func (e *Encoder) prefilter(enabled bool, tn tone, tfEstimate float32, available
 	cancel := after[0] > before[0]
 	if e.channels == 2 {
 		thresh := [2]float32{
-			0.25*f.gain*before[0] + 0.01*before[1],
-			0.25*f.gain*before[1] + 0.01*before[0],
+			float32(0.25*f.gain*before[0]) + float32(0.01*before[1]),
+			float32(0.25*f.gain*before[1]) + float32(0.01*before[0]),
 		}
 		cancel = after[0]-before[0] > thresh[0] || after[1]-before[1] > thresh[1] ||
 			(before[0]-after[0] < thresh[0] && before[1]-after[1] < thresh[1])

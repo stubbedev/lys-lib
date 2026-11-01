@@ -15,10 +15,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/stubbedev/lys-lib/third_party/rasterx"
 	"golang.org/x/image/math/fixed"
 
 	"github.com/stubbedev/lys-lib/third_party/oksvg"
+	"github.com/stubbedev/lys-lib/third_party/rasterx"
 )
 
 // svgDoc is an SVG document parsed for drawing: oksvg's paths and the
@@ -143,7 +143,7 @@ func clipMask(regions []*oksvg.SvgIcon, m rasterx.Matrix2D, rect image.Rectangle
 // landed off target.
 func fitViewBox(vx, vy, vw, vh, x, y, w, h float64) rasterx.Matrix2D {
 	sx, sy := w/vw, h/vh
-	return rasterx.Identity.Translate(x-vx*sx, y-vy*sy).Scale(sx, sy)
+	return rasterx.Identity.Translate(x-float64(vx*sx), y-float64(vy*sy)).Scale(sx, sy)
 }
 
 // svgShapes are the elements oksvg draws as one path each.
@@ -569,13 +569,13 @@ func (b *svgBounds) cubic(p0, p1, p2, p3 [2]float64) {
 		u := 1 - t
 		var p [2]float64
 		for k := range 2 {
-			p[k] = u*u*u*p0[k] + 3*u*u*t*p1[k] + 3*u*t*t*p2[k] + t*t*t*p3[k]
+			p[k] = float64(u*u*u*p0[k]) + float64(3*u*u*t*p1[k]) + float64(3*u*t*t*p2[k]) + float64(t*t*t*p3[k])
 		}
 		return p
 	}
 	for k := range 2 {
 		a, c, e := p1[k]-p0[k], p2[k]-p1[k], p3[k]-p2[k]
-		for _, t := range quadRoots(a-2*c+e, 2*(c-a), a) {
+		for _, t := range quadRoots(a-float64(2*c)+e, 2*(c-a), a) {
 			if t > 0 && t < 1 {
 				b.extend(at(t))
 			}
@@ -594,7 +594,7 @@ func quadRoots(a, b, c float64) []float64 {
 		}
 		return []float64{-c / b}
 	}
-	disc := b*b - 4*a*c
+	disc := float64(b*b) - float64(4*a*c)
 	if disc < 0 {
 		return nil
 	}

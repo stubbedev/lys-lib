@@ -34,10 +34,10 @@ func DotProd(p fixed.Point26_6, q fixed.Point26_6) fixed.Int52_12 {
 // Length is the distance from the origin of the point
 func Length(v fixed.Point26_6) fixed.Int26_6 {
 	vx, vy := float64(v.X), float64(v.Y)
-	return fixed.Int26_6(math.Sqrt(vx*vx + vy*vy))
+	return fixed.Int26_6(math.Sqrt(float64(vx*vx) + float64(vy*vy)))
 }
 
-//PathCommand is the type for the path command token
+// PathCommand is the type for the path command token
 type PathCommand fixed.Int26_6
 
 // Human readable path constants
@@ -158,7 +158,7 @@ func ToLength(p fixed.Point26_6, ln fixed.Int26_6) (q fixed.Point26_6) {
 
 	pX, pY := float64(p.X), float64(p.Y)
 	lnF := float64(ln)
-	pLen := math.Sqrt(pX*pX + pY*pY)
+	pLen := math.Sqrt(float64(pX*pX) + float64(pY*pY))
 
 	qX, qY := pX*lnF/pLen, pY*lnF/pLen
 	q.X, q.Y = fixed.Int26_6(qX), fixed.Int26_6(qY)
@@ -231,13 +231,13 @@ func CircleCircleIntersection(ct, cl fixed.Point26_6, rt, rl fixed.Int26_6) (xt1
 	}
 
 	rlf, rtf, df := float64(rl), float64(rt), float64(d)
-	af := (rtf*rtf - rlf*rlf + df*df) / df / 2.0
-	hfd := math.Sqrt(rtf*rtf-af*af) / df
+	af := (float64(rtf*rtf) - float64(rlf*rlf) + float64(df*df)) / df / 2.0
+	hfd := math.Sqrt(float64(rtf*rtf)-float64(af*af)) / df
 	afd := af / df
 
-	rOffx, rOffy := float64(-dc.Y)*hfd, float64(dc.X)*hfd
-	p2x := float64(ct.X) + float64(dc.X)*afd
-	p2y := float64(ct.Y) + float64(dc.Y)*afd
+	rOffx, rOffy := float64(float64(-dc.Y)*hfd), float64(float64(dc.X)*hfd)
+	p2x := float64(ct.X) + float64(float64(dc.X)*afd)
+	p2y := float64(ct.Y) + float64(float64(dc.Y)*afd)
 	xt1x, xt1y := p2x+rOffx, p2y+rOffy
 	xt2x, xt2y := p2x-rOffx, p2y-rOffy
 	return fixed.Point26_6{X: fixed.Int26_6(xt1x), Y: fixed.Int26_6(xt1y)},
@@ -278,9 +278,9 @@ func RayCircleIntersectionF(s1X, s1Y, s2X, s2Y, cX, cY, r float64) (x, y float64
 	d := s2Y - s1Y
 
 	// Quadratic normal form coefficients
-	A, B, C := e*e+d*d, -2*(e*n+m*d), n*n+m*m-r*r
+	A, B, C := float64(e*e)+float64(d*d), float64(-2*(float64(e*n)+float64(m*d))), float64(n*n)+float64(m*m)-float64(r*r)
 
-	D := B*B - 4*A*C
+	D := float64(B*B) - float64(4*A*C)
 
 	if D <= 0 {
 		return // No intersection or is tangent
@@ -302,5 +302,5 @@ func RayCircleIntersectionF(s1X, s1Y, s2X, s2Y, cX, cY, r float64) (x, y float64
 	default: // Neither solution is on the ray
 		return
 	}
-	return (n - e*t1) + cX, (m - d*t1) + cY, true
+	return (n - float64(e*t1)) + cX, (m - float64(d*t1)) + cY, true
 }

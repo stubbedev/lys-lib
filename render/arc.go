@@ -1,6 +1,10 @@
 package render
 
-import "math"
+import (
+	"math"
+
+	"github.com/stubbedev/lys-lib/third_party/gomath"
+)
 
 // Arc strokes a circular arc of the logical circle centered at (cx, cy)
 // with the given radius (to the stroke's middle) and stroke width,
@@ -40,10 +44,10 @@ type ArcGeometry struct {
 // ArcOf is the stroke Arc paints at device scale num/denom.
 func ArcOf(cx, cy, radius, width, start, sweep float64, num, denom int) ArcGeometry {
 	dev := devScale(num, denom)
-	dcx, dcy, r := float32(cx)*dev, float32(cy)*dev, float32(radius)*dev
+	dcx, dcy, r := float32(float32(cx)*dev), float32(float32(cy)*dev), float32(radius)*dev
 	s, w := float32(start), float32(sweep)
 	end := func(a float32) (float32, float32) {
-		return dcx + float32(r*float32(math.Cos(float64(a)))), dcy + float32(r*float32(math.Sin(float64(a))))
+		return dcx + float32(r*float32(gomath.Cos(float64(a)))), dcy + float32(r*float32(gomath.Sin(float64(a))))
 	}
 	sx, sy := end(s)
 	ex, ey := end(s + w)
@@ -79,7 +83,7 @@ func (g ArcGeometry) Coverage(x, y int) float32 {
 // a pixel.
 func (c *Canvas) arcSpan(cx, cy, radius, width float64) Rect {
 	dev := devScale(c.num, c.denom)
-	dcx, dcy := float32(cx)*dev, float32(cy)*dev
+	dcx, dcy := float32(float32(cx)*dev), float32(float32(cy)*dev)
 	outer := float32(float32(radius)*dev) + float32(float32(width)*dev/2) + 1
 	return Rect{
 		X: int(math.Floor(float64(dcx - outer))), Y: int(math.Floor(float64(dcy - outer))),
@@ -100,13 +104,13 @@ func (g ArcGeometry) rowSpans(y int, box Rect) (left, right [2]int) {
 	if math.Abs(dy) >= outer {
 		return left, right
 	}
-	reach := math.Sqrt(outer*outer - dy*dy)
+	reach := math.Sqrt(float64(outer*outer) - float64(dy*dy))
 	cx := float64(g.CX)
 	lo, hi := max(x0, int(math.Floor(cx-reach))), min(x1, int(math.Ceil(cx+reach)))
 	if inner <= 0 || math.Abs(dy) >= inner {
 		return [2]int{lo, hi}, right
 	}
-	hole := math.Sqrt(inner*inner - dy*dy)
+	hole := math.Sqrt(float64(inner*inner) - float64(dy*dy))
 	holeLo, holeHi := int(math.Ceil(cx-hole)), int(math.Floor(cx+hole))
 	if holeLo >= holeHi {
 		return [2]int{lo, hi}, right

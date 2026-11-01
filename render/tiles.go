@@ -35,7 +35,7 @@ func TileGeometryOf(t Tile, clip Rect, radii Corners, num, denom int) (TileGeome
 	c := Canvas{num: num, denom: denom}
 	b, rc := c.devBox(clip, radii)
 	s := devScale(num, denom)
-	w, h := float32(t.W)*s, float32(t.H)*s
+	w, h := float32(float32(t.W)*s), float32(float32(t.H)*s)
 	px, py := w+float32(float32(t.GapX)*s), h+float32(float32(t.GapY)*s)
 	return TileGeometry{
 		Box: b.array(), Radii: rc,

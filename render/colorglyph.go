@@ -166,7 +166,7 @@ func renderSVGGlyph(t *Typeface, gid font.GID, scale, fx, fy float64, fg Color) 
 			y0, y1 = math.Min(y0, float64(a.Y)), math.Max(y1, float64(a.Y))
 		}
 	}
-	pad := 0.1 * (x1 - x0)
+	pad := float64(0.1 * (x1 - x0))
 	x0, x1 = x0-pad, x1+pad
 	base := Affine{A: scale, D: -scale, E: fx, F: fy}
 	box := base.MapBounds(Rect{X: int(math.Floor(x0)), Y: int(math.Floor(y0)), W: int(math.Ceil(x1-x0)) + 1, H: int(math.Ceil(y1-y0)) + 1})

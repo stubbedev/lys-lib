@@ -6,8 +6,11 @@ lys-lib module.
 | Copy | Upstream | Used by |
 | --- | --- | --- |
 | [godbus](/third-party/godbus) | github.com/godbus/dbus/v5 | `dbusx`, `portaldialogs`, `dbustest` |
+| [gomath](/third-party/gomath) | Go's `math` | Every family member, for results that are the same on every architecture |
 | [oksvg](/third-party/oksvg) | github.com/srwiley/oksvg | `render`, for SVG icons and OT-SVG glyphs |
+| [rasterx](/third-party/rasterx) | github.com/srwiley/rasterx | `render` and `oksvg`, for strokes, dashes and transforms |
 | [typesetting](/third-party/typesetting) | github.com/go-text/typesetting | `render`, `text` and `gpu`, for fonts, shaping and bidirectional text |
+| [vector](/third-party/vector) | golang.org/x/image/vector | `render` and `rasterx`, for coverage |
 | [vk](/third-party/vk) | github.com/gogpu/wgpu's `hal/vulkan/vk` | `gpu` |
 | [wayland](/third-party/wayland) | github.com/neurlang/wayland | `capture`, `vinput`, `wlr` and the rest of the Wayland code |
 

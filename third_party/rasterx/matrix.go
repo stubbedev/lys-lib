@@ -5,8 +5,7 @@
 package rasterx
 
 import (
-	"math"
-
+	"github.com/stubbedev/lys-lib/third_party/gomath"
 	"golang.org/x/image/math/fixed"
 )
 
@@ -35,7 +34,7 @@ func (m *matrix3) coFact(i, j int) float64 {
 	ai, bi := otherPair(i)
 	aj, bj := otherPair(j)
 	a, b, c, d := m[ai+aj*3], m[bi+bj*3], m[ai+bj*3], m[bi+aj*3]
-	return a*b - c*d
+	return float64(a*b) - float64(c*d)
 }
 
 func (m *matrix3) Invert() *matrix3 {
@@ -46,7 +45,7 @@ func (m *matrix3) Invert() *matrix3 {
 			cofact[i+j*3] = m.coFact(i, j) * sign
 		}
 	}
-	deteriminate := m[0]*cofact[0] + m[1]*cofact[1] + m[2]*cofact[2]
+	deteriminate := float64(m[0]*cofact[0]) + float64(m[1]*cofact[1]) + float64(m[2]*cofact[2])
 
 	// transpose cofact
 	for i := 0; i < 2; i++ {
@@ -70,12 +69,12 @@ func (a Matrix2D) Invert() Matrix2D {
 // Mult returns a*b
 func (a Matrix2D) Mult(b Matrix2D) Matrix2D {
 	return Matrix2D{
-		A: a.A*b.A + a.C*b.B,
-		B: a.B*b.A + a.D*b.B,
-		C: a.A*b.C + a.C*b.D,
-		D: a.B*b.C + a.D*b.D,
-		E: a.A*b.E + a.C*b.F + a.E,
-		F: a.B*b.E + a.D*b.F + a.F}
+		A: float64(a.A*b.A) + float64(a.C*b.B),
+		B: float64(a.B*b.A) + float64(a.D*b.B),
+		C: float64(a.A*b.C) + float64(a.C*b.D),
+		D: float64(a.B*b.C) + float64(a.D*b.D),
+		E: float64(a.A*b.E) + float64(a.C*b.F) + a.E,
+		F: float64(a.B*b.E) + float64(a.D*b.F) + a.F}
 }
 
 // Identity is the identity matrix
@@ -83,28 +82,28 @@ var Identity = Matrix2D{1, 0, 0, 1, 0, 0}
 
 // TFixed transforms a fixed.Point26_6 by the matrix
 func (a Matrix2D) TFixed(x fixed.Point26_6) (y fixed.Point26_6) {
-	y.X = fixed.Int26_6((float64(x.X)*a.A + float64(x.Y)*a.C) + a.E*64)
-	y.Y = fixed.Int26_6((float64(x.X)*a.B + float64(x.Y)*a.D) + a.F*64)
+	y.X = fixed.Int26_6((float64(float64(x.X)*a.A) + float64(float64(x.Y)*a.C)) + float64(a.E*64))
+	y.Y = fixed.Int26_6((float64(float64(x.X)*a.B) + float64(float64(x.Y)*a.D)) + float64(a.F*64))
 	return
 }
 
 // Transform multiples the input vector by matrix m and outputs the results vector
 // components.
 func (a Matrix2D) Transform(x1, y1 float64) (x2, y2 float64) {
-	x2 = x1*a.A + y1*a.C + a.E
-	y2 = x1*a.B + y1*a.D + a.F
+	x2 = float64(x1*a.A) + float64(y1*a.C) + a.E
+	y2 = float64(x1*a.B) + float64(y1*a.D) + a.F
 	return
 }
 
 // TransformVector is a modidifed version of Transform that ignores the
 // translation components.
 func (a Matrix2D) TransformVector(x1, y1 float64) (x2, y2 float64) {
-	x2 = x1*a.A + y1*a.C
-	y2 = x1*a.B + y1*a.D
+	x2 = float64(x1*a.A) + float64(y1*a.C)
+	y2 = float64(x1*a.B) + float64(y1*a.D)
 	return
 }
 
-//Scale matrix in x and y dimensions
+// Scale matrix in x and y dimensions
 func (a Matrix2D) Scale(x, y float64) Matrix2D {
 	return a.Mult(Matrix2D{
 		A: x,
@@ -115,29 +114,29 @@ func (a Matrix2D) Scale(x, y float64) Matrix2D {
 		F: 0})
 }
 
-//SkewY skews the matrix in the Y dimension
+// SkewY skews the matrix in the Y dimension
 func (a Matrix2D) SkewY(theta float64) Matrix2D {
 	return a.Mult(Matrix2D{
 		A: 1,
-		B: math.Tan(theta),
+		B: gomath.Tan(theta),
 		C: 0,
 		D: 1,
 		E: 0,
 		F: 0})
 }
 
-//SkewX skews the matrix in the X dimension
+// SkewX skews the matrix in the X dimension
 func (a Matrix2D) SkewX(theta float64) Matrix2D {
 	return a.Mult(Matrix2D{
 		A: 1,
 		B: 0,
-		C: math.Tan(theta),
+		C: gomath.Tan(theta),
 		D: 1,
 		E: 0,
 		F: 0})
 }
 
-//Translate translates the matrix to the x , y point
+// Translate translates the matrix to the x , y point
 func (a Matrix2D) Translate(x, y float64) Matrix2D {
 	return a.Mult(Matrix2D{
 		A: 1,
@@ -148,13 +147,13 @@ func (a Matrix2D) Translate(x, y float64) Matrix2D {
 		F: y})
 }
 
-//Rotate rotate the matrix by theta
+// Rotate rotate the matrix by theta
 func (a Matrix2D) Rotate(theta float64) Matrix2D {
 	return a.Mult(Matrix2D{
-		A: math.Cos(theta),
-		B: math.Sin(theta),
-		C: -math.Sin(theta),
-		D: math.Cos(theta),
+		A: gomath.Cos(theta),
+		B: gomath.Sin(theta),
+		C: -gomath.Sin(theta),
+		D: gomath.Cos(theta),
 		E: 0,
 		F: 0})
 }

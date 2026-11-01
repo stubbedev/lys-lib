@@ -370,9 +370,9 @@ func (s *ShapedText) DrawJustified(cv *Canvas, x, baselineY int, col Color, gap 
 		return
 	}
 	dev := float64(cv.num) / float64(cv.denom)
-	dotX := float64(x) * dev
-	base := float64(baselineY) * dev
-	gap *= dev
+	dotX := float64(float64(x) * dev)
+	base := float64(float64(baselineY) * dev)
+	gap = float64(gap * dev)
 	rs := []rune(s.text)
 	for i := range s.runs {
 		r := &s.runs[i]
@@ -381,15 +381,15 @@ func (s *ShapedText) DrawJustified(cv *Canvas, x, baselineY int, col Color, gap 
 		for j := range r.out.Glyphs {
 			g := &r.out.Glyphs[j]
 			drawGlyph(cv, clip, r.face, g.GlyphID, scale,
-				penX+f64(g.XOffset)*dev,
-				base-f64(g.YOffset)*dev, col)
-			penX += f64(g.Advance) * dev
+				penX+float64(f64(g.XOffset)*dev),
+				base-float64(f64(g.YOffset)*dev), col)
+			penX += float64(f64(g.Advance) * dev)
 			ti := r.start + g.TextIndex()
 			if ti < len(rs) && WordSep(rs[ti]) && (j == len(r.out.Glyphs)-1 || r.out.Glyphs[j+1].TextIndex() != g.TextIndex()) {
 				penX += gap
 			}
 		}
-		dotX += f64(r.out.Advance)*dev + gap*float64(sepClusters(r, rs))
+		dotX += float64(f64(r.out.Advance)*dev) + float64(gap*float64(sepClusters(r, rs)))
 	}
 }
 

@@ -151,7 +151,7 @@ func (c *PathCursor) CompilePath(svgPath string) error {
 }
 
 func reflect(px, py, rx, ry float64) (x, y float64) {
-	return px*2 - rx, py*2 - ry
+	return float64(px*2) - rx, float64(py*2) - ry
 }
 
 func (c *PathCursor) valsToAbs(last float64) {

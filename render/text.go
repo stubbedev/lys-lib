@@ -16,6 +16,7 @@ import (
 	"golang.org/x/image/math/fixed"
 
 	"github.com/stubbedev/lys-lib/text"
+	"github.com/stubbedev/lys-lib/third_party/gomath"
 	"github.com/stubbedev/lys-lib/third_party/typesetting/di"
 	"github.com/stubbedev/lys-lib/third_party/typesetting/font"
 	ot "github.com/stubbedev/lys-lib/third_party/typesetting/font/opentype"
@@ -195,7 +196,7 @@ func (t *Typeface) Tabular() *Typeface {
 // syntheticSlant is a synthetic oblique's shear, tan(14°): CSS's
 // default oblique angle, what a browser slants an italic request to
 // when the family has no italic face.
-var syntheticSlant = math.Tan(14 * math.Pi / 180)
+var syntheticSlant = gomath.Tan(14 * math.Pi / 180)
 
 // Oblique returns the face slanted as a synthetic italic, for a family
 // that has no italic face of its own: the same glyphs and advances, the
@@ -666,7 +667,7 @@ func (s *ShapedText) Draw(cv *Canvas, x, baselineY int, col Color) {
 	}
 	dev := float64(cv.num) / float64(cv.denom)
 	if cv.rec != nil {
-		for _, p := range s.pens(float64(x)*dev, float64(baselineY)*dev, dev) {
+		for _, p := range s.pens(float64(float64(x)*dev), float64(float64(baselineY)*dev), dev) {
 			drawGlyph(cv, clip, p.face, p.gid, p.scale, p.x, p.y, col)
 		}
 		return
@@ -674,7 +675,7 @@ func (s *ShapedText) Draw(cv *Canvas, x, baselineY int, col Color) {
 	s.planMu.Lock()
 	defer s.planMu.Unlock()
 	plan := s.planAt(cv.num, cv.denom)
-	for k, p := range s.pens(float64(x)*dev, float64(baselineY)*dev, dev) {
+	for k, p := range s.pens(float64(float64(x)*dev), float64(float64(baselineY)*dev), dev) {
 		fx, fy := penBucket(p.x), penBucket(p.y)
 		rg := &plan[k]
 		if !rg.at(fx, fy) {
@@ -699,13 +700,13 @@ func (s *ShapedText) pens(dotX, base, dev float64) iter.Seq2[int, glyphPen] {
 			penX := dotX
 			for j := range r.out.Glyphs {
 				g := &r.out.Glyphs[j]
-				if !yield(k, glyphPen{face: r.face, gid: g.GlyphID, scale: scale, x: penX + f64(g.XOffset)*dev, y: base - f64(g.YOffset)*dev}) {
+				if !yield(k, glyphPen{face: r.face, gid: g.GlyphID, scale: scale, x: penX + float64(f64(g.XOffset)*dev), y: base - float64(f64(g.YOffset)*dev)}) {
 					return
 				}
 				k++
-				penX += f64(g.Advance) * dev
+				penX += float64(f64(g.Advance) * dev)
 			}
-			dotX += f64(r.out.Advance) * dev
+			dotX += float64(f64(r.out.Advance) * dev)
 		}
 	}
 }
@@ -1155,13 +1156,13 @@ func AlignedPen(sh *ShapedText, box Rect, h Alignment, d text.Direction) (x, bas
 	var fx float64
 	switch h {
 	case AlignCenter:
-		fx = float64(box.X) + (float64(box.W)-sh.Advance())/2
+		fx = float64(box.X) + float64((float64(box.W)-sh.Advance())/2)
 	case AlignEnd:
 		fx = float64(box.X) + float64(box.W) - sh.Advance()
 	default:
 		fx = float64(box.X)
 	}
-	baseline = box.Y + int(math.Round((float64(box.H)-float64(sh.LineHeight()))/2+sh.Ascent()))
+	baseline = box.Y + int(math.Round(float64((float64(box.H)-float64(sh.LineHeight()))/2)+sh.Ascent()))
 	return int(math.Round(fx)), baseline
 }
 
@@ -1475,5 +1476,5 @@ func f266(px float64) fixed.Int26_6 {
 }
 
 func f64(v fixed.Int26_6) float64 {
-	return float64(int32(v)) / 64
+	return float64(float64(int32(v)) / 64)
 }

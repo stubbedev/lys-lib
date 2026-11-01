@@ -41,6 +41,15 @@ geometry forward through it, which is exact for scales and
 translations (the viewBox fit) but not for a radial gradient under a
 rotation or skew (stubbedev/lys-ui#190).
 
+### Products round the same on every architecture
+
+`svg_path.go`, `public.go`, `utils.go`, `draw.go`: the Go spec lets the compiler fuse
+`x*y + z` into one FMA instruction, which skips the rounding of the product, and it
+does so on arm64 and not on amd64. Each such product is now converted first, as in
+`third_party/rasterx`, which also has the numbers. amd64's results are unchanged.
+Pinned by the family's goldens and by `just no-fused`. Imports `third_party/rasterx`
+in place of github.com/srwiley/rasterx.
+
 ## Upstream status
 
 Each patch is offered upstream; once one is merged, the copy is

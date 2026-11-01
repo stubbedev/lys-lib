@@ -91,11 +91,11 @@ func QuadTo(ax, ay, bx, by, cx, cy float32, LineTo func(dx, dy float32)) {
 
 			mt := 1 - t
 			t1 := mt * mt
-			t2 := mt * t * 2
+			t2 := float32(mt*t) * 2
 			t3 := t * t
 			LineTo(
-				ax*t1+bx*t2+cx*t3,
-				ay*t1+by*t2+cy*t3)
+				float32(ax*t1)+float32(bx*t2)+float32(cx*t3),
+				float32(ay*t1)+float32(by*t2)+float32(cy*t3))
 		}
 	}
 	LineTo(cx, cy)
@@ -124,8 +124,8 @@ func CubeTo(ax, ay, bx, by, cx, cy, dx, dy float32, LineTo func(ex, ey float32))
 			t3 := mt * tsq * 3
 			t4 := tsq * t
 			LineTo(
-				ax*t1+bx*t2+cx*t3+dx*t4,
-				ay*t1+by*t2+cy*t3+dy*t4)
+				float32(ax*t1)+float32(bx*t2)+float32(cx*t3)+float32(dx*t4),
+				float32(ay*t1)+float32(by*t2)+float32(cy*t3)+float32(dy*t4))
 		}
 	}
 	LineTo(dx, dy)
@@ -147,9 +147,9 @@ func CubeTo(ax, ay, bx, by, cx, cy, dx, dy float32, LineTo func(ex, ey float32))
 // where I get n, a recursive approach would get 2^⌈lg n⌉, which, if I haven't
 // made any horrible mistakes, is expected to be 33% more in the limit.
 func devSquared(ax, ay, bx, by, cx, cy float32) float32 {
-	devx := ax - 2*bx + cx
-	devy := ay - 2*by + cy
-	return devx*devx + devy*devy
+	devx := ax - float32(2*bx) + cx
+	devy := ay - float32(2*by) + cy
+	return float32(devx*devx) + float32(devy*devy)
 }
 
 // QuadBezierF adds a quadratic segment to the sgm Rasterizer.

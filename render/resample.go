@@ -176,9 +176,9 @@ func catmullRom(t float64) float64 {
 	t = math.Abs(t)
 	switch {
 	case t < 1:
-		return 1.5*t*t*t - 2.5*t*t + 1
+		return float64(1.5*t*t*t) - float64(2.5*t*t) + 1
 	case t < 2:
-		return -0.5*t*t*t + 2.5*t*t - 4*t + 2
+		return float64(-0.5*t*t*t) + float64(2.5*t*t) - float64(4*t) + 2
 	}
 	return 0
 }
@@ -195,7 +195,7 @@ func kernelTaps(src, dst int) []taps {
 	width := int(math.Ceil(2*support)) + 1
 	backing := make([]float32, 0, dst*width)
 	for d := range dst {
-		center := (float64(d)+0.5)*scale - 0.5
+		center := float64((float64(d)+0.5)*scale) - 0.5
 		first := int(math.Floor(center-support)) + 1
 		last := int(math.Floor(center + support))
 		start := len(backing)
@@ -243,20 +243,20 @@ func cubicScale(dst *image.RGBA, rows rowSource) {
 				px := line[t.first*4:]
 				for _, wgt := range t.w {
 					p := px[:4:4]
-					a0 += wgt * float32(p[0])
-					a1 += wgt * float32(p[1])
-					a2 += wgt * float32(p[2])
-					a3 += wgt * float32(p[3])
+					a0 += float32(wgt * float32(p[0]))
+					a1 += float32(wgt * float32(p[1]))
+					a2 += float32(wgt * float32(p[2]))
+					a3 += float32(wgt * float32(p[3]))
 					px = px[4:]
 				}
 			} else {
 				for i, wgt := range t.w {
 					o := min(max(t.first+i, 0), rows.w-1) * 4
 					p := line[o : o+4 : o+4]
-					a0 += wgt * float32(p[0])
-					a1 += wgt * float32(p[1])
-					a2 += wgt * float32(p[2])
-					a3 += wgt * float32(p[3])
+					a0 += float32(wgt * float32(p[0]))
+					a1 += float32(wgt * float32(p[1]))
+					a2 += float32(wgt * float32(p[2]))
+					a3 += float32(wgt * float32(p[3]))
 				}
 			}
 			q := out[dx*4 : dx*4+4 : dx*4+4]
@@ -274,7 +274,7 @@ func cubicScale(dst *image.RGBA, rows rowSource) {
 			line := filtered(clampRow(t.first + i))
 			acc := sums[:len(line)]
 			for x, v := range line {
-				acc[x] += wgt * v
+				acc[x] += float32(wgt * v)
 			}
 		}
 		for x := 0; x+3 < dw*4; x += 4 {

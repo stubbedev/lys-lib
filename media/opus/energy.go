@@ -1,6 +1,10 @@
 package opus
 
-import "math"
+import (
+	"math"
+
+	"github.com/stubbedev/lys-lib/third_party/gomath"
+)
 
 // bandEnergies sets each band's amplitude (the root of its energy),
 // its log2 relative to the band mean, and the unit-norm shape.
@@ -9,11 +13,11 @@ func bandEnergies(freq, norm []float32, amp, logE *[nbBands]float32) {
 		band := freq[bandStart(i):bandStart(i+1)]
 		sum := float32(1e-27)
 		for _, v := range band {
-			sum += v * v
+			sum += float32(v * v)
 		}
 		a := float32(math.Sqrt(float64(sum)))
 		amp[i] = a
-		logE[i] = float32(math.Log2(float64(a))) - eMeans[i]
+		logE[i] = float32(gomath.Log2(float64(a))) - eMeans[i]
 		g := 1 / (1e-27 + a)
 		for j, v := range band {
 			norm[bandStart(i)+j] = v * g
@@ -87,7 +91,7 @@ func coarseEnergy(rc *rangeEncoder, channels int, logE, old, errs *[2][nbBands]f
 		for c := range prev[:channels] {
 			x := logE[c][i]
 			oldE := max(-9, old[c][i])
-			f := x - coef*oldE - prev[c]
+			f := x - float32(coef*oldE) - prev[c]
 			qi := int(math.Floor(float64(0.5 + f)))
 			decayBound := max(-28, old[c][i]) - maxDecay
 			if qi < 0 && x < decayBound {
@@ -125,8 +129,8 @@ func coarseEnergy(rc *rangeEncoder, channels int, logE, old, errs *[2][nbBands]f
 			errs[c][i] = f - float32(qi)
 			badness += abs(qi0 - qi)
 			q := float32(qi)
-			old[c][i] = coef*oldE + prev[c] + q
-			prev[c] += q - beta*q
+			old[c][i] = float32(coef*oldE) + prev[c] + q
+			prev[c] += q - float32(beta*q)
 		}
 	}
 	return badness
@@ -143,7 +147,7 @@ func fineEnergy(rc *rangeEncoder, channels int, old, errs *[2][nbBands]float32, 
 			q2 := int(math.Floor(float64((errs[c][i] + 0.5) * float32(frac))))
 			q2 = max(0, min(q2, frac-1))
 			rc.bits(sym(q2), uint(fine[i]))
-			offset := (float32(q2)+0.5)*float32(int(1)<<(14-fine[i]))/16384 - 0.5
+			offset := float32((float32(q2)+0.5)*float32(int(1)<<(14-fine[i]))/16384) - 0.5
 			old[c][i] += offset
 			errs[c][i] -= offset
 		}
@@ -164,7 +168,7 @@ func finaliseEnergy(rc *rangeEncoder, channels int, old, errs *[2][nbBands]float
 					q2 = 1
 				}
 				rc.bits(uint32(q2), 1)
-				old[c][i] += (float32(q2) - 0.5) * float32(int(1)<<(14-fine[i]-1)) / 16384
+				old[c][i] += float32((float32(q2) - 0.5) * float32(int(1)<<(14-fine[i]-1)) / 16384)
 				bitsLeft--
 			}
 		}

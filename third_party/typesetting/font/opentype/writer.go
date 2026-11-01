@@ -2,6 +2,7 @@ package opentype
 
 import (
 	"encoding/binary"
+	"github.com/stubbedev/lys-lib/third_party/gomath"
 	"math"
 )
 
@@ -48,9 +49,9 @@ func WriteTTF(tables []Table) []byte {
 
 // out is assumed to have a length >= ttfHeaderSize
 func writeTTFHeader(nTables int, out []byte) {
-	log2 := math.Floor(math.Log2(float64(nTables)))
+	log2 := math.Floor(gomath.Log2(float64(nTables)))
 	// Maximum power of 2 less than or equal to numTables, times 16 ((2**floor(log2(numTables))) * 16, where “**” is an exponentiation operator).
-	searchRange := math.Pow(2, log2) * 16
+	searchRange := gomath.Pow(2, log2) * 16
 	// Log2 of the maximum power of 2 less than or equal to numTables (log2(searchRange/16), which is equal to floor(log2(numTables))).
 	entrySelector := log2
 	// numTables times 16, minus searchRange ((numTables * 16) - searchRange).

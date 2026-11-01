@@ -28,19 +28,19 @@ func RoundedRectPath(p *Path, r Rect, radii Corners) {
 	x1, y1 := float64(r.X+r.W), float64(r.Y+r.H)
 	p.MoveTo(x0+tl, y0)
 	p.LineTo(x1-tr, y0)
-	if k := kappa * tr; k > 0 {
+	if k := float64(kappa * tr); k > 0 {
 		p.CubeTo(x1-tr+k, y0, x1, y0+tr-k, x1, y0+tr)
 	}
 	p.LineTo(x1, y1-br)
-	if k := kappa * br; k > 0 {
+	if k := float64(kappa * br); k > 0 {
 		p.CubeTo(x1, y1-br+k, x1-br+k, y1, x1-br, y1)
 	}
 	p.LineTo(x0+bl, y1)
-	if k := kappa * bl; k > 0 {
+	if k := float64(kappa * bl); k > 0 {
 		p.CubeTo(x0+bl-k, y1, x0, y1-bl+k, x0, y1-bl)
 	}
 	p.LineTo(x0, y0+tl)
-	if k := kappa * tl; k > 0 {
+	if k := float64(kappa * tl); k > 0 {
 		p.CubeTo(x0, y0+tl-k, x0+tl-k, y0, x0+tl, y0)
 	}
 	p.Close()
@@ -57,7 +57,7 @@ func EllipsePath(p *Path, cx, cy, rx, ry float64) {
 	if rx <= 0 || ry <= 0 {
 		return
 	}
-	kx, ky := kappa*rx, kappa*ry
+	kx, ky := float64(kappa*rx), float64(kappa*ry)
 	p.MoveTo(cx+rx, cy)
 	p.CubeTo(cx+rx, cy+ky, cx+kx, cy+ry, cx, cy+ry)
 	p.CubeTo(cx-kx, cy+ry, cx-rx, cy+ky, cx-rx, cy)

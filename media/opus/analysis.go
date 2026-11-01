@@ -1,6 +1,10 @@
 package opus
 
-import "math"
+import (
+	"math"
+
+	"github.com/stubbedev/lys-lib/third_party/gomath"
+)
 
 // lsbDepth is the input's resolution in bits: int16 PCM.
 const lsbDepth = 16
@@ -32,7 +36,7 @@ func dynallocAnalysis(channels int, logE, logE2 *[2][nbBands]float32, tn tone, t
 	var d dynamics
 	var noiseFloor [nbBands]float32
 	for i := range nbBands {
-		noiseFloor[i] = 0.0625*float32(logN[i]) + 0.5 + float32(9-lsbDepth) - eMeans[i] + 0.0062*float32((i+5)*(i+5))
+		noiseFloor[i] = float32(0.0625*float32(logN[i])) + 0.5 + float32(9-lsbDepth) - eMeans[i] + float32(0.0062*float32((i+5)*(i+5)))
 	}
 	d.maxDepth = -31.9
 	for c := range channels {
@@ -105,7 +109,7 @@ func dynallocAnalysis(channels int, logE, logE2 *[2][nbBands]float32, tn tone, t
 		}
 	}
 	for i := range nbBands {
-		d.importance[i] = int(math.Floor(float64(0.5 + 13*exp2(min(boost[i], 4)))))
+		d.importance[i] = int(math.Floor(float64(0.5 + float32(13*exp2(min(boost[i], 4))))))
 	}
 	limited := !vbr || (constrained && !transient)
 	for i := range nbBands {
@@ -276,7 +280,7 @@ func (e *Encoder) allocTrim(equivRate int, tfEstimate float32) int {
 	if equivRate < 64000 {
 		trim = 4
 	} else if equivRate < 80000 {
-		trim = 4 + float32((equivRate-64000)>>10)/16
+		trim = 4 + float32(float32((equivRate-64000)>>10)/16)
 	}
 	if e.channels == 2 {
 		corr := func(i int) float32 {
@@ -292,20 +296,20 @@ func (e *Encoder) allocTrim(equivRate int, tfEstimate float32) int {
 			minXC = min(minXC, abs32(corr(i)))
 		}
 		minXC = min(1, minXC)
-		logXC := log2(1.001 - sum*sum)
-		logXC2 := max(0.5*logXC, log2(1.001-minXC*minXC))
+		logXC := log2(1.001 - float32(sum*sum))
+		logXC2 := max(0.5*logXC, log2(1.001-float32(minXC*minXC)))
 		trim += max(-4, 0.75*logXC)
 		e.stereoSaving = min(e.stereoSaving+0.25, -0.5*logXC2)
 	}
 	var diff float32
 	for ch := range e.channels {
 		for i := range nbBands - 1 {
-			diff += e.logE[ch][i] * float32(2+2*i-nbBands)
+			diff += float32(e.logE[ch][i] * float32(2+2*i-nbBands))
 		}
 	}
 	diff /= float32(e.channels * (nbBands - 1))
 	trim -= max(-2, min(2, (diff+1)/6))
-	trim -= 2 * tfEstimate
+	trim -= float32(2 * tfEstimate)
 	return max(0, min(10, int(math.Floor(float64(0.5+trim)))))
 }
 
@@ -353,6 +357,6 @@ func abs32(v float32) float32 {
 	return v
 }
 
-func log2(v float32) float32 { return float32(math.Log2(float64(v))) }
+func log2(v float32) float32 { return float32(gomath.Log2(float64(v))) }
 
-func exp2(v float32) float32 { return float32(math.Exp2(float64(v))) }
+func exp2(v float32) float32 { return float32(gomath.Exp2(float64(v))) }

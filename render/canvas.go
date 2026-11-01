@@ -486,7 +486,7 @@ func (c *Canvas) RoundedRect(r Rect, radius int, col Color) {
 	}
 	x0, x1 := float32(full.X), float32(full.X+full.W)
 	y0, y1 := float32(full.Y), float32(full.Y+full.H)
-	cx, cy := (x0+x1)*0.5, (y0+y1)*0.5
+	cx, cy := float32((x0+x1)*0.5), float32((y0+y1)*0.5)
 	hw, hh := float32((x1-x0)*0.5)-rad, float32((y1-y0)*0.5)-rad
 	qx := func(x int) float32 { return abs(float32(x)+0.5-cx) - hw }
 	end := box.X + box.W
@@ -529,7 +529,7 @@ func RoundedRadius(full Rect, radius, num, denom int) float32 {
 // Negative inside, positive outside, in pixels.
 func sdRoundRect(px, py float32, r Rect, radius float32) float32 {
 	x0, y0, x1, y1 := float32(r.X), float32(r.Y), float32(r.X+r.W), float32(r.Y+r.H)
-	cx, cy := (x0+x1)*0.5, (y0+y1)*0.5
+	cx, cy := float32((x0+x1)*0.5), float32((y0+y1)*0.5)
 	hw, hh := float32((x1-x0)*0.5)-radius, float32((y1-y0)*0.5)-radius // each conversion rounds its product, so it cannot fuse into an FMA
 	qx, qy := abs(px-cx)-hw, abs(py-cy)-hh
 	return lengthF(max(qx, 0), max(qy, 0)) + min(max(qx, qy), 0) - radius
@@ -585,7 +585,7 @@ func (c *Canvas) Line(x0, y0, x1, y1, width int, col Color) {
 			// Coverage scales all four premultiplied channels, alpha
 			// included, exactly as in RoundedRect and the text
 			// rasterizer.
-			c.blend(x, y, coverageScale(col, uint32(math.Floor(float64(cov*255+0.5)))))
+			c.blend(x, y, coverageScale(col, uint32(math.Floor(float64(float32(cov*255)+0.5)))))
 		}
 	}
 }
@@ -756,8 +756,8 @@ func CoverOf(b image.Rectangle, r Rect, radii Corners, num, denom int) CoverGeom
 	return CoverGeometry{
 		Full: full, W: b.Dx(), H: b.Dy(),
 		Rad:      float32(math.Min(float64(radii.TopLeft)*float64(num)/float64(denom), math.Min(float64(full.W), float64(full.H))/2)),
-		OffX:     float32((sw*scale - float64(full.W)) / 2),
-		OffY:     float32((sh*scale - float64(full.H)) / 2),
+		OffX:     float32((float64(sw*scale) - float64(full.W)) / 2),
+		OffY:     float32((float64(sh*scale) - float64(full.H)) / 2),
 		InvScale: Reciprocal(float32(scale)),
 	}
 }

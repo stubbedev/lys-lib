@@ -2,7 +2,6 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 
-
 // Package vector provides a rasterizer for 2-D vector graphics.
 package vector
 
@@ -45,7 +44,7 @@ import (
 const floatingPointMathThreshold = 512
 
 func lerp(t, px, py, qx, qy float32) (x, y float32) {
-	return px + t*(qx-px), py + t*(qy-py)
+	return px + float32(t*(qx-px)), py + float32(t*(qy-py))
 }
 
 func clamp(i, width int32) uint {
@@ -251,9 +250,9 @@ func (z *Rasterizer) CubeTo(bx, by, cx, cy, dx, dy float32) {
 // where I get n, a recursive approach would get 2^⌈lg n⌉, which, if I haven't
 // made any horrible mistakes, is expected to be 33% more in the limit.
 func devSquared(ax, ay, bx, by, cx, cy float32) float32 {
-	devx := ax - 2*bx + cx
-	devy := ay - 2*by + cy
-	return devx*devx + devy*devy
+	devx := ax - float32(2*bx) + cx
+	devy := ay - float32(2*by) + cy
+	return float32(devx*devx) + float32(devy*devy)
 }
 
 // Draw implements the Drawer interface from the standard library's image/draw

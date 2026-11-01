@@ -331,7 +331,7 @@ func (f *Font) fontHExtentsWithFallback() font.FontExtents {
 	extents.Descender = float32(f.emScalefY(extents.Descender))
 	extents.LineGap = float32(f.emScalefY(extents.LineGap))
 	if !ok {
-		extents.Ascender = float32(f.YScale) * 0.8
+		extents.Ascender = float32(float32(f.YScale) * 0.8)
 		extents.Descender = extents.Ascender - float32(f.YScale)
 		extents.LineGap = 0
 	}
@@ -356,12 +356,12 @@ func (f *Font) ExtentsForDirection(direction Direction) font.FontExtents {
 		extents.Descender = float32(f.emScalefX(extents.Descender))
 		extents.LineGap = float32(f.emScalefX(extents.LineGap))
 		if !ok {
-			extents.Ascender = float32(f.XScale) * 0.5
+			extents.Ascender = float32(float32(f.XScale) * 0.5)
 			extents.Descender = extents.Ascender - float32(f.XScale)
 			extents.LineGap = 0
 		}
 
-		xStrength := float32(f.XScale) * f.xEmbolden
+		xStrength := float32(float32(f.XScale) * f.xEmbolden)
 		extents.Ascender += xStrength
 	}
 	return extents

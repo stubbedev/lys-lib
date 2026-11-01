@@ -43,23 +43,23 @@ func analyseTransient(x [][]float32, tn tone, tmp []float32) transient {
 		var mem0, mem1 float32
 		for i, v := range in {
 			y := mem0 + v
-			mem0 = mem1 + y - 2*v
-			mem1 = v - 0.5*y
+			mem0 = mem1 + y - float32(2*v)
+			mem1 = v - float32(0.5*y)
 			tmp[i] = y
 		}
 		clear(tmp[:12])
 		var mean float32
 		mem0 = 0
 		for i := range n2 {
-			x2 := tmp[2*i]*tmp[2*i] + tmp[2*i+1]*tmp[2*i+1]
+			x2 := float32(tmp[2*i]*tmp[2*i]) + float32(tmp[2*i+1]*tmp[2*i+1])
 			mean += x2
-			mem0 = x2 + (1-forwardDecay)*mem0
+			mem0 = x2 + float32((1-forwardDecay)*mem0)
 			tmp[i] = forwardDecay * mem0
 		}
 		mem0 = 0
 		var maxE float32
 		for i := n2 - 1; i >= 0; i-- {
-			mem0 = tmp[i] + 0.875*mem0
+			mem0 = tmp[i] + float32(0.875*mem0)
 			tmp[i] = 0.125 * mem0
 			maxE = max(maxE, tmp[i])
 		}
@@ -82,7 +82,7 @@ func analyseTransient(x [][]float32, tn tone, tmp []float32) transient {
 		maskMetric = 0
 	}
 	tfMax := max(0, sqrt32(float32(27*maskMetric))-42)
-	t.estimate = sqrt32(max(0, 0.0069*min(163, tfMax)-0.139))
+	t.estimate = sqrt32(max(0, float32(0.0069*min(163, tfMax))-0.139))
 	return t
 }
 

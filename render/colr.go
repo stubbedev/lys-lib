@@ -5,6 +5,7 @@ import (
 	"math"
 	"slices"
 
+	"github.com/stubbedev/lys-lib/third_party/gomath"
 	"github.com/stubbedev/lys-lib/third_party/typesetting/font"
 	"github.com/stubbedev/lys-lib/third_party/typesetting/font/opentype/tables"
 )
@@ -61,10 +62,10 @@ func renderCOLR(t *Typeface, gid font.GID, scale, fx, fy float64, fg Color) (*im
 	img := image.NewRGBA(image.Rect(0, 0, box.W, box.H))
 	for i := 0; out != nil && i < box.W*box.H; i++ {
 		a := clamp01(out[i*4+3])
-		img.Pix[i*4+0] = uint8(clamp01(out[i*4+0])*255 + 0.5)
-		img.Pix[i*4+1] = uint8(clamp01(out[i*4+1])*255 + 0.5)
-		img.Pix[i*4+2] = uint8(clamp01(out[i*4+2])*255 + 0.5)
-		img.Pix[i*4+3] = uint8(a*255 + 0.5)
+		img.Pix[i*4+0] = uint8(float32(clamp01(out[i*4+0])*255) + 0.5)
+		img.Pix[i*4+1] = uint8(float32(clamp01(out[i*4+1])*255) + 0.5)
+		img.Pix[i*4+2] = uint8(float32(clamp01(out[i*4+2])*255) + 0.5)
+		img.Pix[i*4+3] = uint8(float32(a*255) + 0.5)
 	}
 	return img, box.X, box.Y, true
 }
@@ -106,10 +107,10 @@ func colrBounds(t *Typeface, gid font.GID, root tables.PaintTable, base Affine) 
 	}
 	// Transforms inside the graph can move ink past these bounds; a
 	// generous margin covers the common rotations and offsets.
-	pad := (fr[2] - fr[0] + fr[3] - fr[1]) * 0.1
+	pad := float64((fr[2] - fr[0] + fr[3] - fr[1]) * 0.1)
 	r := base.MapBounds(Rect{
 		X: int(math.Floor(fr[0] - pad)), Y: int(math.Floor(fr[1] - pad)),
-		W: int(math.Ceil(fr[2]-fr[0]+2*pad)) + 1, H: int(math.Ceil(fr[3]-fr[1]+2*pad)) + 1,
+		W: int(math.Ceil(fr[2]-fr[0]+float64(2*pad))) + 1, H: int(math.Ceil(fr[3]-fr[1]+float64(2*pad))) + 1,
 	})
 	r = Rect{X: r.X - 1, Y: r.Y - 1, W: r.W + 2, H: r.H + 2}
 	if r.W <= 0 || r.H <= 0 || r.W > 4096 || r.H > 4096 {
@@ -220,11 +221,11 @@ func (p *colrPainter) delta(base, k uint32) float64 {
 }
 
 // f214 converts a 2.14 fixed value.
-func f214(v tables.Fixed214) float64 { return float64(v) / 16384 }
+func f214(v tables.Fixed214) float64 { return float64(float64(v) / 16384) }
 
 // varF214 is a 2.14 field plus its delta (deltas are 2.14 units too).
 func (p *colrPainter) varF214(v tables.Fixed214, base, k uint32) float64 {
-	return f214(v) + p.delta(base, k)/16384
+	return f214(v) + float64(p.delta(base, k)/16384)
 }
 
 // varFU is a font-unit field plus its delta.
@@ -235,14 +236,14 @@ func (p *colrPainter) varFU(v int16, base, k uint32) float64 {
 // angle converts a COLR angle (180° per 1.0, counter-clockwise in font
 // space) to a font-space rotation.
 func colrRotate(turns float64) Affine {
-	s, c := math.Sincos(turns * math.Pi)
+	s, c := gomath.Sincos(turns * math.Pi)
 	return Affine{A: c, B: s, C: -s, D: c}
 }
 
 // colrSkew is the skew by x and y angles (180° per 1.0); positive x
 // skew leans counter-clockwise, as the spec's matrix has it.
 func colrSkew(xTurns, yTurns float64) Affine {
-	return Affine{A: 1, B: math.Tan(yTurns * math.Pi), C: -math.Tan(xTurns * math.Pi), D: 1}
+	return Affine{A: 1, B: gomath.Tan(yTurns * math.Pi), C: -gomath.Tan(xTurns * math.Pi), D: 1}
 }
 
 // paint renders node under m (font units to buffer pixels) within
@@ -324,7 +325,7 @@ func (p *colrPainter) transform(node tables.PaintTable) (Affine, bool) {
 		return Affine{A: float64(a.Xx), B: float64(a.Yx), C: float64(a.Xy), D: float64(a.Yy), E: float64(a.Dx), F: float64(a.Dy)}, true
 	case tables.PaintVarTransform:
 		a, b := n.Transform, n.Transform.VarIndexBase
-		d := func(v float32, k uint32) float64 { return float64(v) + p.delta(b, k)/65536 }
+		d := func(v float32, k uint32) float64 { return float64(v) + float64(p.delta(b, k)/65536) }
 		return Affine{A: d(a.Xx, 0), B: d(a.Yx, 1), C: d(a.Xy, 2), D: d(a.Yy, 3), E: d(a.Dx, 4), F: d(a.Dy, 5)}, true
 	case tables.PaintTranslate:
 		return Translate(float64(n.Dx), float64(n.Dy)), true
@@ -512,7 +513,7 @@ func (p *colrPainter) colorAt(ss []stop, ext tables.Extend, t float64) rgba {
 				f = (t - a.at) / (b.at - a.at)
 			}
 			ca, cb := p.color(a.idx, a.alpha), p.color(b.idx, b.alpha)
-			return rgba{ca[0] + (cb[0]-ca[0])*f, ca[1] + (cb[1]-ca[1])*f, ca[2] + (cb[2]-ca[2])*f, ca[3] + (cb[3]-ca[3])*f}
+			return rgba{ca[0] + float64((cb[0]-ca[0])*f), ca[1] + float64((cb[1]-ca[1])*f), ca[2] + float64((cb[2]-ca[2])*f), ca[3] + float64((cb[3]-ca[3])*f)}
 		}
 	}
 	return rgba{}
@@ -532,17 +533,17 @@ func (p *colrPainter) linear(ss []stop, ext tables.Extend, pts [6]float64, m Aff
 	// Project p1 onto the normal of p0p2: p3 is the effective end.
 	nx, ny := y2-y0, -(x2 - x0)
 	x3, y3 := x1, y1
-	if n2 := nx*nx + ny*ny; n2 > 0 {
-		d := ((x1-x0)*nx + (y1-y0)*ny) / n2
-		x3, y3 = x0+nx*d, y0+ny*d
+	if n2 := float64(nx*nx) + float64(ny*ny); n2 > 0 {
+		d := (float64((x1-x0)*nx) + float64((y1-y0)*ny)) / n2
+		x3, y3 = x0+float64(nx*d), y0+float64(ny*d)
 	}
 	dx, dy := x3-x0, y3-y0
-	l2 := dx*dx + dy*dy
+	l2 := float64(dx*dx) + float64(dy*dy)
 	return p.fill(clip, func(x, y float64) rgba {
 		fx, fy := fontPoint(inv, x, y)
 		t := 0.0
 		if l2 > 0 {
-			t = ((fx-x0)*dx + (fy-y0)*dy) / l2
+			t = (float64((fx-x0)*dx) + float64((fy-y0)*dy)) / l2
 		}
 		return p.colorAt(ss, ext, t)
 	})
@@ -557,12 +558,12 @@ func (p *colrPainter) radial(ss []stop, ext tables.Extend, v [6]float64, m Affin
 	}
 	cx0, cy0, r0, cx1, cy1, r1 := v[0], v[1], v[2], v[3], v[4], v[5]
 	cdx, cdy, dr := cx1-cx0, cy1-cy0, r1-r0
-	a := cdx*cdx + cdy*cdy - dr*dr
+	a := float64(cdx*cdx) + float64(cdy*cdy) - float64(dr*dr)
 	return p.fill(clip, func(x, y float64) rgba {
 		fx, fy := fontPoint(inv, x, y)
 		pdx, pdy := fx-cx0, fy-cy0
-		b := pdx*cdx + pdy*cdy + r0*dr
-		c := pdx*pdx + pdy*pdy - r0*r0
+		b := float64(pdx*cdx) + float64(pdy*cdy) + float64(r0*dr)
+		c := float64(pdx*pdx) + float64(pdy*pdy) - float64(r0*r0)
 		var t float64
 		if math.Abs(a) < 1e-9 {
 			if b == 0 {
@@ -570,17 +571,17 @@ func (p *colrPainter) radial(ss []stop, ext tables.Extend, v [6]float64, m Affin
 			}
 			t = c / (2 * b)
 		} else {
-			disc := b*b - a*c
+			disc := float64(b*b) - float64(a*c)
 			if disc < 0 {
 				return rgba{}
 			}
 			sq := math.Sqrt(disc)
 			t = (b + sq) / a
-			if r0+t*dr < 0 {
+			if r0+float64(t*dr) < 0 {
 				t = (b - sq) / a
 			}
 		}
-		if r0+t*dr < 0 {
+		if r0+float64(t*dr) < 0 {
 			return rgba{}
 		}
 		return p.colorAt(ss, ext, t)
@@ -596,7 +597,7 @@ func (p *colrPainter) sweep(ss []stop, ext tables.Extend, cx, cy, start, end flo
 	}
 	return p.fill(clip, func(x, y float64) rgba {
 		fx, fy := fontPoint(inv, x, y)
-		ang := math.Atan2(fy-cy, fx-cx) * 180 / math.Pi
+		ang := gomath.Atan2(fy-cy, fx-cx) * 180 / math.Pi
 		if ang < 0 {
 			ang += 360
 		}
@@ -639,7 +640,7 @@ func (p *colrPainter) composite(mode tables.CompositeMode, src, dst layer) layer
 func compositePixel(mode tables.CompositeMode, s, d [4]float32) [4]float32 {
 	sa, da := s[3], d[3]
 	pd := func(fs, fd float32) [4]float32 { // Porter-Duff with factors
-		return [4]float32{s[0]*fs + d[0]*fd, s[1]*fs + d[1]*fd, s[2]*fs + d[2]*fd, sa*fs + da*fd}
+		return [4]float32{float32(s[0]*fs) + float32(d[0]*fd), float32(s[1]*fs) + float32(d[1]*fd), float32(s[2]*fs) + float32(d[2]*fd), float32(sa*fs) + float32(da*fd)}
 	}
 	switch mode {
 	case tables.CompositeClear:
@@ -682,9 +683,9 @@ func compositePixel(mode tables.CompositeMode, s, d [4]float32) [4]float32 {
 			if da > 0 {
 				cb = d[k] / da
 			}
-			out[k] = s[k]*(1-da) + d[k]*(1-sa) + sa*da*blend(cb, cs)
+			out[k] = float32(s[k]*(1-da)) + float32(d[k]*(1-sa)) + float32(sa*da*blend(cb, cs))
 		}
-		out[3] = sa + da - sa*da
+		out[3] = sa + da - float32(sa*da)
 		return out
 	}
 	return pd(1, 1-sa) // source over (and the non-separable modes)
@@ -695,7 +696,7 @@ func compositePixel(mode tables.CompositeMode, s, d [4]float32) [4]float32 {
 func separableBlend(mode tables.CompositeMode) func(cb, cs float32) float32 {
 	switch mode {
 	case tables.CompositeScreen:
-		return func(cb, cs float32) float32 { return cb + cs - cb*cs }
+		return func(cb, cs float32) float32 { return cb + cs - float32(cb*cs) }
 	case tables.CompositeOverlay:
 		return func(cb, cs float32) float32 { return hardLight(cs, cb) }
 	case tables.CompositeDarken:
@@ -727,20 +728,20 @@ func separableBlend(mode tables.CompositeMode) func(cb, cs float32) float32 {
 	case tables.CompositeSoftLight:
 		return func(cb, cs float32) float32 {
 			if cs <= 0.5 {
-				return cb - (1-2*cs)*cb*(1-cb)
+				return cb - float32((1-float32(2*cs))*cb*(1-cb))
 			}
 			var dd float32
 			if cb <= 0.25 {
-				dd = ((16*cb-12)*cb + 4) * cb
+				dd = (float32((float32(16*cb)-12)*cb) + 4) * cb
 			} else {
 				dd = float32(math.Sqrt(float64(cb)))
 			}
-			return cb + (2*cs-1)*(dd-cb)
+			return cb + float32((float32(2*cs)-1)*(dd-cb))
 		}
 	case tables.CompositeDifference:
 		return func(cb, cs float32) float32 { return float32(math.Abs(float64(cb - cs))) }
 	case tables.CompositeExclusion:
-		return func(cb, cs float32) float32 { return cb + cs - 2*cb*cs }
+		return func(cb, cs float32) float32 { return cb + cs - float32(2*cb*cs) }
 	case tables.CompositeMultiply:
 		return func(cb, cs float32) float32 { return cb * cs }
 	}
@@ -752,8 +753,8 @@ func hardLight(cb, cs float32) float32 {
 	if cs <= 0.5 {
 		return cb * 2 * cs
 	}
-	s := 2*cs - 1
-	return cb + s - cb*s
+	s := float32(2*cs) - 1
+	return cb + s - float32(cb*s)
 }
 
 func clamp01(v float32) float32 { return min(max(v, 0), 1) }

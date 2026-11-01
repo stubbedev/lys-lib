@@ -9,6 +9,8 @@ package render
 
 import (
 	"math"
+
+	"github.com/stubbedev/lys-lib/third_party/gomath"
 )
 
 // Corners is a per-corner radius set in logical pixels, clockwise from
@@ -557,8 +559,8 @@ func (c *Canvas) BoxShadow(r Rect, radii Corners, s BoxShadow) {
 // a box whose radii overlap keeps its own size.
 func shadowCore(dev Rect, radii Corners, s BoxShadow, num, denom int) (w, h int) {
 	f := devScale(num, denom)
-	tl, tr := float32(radii.TopLeft)*f, float32(radii.TopRight)*f
-	br, bl := float32(radii.BottomRight)*f, float32(radii.BottomLeft)*f
+	tl, tr := float32(float32(radii.TopLeft)*f), float32(float32(radii.TopRight)*f)
+	br, bl := float32(float32(radii.BottomRight)*f), float32(float32(radii.BottomLeft)*f)
 	if tl+tr > float32(dev.W) || bl+br > float32(dev.W) || tl+bl > float32(dev.H) || tr+br > float32(dev.H) {
 		return dev.W, dev.H
 	}
@@ -623,11 +625,11 @@ func buildBoxShadow(w, h int, radii Corners, s BoxShadow, num, denom int) *Shado
 		max(0, float32(radii.BottomRight)*f),
 		max(0, float32(radii.BottomLeft)*f),
 	})
-	ox, oy := float32(s.X)*f, float32(s.Y)*f
+	ox, oy := float32(float32(s.X)*f), float32(float32(s.Y)*f)
 	spread := float32(s.Spread) * f
 	sigma := float32(s.Blur) * f / 2
 	shape := func(sign float32) (frect, fcorners) {
-		g := spread * sign
+		g := float32(spread * sign)
 		sb := frect{box.x0 + ox - g, box.y0 + oy - g, box.x1 + ox + g, box.y1 + oy + g}
 		var src fcorners
 		for i := range rc {
@@ -651,9 +653,9 @@ func buildBoxShadow(w, h int, radii Corners, s BoxShadow, num, denom int) *Shado
 		if sigma <= 0.5 {
 			return coverage(d)
 		}
-		return float32(0.5 * math.Erfc(float64(d)/(float64(sigma)*math.Sqrt2)))
+		return float32(0.5 * gomath.Erfc(float64(d)/(float64(sigma)*math.Sqrt2)))
 	}
-	reach := 3 * sigma
+	reach := float32(3 * sigma)
 	span := box
 	if !s.Inset {
 		sb, _ := shape(1)

@@ -100,7 +100,7 @@ func (store ItemVarStore) GetDelta(index VariationStoreIndex, coords []Coord) fl
 	for i, regionIndex := range varData.RegionIndexes {
 		region := store.VariationRegionList.VariationRegions[regionIndex]
 		v := region.Evaluate(coords)
-		delta += float32(deltaSet[i]) * v
+		delta += float32(float32(deltaSet[i]) * v)
 	}
 	return delta
 }

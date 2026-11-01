@@ -2,10 +2,10 @@ package gpu
 
 import (
 	"fmt"
-	"math"
 	"runtime"
 	"unsafe"
 
+	"github.com/stubbedev/lys-lib/third_party/gomath"
 	"github.com/stubbedev/lys-lib/third_party/vk"
 )
 
@@ -44,8 +44,8 @@ func (k yuv444Key) constants() (yuv444Constants, error) {
 	default:
 		return c, fmt.Errorf("gpu: YCbCr matrix %d is none of BT.601, BT.709, BT.2020", k.matrix)
 	}
-	top := math.Exp2(float64(k.bits)) - 1
-	unit := math.Exp2(float64(k.bits - 8))
+	top := gomath.Exp2(float64(k.bits)) - 1
+	unit := gomath.Exp2(float64(k.bits - 8))
 	switch k.rng {
 	case LimitedRange:
 		c.lumaScale, c.lumaBase = float32(top/(219*unit)), 16.0/219

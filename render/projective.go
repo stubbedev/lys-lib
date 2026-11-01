@@ -1,6 +1,10 @@
 package render
 
-import "math"
+import (
+	"math"
+
+	"github.com/stubbedev/lys-lib/third_party/gomath"
+)
 
 // The projective (3-D-lite) transform pipeline: CSS's 3-D transform
 // functions — perspective(), rotateX/rotateY, translateZ — restricted
@@ -29,7 +33,7 @@ func (m M3) Mul(n M3) M3 {
 		for c := range 3 {
 			v := 0.0
 			for k := range 3 {
-				v += m[r*3+k] * n[k*3+c]
+				v += float64(m[r*3+k] * n[k*3+c])
 			}
 			out[r*3+c] = v
 		}
@@ -39,30 +43,30 @@ func (m M3) Mul(n M3) M3 {
 
 // Apply maps the point (x, y) with the perspective divide.
 func (m M3) Apply(x, y float64) (float64, float64) {
-	w := m[6]*x + m[7]*y + m[8]
+	w := float64(m[6]*x) + float64(m[7]*y) + m[8]
 	if w == 0 || math.IsNaN(w) || math.IsInf(w, 0) {
 		return 0, 0
 	}
-	return (m[0]*x + m[1]*y + m[2]) / w, (m[3]*x + m[4]*y + m[5]) / w
+	return (float64(m[0]*x) + float64(m[1]*y) + m[2]) / w, (float64(m[3]*x) + float64(m[4]*y) + m[5]) / w
 }
 
 // Invert returns the inverse map; false when m collapses the plane.
 func (m M3) Invert() (M3, bool) {
-	det := m[0]*(m[4]*m[8]-m[5]*m[7]) - m[1]*(m[3]*m[8]-m[5]*m[6]) + m[2]*(m[3]*m[7]-m[4]*m[6])
+	det := float64(m[0]*(float64(m[4]*m[8])-float64(m[5]*m[7]))) - float64(m[1]*(float64(m[3]*m[8])-float64(m[5]*m[6]))) + float64(m[2]*(float64(m[3]*m[7])-float64(m[4]*m[6])))
 	if det == 0 || math.IsNaN(det) || math.IsInf(det, 0) {
 		return M3{}, false
 	}
 	inv := 1 / det
 	return M3{
-		(m[4]*m[8] - m[5]*m[7]) * inv,
-		(m[2]*m[7] - m[1]*m[8]) * inv,
-		(m[1]*m[5] - m[2]*m[4]) * inv,
-		(m[5]*m[6] - m[3]*m[8]) * inv,
-		(m[0]*m[8] - m[2]*m[6]) * inv,
-		(m[2]*m[3] - m[0]*m[5]) * inv,
-		(m[3]*m[7] - m[4]*m[6]) * inv,
-		(m[1]*m[6] - m[0]*m[7]) * inv,
-		(m[0]*m[4] - m[1]*m[3]) * inv,
+		(float64(m[4]*m[8]) - float64(m[5]*m[7])) * inv,
+		(float64(m[2]*m[7]) - float64(m[1]*m[8])) * inv,
+		(float64(m[1]*m[5]) - float64(m[2]*m[4])) * inv,
+		(float64(m[5]*m[6]) - float64(m[3]*m[8])) * inv,
+		(float64(m[0]*m[8]) - float64(m[2]*m[6])) * inv,
+		(float64(m[2]*m[3]) - float64(m[0]*m[5])) * inv,
+		(float64(m[3]*m[7]) - float64(m[4]*m[6])) * inv,
+		(float64(m[1]*m[6]) - float64(m[0]*m[7])) * inv,
+		(float64(m[0]*m[4]) - float64(m[1]*m[3])) * inv,
 	}, true
 }
 
@@ -114,7 +118,7 @@ func (m Mat4) Mul(n Mat4) Mat4 {
 		for c := range 4 {
 			v := 0.0
 			for k := range 4 {
-				v += m[r*4+k] * n[k*4+c]
+				v += float64(m[r*4+k] * n[k*4+c])
 			}
 			out[r*4+c] = v
 		}
@@ -155,7 +159,7 @@ func Perspective4(d float64) Mat4 {
 
 // RotateX4 rotates about the x axis by deg degrees.
 func RotateX4(deg float64) Mat4 {
-	s, c := math.Sincos(deg * math.Pi / 180)
+	s, c := gomath.Sincos(deg * math.Pi / 180)
 	m := Identity4
 	m[5], m[6], m[9], m[10] = c, -s, s, c
 	return m
@@ -163,7 +167,7 @@ func RotateX4(deg float64) Mat4 {
 
 // RotateY4 rotates about the y axis by deg degrees.
 func RotateY4(deg float64) Mat4 {
-	s, c := math.Sincos(deg * math.Pi / 180)
+	s, c := gomath.Sincos(deg * math.Pi / 180)
 	m := Identity4
 	m[0], m[2], m[8], m[10] = c, s, -s, c
 	return m

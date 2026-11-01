@@ -299,7 +299,7 @@ func (e *Encoder) encodeFrame(out []byte, pcm []int16) (int, error) {
 	for ch := range c {
 		for i := range nbBands {
 			if abs32(e.logE[ch][i]-e.oldE[ch][i]) < 2 {
-				e.logE[ch][i] -= 0.25 * e.energyError[ch][i]
+				e.logE[ch][i] -= float32(0.25 * e.energyError[ch][i])
 			}
 		}
 	}
@@ -437,7 +437,7 @@ func (e *Encoder) loadInput(pcm []int16) bool {
 		for i := range FrameSize {
 			x := float32(pcm[i*e.channels+ch])
 			y := x - hp
-			hp = highPassCoef*x + highPassFloor + (1-highPassCoef)*hp
+			hp = float32(highPassCoef*x) + highPassFloor + float32((1-highPassCoef)*hp)
 			if i < FrameSize-overlap {
 				peak = max(peak, abs32(y))
 			} else {
@@ -495,7 +495,7 @@ func (e *Encoder) temporalVBR(short bool) float32 {
 	}
 	avg /= nbBands
 	t := max(-1.5, min(3, avg-e.specAvg))
-	e.specAvg += 0.02 * t
+	e.specAvg += float32(0.02 * t)
 	return t
 }
 

@@ -228,7 +228,7 @@ func (met *cff2CharstringHandler) blend(state *ps.Machine) error {
 			deltas := args[n+i*k : n+(i+1)*k] // all the regions, for one operand
 			v := 0.
 			for ik, delta := range deltas {
-				v += float64(met.scalars[ik]) * delta
+				v += float64(float64(met.scalars[ik]) * delta)
 			}
 			args[i] = baseValue + v // update the stack with the blended value
 		}

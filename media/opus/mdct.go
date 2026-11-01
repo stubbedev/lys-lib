@@ -1,6 +1,10 @@
 package opus
 
-import "math"
+import (
+	"math"
+
+	"github.com/stubbedev/lys-lib/third_party/gomath"
+)
 
 // The MDCT runs at two sizes: one long block over the whole frame (1920
 // inputs to 960 coefficients) or, on transients, shortBlocks short ones
@@ -30,8 +34,8 @@ var (
 func newWindow() *[overlap]float32 {
 	var w [overlap]float32
 	for i := range w {
-		s := math.Sin(0.5 * math.Pi * (float64(i) + 0.5) / overlap)
-		w[i] = float32(math.Sin(0.5 * math.Pi * s * s))
+		s := gomath.Sin(0.5 * math.Pi * (float64(i) + 0.5) / overlap)
+		w[i] = float32(gomath.Sin(0.5 * math.Pi * s * s))
 	}
 	return &w
 }
@@ -48,11 +52,11 @@ func newMDCT(n int, factors ...int) *mdct {
 		sine:    float32(2 * math.Pi * 0.125 / float64(n)),
 	}
 	for i := range t.trig {
-		t.trig[i] = float32(math.Cos(2 * math.Pi * float64(i) / float64(n)))
+		t.trig[i] = float32(gomath.Cos(2 * math.Pi * float64(i) / float64(n)))
 	}
 	for i := range t.twiddle {
 		phase := -2 * math.Pi * float64(i) / float64(n4)
-		t.twiddle[i] = complex(float32(math.Cos(phase)), float32(math.Sin(phase)))
+		t.twiddle[i] = complex(float32(gomath.Cos(phase)), float32(gomath.Sin(phase)))
 	}
 	return t
 }
@@ -77,7 +81,7 @@ func (t *mdct) fftStage(dst, src []complex64, stride, depth int) {
 			w := 0
 			var sum complex64
 			for q := range p {
-				sum += dst[q*m+k] * t.twiddle[w]
+				sum += complexMul(dst[q*m+k], t.twiddle[w])
 				if w += step; w >= n4 {
 					w -= n4
 				}
@@ -103,7 +107,7 @@ func (t *mdct) forward(in, out []float32, stride int, f, g []complex64) {
 	wp2 := overlap/2 - 1
 	i := 0
 	for ; i < overlap/4; i++ {
-		f[i] = complex(w[wp2]*in[xp1+n2]+w[wp1]*in[xp2], w[wp1]*in[xp1]-w[wp2]*in[xp2-n2])
+		f[i] = complex(float32(w[wp2]*in[xp1+n2])+float32(w[wp1]*in[xp2]), float32(w[wp1]*in[xp1])-float32(w[wp2]*in[xp2-n2]))
 		xp1 += 2
 		xp2 -= 2
 		wp1 += 2
@@ -117,7 +121,7 @@ func (t *mdct) forward(in, out []float32, stride int, f, g []complex64) {
 		xp2 -= 2
 	}
 	for ; i < n4; i++ {
-		f[i] = complex(-w[wp1]*in[xp1-n2]+w[wp2]*in[xp2], w[wp2]*in[xp1]+w[wp1]*in[xp2+n2])
+		f[i] = complex(float32(-w[wp1]*in[xp1-n2])+float32(w[wp2]*in[xp2]), float32(w[wp2]*in[xp1])+float32(w[wp1]*in[xp2+n2]))
 		xp1 += 2
 		xp2 -= 2
 		wp1 += 2
@@ -125,17 +129,26 @@ func (t *mdct) forward(in, out []float32, stride int, f, g []complex64) {
 	}
 	for i := range n4 {
 		re, im := real(f[i]), imag(f[i])
-		yr := -re*t.trig[i] - im*t.trig[n4-i]
-		yi := -im*t.trig[i] + re*t.trig[n4-i]
-		f[i] = complex(yr+yi*t.sine, yi-yr*t.sine)
+		yr := float32(-re*t.trig[i]) - float32(im*t.trig[n4-i])
+		yi := float32(-im*t.trig[i]) + float32(re*t.trig[n4-i])
+		f[i] = complex(yr+float32(yi*t.sine), yi-float32(yr*t.sine))
 	}
 	t.fftStage(g, f, 1, 0)
 	scale := 1 / float32(n4)
 	for i := range n4 {
 		re, im := real(g[i])*scale, imag(g[i])*scale
-		yr := im*t.trig[n4-i] + re*t.trig[i]
-		yi := re*t.trig[n4-i] - im*t.trig[i]
-		out[2*i*stride] = yr - yi*t.sine
-		out[(n2-1-2*i)*stride] = yi + yr*t.sine
+		yr := float32(im*t.trig[n4-i]) + float32(re*t.trig[i])
+		yi := float32(re*t.trig[n4-i]) - float32(im*t.trig[i])
+		out[2*i*stride] = yr - float32(yi*t.sine)
+		out[(n2-1-2*i)*stride] = yi + float32(yr*t.sine)
 	}
+}
+
+// complexMul is a*b as the compiler lowers it, in float64 and then
+// narrowed, with each product rounded: the operator's own products may
+// fuse on arm64, where they would round differently.
+func complexMul(a, b complex64) complex64 {
+	ar, ai := float64(real(a)), float64(imag(a))
+	br, bi := float64(real(b)), float64(imag(b))
+	return complex(float32(float64(ar*br)-float64(ai*bi)), float32(float64(ar*bi)+float64(ai*br)))
 }

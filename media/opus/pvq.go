@@ -1,6 +1,10 @@
 package opus
 
-import "math"
+import (
+	"math"
+
+	"github.com/stubbedev/lys-lib/third_party/gomath"
+)
 
 // The spreading levels a frame signals (RFC 6716 section 4.3.4.3).
 const (
@@ -31,9 +35,9 @@ func rotate(x []float32, k, spread, blocks int) {
 		return
 	}
 	gain := float32(n) / float32(n+spreadFactor[spread]*k)
-	theta := 0.5 * gain * gain
-	c := float32(math.Cos(0.5 * math.Pi * float64(theta)))
-	s := float32(math.Cos(0.5 * math.Pi * float64(1-theta)))
+	theta := float32(0.5 * gain * gain)
+	c := float32(gomath.Cos(0.5 * math.Pi * float64(theta)))
+	s := float32(gomath.Cos(0.5 * math.Pi * float64(1-theta)))
 	stride2 := 0
 	if n >= 8*blocks {
 		stride2 = 1
@@ -57,13 +61,13 @@ func rotate1(x []float32, stride int, c, s float32) {
 	n := len(x)
 	for i := range n - stride {
 		x1, x2 := x[i], x[i+stride]
-		x[i+stride] = c*x2 + s*x1
-		x[i] = c*x1 - s*x2
+		x[i+stride] = float32(c*x2) + float32(s*x1)
+		x[i] = float32(c*x1) - float32(s*x2)
 	}
 	for i := n - 2*stride - 1; i >= 0; i-- {
 		x1, x2 := x[i], x[i+stride]
-		x[i+stride] = c*x2 + s*x1
-		x[i] = c*x1 - s*x2
+		x[i+stride] = float32(c*x2) + float32(s*x1)
+		x[i] = float32(c*x1) - float32(s*x2)
 	}
 }
 
@@ -98,15 +102,15 @@ func (p *pvq) quant(rc *rangeEncoder, x []float32, k, spread, blocks int) {
 		for j, v := range x {
 			iy[j] = int(math.Floor(float64(rcp * v)))
 			y[j] = float32(iy[j])
-			yy += y[j] * y[j]
-			xy += v * y[j]
+			yy += float32(y[j] * y[j])
+			xy += float32(v * y[j])
 			y[j] *= 2
 			left -= iy[j]
 		}
 	}
 	if left > n+3 {
 		t := float32(left)
-		yy += t*t + t*y[0]
+		yy += float32(t*t) + float32(t*y[0])
 		iy[0] += left
 		left = 0
 	}

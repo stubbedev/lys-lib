@@ -12,6 +12,8 @@ package render
 import (
 	"math"
 	"sync"
+
+	"github.com/stubbedev/lys-lib/third_party/gomath"
 )
 
 // maxShadowBlur caps the kernel extent in device pixels. Theme blurs
@@ -185,11 +187,11 @@ func shadowTail(devBlur int) (tail []float32, half int) {
 	half = devBlur
 	weight := make([]float64, half+1)
 	for i := range weight {
-		weight[i] = math.Exp(-0.5 * float64(i*i) / (sigma * sigma))
+		weight[i] = gomath.Exp(-0.5 * float64(i*i) / (sigma * sigma))
 	}
 	total := weight[0]
 	for i := 1; i <= half; i++ {
-		total += 2 * weight[i]
+		total += float64(2 * weight[i])
 	}
 	sum := make([]float64, half+2)
 	tail = make([]float32, half+2)

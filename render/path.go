@@ -134,7 +134,7 @@ func (p *Path) Contains(x, y float64) bool {
 // cross is the z of (b-a)×(pt-a): positive when (x, y) lies left of
 // the edge a→b.
 func cross(a, b [2]float64, x, y float64) float64 {
-	return (b[0]-a[0])*(y-a[1]) - (x-a[0])*(b[1]-a[1])
+	return float64((b[0]-a[0])*(y-a[1])) - float64((x-a[0])*(b[1]-a[1]))
 }
 
 // cubicAt is the cubic from p0 through the control points c[0], c[1]
@@ -143,8 +143,8 @@ func cubicAt(p0 [2]float64, c [3][2]float64, t float64) [2]float64 {
 	u := 1 - t
 	a, b, d, e := u*u*u, 3*u*u*t, 3*u*t*t, t*t*t
 	return [2]float64{
-		a*p0[0] + b*c[0][0] + d*c[1][0] + e*c[2][0],
-		a*p0[1] + b*c[0][1] + d*c[1][1] + e*c[2][1],
+		float64(a*p0[0]) + float64(b*c[0][0]) + float64(d*c[1][0]) + float64(e*c[2][0]),
+		float64(a*p0[1]) + float64(b*c[0][1]) + float64(d*c[1][1]) + float64(e*c[2][1]),
 	}
 }
 

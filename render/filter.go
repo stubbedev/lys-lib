@@ -7,6 +7,7 @@ import (
 	"math"
 
 	"github.com/stubbedev/lys-lib/intconv"
+	"github.com/stubbedev/lys-lib/third_party/gomath"
 )
 
 // The CSS filter effects: the color-matrix family (brightness,
@@ -194,36 +195,36 @@ func filterMatrix(kind FilterKind, amount float64) colorMatrix {
 	case FilterGrayscale:
 		a := 1 - amount
 		set([3][5]float64{
-			{0.2126 + 0.7874*a, 0.7152 - 0.7152*a, 0.0722 - 0.0722*a, 0, 0},
-			{0.2126 - 0.2126*a, 0.7152 + 0.2848*a, 0.0722 - 0.0722*a, 0, 0},
-			{0.2126 - 0.2126*a, 0.7152 - 0.7152*a, 0.0722 + 0.9278*a, 0, 0},
+			{0.2126 + float64(0.7874*a), 0.7152 - float64(0.7152*a), 0.0722 - float64(0.0722*a), 0, 0},
+			{0.2126 - float64(0.2126*a), 0.7152 + float64(0.2848*a), 0.0722 - float64(0.0722*a), 0, 0},
+			{0.2126 - float64(0.2126*a), 0.7152 - float64(0.7152*a), 0.0722 + float64(0.9278*a), 0, 0},
 		})
 	case FilterSaturate:
 		set([3][5]float64{
-			{0.213 + 0.787*amount, 0.715 - 0.715*amount, 0.072 - 0.072*amount, 0, 0},
-			{0.213 - 0.213*amount, 0.715 + 0.285*amount, 0.072 - 0.072*amount, 0, 0},
-			{0.213 - 0.213*amount, 0.715 - 0.715*amount, 0.072 + 0.928*amount, 0, 0},
+			{0.213 + float64(0.787*amount), 0.715 - float64(0.715*amount), 0.072 - float64(0.072*amount), 0, 0},
+			{0.213 - float64(0.213*amount), 0.715 + float64(0.285*amount), 0.072 - float64(0.072*amount), 0, 0},
+			{0.213 - float64(0.213*amount), 0.715 - float64(0.715*amount), 0.072 + float64(0.928*amount), 0, 0},
 		})
 	case FilterSepia:
 		a := 1 - amount
 		set([3][5]float64{
-			{0.393 + 0.607*a, 0.769 - 0.769*a, 0.189 - 0.189*a, 0, 0},
-			{0.349 - 0.349*a, 0.686 + 0.314*a, 0.168 - 0.168*a, 0, 0},
-			{0.272 - 0.272*a, 0.534 - 0.534*a, 0.131 + 0.869*a, 0, 0},
+			{0.393 + float64(0.607*a), 0.769 - float64(0.769*a), 0.189 - float64(0.189*a), 0, 0},
+			{0.349 - float64(0.349*a), 0.686 + float64(0.314*a), 0.168 - float64(0.168*a), 0, 0},
+			{0.272 - float64(0.272*a), 0.534 - float64(0.534*a), 0.131 + float64(0.869*a), 0, 0},
 		})
 	case FilterHueRotate:
-		s, c := math.Sincos(amount * math.Pi / 180)
+		s, c := gomath.Sincos(amount * math.Pi / 180)
 		set([3][5]float64{
-			{0.213 + c*0.787 - s*0.213, 0.715 - c*0.715 - s*0.715, 0.072 - c*0.072 + s*0.928, 0, 0},
-			{0.213 - c*0.213 + s*0.143, 0.715 + c*0.285 + s*0.140, 0.072 - c*0.072 - s*0.283, 0, 0},
-			{0.213 - c*0.213 - s*0.787, 0.715 - c*0.715 + s*0.715, 0.072 + c*0.928 + s*0.072, 0, 0},
+			{0.213 + float64(c*0.787) - float64(s*0.213), 0.715 - float64(c*0.715) - float64(s*0.715), 0.072 - float64(c*0.072) + float64(s*0.928), 0, 0},
+			{0.213 - float64(c*0.213) + float64(s*0.143), 0.715 + float64(c*0.285) + float64(s*0.140), 0.072 - float64(c*0.072) - float64(s*0.283), 0, 0},
+			{0.213 - float64(c*0.213) - float64(s*0.787), 0.715 - float64(c*0.715) + float64(s*0.715), 0.072 + float64(c*0.928) + float64(s*0.072), 0, 0},
 		})
 	case FilterInvert:
 		i := amount
 		set([3][5]float64{
-			{1 - 2*i, 0, 0, 0, 255 * i},
-			{0, 1 - 2*i, 0, 0, 255 * i},
-			{0, 0, 1 - 2*i, 0, 255 * i},
+			{1 - float64(2*i), 0, 0, 0, 255 * i},
+			{0, 1 - float64(2*i), 0, 0, 255 * i},
+			{0, 0, 1 - float64(2*i), 0, 255 * i},
 		})
 	case FilterOpacity:
 		m[18] = amount
@@ -427,7 +428,7 @@ func blurBoxes(sigma float64) [3]int {
 		wl = 1
 	}
 	wu := wl + 2
-	mIdeal := (12*sigma*sigma - n*float64(wl*wl) - 4*n*float64(wl) - 3*n) / (-4*float64(wl) - 4)
+	mIdeal := (float64(12*sigma*sigma) - float64(n*float64(wl*wl)) - float64(4*n*float64(wl)) - float64(3*n)) / (float64(-4*float64(wl)) - 4)
 	m := min(3, max(0, int(math.Round(mIdeal))))
 	var out [3]int
 	for i := range out {
@@ -496,7 +497,7 @@ func BlurPlanOf(radius float64) (BlurPlan, bool) {
 	// (d²-1)/12 and d²/6 in full-resolution pixels): the passes make
 	// up only the rest, so the total stays sigma.
 	fd := float64(d)
-	rest := math.Max(0, sigma*sigma-(fd*fd-1)/12-fd*fd/6)
+	rest := math.Max(0, float64(sigma*sigma)-(float64(fd*fd)-1)/12-fd*fd/6)
 	return BlurPlan{D: d, Boxes: blurBoxes(math.Sqrt(rest) / fd)}, true
 }
 

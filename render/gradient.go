@@ -1,6 +1,10 @@
 package render
 
-import "math"
+import (
+	"math"
+
+	"github.com/stubbedev/lys-lib/third_party/gomath"
+)
 
 // GradientKind is a gradient's geometry.
 type GradientKind uint8
@@ -164,7 +168,7 @@ func (g Gradient) mapping(b frect, scale float32) (GradientMap, bool) {
 		return m, true
 	}
 	rad := g.Angle * math.Pi / 180
-	m.DX, m.DY = float32(math.Sin(rad)), float32(-math.Cos(rad))
+	m.DX, m.DY = float32(gomath.Sin(rad)), float32(-gomath.Cos(rad))
 	m.Length = abs(float32(w*m.DX)) + abs(float32(h*m.DY))
 	m.CX, m.CY = (b.x0+b.x1)/2, (b.y0+b.y1)/2
 	m.InvLength = Reciprocal(m.Length)
@@ -200,11 +204,11 @@ func (m GradientMap) At(x, y float32) float32 {
 		dy := (y - cy) * m.InvRY
 		return float32(math.Sqrt(float64(float32(dx*dx) + float32(dy*dy))))
 	case GradientConic:
-		a := atan2f(x-cx, -(y-cy)) * float32(180/math.Pi)
+		a := float32(atan2f(x-cx, -(y-cy)) * float32(180/math.Pi))
 		return modFloor(a-m.From, 360, inv360) * inv360
 	}
 	d := float32((x-cx)*m.DX) + float32((y-cy)*m.DY)
-	return d*m.InvLength + 0.5
+	return float32(d*m.InvLength) + 0.5
 }
 
 // radii resolves a radial gradient's ending-shape radii in device

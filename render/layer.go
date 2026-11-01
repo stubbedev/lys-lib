@@ -6,6 +6,8 @@ import (
 	"runtime"
 
 	memory "github.com/stubbedev/memory-go"
+
+	"github.com/stubbedev/lys-lib/third_party/gomath"
 )
 
 // Affine is a 2-D affine map in device pixels: (x, y) goes to
@@ -25,7 +27,7 @@ func Scale(sx, sy float64) Affine { return Affine{A: sx, D: sy} }
 // Rotate is the map rotating about the origin by deg degrees, clockwise
 // on screen (y grows downward), as a GSK snapshot rotation does.
 func Rotate(deg float64) Affine {
-	s, c := math.Sincos(deg * math.Pi / 180)
+	s, c := gomath.Sincos(deg * math.Pi / 180)
 	return Affine{A: c, B: s, C: -s, D: c}
 }
 
@@ -33,12 +35,12 @@ func Rotate(deg float64) Affine {
 // operations t1, t2, t3 on a point is t1.Mul(t2).Mul(t3).
 func (m Affine) Mul(n Affine) Affine {
 	return Affine{
-		A: m.A*n.A + m.C*n.B,
-		B: m.B*n.A + m.D*n.B,
-		C: m.A*n.C + m.C*n.D,
-		D: m.B*n.C + m.D*n.D,
-		E: m.A*n.E + m.C*n.F + m.E,
-		F: m.B*n.E + m.D*n.F + m.F,
+		A: float64(m.A*n.A) + float64(m.C*n.B),
+		B: float64(m.B*n.A) + float64(m.D*n.B),
+		C: float64(m.A*n.C) + float64(m.C*n.D),
+		D: float64(m.B*n.C) + float64(m.D*n.D),
+		E: float64(m.A*n.E) + float64(m.C*n.F) + m.E,
+		F: float64(m.B*n.E) + float64(m.D*n.F) + m.F,
 	}
 }
 
@@ -49,12 +51,12 @@ func (m Affine) About(px, py float64) Affine {
 
 // Apply maps the point (x, y).
 func (m Affine) Apply(x, y float64) (float64, float64) {
-	return m.A*x + m.C*y + m.E, m.B*x + m.D*y + m.F
+	return float64(m.A*x) + float64(m.C*y) + m.E, float64(m.B*x) + float64(m.D*y) + m.F
 }
 
 // Invert returns the inverse map; false when m collapses an axis.
 func (m Affine) Invert() (Affine, bool) {
-	det := m.A*m.D - m.B*m.C
+	det := float64(m.A*m.D) - float64(m.B*m.C)
 	if det == 0 || math.IsNaN(det) || math.IsInf(det, 0) {
 		return Affine{}, false
 	}
@@ -63,8 +65,8 @@ func (m Affine) Invert() (Affine, bool) {
 		B: -m.B / det,
 		C: -m.C / det,
 		D: m.A / det,
-		E: (m.C*m.F - m.D*m.E) / det,
-		F: (m.B*m.E - m.A*m.F) / det,
+		E: (float64(m.C*m.F) - float64(m.D*m.E)) / det,
+		F: (float64(m.B*m.E) - float64(m.A*m.F)) / det,
 	}, true
 }
 

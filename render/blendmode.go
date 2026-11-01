@@ -82,7 +82,7 @@ var SoftLightTable = func() (t [256]int32) {
 		x := float64(b) / 255
 		d := math.Sqrt(x)
 		if x <= 0.25 {
-			d = ((16*x-12)*x + 4) * x
+			d = (float64((float64(16*x)-12)*x) + 4) * x
 		}
 		t[b] = int32(math.Round(d * blendK))
 	}

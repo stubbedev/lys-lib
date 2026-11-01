@@ -366,8 +366,8 @@ func (p *Pass) DrawTexture(t *Texture, src FRect, dst image.Rectangle, tr Transf
 		var s [2]float64
 		s[h.source] = flip(corner[0], h.reversed)
 		s[v.source] = flip(corner[1], v.reversed)
-		dc.extra[i/2][i%2*2] = float32((src.X + s[0]*src.W) / float64(t.w))
-		dc.extra[i/2][i%2*2+1] = float32((src.Y + s[1]*src.H) / float64(t.h))
+		dc.extra[i/2][i%2*2] = float32((src.X + float64(s[0]*src.W)) / float64(t.w))
+		dc.extra[i/2][i%2*2+1] = float32((src.Y + float64(s[1]*src.H)) / float64(t.h))
 	}
 	op := passOp{kind: opTexture, dst: dst, tex: t, set: set, pipe: p.ct.tex, layout: p.d.comp.layout, dc: dc}
 	if t.ycbcr != nil {

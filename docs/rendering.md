@@ -60,7 +60,7 @@ func main() {
 | Damage | `Rect.Subtract`, `Rect.Union`, `UnionAll` |
 
 Fonts are shaped by [go-text/typesetting](/third-party/typesetting), and SVG
-goes through [oksvg](/third-party/oksvg), both patched copies. `LoadSVG`
+goes through [oksvg](/third-party/oksvg) and [rasterx](/third-party/rasterx), all patched copies. `LoadSVG`
 returns an error for an element it does not support rather than dropping it.
 `LoadFont` reads its tables in place, so the bytes it is given must stay valid
 and unchanged for as long as the typeface is used.

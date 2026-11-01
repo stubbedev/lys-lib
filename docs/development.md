@@ -8,7 +8,7 @@
 | Recipe | What it does |
 | --- | --- |
 | `just fmt-check` | Formatting |
-| `just check` | `vet`, `lint`, `test`, `build` |
+| `just check` | `vet`, `lint`, `no-fused`, `test`, `build` |
 | `just race` | The test suite under the race detector |
 | `just gpu` | The GPU tests on lavapipe |
 | `just headless` | The capture and virtual input tests against a private headless sway |
@@ -20,6 +20,20 @@ layer. `nix fmt` formats the nix files with alejandra.
 the dev shell's store paths, the checkout, the GPUs' render and NVIDIA device
 nodes and the host's drivers, but no display socket, session bus or runtime dir of
 the desktop session, with memory capped.
+
+## Same input, same output
+
+Rendering, typesetting, animation and styling give the same bits on every
+architecture, so one golden holds on all of them. Floating point needs two rules
+for that, each with a gate:
+
+- The Go spec lets the compiler fuse `x*y + z` into an FMA, which skips rounding the
+  product; arm64 does, amd64 does not. Write `float64(x*y) + z` where a product, or a
+  division by a constant power of two, reaches an addition or a subtraction, across
+  statements too. `just no-fused` compiles for arm64 and fails on any FMA instruction.
+- Call [gomath](/third-party/gomath) for trigonometry, exponentials, logarithms, `Pow`,
+  `Cbrt` and `Hypot`, since `math`'s own results differ between architectures. The
+  linter refuses `math`'s versions outside tests.
 
 ## CI
 

@@ -8,6 +8,7 @@ package rasterx
 import (
 	"math"
 
+	"github.com/stubbedev/lys-lib/third_party/gomath"
 	"golang.org/x/image/math/fixed"
 )
 
@@ -76,10 +77,10 @@ func AddRoundRect(minX, minY, maxX, maxY, rx, ry, rot float64, gf GapFunc, p Add
 		ry = h / 2
 	}
 	stretch := rx / ry
-	midY := minY + h/2
-	m := Identity.Translate(minX+w/2, midY).Rotate(rot).Scale(1, 1/stretch).Translate(-minX-w/2, -minY-h/2)
-	maxY = midY + h/2*stretch
-	minY = midY - h/2*stretch
+	midY := minY + float64(h/2)
+	m := Identity.Translate(minX+float64(w/2), midY).Rotate(rot).Scale(1, 1/stretch).Translate(-minX-float64(w/2), -minY-float64(h/2))
+	maxY = midY + float64(h/2*stretch)
+	minY = midY - float64(h/2*stretch)
 
 	q := &MatrixAdder{M: m, Adder: p}
 
@@ -95,19 +96,19 @@ func AddRoundRect(minX, minY, maxX, maxY, rx, ry, rot float64, gf GapFunc, p Add
 	q.Stop(true)
 }
 
-//AddArc adds an arc to the adder p
+// AddArc adds an arc to the adder p
 func AddArc(points []float64, cx, cy, px, py float64, p Adder) (lx, ly float64) {
 	rotX := points[2] * math.Pi / 180 // Convert degress to radians
 	largeArc := points[3] != 0
 	sweep := points[4] != 0
-	startAngle := math.Atan2(py-cy, px-cx) - rotX
-	endAngle := math.Atan2(points[6]-cy, points[5]-cx) - rotX
+	startAngle := gomath.Atan2(py-cy, px-cx) - rotX
+	endAngle := gomath.Atan2(points[6]-cy, points[5]-cx) - rotX
 	deltaTheta := endAngle - startAngle
 	arcBig := math.Abs(deltaTheta) > math.Pi
 
 	// Approximate ellipse using cubic bezeir splines
-	etaStart := math.Atan2(math.Sin(startAngle)/points[1], math.Cos(startAngle)/points[0])
-	etaEnd := math.Atan2(math.Sin(endAngle)/points[1], math.Cos(endAngle)/points[0])
+	etaStart := gomath.Atan2(gomath.Sin(startAngle)/points[1], gomath.Cos(startAngle)/points[0])
+	etaEnd := gomath.Atan2(gomath.Sin(endAngle)/points[1], gomath.Cos(endAngle)/points[0])
 	deltaEta := etaEnd - etaStart
 	if (arcBig && !largeArc) || (!arcBig && largeArc) { // Go has no boolean XOR
 		if deltaEta < 0 {
@@ -131,13 +132,13 @@ func AddArc(points []float64, cx, cy, px, py float64, p Adder) (lx, ly float64) 
 	// L. Maisonobe, "Drawing an elliptical arc using polylines, quadratic
 	// or cubic Bezier curves", 2003
 	// https://www.spaceroots.org/documents/elllipse/elliptical-arc.pdf
-	tde := math.Tan(dEta / 2)
-	alpha := math.Sin(dEta) * (math.Sqrt(4+3*tde*tde) - 1) / 3 // Math is fun!
+	tde := gomath.Tan(dEta / 2)
+	alpha := gomath.Sin(dEta) * (math.Sqrt(4+float64(3*tde*tde)) - 1) / 3 // Math is fun!
 	lx, ly = px, py
-	sinTheta, cosTheta := math.Sin(rotX), math.Cos(rotX)
+	sinTheta, cosTheta := gomath.Sin(rotX), gomath.Cos(rotX)
 	ldx, ldy := ellipsePrime(points[0], points[1], sinTheta, cosTheta, etaStart, cx, cy)
 	for i := 1; i <= segs; i++ {
-		eta := etaStart + dEta*float64(i)
+		eta := etaStart + float64(dEta*float64(i))
 		var px, py float64
 		if i == segs {
 			px, py = points[5], points[6] // Just makes the end point exact; no roundoff error
@@ -145,8 +146,8 @@ func AddArc(points []float64, cx, cy, px, py float64, p Adder) (lx, ly float64) 
 			px, py = ellipsePointAt(points[0], points[1], sinTheta, cosTheta, eta, cx, cy)
 		}
 		dx, dy := ellipsePrime(points[0], points[1], sinTheta, cosTheta, eta, cx, cy)
-		p.CubeBezier(ToFixedP(lx+alpha*ldx, ly+alpha*ldy),
-			ToFixedP(px-alpha*dx, py-alpha*dy), ToFixedP(px, py))
+		p.CubeBezier(ToFixedP(lx+float64(alpha*ldx), ly+float64(alpha*ldy)),
+			ToFixedP(px-float64(alpha*dx), py-float64(alpha*dy)), ToFixedP(px, py))
 		lx, ly, ldx, ldy = px, py, dx, dy
 	}
 	return lx, ly
@@ -154,19 +155,19 @@ func AddArc(points []float64, cx, cy, px, py float64, p Adder) (lx, ly float64) 
 
 // ellipsePrime gives tangent vectors for parameterized elipse; a, b, radii, eta parameter, center cx, cy
 func ellipsePrime(a, b, sinTheta, cosTheta, eta, cx, cy float64) (px, py float64) {
-	bCosEta := b * math.Cos(eta)
-	aSinEta := a * math.Sin(eta)
-	px = -aSinEta*cosTheta - bCosEta*sinTheta
-	py = -aSinEta*sinTheta + bCosEta*cosTheta
+	bCosEta := b * gomath.Cos(eta)
+	aSinEta := a * gomath.Sin(eta)
+	px = float64(-aSinEta*cosTheta) - float64(bCosEta*sinTheta)
+	py = float64(-aSinEta*sinTheta) + float64(bCosEta*cosTheta)
 	return
 }
 
 // ellipsePointAt gives points for parameterized elipse; a, b, radii, eta parameter, center cx, cy
 func ellipsePointAt(a, b, sinTheta, cosTheta, eta, cx, cy float64) (px, py float64) {
-	aCosEta := a * math.Cos(eta)
-	bSinEta := b * math.Sin(eta)
-	px = cx + aCosEta*cosTheta - bSinEta*sinTheta
-	py = cy + aCosEta*sinTheta + bSinEta*cosTheta
+	aCosEta := a * gomath.Cos(eta)
+	bSinEta := b * gomath.Sin(eta)
+	px = cx + float64(aCosEta*cosTheta) - float64(bSinEta*sinTheta)
+	py = cy + float64(aCosEta*sinTheta) + float64(bSinEta*cosTheta)
 	return
 }
 
@@ -178,18 +179,18 @@ func ellipsePointAt(a, b, sinTheta, cosTheta, eta, cx, cy float64) (px, py float
 // and an arbitrary point. The center of the circle is then transformed
 // back to the original coordinates and returned.
 func FindEllipseCenter(ra, rb *float64, rotX, startX, startY, endX, endY float64, sweep, smallArc bool) (cx, cy float64) {
-	cos, sin := math.Cos(rotX), math.Sin(rotX)
+	cos, sin := gomath.Cos(rotX), gomath.Sin(rotX)
 
 	// Move origin to start point
 	nx, ny := endX-startX, endY-startY
 
 	// Rotate ellipse x-axis to coordinate x-axis
-	nx, ny = nx*cos+ny*sin, -nx*sin+ny*cos
+	nx, ny = float64(nx*cos)+float64(ny*sin), float64(-nx*sin)+float64(ny*cos)
 	// Scale X dimension so that ra = rb
 	nx *= *rb / *ra // Now the ellipse is a circle radius rb; therefore foci and center coincide
 
-	midX, midY := nx/2, ny/2
-	midlenSq := midX*midX + midY*midY
+	midX, midY := float64(nx/2), float64(ny/2)
+	midlenSq := float64(midX*midX) + float64(midY*midY)
 
 	var hr float64
 	if *rb**rb < midlenSq {
@@ -203,19 +204,19 @@ func FindEllipseCenter(ra, rb *float64, rotX, startX, startY, endX, endY float64
 		}
 		*rb = nrb
 	} else {
-		hr = math.Sqrt(*rb**rb-midlenSq) / math.Sqrt(midlenSq)
+		hr = math.Sqrt(float64(*rb**rb)-midlenSq) / math.Sqrt(midlenSq)
 	}
 	// Notice that if hr is zero, both answers are the same.
 	if (sweep && smallArc) || (!sweep && !smallArc) {
-		cx = midX + midY*hr
-		cy = midY - midX*hr
+		cx = midX + float64(midY*hr)
+		cy = midY - float64(midX*hr)
 	} else {
-		cx = midX - midY*hr
-		cy = midY + midX*hr
+		cx = midX - float64(midY*hr)
+		cy = midY + float64(midX*hr)
 	}
 
 	// reverse scale
 	cx *= *ra / *rb
 	//Reverse rotate and translate back to original coordinates
-	return cx*cos - cy*sin + startX, cx*sin + cy*cos + startY
+	return float64(cx*cos) - float64(cy*sin) + startX, float64(cx*sin) + float64(cy*cos) + startY
 }

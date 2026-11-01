@@ -42,8 +42,8 @@ func (svgp *SvgPath) DrawTransformed(r *rasterx.Dasher, opacity float64, t raste
 		case rasterx.Gradient:
 			if fillerColor.Units == rasterx.ObjectBoundingBox {
 				fRect := rf.Scanner.GetPathExtent()
-				mnx, mny := float64(fRect.Min.X)/64, float64(fRect.Min.Y)/64
-				mxx, mxy := float64(fRect.Max.X)/64, float64(fRect.Max.Y)/64
+				mnx, mny := float64(float64(fRect.Min.X)/64), float64(float64(fRect.Min.Y)/64)
+				mxx, mxy := float64(float64(fRect.Max.X)/64), float64(float64(fRect.Max.Y)/64)
 				fillerColor.Bounds.X, fillerColor.Bounds.Y = mnx, mny
 				fillerColor.Bounds.W, fillerColor.Bounds.H = mxx-mnx, mxy-mny
 			}
@@ -71,7 +71,7 @@ func (svgp *SvgPath) DrawTransformed(r *rasterx.Dasher, opacity float64, t raste
 		// The pen is in user units: scale it, and the dashes, to device
 		// space by the transform's area scale.
 		mt := svgp.mAdder.M
-		scale := math.Sqrt(math.Abs(mt.A*mt.D - mt.B*mt.C))
+		scale := math.Sqrt(math.Abs(float64(mt.A*mt.D) - float64(mt.B*mt.C)))
 		var dash []float64
 		if svgp.Dash != nil {
 			dash = make([]float64, len(svgp.Dash))
@@ -89,8 +89,8 @@ func (svgp *SvgPath) DrawTransformed(r *rasterx.Dasher, opacity float64, t raste
 		case rasterx.Gradient:
 			if linerColor.Units == rasterx.ObjectBoundingBox {
 				fRect := r.Scanner.GetPathExtent()
-				mnx, mny := float64(fRect.Min.X)/64, float64(fRect.Min.Y)/64
-				mxx, mxy := float64(fRect.Max.X)/64, float64(fRect.Max.Y)/64
+				mnx, mny := float64(float64(fRect.Min.X)/64), float64(float64(fRect.Min.Y)/64)
+				mxx, mxy := float64(float64(fRect.Max.X)/64), float64(float64(fRect.Max.Y)/64)
 				linerColor.Bounds.X, linerColor.Bounds.Y = mnx, mny
 				linerColor.Bounds.W, linerColor.Bounds.H = mxx-mnx, mxy-mny
 			}

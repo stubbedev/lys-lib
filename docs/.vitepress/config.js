@@ -30,8 +30,11 @@ export default lysConfig({
       items: [
         { text: 'Patch policy', link: '/third-party/' },
         { text: 'godbus', link: '/third-party/godbus' },
+        { text: 'gomath', link: '/third-party/gomath' },
         { text: 'oksvg', link: '/third-party/oksvg' },
+        { text: 'rasterx', link: '/third-party/rasterx' },
         { text: 'typesetting', link: '/third-party/typesetting' },
+        { text: 'vector', link: '/third-party/vector' },
         { text: 'vk', link: '/third-party/vk' },
         { text: 'wayland', link: '/third-party/wayland' },
       ],

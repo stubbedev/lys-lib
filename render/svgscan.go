@@ -5,8 +5,9 @@ import (
 	"image/draw"
 	"math"
 
-	"github.com/stubbedev/lys-lib/third_party/rasterx"
 	"golang.org/x/image/math/fixed"
+
+	"github.com/stubbedev/lys-lib/third_party/rasterx"
 	"github.com/stubbedev/lys-lib/third_party/vector"
 )
 
@@ -159,7 +160,7 @@ func (s *svgScanner) accumulateEvenOdd(w, h int, ox, oy float32) {
 		if c > 1 {
 			c = 2 - c
 		}
-		s.mask.Pix[i] = uint8(c*255 + 0.5)
+		s.mask.Pix[i] = uint8(float32(c*255) + 0.5)
 	}
 }
 

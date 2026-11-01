@@ -12,8 +12,8 @@ test_dir := "/tmp/lys-lib-test-env"
 # lavapipe and the compositor-in-the-loop suite.
 gates: fmt-check check race gpu headless
 
-# Run every release gate in order: vet, lint, test, build.
-check: vet lint test build
+# Run every release gate in order: vet, lint, no-fused, test, build.
+check: vet lint no-fused test build
 
 # Static analysis of every package with go vet.
 vet:
@@ -22,6 +22,16 @@ vet:
 # Lint every package; settings live in .golangci.yml.
 lint:
     golangci-lint run
+
+# Fail on any float product fused into an FMA: see docs/development.md.
+no-fused:
+    #!/usr/bin/env bash
+    set -euo pipefail
+    asm=$(GOOS=linux GOARCH=arm64 CGO_ENABLED=0 go build -gcflags=-S -o /dev/null ./... 2>&1)
+    if fused=$(grep -E '\b(FMADD|FMSUB|FNMADD|FNMSUB)[DS]\b' <<<"$asm"); then
+        printf '%s\n' "$fused" >&2
+        exit 1
+    fi
 
 # Run the test suite for every package.
 test:
