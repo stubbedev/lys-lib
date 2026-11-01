@@ -372,8 +372,8 @@ func (gvar gvar) applyDeltasToPoints(glyph gID, coords []VarCoord, points []cont
 				ptIndex = tuple.pointNumbers[i]
 			}
 			deltas[ptIndex].isExplicit = true
-			deltas[ptIndex].X += float32(xDeltas[i]) * scalar
-			deltas[ptIndex].Y += float32(yDeltas[i]) * scalar
+			deltas[ptIndex].X += float32(float32(xDeltas[i]) * scalar)
+			deltas[ptIndex].Y += float32(float32(yDeltas[i]) * scalar)
 		}
 
 		/* infer deltas for unreferenced points */
@@ -476,7 +476,7 @@ func inferDelta(targetVal, prevVal, nextVal, prevDelta, nextDelta float32) float
 
 	// linear interpolation
 	r := (targetVal - prevVal) / (nextVal - prevVal)
-	return prevDelta + r*(nextDelta-prevDelta)
+	return prevDelta + float32(r*(nextDelta-prevDelta))
 }
 
 func sanitizeGDEF(table tables.GDEF, axisCount int) error {

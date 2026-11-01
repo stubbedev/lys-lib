@@ -131,3 +131,10 @@ does not pay for a heap-backed file: the file buffer would be kept whole
 (a `Font` of the font above would hold 2.9 MB instead of 2.1 MB). It
 pays only over an mmapped file (0.4 MB of heap per `Font`), which needs
 a mapping that lives as long as the face and a file nobody truncates.
+
+### Variable font deltas round the same on every architecture
+
+`font/variations.go`: upstream's `a*b + c` on `float32` deltas may fuse into
+an FMA on arm64 and not on amd64, so a varied outline differed by the last bit
+between them. An explicit conversion rounds each product first, as the Go spec
+provides, and a varied font now hashes to the same outlines everywhere.
