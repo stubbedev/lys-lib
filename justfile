@@ -236,3 +236,7 @@ test-env-stop dir=test_dir:
     pkill -f "$dir/bus.conf" 2>/dev/null
     rm -rf "$dir"
     echo "test compositor stopped"
+
+# Set nix/checks.nix's vendorHash to the hash of the modules go.sum pins.
+vendor-hash:
+    nix run github:stubbedev/lys-ci#vendor-hash -- nix/checks.nix .#drm-tests.goModules
