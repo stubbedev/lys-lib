@@ -20,22 +20,22 @@ func (d *Device) commandPool(family uint32) (vk.CommandPool, error) {
 
 // commandBuffer allocates a primary command buffer from pool.
 func (d *Device) commandBuffer(pool vk.CommandPool) (vk.CommandBuffer, error) {
-	cai := vk.CommandBufferAllocateInfo{SType: vk.StructureTypeCommandBufferAllocateInfo, CommandPool: pool, Level: vk.CommandBufferLevelPrimary, CommandBufferCount: 1}
-	var cb vk.CommandBuffer
-	if r := d.cmds.AllocateCommandBuffers(d.device, &cai, &cb); r != vk.Success {
+	a := &d.args
+	a.allocCB = vk.CommandBufferAllocateInfo{SType: vk.StructureTypeCommandBufferAllocateInfo, CommandPool: pool, Level: vk.CommandBufferLevelPrimary, CommandBufferCount: 1}
+	if r := d.cmds.AllocateCommandBuffers(d.device, &a.allocCB, &a.cb); r != vk.Success {
 		return 0, fmt.Errorf("gpu: vkAllocateCommandBuffers: %w", resultError(r))
 	}
-	return cb, nil
+	return a.cb, nil
 }
 
 // fence makes an unsignalled fence.
 func (d *Device) fence() (vk.Fence, error) {
-	fci := vk.FenceCreateInfo{SType: vk.StructureTypeFenceCreateInfo}
-	var f vk.Fence
-	if r := d.cmds.CreateFence(d.device, &fci, nil, &f); r != vk.Success {
+	a := &d.args
+	a.createFence = vk.FenceCreateInfo{SType: vk.StructureTypeFenceCreateInfo}
+	if r := d.cmds.CreateFence(d.device, &a.createFence, nil, &a.fence); r != vk.Success {
 		return 0, fmt.Errorf("gpu: vkCreateFence: %w", resultError(r))
 	}
-	return f, nil
+	return a.fence, nil
 }
 
 func resetFence(d *Device, f vk.Fence) error {

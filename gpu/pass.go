@@ -20,7 +20,8 @@ type FRect struct {
 
 // Pass draws a compositor's frame into a Target, every call clipped to
 // the damage it began with. The first bad call fails the pass: End
-// reports it and draws nothing.
+// reports it and draws nothing. The device reuses it for its next Begin,
+// so a frame costs no allocation: nothing holds one past that Begin.
 type Pass struct {
 	d      *Device
 	t      *Target
@@ -67,7 +68,8 @@ func (d *Device) Begin(t *Target, damage []image.Rectangle) (*Pass, error) {
 	if err := t.s.ready(); err != nil {
 		return nil, err
 	}
-	p := &Pass{d: d, t: t, ct: ct, damage: d.passRects.disjoint(damage, image.Rectangle{Max: t.Size()}), ops: d.passOps[:0]}
+	p := &d.reused
+	*p = Pass{d: d, t: t, ct: ct, damage: d.passRects.disjoint(damage, image.Rectangle{Max: t.Size()}), ops: d.passOps[:0]}
 	d.active = p
 	return p, nil
 }

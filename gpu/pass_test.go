@@ -275,7 +275,7 @@ func TestDisjointCoversTheDamageOnce(t *testing.T) {
 	}
 }
 
-func TestASteadyPassAllocatesOnlyItself(t *testing.T) {
+func TestASteadyPassDoesNotAllocate(t *testing.T) {
 	if raceEnabled {
 		t.Skip("the race detector allocates on its own")
 	}
@@ -299,10 +299,8 @@ func TestASteadyPassAllocatesOnlyItself(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	for range 100 {
-		pass()
-	}
-	if n := testing.AllocsPerRun(100, pass); n > 1 {
+	pass()
+	if n := testing.AllocsPerRun(100, pass); n != 0 {
 		t.Fatalf("a steady pass allocated %v times", n)
 	}
 }
