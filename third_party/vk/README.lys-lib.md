@@ -5,8 +5,8 @@ A copy of the `hal/vulkan/vk` package of github.com/gogpu/wgpu at
 of the lys-lib module and imported as
 `github.com/stubbedev/lys-lib/third_party/vk`. These are pure-Go Vulkan
 bindings generated from vk.xml, loading libvulkan at runtime through
-goffi, so lys-lib stays `CGO_ENABLED=0`. the GPU renderer (lys-ui#298)
-draws through it.
+purego (upstream uses goffi, see below), so lys-lib stays
+`CGO_ENABLED=0`. The GPU renderer (lys-ui#298) draws through it.
 
 ## Why it lives inside the module
 
@@ -30,9 +30,9 @@ merged.
 github.com/ebitengine/purego. Every source imports it in place of
 `goffi/ffi` and `goffi/types`. goffi and purego each link a runtime
 shim (`internal/fakecgo`), so a cgo-free program holding both fails to
-link with a duplicated `_cgo_init`. lys-shell loads its other native
-libraries through purego. Vulkan's arguments and results are integers,
-handles and pointers; a float argument (vkCmdSetLineWidth and a few
+link with a duplicated `_cgo_init`. The family's other native libraries
+load through purego too (`clib`, `internal/va`). Vulkan's arguments and
+results are integers, handles and pointers; a float argument (vkCmdSetLineWidth and a few
 others, which lys-lib does not call) panics, since purego.SyscallN
 passes integer registers only. gpu's TestOneFakecgo keeps a second
 shim out. This is a lys-lib integration choice rather than an upstream
