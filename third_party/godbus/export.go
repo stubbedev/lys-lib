@@ -6,6 +6,7 @@ import (
 	"os"
 	"reflect"
 	"strings"
+	"sync"
 )
 
 var (
@@ -67,26 +68,39 @@ func computeMethodName(name string, mapping map[string]string) string {
 	return name
 }
 
+// exportedMethodIndexes is, per type, the index of each method that can
+// be exported: one ending in a *Error result. Reflecting over a method's
+// type allocates, and a service may export thousands of objects of one
+// type.
+var exportedMethodIndexes sync.Map
+
+func methodIndexes(t reflect.Type) map[string]int {
+	if m, ok := exportedMethodIndexes.Load(t); ok {
+		return m.(map[string]int)
+	}
+	m := make(map[string]int)
+	for i := 0; i < t.NumMethod(); i++ {
+		method := t.Method(i)
+		out := method.Type.NumOut()
+		if out == 0 || method.Type.Out(out-1) != reflect.TypeOf(&ErrMsgInvalidArg) || method.PkgPath != "" {
+			continue
+		}
+		m[method.Name] = i
+	}
+	exportedMethodIndexes.Store(t, m)
+	return m
+}
+
 func getMethods(in any, mapping map[string]string) map[string]reflect.Value {
 	if in == nil {
 		return nil
 	}
-	methods := make(map[string]reflect.Value)
 	val := reflect.ValueOf(in)
-	typ := val.Type()
-	for i := 0; i < typ.NumMethod(); i++ {
-		methtype := typ.Method(i)
-		method := val.Method(i)
-		t := method.Type()
-		// only track valid methods must return *Error as last arg
-		// and must be exported
-		if t.NumOut() == 0 ||
-			t.Out(t.NumOut()-1) != reflect.TypeOf(&ErrMsgInvalidArg) ||
-			methtype.PkgPath != "" {
-			continue
-		}
+	indexes := methodIndexes(val.Type())
+	methods := make(map[string]reflect.Value, len(indexes))
+	for name, i := range indexes {
 		// map names while building table
-		methods[computeMethodName(methtype.Name, mapping)] = method
+		methods[computeMethodName(name, mapping)] = val.Method(i)
 	}
 	return methods
 }
@@ -298,6 +312,10 @@ func (conn *Conn) ExportAll(v any, path ObjectPath, iface string) error {
 // The keys in the map are the real method names (exported on the struct), and
 // the values are the method names to be exported on DBus.
 func (conn *Conn) ExportWithMap(v any, mapping map[string]string, path ObjectPath, iface string) error {
+	if v != nil && mapping == nil {
+		val := reflect.ValueOf(v)
+		return conn.addInterface(&exportedIntf{receiver: val, indexes: methodIndexes(val.Type())}, path, iface)
+	}
 	return conn.export(getMethods(v, mapping), path, iface, false)
 }
 
@@ -371,19 +389,12 @@ func (conn *Conn) unexport(h *defaultHandler, path ObjectPath, iface string) err
 
 // export is the worker function for all exports/registrations.
 func (conn *Conn) export(methods map[string]reflect.Value, path ObjectPath, iface string, includeSubtree bool) error {
-	h, ok := conn.handler.(*defaultHandler)
-	if !ok {
-		return fmt.Errorf(
-			`dbus: export only allowed on the default handler. Received: %T"`,
-			conn.handler)
-	}
-
-	if !path.IsValid() {
-		return fmt.Errorf(`dbus: Invalid path name: "%s"`, path)
-	}
-
 	// Remove a previous export if the interface is nil
 	if methods == nil {
+		h, err := conn.exportHandler(path)
+		if err != nil {
+			return err
+		}
 		return conn.unexport(h, path, iface)
 	}
 
@@ -392,10 +403,30 @@ func (conn *Conn) export(methods map[string]reflect.Value, path ObjectPath, ifac
 		exportedMethods[name] = exportedMethod{method}
 	}
 
-	// Finally, save this handler, creating the path's object for its
-	// first one.
-	h.addInterface(path, iface, newExportedIntf(exportedMethods, includeSubtree))
+	return conn.addInterface(newExportedIntf(exportedMethods, includeSubtree), path, iface)
+}
 
+// exportHandler is the handler an export at path goes to.
+func (conn *Conn) exportHandler(path ObjectPath) (*defaultHandler, error) {
+	h, ok := conn.handler.(*defaultHandler)
+	if !ok {
+		return nil, fmt.Errorf(
+			`dbus: export only allowed on the default handler. Received: %T"`,
+			conn.handler)
+	}
+	if !path.IsValid() {
+		return nil, fmt.Errorf(`dbus: Invalid path name: "%s"`, path)
+	}
+	return h, nil
+}
+
+// addInterface saves intf, creating the path's object for its first one.
+func (conn *Conn) addInterface(intf *exportedIntf, path ObjectPath, iface string) error {
+	h, err := conn.exportHandler(path)
+	if err != nil {
+		return err
+	}
+	h.addInterface(path, iface, intf)
 	return nil
 }
 

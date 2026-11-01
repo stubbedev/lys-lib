@@ -10,8 +10,10 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"reflect"
 	"slices"
 	"sort"
+	"sync"
 
 	dbus "github.com/stubbedev/lys-lib/third_party/godbus"
 	"github.com/stubbedev/lys-lib/third_party/godbus/introspect"
@@ -181,7 +183,7 @@ func objectsAt(path dbus.ObjectPath, ifaces []Interface) ([]exported, error) {
 	props := &properties{ifaces: make(map[string]Getters, len(ifaces)), setters: make(map[string]Setters, len(ifaces))}
 	node := introspect.Node{Name: string(path), Interfaces: []introspect.Interface{
 		introspect.IntrospectData,
-		{Name: propertiesIface, Methods: introspect.Methods(props)},
+		{Name: propertiesIface, Methods: methodsOf(props)},
 	}}
 	objects := make([]exported, 0, len(ifaces)+2)
 	for _, iface := range ifaces {
@@ -202,7 +204,7 @@ func objectsAt(path dbus.ObjectPath, ifaces []Interface) ([]exported, error) {
 		}
 		props.ifaces[iface.Name] = iface.Properties
 		props.setters[iface.Name] = iface.Setters
-		node.Interfaces = append(node.Interfaces, introspect.Interface{Name: iface.Name, Methods: introspect.Methods(iface.Methods), Signals: signals})
+		node.Interfaces = append(node.Interfaces, introspect.Interface{Name: iface.Name, Methods: methodsOf(iface.Methods), Signals: signals})
 		objects = append(objects, exported{iface: iface.Name, methods: iface.Methods})
 	}
 	return append(objects,
@@ -309,4 +311,18 @@ func File(fd dbus.UnixFD, name string) (*os.File, error) {
 		return nil, fmt.Errorf("%s: invalid file descriptor %d", name, fd)
 	}
 	return os.NewFile(uintptr(fd), name), nil
+}
+
+// introspectedMethods is introspect.Methods per type, the result shared
+// and read only: a service may export thousands of objects of one type.
+var introspectedMethods sync.Map
+
+func methodsOf(v any) []introspect.Method {
+	t := reflect.TypeOf(v)
+	if m, ok := introspectedMethods.Load(t); ok {
+		return m.([]introspect.Method)
+	}
+	m := introspect.Methods(v)
+	introspectedMethods.Store(t, m)
+	return m
 }

@@ -310,3 +310,42 @@ func TestExportIsAllOrNothing(t *testing.T) {
 		}
 	}
 }
+
+type labelled struct{ label string }
+
+func (l *labelled) Label() (string, *dbus.Error) { return l.label, nil }
+
+// Objects of one type share what reflection found, not their receivers,
+// and each serves its own calls and introspection.
+func TestExportedObjectsOfATypeKeepTheirReceivers(t *testing.T) {
+	bus := dbustest.Start(t)
+	srv, cli := bus.Conn(t), bus.Conn(t)
+	const iface = "x.Labelled"
+	for _, name := range []string{"a", "b", "c"} {
+		off, err := dbusx.Export(srv, dbus.ObjectPath("/o/"+name), dbusx.Interface{Name: iface, Methods: &labelled{name}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(off)
+	}
+	for _, name := range []string{"a", "b", "c"} {
+		obj := cli.Object(srv.Names()[0], dbus.ObjectPath("/o/"+name))
+		var got string
+		if err := obj.Call(iface+".Label", 0).Store(&got); err != nil {
+			t.Fatal(err)
+		}
+		if got != name {
+			t.Errorf("/o/%s answered %q", name, got)
+		}
+		var xml string
+		if err := obj.Call("org.freedesktop.DBus.Introspectable.Introspect", 0).Store(&xml); err != nil {
+			t.Fatal(err)
+		}
+		if !strings.Contains(xml, `"Label"`) {
+			t.Errorf("/o/%s introspects as %s", name, xml)
+		}
+		if call := obj.Call(iface+".Missing", 0); call.Err == nil {
+			t.Errorf("/o/%s served a method it does not have", name)
+		}
+	}
+}

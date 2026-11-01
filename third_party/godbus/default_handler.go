@@ -245,15 +245,27 @@ func newExportedIntf(methods map[string]Method, includeSubtree bool) *exportedIn
 }
 
 type exportedIntf struct {
-	methods map[string]Method
+	// methods are this export's own methods; or, for an object exported
+	// by its type, indexes are shared by all of the type's objects and a
+	// method binds to receiver when called.
+	methods  map[string]Method
+	receiver reflect.Value
+	indexes  map[string]int
 
 	// Whether or not this export is for the entire subtree
 	includeSubtree bool
 }
 
 func (obj *exportedIntf) LookupMethod(name string) (Method, bool) {
-	out, exists := obj.methods[name]
-	return out, exists
+	if obj.indexes == nil {
+		out, exists := obj.methods[name]
+		return out, exists
+	}
+	i, exists := obj.indexes[name]
+	if !exists {
+		return nil, false
+	}
+	return exportedMethod{obj.receiver.Method(i)}, true
 }
 
 func (obj *exportedIntf) isFallbackInterface() bool {
