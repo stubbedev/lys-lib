@@ -208,6 +208,19 @@ which a scan's order mostly hid. A buffer inside the font now counts as none, an
 scan keeps no buffer past the file it mapped. Pinned by
 `font/opentype/lys_mapped_test.go`.
 
+### AddFont parses a font when a query needs it
+
+`fontscan/fontmap.go`, `footprint.go`: upstream parsed each face and its coverage in
+`AddFont`, so lys-ui's two embedded faces were parsed in every process that looked up
+any font, nearly always to go unused. `AddFont` now reads the family and aspect, and
+leaves the entry's coverage and face for the first query to reach it: a rune or language
+check on that candidate, a query with a script, or the arbitrary last resort. The
+entry keeps its place in the database, its order in `scriptMap` and its claim on the first
+face, so what resolves does not change. A resource that is not a font is still refused
+by `AddFont`; one whose tables are damaged is logged when reached and covers nothing,
+where `AddFont` used to refuse it. The resource must stay readable. Pinned by
+`fontscan/lys_lazy_test.go`, which compares answers with fonts parsed when added.
+
 ### Import path
 
 Every source imports `github.com/stubbedev/lys-lib/third_party/typesetting`

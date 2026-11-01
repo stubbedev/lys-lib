@@ -63,7 +63,22 @@ func newFootprintFromFont(f *font.Font, location Location, md font.Description) 
 	return out
 }
 
-func newFootprintFromLoader(ld *ot.Loader, isUserProvided bool, buffer scanBuffer) (out Footprint, _ scanBuffer, err error) {
+// newFootprintFromLoader summarizes a system font.
+func newFootprintFromLoader(ld *ot.Loader, buffer scanBuffer) (out Footprint, _ scanBuffer, err error) {
+	out, buffer, err = newCoverageFromLoader(ld, buffer)
+	if err != nil {
+		return Footprint{}, buffer, err
+	}
+	desc, raw := font.Describe(ld, buffer.tableBuffer)
+	out.Family = font.NormalizeFamily(desc.Family)
+	out.Aspect = desc.Aspect
+	buffer.tableBuffer = raw
+	return out, buffer, nil
+}
+
+// newCoverageFromLoader fills in what a font covers: its runes, scripts
+// and languages.
+func newCoverageFromLoader(ld *ot.Loader, buffer scanBuffer) (out Footprint, _ scanBuffer, err error) {
 	raw := buffer.tableBuffer
 
 	// since raw is shared, special car must be taken in the parsing order
@@ -92,11 +107,6 @@ func newFootprintFromLoader(ld *ot.Loader, isUserProvided bool, buffer scanBuffe
 	out.Runes, out.Scripts, buffer.cmapBuffer = newCoveragesFromCmap(cmap, buffer.cmapBuffer) // ... and build the corresponding rune set
 
 	out.Langs = newLangsetFromCoverage(out.Runes)
-
-	desc, raw := font.Describe(ld, raw)
-	out.Family = font.NormalizeFamily(desc.Family)
-	out.Aspect = desc.Aspect
-	out.isUserProvided = isUserProvided
 
 	buffer.tableBuffer = raw
 

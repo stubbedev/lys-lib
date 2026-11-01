@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"os"
 	"path/filepath"
 	"slices"
@@ -66,6 +67,14 @@ type FontMap struct {
 	faceCache map[Location]*font.Face
 	metaCache map[*font.Font]cacheEntry
 
+	// pending holds the fonts [AddFont] registered and nothing has needed
+	// yet, by their index in database: only the family and aspect of those
+	// entries are filled in. See [FontMap.realize].
+	pending map[int]*ot.Loader
+	// firstPending is the entry that becomes firstFace when it is realized,
+	// the first font registered while firstFace was unset, or noPendingFace.
+	firstPending int
+
 	// the database to query, either loaded from an index
 	// or populated with the [UseSystemFonts], [AddFont], and/or [AddFace] method.
 	database  fontSet
@@ -86,6 +95,8 @@ type FontMap struct {
 	script language.Script // current script
 }
 
+const noPendingFace = -1
+
 // NewFontMap return a new font map, which should be filled with the `UseSystemFonts`
 // or `AddFont` methods. The provided logger will be used to record non-fatal errors
 // encountered during font loading. If logger is nil, log.Default() is used.
@@ -99,6 +110,8 @@ func NewFontMap(logger Logger) *FontMap {
 		metaCache:    make(map[*font.Font]cacheEntry),
 		cribleBuffer: make(familyCrible, 150),
 		scriptMap:    make(map[language.Script][]int),
+		pending:      make(map[int]*ot.Loader),
+		firstPending: noPendingFace,
 	}
 	fm.lru.maxSize = 4096
 	return fm
@@ -285,7 +298,10 @@ func refreshSystemFontsIndex(logger Logger, cachePath string, now time.Time) (sy
 // If `familyName` is not empty, it is used as the family name for `fontFile`
 // instead of the one found in the font file.
 //
-// An error is returned if the font resource is not supported.
+// An error is returned if the font resource is not supported. Its faces
+// are parsed when a query first needs what they cover, so fontFile must
+// stay readable as long as the FontMap is used, and a face whose tables
+// turn out to be damaged is then logged and covers nothing.
 //
 // The order of calls to [AddFont] and [AddFace] determines relative priority
 // of manually loaded fonts. See [ResolveFace] for details about when this matters.
@@ -295,49 +311,75 @@ func (fm *FontMap) AddFont(fontFile font.Resource, fileID, familyName string) er
 		return fmt.Errorf("unsupported font resource: %s", err)
 	}
 
-	// eagerly load the faces
-	faces, err := font.ParseTTC(fontFile)
-	if err != nil {
-		return fmt.Errorf("unsupported font resource: %s", err)
-	}
-
-	// by construction of fonts.Loader and fonts.FontDescriptor,
-	// fontDescriptors and face have the same length
-	if len(faces) != len(loaders) {
-		panic("internal error: inconsistent font descriptors and loader")
-	}
-
-	var addedFonts []Footprint
-	for i, fontDesc := range loaders {
-		fp, _, err := newFootprintFromLoader(fontDesc, true, scanBuffer{})
-		// the font won't be usable, just ignore it
-		if err != nil {
-			continue
+	added := make([]Footprint, len(loaders))
+	var raw []byte
+	for i, ld := range loaders {
+		var desc font.Description
+		desc, raw = font.Describe(ld, raw)
+		family := familyName
+		if family == "" {
+			family = desc.Family
 		}
-
-		fp.Location.File = fileID
-		fp.Location.Index = uint16(i)
-		// TODO: for now, we do not handle variable fonts
-
-		if familyName != "" {
-			// give priority to the user provided family
-			fp.Family = font.NormalizeFamily(familyName)
+		added[i] = Footprint{
+			Location:       Location{File: fileID, Index: uint16(i)},
+			Family:         font.NormalizeFamily(family),
+			Aspect:         desc.Aspect,
+			isUserProvided: true,
 		}
-
-		addedFonts = append(addedFonts, fp)
-		fm.cache(fp, faces[i])
+		fm.pending[len(fm.database)+i] = ld
 	}
-
-	if len(addedFonts) == 0 {
+	if len(added) == 0 {
 		return fmt.Errorf("empty font resource %s", fileID)
 	}
+	if fm.firstFace == nil && fm.firstPending == noPendingFace {
+		fm.firstPending = len(fm.database)
+	}
 
-	fm.appendFootprints(addedFonts...)
+	fm.appendFootprints(added...)
 
 	fm.built = false
 
 	fm.lru.Clear()
 	return nil
+}
+
+// realize parses the font registered at index in the database, if it is
+// still pending, and fills in what it covers. A font that does not parse
+// is logged and covers nothing.
+func (fm *FontMap) realize(index int) {
+	ld, isPending := fm.pending[index]
+	if !isPending {
+		return
+	}
+	delete(fm.pending, index)
+	if index == fm.firstPending {
+		fm.firstPending = noPendingFace
+	}
+	fp := &fm.database[index]
+	coverage, _, err := newCoverageFromLoader(ld, scanBuffer{})
+	if err != nil {
+		fm.logger.Printf("reading font %s: %v", fp.Location.File, err)
+		return
+	}
+	ft, err := font.NewFont(ld)
+	if err != nil {
+		fm.logger.Printf("reading font %s: %v", fp.Location.File, err)
+		return
+	}
+	fp.Runes, fp.Scripts, fp.Langs = coverage.Runes, coverage.Scripts, coverage.Langs
+	for _, script := range fp.Scripts {
+		entries := fm.scriptMap[script]
+		at, _ := slices.BinarySearch(entries, index)
+		fm.scriptMap[script] = slices.Insert(entries, at, index)
+	}
+	fm.cache(*fp, font.NewFace(ft))
+}
+
+// realizeAll parses every pending font, in the order they were registered.
+func (fm *FontMap) realizeAll() {
+	for _, index := range slices.Sorted(maps.Keys(fm.pending)) {
+		fm.realize(index)
+	}
 }
 
 // [AddFace] inserts an already-loaded font.Face into the FontMap. The caller
@@ -356,7 +398,7 @@ func (fm *FontMap) AddFace(face *font.Face, location Location, md font.Descripti
 }
 
 func (fm *FontMap) cache(fp Footprint, face *font.Face) {
-	if fm.firstFace == nil {
+	if fm.firstFace == nil && fm.firstPending == noPendingFace {
 		fm.firstFace = face
 	}
 	fm.faceCache[fp.Location] = face
@@ -462,6 +504,11 @@ func (fm *FontMap) buildCandidates() {
 	if fm.built {
 		return
 	}
+	// a script selects fonts by what they cover
+	if fm.script != 0 {
+		fm.realizeAll()
+	}
+
 	fm.candidates.resetWithSize(len(fm.query.Families))
 
 	// first pass for an exact match
@@ -511,6 +558,7 @@ func (fm *FontMap) buildCandidates() {
 // returns nil if not candidates supports the rune `r`
 func (fm *FontMap) resolveForRune(candidates []int, r rune) *font.Face {
 	for _, footprintIndex := range candidates {
+		fm.realize(footprintIndex)
 		// check the coverage
 		if fp := fm.database[footprintIndex]; fp.Runes.Contains(r) {
 			// try to use the font
@@ -530,6 +578,7 @@ func (fm *FontMap) resolveForRune(candidates []int, r rune) *font.Face {
 // returns nil if no candidates support the language `lang`
 func (fm *FontMap) resolveForLang(candidates []int, lang LangID) *font.Face {
 	for _, footprintIndex := range candidates {
+		fm.realize(footprintIndex)
 		// check the coverage
 		if fp := fm.database[footprintIndex]; fp.Langs.Contains(lang) {
 			// try to use the font
@@ -604,6 +653,7 @@ func (fm *FontMap) ResolveFace(r rune) (face *font.Face) {
 
 	fm.logger.Printf("No font matched for script %s and rune %U (%c) -> returning arbitrary face", fm.script, r, r)
 	// return an arbitrary face
+	fm.realizeAll()
 	if fm.firstFace == nil && len(fm.database) > 0 {
 		for _, fp := range fm.database {
 			face, err := fm.loadFont(fp)

@@ -306,7 +306,7 @@ func (fa *footprintScanner) consume(path string, stamp fileStamp) error {
 
 	for i, ld := range loaders {
 		var fp Footprint
-		fp, fa.scanBuffer, err = newFootprintFromLoader(ld, false, fa.scanBuffer)
+		fp, fa.scanBuffer, err = newFootprintFromLoader(ld, fa.scanBuffer)
 		// the font won't be usable, just ignore it
 		if err != nil {
 			continue
