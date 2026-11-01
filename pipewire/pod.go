@@ -59,6 +59,7 @@ const (
 	formatVideoModifier = 0x20002
 	formatVideoSize     = 0x20003
 	formatVideoRate     = 0x20004
+	formatVideoMaxRate  = 0x20005
 
 	mediaTypeVideo  = 2
 	mediaSubtypeRaw = 1
@@ -204,6 +205,31 @@ func podIntRange(def, lo, hi int32) pod {
 	return pod{typeChoice, body}
 }
 
+// podFractionRange is a Choice of Range over whole frame rates: default,
+// min, max.
+func podFractionRange(def, lo, hi uint32) pod {
+	body := append(le32(choiceRange), le32(0)...)
+	body = append(body, append(le32(8), le32(typeFraction)...)...)
+	for _, v := range []uint32{def, lo, hi} {
+		body = append(body, append(le32(v), le32(1)...)...)
+	}
+	return pod{typeChoice, body}
+}
+
+// formatMaxRate is a negotiated format's most frames a second, whole frames
+// rounded up; false when the format fixes none.
+func formatMaxRate(b []byte) (uint32, bool) {
+	typ, v, ok := propValue(b, formatVideoMaxRate)
+	if !ok || typ != typeFraction || len(v) < 8 {
+		return 0, false
+	}
+	num, denom := binary.LittleEndian.Uint32(v), binary.LittleEndian.Uint32(v[4:])
+	if num == 0 || denom == 0 {
+		return 0, false
+	}
+	return (num + denom - 1) / denom, true
+}
+
 // podIntFlags is a Choice of Flags over an Int mask: the server takes the
 // bits both sides name, where two plain Ints would have to be equal.
 func podIntFlags(mask uint32) pod {
@@ -259,7 +285,8 @@ func formatObject(id, width, height, fps uint32, format VideoFormat, modifier *f
 	}
 	props = append(props,
 		prop{key: formatVideoSize, value: podRectangle(width, height)},
-		prop{key: formatVideoRate, value: podFraction(fps, 1)},
+		prop{key: formatVideoRate, value: podFractionRange(0, 0, fps)},
+		prop{key: formatVideoMaxRate, value: podFractionRange(fps, 1, fps)},
 	)
 	return object(objectFormat, id, props...)
 }

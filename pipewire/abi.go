@@ -24,7 +24,7 @@ type nodeActivation struct {
 	clientVersion  atomic.Uint32
 	serverVersion  atomic.Uint32
 	activeDriverID atomic.Uint32
-	_              uint32
+	driverID       atomic.Uint32
 	flags          atomic.Uint32
 	position       ioPosition
 }
@@ -36,9 +36,9 @@ const activationVersionOffset = 540
 // activationState is struct pw_node_activation_state: the status of
 // the node's last cycle, and how many of its dependencies are pending.
 type activationState struct {
-	status  atomic.Int32
-	_       int32
-	pending atomic.Int32
+	status   atomic.Int32
+	required atomic.Int32
+	pending  atomic.Int32
 }
 
 // Activation statuses (PW_NODE_ACTIVATION_*).
@@ -85,19 +85,25 @@ type ioPosition struct {
 	_     [ioPositionSize - ioClockSize]byte
 }
 
-// ioClock is struct spa_io_clock: the driver's id, and past its name
-// and timing the count of graph cycles.
+// ioClock is struct spa_io_clock: the driver's id, its timing, and the
+// count of graph cycles.
 type ioClock struct {
-	_     uint32
-	id    atomic.Uint32
-	_     [ioClockCycleOffset - 8]byte
-	cycle atomic.Uint32
-	_     [ioClockSize - ioClockCycleOffset - 4]byte
+	_        uint32
+	id       atomic.Uint32
+	_        [ioClockNsecOffset - 8]byte
+	nsec     atomic.Uint64
+	_        uint64
+	position atomic.Uint64
+	duration atomic.Uint64
+	_        [ioClockCycleOffset - ioClockNsecOffset - 32]byte
+	cycle    atomic.Uint32
+	_        [ioClockSize - ioClockCycleOffset - 4]byte
 }
 
 const (
 	ioPositionSize     = 1688
 	ioClockSize        = 160
+	ioClockNsecOffset  = 72
 	ioClockCycleOffset = 148
 )
 

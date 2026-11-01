@@ -102,6 +102,9 @@ type nodeHandler interface {
 	allocData(b *buffer) error
 	releaseData(b *buffer)
 	buffersCleared()
+	// scheduleChanged tells the handler the node may now run differently: it
+	// started, its driver changed or it has new buffers. It must not block.
+	scheduleChanged()
 	process(n *node) int32
 }
 
@@ -481,6 +484,7 @@ func (n *node) setIO(id, memID, off, size uint32) error {
 	if pos != nil && n.activation != nil && n.abi.v1() {
 		n.activation.activeDriverID.Store(pos.clock.id.Load())
 	}
+	n.h.scheduleChanged()
 	return nil
 }
 
@@ -507,6 +511,7 @@ func (n *node) command(cmd []byte) error {
 			n.activation.status.Store(activationFinished)
 		}
 		n.prepared = true
+		n.h.scheduleChanged()
 	case commandPause, commandSuspend:
 		return n.unprepare()
 	}
@@ -607,6 +612,7 @@ func (n *node) portUseBuffers(seq uint32, f *podIter) error {
 			return refuse(fmt.Errorf("buffer %d: %w", i, err))
 		}
 	}
+	n.h.scheduleChanged()
 	if !alloc || count == 0 {
 		return nil
 	}
@@ -851,8 +857,9 @@ func (n *node) realtime() {
 // cycle is one process cycle, as libpipewire's process_node runs it:
 // with the v1 activation claim the trigger, process, mark the cycle
 // finished and, unless the driver resumes the node asynchronously, wake
-// its peers; before 1.2 a woken node always runs and wakes them. It
-// allocates nothing.
+// its peers; before 1.2 a woken node always runs and wakes them. A node
+// driving its graph was woken because the cycle it began has ended: it
+// has nothing to do, and no one is left to wake. It allocates nothing.
 func (n *node) cycle() error {
 	a := n.activation
 	v1 := n.abi.v1()
@@ -864,8 +871,12 @@ func (n *node) cycle() error {
 	}
 	a.awakeTime.Store(n.now())
 	a.bits.And(^uint32(activationBitPendingSync))
+	driving := n.driving()
 	status := int32(statusHaveData)
-	if n.prepared {
+	switch {
+	case driving:
+		status = statusNeedData
+	case n.prepared:
 		status = n.h.process(n)
 	}
 	a.state[0].status.Store(status)
@@ -877,10 +888,103 @@ func (n *node) cycle() error {
 		a.status.Store(activationFinished)
 	}
 	a.finishTime.Store(now)
-	if finished && !n.async() {
+	if finished && !driving && !n.async() {
 		return n.triggerTargets(now)
 	}
 	return nil
+}
+
+// driving is whether the node is the driver of its graph: the position it
+// follows is its own clock's.
+func (n *node) driving() bool {
+	return n.position != nil && n.position.clock.id.Load() == n.activation.position.clock.id.Load()
+}
+
+// followed is whether a node the driving node would wake is ready for a
+// cycle: a frame sent to no one is lost, and a still source has no other.
+func (n *node) followed() bool {
+	if len(n.mixes) == 0 {
+		return false
+	}
+	own := n.activation.position.clock.id.Load()
+	for i := range n.targets {
+		t := &n.targets[i]
+		if t.activation == n.activation || t.id == own {
+			continue
+		}
+		if !n.abi.v1() {
+			return true
+		}
+		if t.activation.activeDriverID.Load() == own && t.activation.status.Load() != activationInactive {
+			return true
+		}
+	}
+	return false
+}
+
+// begin starts a graph cycle of the driving node, as libpipewire's
+// node_ready does: end a cycle a peer has not finished, set every peer up to
+// count down from its dependencies, publish the position and wake them. A
+// peer of another driver or stopped is left alone. The transport position
+// stays stopped: nothing on a video link reads it, and no peer can start one.
+// It allocates nothing.
+func (n *node) begin() error {
+	a := n.activation
+	v1 := n.abi.v1()
+	if a.status.Load() != activationFinished {
+		if v1 {
+			a.status.Store(activationTriggered)
+		}
+		if err := n.cycle(); err != nil {
+			return err
+		}
+	}
+	own := a.position.clock.id.Load()
+	pending := int32(0)
+	for i := range n.targets {
+		ta := n.targets[i].activation
+		st := &ta.state[0]
+		if v1 {
+			ta.driverID.Store(own)
+		}
+		st.pending.Store(st.required.Load())
+		if !n.readyFollower(ta, own) {
+			continue
+		}
+		if !v1 || ta.flags.Load()&activationFlagAsync == 0 {
+			pending++
+		}
+	}
+	a.state[0].pending.Store(pending)
+	now := n.now()
+	clock := &a.position.clock
+	clock.nsec.Store(now)
+	clock.position.Add(clock.duration.Load())
+	if v1 {
+		clock.cycle.Add(1)
+	}
+	return n.triggerTargets(now)
+}
+
+// readyFollower moves a peer to not triggered for the coming cycle, false
+// when it does not take part in it.
+func (n *node) readyFollower(ta *nodeActivation, own uint32) bool {
+	if !n.abi.v1() {
+		ta.status.Store(activationNotTriggered)
+		return true
+	}
+	if ta.activeDriverID.Load() != own {
+		return false
+	}
+	for {
+		old := ta.status.Load()
+		if old == activationInactive {
+			return false
+		}
+		if ta.status.CompareAndSwap(old, activationNotTriggered) {
+			return true
+		}
+	}
 }
 
 // now is CLOCK_MONOTONIC in nanoseconds, the clock the graph keeps its

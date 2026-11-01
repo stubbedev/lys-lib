@@ -1,8 +1,8 @@
 // Package pipewire is the PipeWire video producer a ScreenCast portal
 // streams through: a node exported over PipeWire's native
-// protocol (a client-node, as libpipewire's pw_stream exports one), fed
-// one captured frame per cycle the graph drives, stamped with the
-// header, transform and damage metas. The protocol, the shared memory
+// protocol (a client-node, as libpipewire's pw_stream exports one), which
+// drives its own graph: a cycle runs when a captured frame is ready, stamped
+// with the header, transform and damage metas. The protocol, the shared memory
 // and the realtime cycle are spoken here in Go; no libpipewire.
 package pipewire
 
@@ -56,6 +56,15 @@ type DmabufSource interface {
 	FillDmabuf(Dmabuf) (damage []Rect, ok bool)
 }
 
+// FrameNotifier is a DmabufSource whose GPU frames land on their own time. On
+// those buffers the producer does not poll it: it calls NotifyFrames once,
+// before any fill, and the source calls wake, from any goroutine and without
+// blocking, whenever FillDmabuf may now produce a frame or a copy it started
+// has ended.
+type FrameNotifier interface {
+	NotifyFrames(wake func())
+}
+
 // DmabufPreparer is a DmabufSource whose fills land apart from the graph
 // (FillDmabuf false while one runs). PrepareDmabuf starts filling the
 // buffer the next cycle's FillDmabuf gets, so a frame goes out each cycle
@@ -89,7 +98,9 @@ type Config struct {
 	Name                  string
 	Width, Height, Stride uint32
 	Format                VideoFormat
-	// FPS is the advertised and paced frame rate. Required.
+	// FPS is the most frames a second the stream sends, advertised as its
+	// maximum and paced. The rate is variable: a frame goes out when the
+	// source has one, not on a clock. A consumer may ask for less. Required.
 	FPS uint32
 	// Transform is the constant spa_meta_videotransform value (the
 	// output's wl_output transform; 0 for a window).
@@ -125,11 +136,21 @@ type Producer struct {
 	// producer's until it goes out, as a source may be filling it.
 	pending *buffer
 
-	start       time.Time
-	minInterval time.Duration
-	last        time.Time
-	seq         uint64
-	damage      []Rect
+	// kick wakes the drive loop; driven closes when it has ended.
+	kick   chan struct{}
+	driven chan struct{}
+	// notifies is whether the source tells when its GPU frames land.
+	notifies bool
+
+	start time.Time
+	// interval is the time between frames at the negotiated rate, and next
+	// when the next one is due: frames that land early wait for it, and a late
+	// one does not move the ones after it, so the rate is the negotiated one
+	// whatever the source's cadence.
+	interval time.Duration
+	next     time.Time
+	seq      uint64
+	damage   []Rect
 }
 
 // connectTimeout bounds each wait on the server while starting.
@@ -143,10 +164,14 @@ func Start(cfg Config) (*Producer, error) {
 	}
 	p := &Producer{
 		cfg: cfg, done: make(chan struct{}), closing: make(chan struct{}), start: time.Now(),
-		minInterval: time.Second * 10 / time.Duration(cfg.FPS*12),
-		damage:      make([]Rect, 0, maxDamageRegions),
+		kick: make(chan struct{}, 1), driven: make(chan struct{}),
+		damage: make([]Rect, 0, maxDamageRegions),
 	}
-	p.last = p.start.Add(-p.minInterval)
+	p.pace(cfg.FPS)
+	if notifier, ok := cfg.Source.(FrameNotifier); ok {
+		p.notifies = true
+		notifier.NotifyFrames(p.scheduleChanged)
+	}
 	p.dmabuf, _ = cfg.Source.(DmabufSource)
 	p.resizable, _ = cfg.Source.(Resizable)
 	k, err := connectCore(connectTimeout, cfg.Application, p.stopped)
@@ -166,6 +191,7 @@ func Start(cfg Config) (*Producer, error) {
 		{"media.name", cfg.Name},
 		{"node.name", cfg.Name},
 		{"node.async", "true"},
+		{"node.driver", "true"},
 		{"node.want-driver", "true"},
 		{"stream.is-live", "true"},
 	}, portFlags)
@@ -173,6 +199,7 @@ func Start(cfg Config) (*Producer, error) {
 		k.close()
 		return nil, fmt.Errorf("pipewire: create the stream node: %w", err)
 	}
+	go p.drive()
 	if err := p.n.export(connectTimeout); err != nil {
 		p.Close()
 		return nil, fmt.Errorf("pipewire: export the stream node: %w", err)
@@ -227,6 +254,7 @@ func (p *Producer) stopped(err error) {
 func (p *Producer) Close() {
 	p.closeOnce.Do(func() {
 		close(p.closing)
+		<-p.driven
 		if err := p.n.deactivate(); err != nil {
 			p.k.abort(err)
 		}
@@ -311,6 +339,11 @@ func (p *Producer) setFormat(f []byte) error {
 		return fmt.Errorf("size %dx%d is not the offered %dx%d", w, h, p.cfg.Width, p.cfg.Height)
 	}
 	p.format, p.useDmabuf, p.renegotiating = append([]byte(nil), f...), dmabuf, false
+	rate := p.cfg.FPS
+	if asked, ok := formatMaxRate(f); ok {
+		rate = min(rate, asked)
+	}
+	p.pace(rate)
 	return nil
 }
 
@@ -353,37 +386,141 @@ func (p *Producer) releaseData(b *buffer) {
 	b.dmabuf, b.data, b.fd = nil, nil, -1
 }
 
-// process is one cycle of the stream: unless it is too early or the
-// source's size is being renegotiated, fill the buffer a previous cycle
-// did not finish, else the next free one, and hand it to the links.
+// paceSlack is how early a frame may go out: less than the wake-up jitter of
+// a timer or a compositor, so neither costs a frame.
+const paceSlack = time.Millisecond
+
+// pace sets the stream's frame interval for a rate.
+func (p *Producer) pace(rate uint32) {
+	p.interval = time.Second / time.Duration(rate)
+}
+
+// scheduleChanged wakes the drive loop.
+func (p *Producer) scheduleChanged() {
+	select {
+	case p.kick <- struct{}{}:
+	default:
+	}
+}
+
+// drive runs the stream's graph while the node is its driver, as PipeWire's
+// quantum, an audio period, says nothing of when frames exist: a cycle begins
+// when there is a frame, so a share runs at its source's rate up to the
+// negotiated one, and a still source wakes no one. A source is asked once per
+// frame interval unless it is a FrameNotifier on GPU buffers.
+func (p *Producer) drive() {
+	defer close(p.driven)
+	timer := time.NewTimer(0)
+	defer timer.Stop()
+	for {
+		select {
+		case <-p.closing:
+			return
+		case <-p.kick:
+		case <-timer.C:
+		}
+		wait, err := p.driveOnce()
+		if err != nil {
+			p.k.abort(err)
+			return
+		}
+		if wait > 0 {
+			timer.Reset(wait)
+		}
+	}
+}
+
+// driveOnce begins a cycle if a frame is there for it, and says when to look
+// again; 0 is when woken.
+func (p *Producer) driveOnce() (time.Duration, error) {
+	n := p.n
+	n.mu.Lock()
+	wait, err := p.driveLocked(n)
+	dirty := n.portDirty
+	n.portDirty = false
+	n.mu.Unlock()
+	if err == nil && dirty {
+		err = n.updatePort()
+	}
+	return wait, err
+}
+
+func (p *Producer) driveLocked(n *node) (time.Duration, error) {
+	if n.activation == nil || !n.prepared || !n.driving() {
+		return 0, nil
+	}
+	if !n.followed() {
+		return p.interval, nil
+	}
+	now := time.Now()
+	if early := p.early(now); early > 0 {
+		return early, nil
+	}
+	b := p.frame(n, now)
+	if b == nil {
+		if p.notifies && p.useDmabuf {
+			return 0, nil
+		}
+		return p.interval, nil
+	}
+	slot, _ := n.cycleSlot()
+	n.queue(slot, b)
+	err := n.begin()
+	p.prepare(n)
+	if p.notifies && p.useDmabuf {
+		return 0, err
+	}
+	return max(time.Until(p.next), time.Nanosecond), err
+}
+
+// process is one cycle of the stream when another node drives its graph.
 func (p *Producer) process(n *node) int32 {
 	slot, ok := n.cycleSlot()
 	if !ok {
 		return statusNeedData
 	}
-	now := time.Now()
-	if now.Sub(p.last) < p.minInterval || !p.sizeSettled(n) {
+	b := p.frame(n, time.Now())
+	if b == nil {
 		n.idle(slot)
 		return statusNeedData
+	}
+	n.queue(slot, b)
+	p.prepare(n)
+	return statusHaveData
+}
+
+// frame fills the buffer an earlier fill did not finish, else the next free
+// one, unless it is too early or the source's size is being renegotiated. Nil
+// is no frame.
+func (p *Producer) frame(n *node, now time.Time) *buffer {
+	if p.early(now) > 0 || !p.sizeSettled(n) {
+		return nil
 	}
 	b := p.pending
 	if b == nil {
 		b = n.dequeue()
 	}
 	if b == nil {
-		n.idle(slot)
-		return statusNeedData
+		return nil
 	}
 	if !p.fill(b, now) {
 		p.pending = b
-		n.idle(slot)
-		return statusNeedData
+		return nil
 	}
 	p.pending = nil
-	p.last = now
-	n.queue(slot, b)
-	p.prepare(n)
-	return statusHaveData
+	p.next = p.next.Add(p.interval)
+	if p.next.Before(now) {
+		p.next = now.Add(p.interval)
+	}
+	return b
+}
+
+// early is how long until a frame may go out.
+func (p *Producer) early(now time.Time) time.Duration {
+	if !now.Before(p.next) {
+		return 0
+	}
+	return p.next.Sub(now) - paceSlack
 }
 
 // prepare has a source that fills apart from the graph start on the next
