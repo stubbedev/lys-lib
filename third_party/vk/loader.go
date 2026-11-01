@@ -3,11 +3,11 @@
 // Copyright 2025 The GoGPU Authors
 // SPDX-License-Identifier: MIT
 
-// Package vk provides Pure Go Vulkan bindings using goffi for FFI calls.
+// Package vk provides Pure Go Vulkan bindings, calling through internal/ffi.
 //
-// # goffi Calling Convention
+// # Calling Convention
 //
-// CRITICAL: goffi expects args[] to contain pointers to WHERE argument values are stored,
+// CRITICAL: ffi.CallFunction expects args[] to contain pointers to WHERE argument values are stored,
 // NOT the values themselves. This applies to ALL argument types, including pointers.
 //
 // For scalar types (uint32, uint64, etc.):
@@ -21,11 +21,11 @@
 //	args[i] = unsafe.Pointer(&ptr)    // ✓ Correct: pointer TO the pointer
 //
 //	// WRONG: args[i] = unsafe.Pointer(&data[0])
-//	// This passes the data address, but goffi reads it AS IF it contains a pointer,
+//	// This passes the data address, but CallFunction reads it AS IF it contains a pointer,
 //	// interpreting the data bytes as a memory address → crash!
 //
-// This pattern is required because goffi uses ffi_call() internally, which reads
-// argument values FROM the addresses provided in the args array.
+// This pattern is required because CallFunction reads argument values FROM
+// the addresses provided in the args array before handing them to purego.
 //
 // # Intel Driver Compatibility
 //
@@ -143,7 +143,7 @@ func GetInstanceProcAddr(instance Instance, name string) unsafe.Pointer {
 	copy(cname, name)
 
 	var result unsafe.Pointer
-	// goffi expects args[] to contain pointers to WHERE values are stored.
+	// CallFunction expects args[] to contain pointers to WHERE values are stored.
 	// For pointer arguments, we need pointer-to-pointer: store the pointer
 	// in a variable, then pass &variable.
 	namePtr := unsafe.Pointer(&cname[0])

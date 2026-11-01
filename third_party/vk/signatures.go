@@ -3,10 +3,8 @@
 // Copyright 2025 The GoGPU Authors
 // SPDX-License-Identifier: MIT
 
-// Package vk provides Pure Go Vulkan bindings using goffi.
-//
 // This file contains CallInterface signatures that are reused across
-// multiple Vulkan functions with identical parameter ffi.
+// multiple Vulkan functions with identical parameter types.
 
 package vk
 
