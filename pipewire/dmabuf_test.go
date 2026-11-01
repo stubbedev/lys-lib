@@ -143,3 +143,89 @@ func TestADmabufSourceFallsBackToSharedMemory(t *testing.T) {
 		t.Errorf("a plain consumer got GPU buffers (allocs %d fills %d)", src.allocs.Load(), src.fills.Load())
 	}
 }
+
+// lateSource is a DmabufSource whose frames land apart from the graph,
+// after a few handovers of the buffer they fill, as a capture waiting
+// for the compositor does.
+type lateSource struct {
+	gpuSource
+	handovers int
+	filling   Dmabuf
+	prepared  bool
+	switched  chan struct{}
+	sent      atomic.Int32
+}
+
+func (l *lateSource) FillDmabuf(d Dmabuf) ([]Rect, bool) {
+	if l.filling == nil {
+		l.filling = d
+	}
+	if l.filling != d {
+		select {
+		case l.switched <- struct{}{}:
+		default:
+		}
+		l.filling = d
+	}
+	l.handovers++
+	if l.handovers < 4 {
+		return nil, false
+	}
+	l.handovers, l.filling = 0, nil
+	l.sent.Add(1)
+	return nil, true
+}
+
+// PrepareDmabuf starts on the next buffer: its handovers count from here.
+func (l *lateSource) PrepareDmabuf(d Dmabuf) {
+	l.filling, l.prepared = d, true
+}
+
+// A buffer a fill has not finished comes back on the next cycle, instead
+// of the fill landing only when the free buffers have gone round, and
+// the buffer prepared after a frame is the one the next cycle fills.
+func TestAnUnfinishedFillKeepsItsBuffer(t *testing.T) {
+	src := &lateSource{switched: make(chan struct{}, 1)}
+	mod := fourcc.Linear
+	_, p := streamTo(t, src, &mod)
+	deadline := time.After(5 * time.Second)
+	for src.sent.Load() < 3 {
+		select {
+		case <-src.switched:
+			t.Fatal("a fill in progress lost its buffer to another")
+		case <-deadline:
+			t.Fatalf("%d frames sent in 5 s", src.sent.Load())
+		case <-time.After(10 * time.Millisecond):
+		}
+	}
+	p.Close()
+	if !src.prepared {
+		t.Error("the source was never asked to prepare the next buffer")
+	}
+}
+
+type restarts struct {
+	solid
+	n int
+}
+
+func (r *restarts) Restart() { r.n++ }
+
+// A source hears of dropped buffers, as new ones hold nothing, but not
+// when they drop because the stream ends. Its unfinished buffer is gone.
+func TestDroppedBuffersRestartTheSource(t *testing.T) {
+	src := &restarts{}
+	p := &Producer{cfg: Config{Source: src}, closing: make(chan struct{}), pending: &buffer{}}
+	p.buffersCleared()
+	if src.n != 1 {
+		t.Errorf("%d restarts for dropped buffers, want 1", src.n)
+	}
+	if p.pending != nil {
+		t.Error("the producer kept a dropped buffer")
+	}
+	close(p.closing)
+	p.buffersCleared()
+	if src.n != 1 {
+		t.Errorf("%d restarts after the stream ended, want 1", src.n)
+	}
+}

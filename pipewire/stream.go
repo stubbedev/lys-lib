@@ -56,6 +56,21 @@ type DmabufSource interface {
 	FillDmabuf(Dmabuf) (damage []Rect, ok bool)
 }
 
+// DmabufPreparer is a DmabufSource whose fills land apart from the graph
+// (FillDmabuf false while one runs). PrepareDmabuf starts filling the
+// buffer the next cycle's FillDmabuf gets, so a frame goes out each cycle
+// and not every other one. It must not block.
+type DmabufPreparer interface {
+	PrepareDmabuf(Dmabuf)
+}
+
+// Restarter is a Source that must know when the consumer's buffers are
+// dropped: the buffers that replace them hold nothing, so the next fill
+// has to produce a frame even if the source has not changed.
+type Restarter interface {
+	Restart()
+}
+
 // Dmabuf is one GPU buffer's single plane.
 type Dmabuf interface {
 	Fd() int
@@ -106,6 +121,9 @@ type Producer struct {
 	resizable     Resizable
 	renegotiating bool
 	format        []byte
+	// pending is the buffer a fill did not finish: it stays this
+	// producer's until it goes out, as a source may be filling it.
+	pending *buffer
 
 	start       time.Time
 	minInterval time.Duration
@@ -336,8 +354,8 @@ func (p *Producer) releaseData(b *buffer) {
 }
 
 // process is one cycle of the stream: unless it is too early or the
-// source's size is being renegotiated, fill the next free buffer and
-// hand it to the links.
+// source's size is being renegotiated, fill the buffer a previous cycle
+// did not finish, else the next free one, and hand it to the links.
 func (p *Producer) process(n *node) int32 {
 	slot, ok := n.cycleSlot()
 	if !ok {
@@ -348,19 +366,51 @@ func (p *Producer) process(n *node) int32 {
 		n.idle(slot)
 		return statusNeedData
 	}
-	b := n.dequeue()
+	b := p.pending
+	if b == nil {
+		b = n.dequeue()
+	}
 	if b == nil {
 		n.idle(slot)
 		return statusNeedData
 	}
 	if !p.fill(b, now) {
-		b.release()
+		p.pending = b
 		n.idle(slot)
 		return statusNeedData
 	}
+	p.pending = nil
 	p.last = now
 	n.queue(slot, b)
+	p.prepare(n)
 	return statusHaveData
+}
+
+// prepare has a source that fills apart from the graph start on the next
+// frame while this one is on its way.
+func (p *Producer) prepare(n *node) {
+	prep, ok := p.cfg.Source.(DmabufPreparer)
+	if !ok || !p.useDmabuf {
+		return
+	}
+	if next := n.dequeue(); next != nil {
+		p.pending = next
+		prep.PrepareDmabuf(next.dmabuf)
+	}
+}
+
+// buffersCleared forgets the buffers the node just dropped and, unless
+// the stream is ending, tells the source its frames are gone with them.
+func (p *Producer) buffersCleared() {
+	p.pending = nil
+	select {
+	case <-p.closing:
+		return
+	default:
+	}
+	if r, ok := p.cfg.Source.(Restarter); ok {
+		r.Restart()
+	}
 }
 
 // sizeSettled is whether frames of the stream's size may go out: a

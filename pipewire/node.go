@@ -101,6 +101,7 @@ type nodeHandler interface {
 	setFormat(format []byte) error
 	allocData(b *buffer) error
 	releaseData(b *buffer)
+	buffersCleared()
 	process(n *node) int32
 }
 
@@ -557,6 +558,9 @@ func (n *node) portSetParam(seq, dir, port, id uint32, param []byte) error {
 // clearBuffers drops the port's buffers and what was allocated for
 // them; the links keep their io.
 func (n *node) clearBuffers() {
+	if len(n.buffers) > 0 {
+		n.h.buffersCleared()
+	}
 	for i := range n.buffers {
 		b := &n.buffers[i]
 		if b.allocated {
