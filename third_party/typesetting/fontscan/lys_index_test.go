@@ -310,6 +310,9 @@ func newFontTree(t *testing.T) *fontTree {
 	t.Setenv("XDG_DATA_HOME", filepath.Join(root, "data"))
 	t.Setenv("XDG_DATA_DIRS", "")
 	t.Setenv("FONTCONFIG_FILE", tree.conf)
+	systemDirs := fhsFontDirectories
+	fhsFontDirectories = nil
+	t.Cleanup(func() { fhsFontDirectories = systemDirs })
 	return tree
 }
 

@@ -17,6 +17,15 @@ import (
 	ot "github.com/stubbedev/lys-lib/third_party/typesetting/font/opentype"
 )
 
+// fhsFontDirectories are the fixed locations a Unix system keeps fonts in,
+// whatever its fontconfig says.
+var fhsFontDirectories = []string{
+	"/usr/X11R6/lib/X11/fonts",
+	"/usr/local/share/fonts",
+	"/usr/share/fonts",
+	"/usr/share/texmf/fonts/opentype/public",
+}
+
 // ErrNoFontDirectories is DefaultFontDirectories finding no font directory
 // on the system, as in a minimal container.
 var ErrNoFontDirectories = errors.New("no font directories found")
@@ -62,14 +71,11 @@ func fontDirectories(logger Logger, fontconfigDirs func() []string) ([]string, e
 			"/System/Library/Assets/com_apple_MobileAsset_Font5",
 		}
 	case "linux", "openbsd", "freebsd":
-		dirs = []string{
-			"/usr/X11R6/lib/X11/fonts",
-			"/usr/local/share/fonts",
-			"/usr/share/fonts",
-			"/usr/share/texmf/fonts/opentype/public",
+		dirs = append(dirs, fhsFontDirectories...)
+		dirs = append(dirs,
 			"~/.fonts/",
 			filepath.Join(getEnvWithDefault("XDG_DATA_HOME", "~/.local/share"), "fonts"),
-		}
+		)
 
 		if dataPaths := os.Getenv("XDG_DATA_DIRS"); dataPaths != "" {
 			for _, dataPath := range filepath.SplitList(dataPaths) {
