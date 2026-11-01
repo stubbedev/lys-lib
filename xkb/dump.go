@@ -75,34 +75,57 @@ func writeStringLiteral(b *strings.Builder, s string) {
 	b.WriteByte('"')
 }
 
-func (m *Keymap) writeSectionHeader(b *strings.Builder, keyword string, typ fileType) {
-	if name := m.sections[typ]; name != "" {
-		fmt.Fprintf(b, "%s \"%s\" {\n", keyword, name)
-		return
-	}
-	fmt.Fprintf(b, "%s {\n", keyword)
+type dumper struct {
+	m          *Keymap
+	b          *strings.Builder
+	format     KeymapFormat
+	maxGroups  uint32
+	pretty     bool
+	dropUnused bool
 }
 
-func (m *Keymap) writeVmods(b *strings.Builder) {
+const (
+	symbolPadding = 15
+	actionPadding = 30
+)
+
+const incompatibleTextFormat = 742
+
+func (d *dumper) logMultipleActions() {
+	d.m.ctx.log(LogError, 0, incompatibleTextFormat, "Cannot serialize multiple actions per level in keymap format %d; degrade to VoidAction()\n", d.format)
+}
+
+func (d *dumper) sectionHeader(keyword string, typ fileType) {
+	if name := d.m.sections[typ]; name != "" {
+		fmt.Fprintf(d.b, "%s \"%s\" {\n", keyword, name)
+		return
+	}
+	fmt.Fprintf(d.b, "%s {\n", keyword)
+}
+
+func (d *dumper) vmods() {
+	m := d.m
 	hasSome := false
+	autoCanonical := d.format >= FormatTextV2
 	for i := uint32(8); i < m.mods.num; i++ {
 		if !hasSome {
-			b.WriteString("\tvirtual_modifiers ")
+			d.b.WriteString("\tvirtual_modifiers ")
 			hasSome = true
 		} else {
-			b.WriteByte(',')
+			d.b.WriteByte(',')
 		}
-		b.WriteString(m.mods.mods[i].name)
-		if m.mods.explicit&(1<<i) != 0 && m.mods.mods[i].mapping != 0 {
-			fmt.Fprintf(b, "=%s", m.modMaskText(modReal, m.mods.mods[i].mapping))
+		d.b.WriteString(m.mods.mods[i].name)
+		if m.mods.explicit&(1<<i) != 0 && (autoCanonical || m.mods.mods[i].mapping != 0) {
+			fmt.Fprintf(d.b, "=%s", m.modMaskText(modReal, m.mods.mods[i].mapping))
 		}
 	}
 	if hasSome {
-		b.WriteString(";\n\n")
+		d.b.WriteString(";\n\n")
 	}
 }
 
-func (m *Keymap) writeLEDMap(b *strings.Builder, l *led) {
+func (d *dumper) ledMap(l *led) {
+	m, b := d.m, d.b
 	b.WriteString("\tindicator ")
 	writeStringLiteral(b, l.name)
 	b.WriteString(" {\n")
@@ -146,7 +169,12 @@ func actionTypeText(t actionType) string {
 	return "Private"
 }
 
-const voidActionV1 = "LockControls(controls=none,affect=neither)"
+func (d *dumper) voidText() string {
+	if d.format == FormatTextV1 {
+		return "LockControls(controls=none,affect=neither)"
+	}
+	return "VoidAction()"
+}
 
 func signPrefix(absolute bool, positive bool) string {
 	if !absolute && positive {
@@ -155,13 +183,13 @@ func signPrefix(absolute bool, positive bool) string {
 	return ""
 }
 
-func (m *Keymap) actionText(a *action) string {
+func (d *dumper) actionText(a *action) string {
 	name := actionTypeText(a.typ)
 	switch a.typ {
 	case actModSet, actModLatch, actModLock:
-		return m.modActionText(name, a)
+		return d.modActionText(name, a)
 	case actGroupSet, actGroupLatch, actGroupLock:
-		return groupActionText(name, a)
+		return d.groupActionText(name, a)
 	case actTerminate:
 		return name + "()"
 	case actPtrMove:
@@ -187,17 +215,17 @@ func (m *Keymap) actionText(a *action) string {
 	case actNone:
 		return "NoAction()"
 	case actVoid:
-		return voidActionV1
+		return d.voidText()
 	}
-	d := a.privData
+	p := a.privData
 	return fmt.Sprintf("%s(type=0x%02x,data[0]=0x%02x,data[1]=0x%02x,data[2]=0x%02x,data[3]=0x%02x,data[4]=0x%02x,data[5]=0x%02x,data[6]=0x%02x)",
-		name, uint8(a.typ), d[0], d[1], d[2], d[3], d[4], d[5], d[6])
+		name, uint8(a.typ), p[0], p[1], p[2], p[3], p[4], p[5], p[6])
 }
 
-func (m *Keymap) modActionText(name string, a *action) string {
+func (d *dumper) modActionText(name string, a *action) string {
 	args := "modMapMods"
 	if a.flags&flagLookupModmap == 0 {
-		args = m.modMaskText(modBoth, a.mods)
+		args = d.m.modMaskText(modBoth, a.mods)
 	}
 	var extra string
 	if a.typ != actModLock {
@@ -210,21 +238,35 @@ func (m *Keymap) modActionText(name string, a *action) string {
 	} else {
 		extra = affectText(a.flags, false)
 	}
+	if a.flags&flagUnlockOnPress != 0 {
+		if d.format >= FormatTextV2 {
+			extra += ",unlockOnPress"
+		} else {
+			d.m.ctx.log(LogError, 0, incompatibleTextFormat, "Cannot use \"%s(unlockOnPress=true)\" in keymap format %d\n", name, d.format)
+		}
+	}
+	if a.typ == actModLatch && a.flags&flagLatchOnPress != 0 {
+		if d.format >= FormatTextV2 {
+			extra += ",latchOnPress"
+		} else {
+			d.m.ctx.log(LogError, 0, incompatibleTextFormat, "Cannot use \"LatchMods(latchOnPress=true)\" in keymap format %d\n", d.format)
+		}
+	}
 	return fmt.Sprintf("%s(modifiers=%s%s)", name, args, extra)
 }
 
-func groupActionText(name string, a *action) string {
+func (d *dumper) groupActionText(name string, a *action) string {
 	absolute := a.flags&flagAbsoluteSwitch != 0
 	magnitude := a.group
 	if magnitude < 0 {
 		magnitude = -magnitude
 	}
-	limit := int32(maxGroupsV1)
+	limit := int32(d.maxGroups) //nolint:gosec // at most maxGroups
 	if !absolute {
 		limit++
 	}
 	if magnitude >= limit {
-		return voidActionV1
+		return d.voidText()
 	}
 	value := a.group
 	if absolute {
@@ -237,6 +279,12 @@ func groupActionText(name string, a *action) string {
 		}
 		if a.flags&flagLatchToLock != 0 {
 			extra += ",latchToLock"
+		}
+	} else if a.flags&flagLockOnRelease != 0 {
+		if d.format >= FormatTextV2 {
+			extra += ",lockOnRelease"
+		} else {
+			d.m.ctx.log(LogError, 0, incompatibleTextFormat, "Cannot use \"GroupLock(lockOnRelease=true)\" in keymap format %d\n", d.format)
 		}
 	}
 	return fmt.Sprintf("%s(group=%s%d%s)", name, signPrefix(absolute, a.group > 0), value, extra)
@@ -260,33 +308,40 @@ func ptrButtonText(name string, a *action) string {
 	return b.String()
 }
 
-func (m *Keymap) writeCompat(b *strings.Builder) {
-	m.writeSectionHeader(b, "xkb_compatibility", fileCompat)
-	m.writeVmods(b)
+func (d *dumper) compat() {
+	m, b := d.m, d.b
+	d.sectionHeader("xkb_compatibility", fileCompat)
+	d.vmods()
 	b.WriteString("\tinterpret.useModMapMods= AnyLevel;\n")
 	b.WriteString("\tinterpret.repeat= False;\n")
-	interps := m.interprets
-	if !m.interpsAny {
+	interps := m.allInterprets
+	if len(interps) == 0 {
 		interps = []*interpret{&defaultInterpret}
 	}
 	for _, si := range interps {
-		m.writeInterpret(b, si)
+		if si.required || !d.dropUnused {
+			d.interpret(si)
+		}
 	}
 	for i := range m.leds {
 		l := &m.leds[i]
 		if l.whichGroups != 0 || l.groups != 0 || l.whichMods != 0 || l.mods != 0 || l.ctrls != 0 {
-			m.writeLEDMap(b, l)
+			d.ledMap(l)
 		}
 	}
 	b.WriteString("};\n\n")
 }
 
-func (m *Keymap) writeInterpret(b *strings.Builder, si *interpret) {
+func (d *dumper) interpret(si *interpret) {
+	m, b := d.m, d.b
 	match := lookupValue(matchNames, uint32(si.match))
 	mods := m.modMaskText(modBoth, si.mods)
-	if si.sym == KeyNoSymbol {
+	switch {
+	case si.sym == KeyNoSymbol:
 		fmt.Fprintf(b, "\tinterpret Any+%s(%s) {", match, mods)
-	} else {
+	case d.pretty:
+		fmt.Fprintf(b, "\tinterpret %s+%s(%s) {", keysymText(si.sym), match, mods)
+	default:
 		fmt.Fprintf(b, "\tinterpret 0x%x+%s(%s) {", uint32(si.sym), match, mods)
 	}
 	explicit := false
@@ -302,13 +357,24 @@ func (m *Keymap) writeInterpret(b *strings.Builder, si *interpret) {
 		b.WriteString("\n\t\trepeat= True;")
 		explicit = true
 	}
-	switch len(si.actions) {
-	case 0:
-	case 1:
-		fmt.Fprintf(b, "\n\t\taction= %s;", m.actionText(&si.actions[0]))
+	switch {
+	case len(si.actions) == 0:
+	case len(si.actions) == 1:
+		fmt.Fprintf(b, "\n\t\taction= %s;", d.actionText(&si.actions[0]))
+		explicit = true
+	case d.format < FormatTextV2:
+		d.logMultipleActions()
+		fmt.Fprintf(b, "\n\t\taction= %s;", d.voidText())
 		explicit = true
 	default:
-		fmt.Fprintf(b, "\n\t\taction= %s;", voidActionV1)
+		b.WriteString("\n\t\taction= {")
+		for i := range si.actions {
+			if i != 0 {
+				b.WriteString(", ")
+			}
+			b.WriteString(d.actionText(&si.actions[i]))
+		}
+		b.WriteString("};")
 		explicit = true
 	}
 	if explicit {
@@ -318,14 +384,28 @@ func (m *Keymap) writeInterpret(b *strings.Builder, si *interpret) {
 	}
 }
 
-func (m *Keymap) writeKeycodes(b *strings.Builder) {
-	m.writeSectionHeader(b, "xkb_keycodes", fileKeycodes)
+func keysymText(sym Keysym) string {
+	if name := KeysymGetName(sym); name != "" {
+		return name
+	}
+	return "NoSymbol"
+}
+
+func (d *dumper) keycodes() {
+	m, b := d.m, d.b
+	d.sectionHeader("xkb_keycodes", fileKeycodes)
 	fmt.Fprintf(b, "\tminimum = %d;\n", min(m.minKey, 8))
 	fmt.Fprintf(b, "\tmaximum = %d;\n", max(m.maxKey, 255))
 	for i := range m.flatKeys {
 		k := &m.flatKeys[i]
-		if k.nameLen > 0 {
-			fmt.Fprintf(b, "\t<%s> = %d;\n", m.keyName(k), k.keycode)
+		if k.nameLen == 0 {
+			continue
+		}
+		name := "<" + m.keyName(k) + ">"
+		if d.pretty {
+			fmt.Fprintf(b, "\t%-20s = %d;\n", name, k.keycode)
+		} else {
+			fmt.Fprintf(b, "\t%s = %d;\n", name, k.keycode)
 		}
 	}
 	for i := range m.leds {
@@ -336,15 +416,25 @@ func (m *Keymap) writeKeycodes(b *strings.Builder) {
 		}
 	}
 	for _, a := range m.aliasPairs {
-		fmt.Fprintf(b, "\talias <%s> = <%s>;\n", m.nameBlob[a.alias:a.alias+uint32(a.aliasSize)], m.nameBlob[a.real:a.real+uint32(a.realSize)])
+		alias := "<" + m.nameBlob[a.alias:a.alias+uint32(a.aliasSize)] + ">"
+		real := "<" + m.nameBlob[a.real:a.real+uint32(a.realSize)] + ">"
+		if d.pretty {
+			fmt.Fprintf(b, "\talias %-14s = %s;\n", alias, real)
+		} else {
+			fmt.Fprintf(b, "\talias %s = %s;\n", alias, real)
+		}
 	}
 	b.WriteString("};\n\n")
 }
 
-func (m *Keymap) writeTypes(b *strings.Builder) {
-	m.writeSectionHeader(b, "xkb_types", fileTypes)
-	m.writeVmods(b)
-	for _, t := range m.types {
+func (d *dumper) types() {
+	m, b := d.m, d.b
+	d.sectionHeader("xkb_types", fileTypes)
+	d.vmods()
+	for _, t := range m.allTypes {
+		if !t.required && d.dropUnused {
+			continue
+		}
 		b.WriteString("\ttype ")
 		writeStringLiteral(b, t.name)
 		b.WriteString(" {\n")
@@ -376,55 +466,107 @@ func (m *Keymap) groupNumLevels(g *flatGroup) uint32 {
 	return uint32(m.flatTypes[g.typ].numLevels)
 }
 
-func (m *Keymap) writeActions(b *strings.Builder, g *flatGroup) {
+func (d *dumper) actions(g *flatGroup) {
+	m, b := d.m, d.b
 	for lvl := range m.groupNumLevels(g) {
 		if lvl != 0 {
 			b.WriteString(", ")
 		}
 		actions := m.levelActions(&m.flatLevels[g.firstLevel+lvl])
-		text := "NoAction()"
+		var text string
 		switch {
+		case len(actions) == 0:
+			text = "NoAction()"
 		case len(actions) == 1:
-			text = m.actionText(&actions[0])
-		case len(actions) > 1:
-			text = voidActionV1
+			text = d.actionText(&actions[0])
+		case d.format < FormatTextV2:
+			d.logMultipleActions()
+			text = d.voidText()
+		default:
+			var multi strings.Builder
+			multi.WriteString("{ ")
+			for k := range actions {
+				if k != 0 {
+					multi.WriteString(", ")
+				}
+				fmt.Fprintf(&multi, "%*s", actionPadding, d.actionText(&actions[k]))
+			}
+			multi.WriteString(" }")
+			text = multi.String()
 		}
-		fmt.Fprintf(b, "%30s", text)
+		fmt.Fprintf(b, "%*s", actionPadding, text)
 	}
 }
 
-func (m *Keymap) writeKeysyms(b *strings.Builder, g *flatGroup) {
+func (d *dumper) keysyms(g *flatGroup, showActions bool) {
+	m, b := d.m, d.b
+	padding := 0
+	if d.pretty {
+		padding = symbolPadding
+		if showActions {
+			padding = actionPadding
+		}
+	}
 	for lvl := range m.groupNumLevels(g) {
 		if lvl != 0 {
 			b.WriteString(", ")
 		}
 		syms := m.levelSyms(&m.flatLevels[g.firstLevel+lvl])
-		switch len(syms) {
-		case 0:
-			b.WriteString("NoSymbol")
-		case 1:
+		switch {
+		case len(syms) == 0:
+			fmt.Fprintf(b, "%*s", padding, "NoSymbol")
+		case len(syms) == 1 && (d.pretty || syms[0] == KeyNoSymbol):
+			fmt.Fprintf(b, "%*s", padding, keysymText(syms[0]))
+		case len(syms) == 1:
 			fmt.Fprintf(b, "0x%x", uint32(syms[0]))
+		case d.pretty:
+			var multi strings.Builder
+			multi.WriteString("{ ")
+			inner := 0
+			if showActions {
+				inner = padding
+			}
+			for s, sym := range syms {
+				if s != 0 {
+					multi.WriteString(", ")
+				}
+				fmt.Fprintf(&multi, "%*s", inner, keysymText(sym))
+			}
+			multi.WriteString(" }")
+			fmt.Fprintf(b, "%*s", padding, multi.String())
 		default:
 			b.WriteByte('{')
 			for s, sym := range syms {
 				if s != 0 {
 					b.WriteByte(',')
 				}
-				fmt.Fprintf(b, "0x%x", uint32(sym))
+				if sym == KeyNoSymbol {
+					b.WriteString("NoSymbol")
+				} else {
+					fmt.Fprintf(b, "0x%x", uint32(sym))
+				}
 			}
 			b.WriteByte('}')
 		}
 	}
 }
 
-func (m *Keymap) writeKey(b *strings.Builder, k *flatKey) {
+func (d *dumper) key(k *flatKey) {
+	m, b := d.m, d.b
 	simple := true
 	groups := m.flatGroups[k.firstGroup : k.firstGroup+uint32(k.numGroups)]
-	numGroups := uint32(min(k.numGroups, maxGroupsV1))
-	fmt.Fprintf(b, "\tkey <%s> {", m.keyName(k))
+	numGroups := min(uint32(k.numGroups), d.maxGroups)
+	name := "<" + m.keyName(k) + ">"
+	if d.pretty {
+		fmt.Fprintf(b, "\tkey %-20s {", name)
+	} else {
+		fmt.Fprintf(b, "\tkey %s {", name)
+	}
+	trailingComma := false
 	if k.explicit&explicitTypes != 0 {
 		simple = false
-		m.writeKeyTypes(b, groups[:numGroups])
+		d.keyTypes(groups[:numGroups])
+		trailingComma = true
 	}
 	showActions := k.explicit&explicitInterp != 0
 	if k.explicit&explicitRepeat != 0 || showActions {
@@ -433,23 +575,27 @@ func (m *Keymap) writeKey(b *strings.Builder, k *flatKey) {
 		} else {
 			b.WriteString("\n\t\trepeat= No,")
 		}
+		trailingComma = true
 	}
 	if k.explicit&explicitVmodmap != 0 || (showActions && k.vmodmap != 0) {
 		fmt.Fprintf(b, "\n\t\tvirtualMods= %s,", m.modMaskText(modBoth, k.vmodmap))
+		trailingComma = true
 	}
 	switch k.rangeAct {
 	case rangeSaturate:
 		b.WriteString("\n\t\tgroupsClamp,")
+		trailingComma = true
 	case rangeRedirect:
 		if uint32(k.rangeNum) < numGroups {
 			fmt.Fprintf(b, "\n\t\tgroupsRedirect= %d,", uint32(k.rangeNum)+1)
+			trailingComma = true
 		}
 	}
 	if numGroups > 1 || showActions {
 		simple = false
 	}
 	if simple {
-		m.writeSimpleKey(b, k, groups[:numGroups])
+		d.simpleKey(k, groups[:numGroups], trailingComma)
 		return
 	}
 	for i := range groups[:numGroups] {
@@ -457,18 +603,19 @@ func (m *Keymap) writeKey(b *strings.Builder, k *flatKey) {
 			b.WriteByte(',')
 		}
 		fmt.Fprintf(b, "\n\t\tsymbols[%d]= [ ", i+1)
-		m.writeKeysyms(b, &groups[i])
+		d.keysyms(&groups[i], showActions)
 		b.WriteString(" ]")
 		if showActions {
 			fmt.Fprintf(b, ",\n\t\tactions[%d]= [ ", i+1)
-			m.writeActions(b, &groups[i])
+			d.actions(&groups[i])
 			b.WriteString(" ]")
 		}
 	}
 	b.WriteString("\n\t};\n")
 }
 
-func (m *Keymap) writeKeyTypes(b *strings.Builder, groups []flatGroup) {
+func (d *dumper) keyTypes(groups []flatGroup) {
+	m, b := d.m, d.b
 	multi := false
 	for i := 1; i < len(groups); i++ {
 		if groups[i].typ != groups[0].typ {
@@ -492,11 +639,12 @@ func (m *Keymap) writeKeyTypes(b *strings.Builder, groups []flatGroup) {
 	}
 }
 
-func (m *Keymap) writeSimpleKey(b *strings.Builder, k *flatKey, groups []flatGroup) {
+func (d *dumper) simpleKey(k *flatKey, groups []flatGroup, trailingComma bool) {
+	b := d.b
 	onlySymbols := k.explicit == explicitSymbols
 	if len(groups) == 0 {
-		text := b.String()
-		if text[len(text)-1] == ',' {
+		if trailingComma {
+			text := b.String()
 			b.Reset()
 			b.WriteString(text[:len(text)-1])
 		}
@@ -505,7 +653,7 @@ func (m *Keymap) writeSimpleKey(b *strings.Builder, k *flatKey, groups []flatGro
 			b.WriteString("\n\t")
 		}
 		b.WriteString("\t[ ")
-		m.writeKeysyms(b, &groups[0])
+		d.keysyms(&groups[0], false)
 		b.WriteString(" ]")
 	}
 	if onlySymbols {
@@ -515,11 +663,12 @@ func (m *Keymap) writeSimpleKey(b *strings.Builder, k *flatKey, groups []flatGro
 	}
 }
 
-func (m *Keymap) writeSymbols(b *strings.Builder) {
-	m.writeSectionHeader(b, "xkb_symbols", fileSymbols)
+func (d *dumper) symbols() {
+	m, b := d.m, d.b
+	d.sectionHeader("xkb_symbols", fileSymbols)
 	hasNames := false
 	for group, name := range m.groupNames {
-		if group >= maxGroupsV1 || name == "" {
+		if uint32(group) >= d.maxGroups || name == "" {
 			continue
 		}
 		fmt.Fprintf(b, "\tname[%d]=", group+1)
@@ -532,7 +681,7 @@ func (m *Keymap) writeSymbols(b *strings.Builder) {
 	}
 	for i := range m.flatKeys {
 		if m.flatKeys[i].explicit != 0 {
-			m.writeKey(b, &m.flatKeys[i])
+			d.key(&m.flatKeys[i])
 		}
 	}
 	for i := range uint32(8) {
@@ -556,13 +705,21 @@ func (m *Keymap) writeSymbols(b *strings.Builder) {
 	b.WriteString("};\n\n")
 }
 
-func (m *Keymap) serialize() string {
+func (m *Keymap) serialize(format KeymapFormat, flags SerializeFlags) string {
 	var b strings.Builder
+	d := dumper{
+		m: m, b: &b, format: format, maxGroups: format.maxGroups(),
+		pretty:     flags&SerializePretty != 0,
+		dropUnused: flags&SerializeKeepUnused == 0,
+	}
+	if m.numGroups > d.maxGroups {
+		m.ctx.log(LogError, 0, 237, "Cannot serialize %d groups in keymap format %d: maximum is %d; discarding unsupported groups\n", m.numGroups, format, d.maxGroups)
+	}
 	b.WriteString("xkb_keymap {\n")
-	m.writeKeycodes(&b)
-	m.writeTypes(&b)
-	m.writeCompat(&b)
-	m.writeSymbols(&b)
+	d.keycodes()
+	d.types()
+	d.compat()
+	d.symbols()
 	b.WriteString("};\n")
 	return b.String()
 }

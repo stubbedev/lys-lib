@@ -214,7 +214,7 @@ func BenchmarkKeymapText(b *testing.B) {
 	km := benchKeymap(b)
 	b.ReportAllocs()
 	for b.Loop() {
-		benchSink += uint32(len(km.serialize()))
+		benchSink += uint32(len(km.serialize(FormatTextV1, 0)))
 	}
 }
 

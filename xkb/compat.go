@@ -44,13 +44,14 @@ type compatInfo struct {
 	interps       []*interpInfo
 	defaultLED    ledInfo
 	leds          []*ledInfo
+	format        KeymapFormat
 	defaults      *actionDefaults
 	mods          modSet
 	ctx           *session
 }
 
-func newCompatInfo(ctx *session, depth int, mods *modSet) *compatInfo {
-	info := &compatInfo{depth: depth, mods: *mods, ctx: ctx, defaults: newActionDefaults()}
+func newCompatInfo(ctx *session, format KeymapFormat, depth int, mods *modSet) *compatInfo {
+	info := &compatInfo{depth: depth, format: format, mods: *mods, ctx: ctx, defaults: newActionDefaults()}
 	info.defaultInterp.in.virtualMod = modIndexInvalid
 	if depth > 0 {
 		info.mods.resetVirtual()
@@ -65,12 +66,23 @@ func useNewField[T ~uint8](field, old, new T, clobber bool) bool {
 	return new&field != 0 && clobber
 }
 
-func mergeInterp(old, new *interpInfo) {
+func collides[T ~uint8](report bool, fields, old, new T) bool {
+	return report && old&new&fields != 0
+}
+
+func (info *compatInfo) mergeInterp(old, new *interpInfo, sameFile bool) {
+	report := info.ctx.report(sameFile)
 	if new.merge == mergeReplace {
+		if report {
+			info.ctx.warn(0, "Multiple definitions for \"%s\"; Earlier interpretation ignored\n", KeysymGetName(new.in.sym))
+		}
 		*old = *new
 		return
 	}
 	clobber := new.merge != mergeAugment
+	if collides(report, siVirtualMod|siAction|siRepeat|siLevelOneOnly, old.defined, new.defined) {
+		info.ctx.warn(0, "Multiple interpretations of \"%s\"; Using %s definition for duplicate fields\n", KeysymGetName(old.in.sym), useFirstOrLast(clobber))
+	}
 	if useNewField(siVirtualMod, old.defined, new.defined, clobber) {
 		old.in.virtualMod = new.in.virtualMod
 		old.defined |= siVirtualMod
@@ -89,27 +101,34 @@ func mergeInterp(old, new *interpInfo) {
 	}
 }
 
-func (info *compatInfo) addInterp(new *interpInfo) {
+func (info *compatInfo) addInterp(new *interpInfo, sameFile bool) {
 	for _, old := range info.interps {
 		if old.in.sym == new.in.sym && old.in.mods == new.in.mods && old.in.match == new.in.match {
-			mergeInterp(old, new)
+			info.mergeInterp(old, new, sameFile)
 			return
 		}
 	}
 	info.interps = append(info.interps, new)
 }
 
-func mergeLED(old, new *ledInfo) {
+func (info *compatInfo) mergeLED(old, new *ledInfo, sameFile bool) {
+	report := info.ctx.report(sameFile)
 	if old.led.mods == new.led.mods && old.led.groups == new.led.groups && old.led.ctrls == new.led.ctrls &&
 		old.led.whichMods == new.led.whichMods && old.led.whichGroups == new.led.whichGroups {
 		old.defined |= new.defined
 		return
 	}
 	if new.merge == mergeReplace {
+		if report {
+			info.ctx.warn(0, "Map for indicator %s redefined; Earlier definition ignored\n", old.led.name)
+		}
 		*old = *new
 		return
 	}
 	clobber := new.merge != mergeAugment
+	if collides(report, ledMods|ledGroups|ledCtrls, old.defined, new.defined) {
+		info.ctx.warn(0, "Map for indicator %s redefined; Using %s definition for duplicate fields\n", old.led.name, useFirstOrLast(clobber))
+	}
 	if useNewField(ledMods, old.defined, new.defined, clobber) {
 		old.led.whichMods = new.led.whichMods
 		old.led.mods = new.led.mods
@@ -126,10 +145,10 @@ func mergeLED(old, new *ledInfo) {
 	}
 }
 
-func (info *compatInfo) addLED(new *ledInfo) error {
+func (info *compatInfo) addLED(new *ledInfo, sameFile bool) error {
 	for _, old := range info.leds {
 		if old.led.name == new.led.name {
-			mergeLED(old, new)
+			info.mergeLED(old, new, sameFile)
 			return nil
 		}
 	}
@@ -150,7 +169,7 @@ func (info *compatInfo) merge(from *compatInfo, merge mergeMode) error {
 	} else {
 		for _, si := range from.interps {
 			si.merge = merge
-			info.addInterp(si)
+			info.addInterp(si, false)
 		}
 	}
 	if len(info.leds) == 0 {
@@ -159,7 +178,7 @@ func (info *compatInfo) merge(from *compatInfo, merge mergeMode) error {
 	}
 	for _, l := range from.leds {
 		l.merge = merge
-		if err := info.addLED(l); err != nil {
+		if err := info.addLED(l, false); err != nil {
 			return err
 		}
 	}
@@ -170,14 +189,14 @@ func (info *compatInfo) handleInclude(inc includeDecl) error {
 	if info.depth >= includeMaxDepth {
 		return fmt.Errorf("exceeded the include depth of %d at %q", includeMaxDepth, inc.text)
 	}
-	included := newCompatInfo(info.ctx, info.depth+1, &info.mods)
+	included := newCompatInfo(info.ctx, info.format, info.depth+1, &info.mods)
 	included.name = inc.text
 	for _, stmt := range inc.stmts {
 		f, err := info.ctx.processInclude(stmt, fileCompat)
 		if err != nil {
 			return err
 		}
-		next := newCompatInfo(info.ctx, info.depth+1, &included.mods)
+		next := newCompatInfo(info.ctx, info.format, info.depth+1, &included.mods)
 		next.defaultInterp = info.defaultInterp
 		next.defaultLED = info.defaultLED
 		if err := next.handleFile(f); err != nil {
@@ -192,6 +211,7 @@ func (info *compatInfo) handleInclude(inc includeDecl) error {
 
 func (info *compatInfo) handleFile(f *xkbFile) error {
 	info.name = f.name
+	var errs sectionErrors
 	for _, d := range f.decls {
 		var err error
 		switch v := d.(type) {
@@ -209,11 +229,11 @@ func (info *compatInfo) handleFile(f *xkbFile) error {
 		default:
 			err = fmt.Errorf("compat files may not include %T", d)
 		}
-		if err != nil {
-			return fmt.Errorf("%s: %w", mapDisplayName(f), err)
+		if err != nil && errs.add(info.ctx.Context, fmt.Errorf("%s: %w", mapDisplayName(f), err), "compatibility map", mapDisplayName(f)) {
+			break
 		}
 	}
-	return nil
+	return errs.err()
 }
 
 func (info *compatInfo) resolvePredicate(e expr) (matchOp, uint32, error) {
@@ -290,7 +310,7 @@ func (info *compatInfo) setInterpField(si *interpInfo, l lhs, value expr) error 
 func (info *compatInfo) parseInterpActions(value expr) ([]action, error) {
 	list, isList := value.(exprActionList)
 	if !isList {
-		a, err := info.defaults.parse(&info.mods, value)
+		a, err := info.defaults.parse(info.ctx.Context, info.format, &info.mods, value)
 		if err != nil {
 			return nil, err
 		}
@@ -301,7 +321,7 @@ func (info *compatInfo) parseInterpActions(value expr) ([]action, error) {
 	}
 	var actions []action
 	for _, def := range list.actions {
-		a, err := info.defaults.parse(&info.mods, def)
+		a, err := info.defaults.parse(info.ctx.Context, info.format, &info.mods, def)
 		if err != nil {
 			return nil, err
 		}
@@ -325,14 +345,14 @@ func (info *compatInfo) setLEDField(l *ledInfo, f lhs, value expr) error {
 	case "modifiers", "mods":
 		mods, err := resolveModMask(value, modBoth, &info.mods)
 		if err != nil {
-			return err
+			return coded(codeWrongFieldType, err)
 		}
 		l.led.mods = mods
 		l.defined |= ledMods
 	case "groups":
-		mask, err := resolveMask(value, groupMaskLookup)
+		mask, err := resolveMask(value, groupMaskLookup(info.format.maxGroups()))
 		if err != nil {
-			return err
+			return coded(codeWrongFieldType, err)
 		}
 		l.led.groups = mask
 		l.defined |= ledGroups
@@ -361,16 +381,18 @@ func (info *compatInfo) setLEDField(l *ledInfo, f lhs, value expr) error {
 	return nil
 }
 
-func groupMaskLookup(name string) (uint32, bool) {
-	if len(name) > len("Group") && strings.EqualFold(name[:len("Group")], "Group") {
-		if v, err := strconv.ParseUint(name[len("Group"):], 10, 32); err == nil {
-			if v < 1 || v > maxGroupsV1 {
-				return 0, false
+func groupMaskLookup(limit uint32) identLookup {
+	return func(name string) (uint32, bool) {
+		if len(name) > len("Group") && strings.EqualFold(name[:len("Group")], "Group") {
+			if v, err := strconv.ParseUint(name[len("Group"):], 10, 32); err == nil {
+				if v < 1 || v > uint64(limit) {
+					return 0, false
+				}
+				return 1 << (v - 1), true
 			}
-			return 1 << (v - 1), true
 		}
+		return lookupName(groupMaskNames, name)
 	}
-	return lookupName(groupMaskNames, name)
 }
 
 func (info *compatInfo) handleGlobalVar(v varDecl) error {
@@ -385,19 +407,19 @@ func (info *compatInfo) handleGlobalVar(v varDecl) error {
 		if err := info.setInterpField(&temp, l, v.value); err != nil {
 			return err
 		}
-		mergeInterp(&info.defaultInterp, &temp)
+		info.mergeInterp(&info.defaultInterp, &temp, true)
 		return nil
 	case strings.EqualFold(l.elem, "indicator"):
 		temp := ledInfo{merge: v.merge}
 		if err := info.setLEDField(&temp, l, v.value); err != nil {
 			return err
 		}
-		mergeLED(&info.defaultLED, &temp)
+		info.mergeLED(&info.defaultLED, &temp, true)
 		return nil
 	case l.elem != "":
-		return info.defaults.setField(&info.mods, l.elem, l.field, l.index, v.value, v.merge)
+		return info.defaults.setField(info.format, &info.mods, l.elem, l.field, l.index, v.value, v.merge)
 	}
-	return fmt.Errorf("default defined for unknown field %q", l.field)
+	return codedf(codeUnknownDefault, "default defined for unknown field %q", l.field)
 }
 
 func (info *compatInfo) handleInterp(d interpDecl) error {
@@ -410,19 +432,25 @@ func (info *compatInfo) handleInterp(d interpDecl) error {
 	si.in.sym = d.sym
 	si.in.match = pred
 	si.in.mods = mods
+	var errs []error
 	for _, v := range d.body {
 		l, err := resolveLhs(v.name)
 		if err != nil {
-			return err
+			errs = append(errs, err)
+			continue
 		}
 		if l.elem != "" {
-			return errors.New("cannot set a global default inside an interpret statement")
+			errs = append(errs, errors.New("cannot set a global default inside an interpret statement"))
+			continue
 		}
 		if err := info.setInterpField(&si, l, v.value); err != nil {
-			return fmt.Errorf("interpret %s: %w", KeysymGetName(d.sym), err)
+			errs = append(errs, fmt.Errorf("interpret %s: %w", KeysymGetName(d.sym), err))
 		}
 	}
-	info.addInterp(&si)
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	info.addInterp(&si, true)
 	return nil
 }
 
@@ -430,23 +458,29 @@ func (info *compatInfo) handleLEDMap(d ledMapDecl) error {
 	l := info.defaultLED
 	l.merge = d.merge
 	l.led.name = d.name
+	var errs []error
 	for _, v := range d.body {
 		f, err := resolveLhs(v.name)
 		if err != nil {
-			return err
+			errs = append(errs, err)
+			continue
 		}
 		if f.elem != "" {
-			return fmt.Errorf("cannot set defaults for %q in an indicator map", f.elem)
+			errs = append(errs, fmt.Errorf("cannot set defaults for %q in an indicator map", f.elem))
+			continue
 		}
 		if err := info.setLEDField(&l, f, v.value); err != nil {
-			return fmt.Errorf("indicator %s: %w", d.name, err)
+			errs = append(errs, fmt.Errorf("indicator %s: %w", d.name, err))
 		}
 	}
-	return info.addLED(&l)
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	return info.addLED(&l, true)
 }
 
 func (m *Keymap) compileCompat(f *xkbFile, ctx *session) error {
-	info := newCompatInfo(ctx, 0, &m.mods)
+	info := newCompatInfo(ctx, m.format, 0, &m.mods)
 	if f != nil {
 		if err := info.handleFile(f); err != nil {
 			return err

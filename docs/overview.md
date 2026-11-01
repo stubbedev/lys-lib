@@ -57,7 +57,7 @@ neither.
 | --- | --- |
 | [`capture`](/wayland#capture) | Screen and window capture on a private connection |
 | [`vinput`, `keymapfd`](/wayland#vinput-keymapfd) | Virtual pointer and keyboard input, reading a keymap fd |
-| [`xkb`](/wayland#xkb) | The XKB keyboard model in pure Go: keymaps, keyboard state, keysyms and Compose |
+| [`xkb`](/xkb) | The XKB keyboard model in pure Go: keymaps in both text formats, keyboard state, keysyms, Compose, X11 keymap import and the ruleset registry |
 | [`wlr`](/wayland#wlr) | Protocol bindings beyond the core and xdg-shell |
 | [`third_party/wayland`](/third-party/wayland) | The core client library and the scanner |
 

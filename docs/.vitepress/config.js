@@ -22,6 +22,7 @@ export default lysConfig({
         { text: 'Wayland', link: '/wayland' },
         { text: 'Media', link: '/media' },
         { text: 'System services', link: '/system' },
+        { text: 'xkb', link: '/xkb' },
       ],
     },
     {

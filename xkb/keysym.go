@@ -2,6 +2,7 @@ package xkb
 
 import (
 	"fmt"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -68,7 +69,13 @@ type runeKeysym struct {
 
 type caseMapping struct {
 	sym, upper, lower Keysym
+	flags             uint8
 }
+
+const (
+	caseFlagLower uint8 = 1 << iota
+	caseFlagUpper
+)
 
 func findName(table []keysymName, name string) (Keysym, bool) {
 	i := sort.Search(len(table), func(i int) bool { return table[i].name >= name })
@@ -224,12 +231,12 @@ func KeysymToLower(sym Keysym) Keysym {
 
 func keysymIsLower(sym Keysym) bool {
 	c, ok := caseOf(sym)
-	return ok && c.upper != sym && c.lower == sym
+	return ok && c.flags&caseFlagLower != 0
 }
 
 func keysymIsUpperOrTitle(sym Keysym) bool {
 	c, ok := caseOf(sym)
-	return ok && c.lower != sym
+	return ok && c.flags&caseFlagUpper != 0
 }
 
 // KeysymIsKeypad reports whether a keysym is on the numeric keypad.
@@ -240,4 +247,19 @@ func KeysymIsModifier(sym Keysym) bool {
 	return (sym >= KeyShiftL && sym <= KeyHyperR) ||
 		(sym >= KeyISOLock && sym <= KeyISOLevel5Lock) ||
 		sym == KeyModeSwitch || sym == KeyNumLock
+}
+
+type deprecatedName struct{ name, reference string }
+
+func checkDeprecatedName(name string) (deprecated bool, reference string) {
+	i := sort.Search(len(keysymDeprecatedNames), func(i int) bool { return keysymDeprecatedNames[i].name >= name })
+	if i < len(keysymDeprecatedNames) && keysymDeprecatedNames[i].name == name {
+		return true, keysymDeprecatedNames[i].reference
+	}
+	return false, ""
+}
+
+func checkDeprecatedValue(sym Keysym) bool {
+	_, ok := slices.BinarySearch(keysymDeprecatedValues, sym)
+	return ok
 }

@@ -943,15 +943,18 @@ func (m *matcher) runRuleOutputs(l *rulesLexer) error {
 }
 
 type components4 struct {
-	keycodes, types, compat, symbols string
+	keycodes, types, compat, symbols, geometry string
 }
 
 func (c *session) resolveRules(names Names) (components4, uint32, error) {
-	m := newMatcher(c, names)
+	return c.resolveWith(newMatcher(c, names), names.Rules)
+}
+
+func (c *session) resolveWith(m *matcher, rules string) (components4, uint32, error) {
 	var mainPath string
 	var mainSrc []byte
 	for _, dir := range c.paths {
-		path := filepath.Join(dir, "rules", names.Rules)
+		path := filepath.Join(dir, "rules", rules)
 		src, err := c.read(path)
 		if err == nil {
 			mainPath, mainSrc = path, src
@@ -959,21 +962,21 @@ func (c *session) resolveRules(names Names) (components4, uint32, error) {
 		}
 	}
 	if mainPath == "" {
-		return components4{}, 0, fmt.Errorf("no rules file %q in %v", names.Rules, c.paths)
+		return components4{}, 0, fmt.Errorf("no rules file %q in %v", rules, c.paths)
 	}
-	if err := m.readPartial(c, names.Rules+".pre"); err != nil {
+	if err := m.readPartial(c, rules+".pre"); err != nil {
 		return components4{}, 0, err
 	}
 	if err := m.readRules(mainPath, mainSrc, 0); err != nil {
 		return components4{}, 0, fmt.Errorf("parse rules: %w", err)
 	}
-	if err := m.readPartial(c, names.Rules+".post"); err != nil {
+	if err := m.readPartial(c, rules+".post"); err != nil {
 		return components4{}, 0, err
 	}
 	if m.out[kcKeycodes] == "" || m.out[kcTypes] == "" || m.out[kcCompat] == "" || m.out[kcSymbols] == "" {
-		return components4{}, 0, fmt.Errorf("no components returned from rules %q", names.Rules)
+		return components4{}, 0, fmt.Errorf("no components returned from rules %q", rules)
 	}
-	return components4{m.out[kcKeycodes], m.out[kcTypes], m.out[kcCompat], m.out[kcSymbols]}, explicitLayouts(m.out[kcSymbols]), nil
+	return components4{m.out[kcKeycodes], m.out[kcTypes], m.out[kcCompat], m.out[kcSymbols], m.out[kcGeometry]}, explicitLayouts(m.out[kcSymbols]), nil
 }
 
 func (m *matcher) readPartial(c *session, name string) error {

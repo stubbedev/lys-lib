@@ -32,13 +32,18 @@ func newTypesInfo(ctx *session, depth int, mods *modSet) *typesInfo {
 	return info
 }
 
-func (info *typesInfo) add(t *typeInfo) {
+func (info *typesInfo) add(t *typeInfo, sameFile bool) {
 	for i, old := range info.types {
 		if old.name != t.name {
 			continue
 		}
 		if t.merge != mergeAugment {
+			if info.ctx.report(sameFile) {
+				info.ctx.warn(warnConflictingTypeDefs, "Multiple definitions of the %s key type; Earlier definition ignored\n", t.name)
+			}
 			info.types[i] = t
+		} else if sameFile {
+			info.ctx.verbose(verbosityDetailed, warnConflictingTypeDefs, "Multiple definitions of the %s key type; Later definition ignored\n", t.name)
 		}
 		return
 	}
@@ -56,7 +61,7 @@ func (info *typesInfo) merge(from *typesInfo, merge mergeMode) {
 	}
 	for _, t := range from.types {
 		t.merge = merge
-		info.add(t)
+		info.add(t, false)
 	}
 }
 
@@ -147,6 +152,7 @@ func (info *typesInfo) handleInclude(inc includeDecl) error {
 
 func (info *typesInfo) handleFile(f *xkbFile) error {
 	info.name = f.name
+	var errs sectionErrors
 	for _, d := range f.decls {
 		var err error
 		switch v := d.(type) {
@@ -161,31 +167,36 @@ func (info *typesInfo) handleFile(f *xkbFile) error {
 		default:
 			err = fmt.Errorf("key type files may not include %T", d)
 		}
-		if err != nil {
-			return fmt.Errorf("%s: %w", mapDisplayName(f), err)
+		if err != nil && errs.add(info.ctx.Context, fmt.Errorf("%s: %w", mapDisplayName(f), err), "keytypes file", mapDisplayName(f)) {
+			break
 		}
 	}
-	return nil
+	return errs.err()
 }
 
 func (info *typesInfo) handleType(d typeDecl) error {
 	t := &typeInfo{merge: d.merge, name: d.name, numLevels: 1}
+	var errs []error
 	for _, v := range d.body {
 		l, err := resolveLhs(v.name)
 		if err != nil {
-			return fmt.Errorf("type %s: %w", d.name, err)
+			errs = append(errs, fmt.Errorf("type %s: %w", d.name, err))
+			continue
 		}
 		if l.elem != "" {
-			if strings.EqualFold(l.elem, "type") {
-				continue
+			if !strings.EqualFold(l.elem, "type") {
+				errs = append(errs, codedf(codeDefaultsScope, "type %s: cannot set defaults for %q", d.name, l.elem))
 			}
-			return fmt.Errorf("type %s: cannot set defaults for %q", d.name, l.elem)
+			continue
 		}
 		if err := info.setField(t, l, v.value); err != nil {
-			return fmt.Errorf("type %s: %w", d.name, err)
+			errs = append(errs, fmt.Errorf("type %s: %w", d.name, err))
 		}
 	}
-	info.add(t)
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
+	info.add(t, true)
 	return nil
 }
 
@@ -198,9 +209,9 @@ func (info *typesInfo) setField(t *typeInfo, l lhs, value expr) error {
 	case "preserve":
 		return info.setPreserve(t, l, value)
 	case "levelname", "level_name":
-		return setLevelName(t, l, value)
+		return info.setLevelName(t, l, value)
 	}
-	return fmt.Errorf("unknown field %q", l.field)
+	return codedf(codeUnknownField, "unknown field %q", l.field)
 }
 
 func (info *typesInfo) setModifiers(t *typeInfo, l lhs, value expr) error {
@@ -209,9 +220,10 @@ func (info *typesInfo) setModifiers(t *typeInfo, l lhs, value expr) error {
 	}
 	mods, err := resolveModMask(value, modBoth, &info.mods)
 	if err != nil {
-		return fmt.Errorf("modifiers: %w", err)
+		return coded(codeUnsupportedModMask, fmt.Errorf("modifiers: %w", err))
 	}
 	if t.modsSet {
+		info.ctx.warn(0, "Multiple modifier mask definitions for key type %s; Using %#x, ignoring %#x\n", t.name, t.mods, mods)
 		return errors.New("multiple modifier mask definitions")
 	}
 	t.mods, t.modsSet = mods, true
@@ -224,18 +236,26 @@ func (info *typesInfo) setMapEntry(t *typeInfo, l lhs, value expr) error {
 	}
 	mods, err := resolveModMask(l.index, modBoth, &info.mods)
 	if err != nil {
-		return fmt.Errorf("map entry: %w", err)
+		return coded(codeUnsupportedModMask, fmt.Errorf("map entry: %w", err))
+	}
+	if mods&^t.mods != 0 {
+		info.ctx.verbose(verbosityBrief, warnUndeclaredTypeModifiers, "Map entry for modifiers not used by type %s; Using %#x instead of %#x\n", t.name, mods&t.mods, mods)
 	}
 	mods &= t.mods
 	lvl, err := resolveLevel(value)
 	if err != nil {
-		return fmt.Errorf("map entry: %w", err)
+		return coded(codeShiftLevel, fmt.Errorf("map entry: %w", err))
 	}
 	if lvl >= t.numLevels {
 		t.numLevels = lvl + 1
 	}
 	for i := range t.entries {
 		if t.entries[i].mods == mods {
+			if t.entries[i].level != lvl {
+				info.ctx.warn(warnConflictingMapEntry, "Multiple map entries for %#x in %s; Using %d, ignoring %d\n", mods, t.name, lvl+1, t.entries[i].level+1)
+			} else {
+				info.ctx.verbose(verbosityVerbose, warnConflictingMapEntry, "Multiple occurrences of map[%#x]= %d in %s; Ignored\n", mods, lvl+1, t.name)
+			}
 			t.entries[i].level = lvl
 			return nil
 		}
@@ -250,16 +270,28 @@ func (info *typesInfo) setPreserve(t *typeInfo, l lhs, value expr) error {
 	}
 	mods, err := resolveModMask(l.index, modBoth, &info.mods)
 	if err != nil {
-		return fmt.Errorf("preserve entry: %w", err)
+		return coded(codeUnsupportedModMask, fmt.Errorf("preserve entry: %w", err))
+	}
+	if mods&^t.mods != 0 {
+		info.ctx.verbose(verbosityBrief, warnUndeclaredTypeModifiers, "Preserve entry for modifiers not used by the %s type; Index %#x converted to %#x\n", t.name, mods, mods&t.mods)
 	}
 	mods &= t.mods
 	preserve, err := resolveModMask(value, modBoth, &info.mods)
 	if err != nil {
-		return fmt.Errorf("preserve value: %w", err)
+		return coded(codeUnsupportedModMask, fmt.Errorf("preserve value: %w", err))
+	}
+	if preserve&^mods != 0 {
+		info.ctx.verbose(verbosityBrief, warnIllegalPreserveResult, "Illegal value for preserve[%#x] in type %s; Converted %#x to %#x\n", mods, t.name, preserve, preserve&mods)
 	}
 	preserve &= mods
 	for i := range t.entries {
 		if t.entries[i].mods == mods {
+			switch old := t.entries[i].preserve; {
+			case old == preserve && old != 0:
+				info.ctx.verbose(verbosityVerbose, warnDuplicateEntry, "Identical definitions for preserve[%#x] in %s; Ignored\n", mods, t.name)
+			case old != 0:
+				info.ctx.verbose(verbosityBrief, warnConflictingPreserve, "Multiple definitions for preserve[%#x] in %s; Using %#x, ignoring %#x\n", mods, t.name, preserve, old)
+			}
 			t.entries[i].preserve = preserve
 			return nil
 		}
@@ -268,13 +300,13 @@ func (info *typesInfo) setPreserve(t *typeInfo, l lhs, value expr) error {
 	return nil
 }
 
-func setLevelName(t *typeInfo, l lhs, value expr) error {
+func (info *typesInfo) setLevelName(t *typeInfo, l lhs, value expr) error {
 	if l.index == nil {
 		return errors.New("the level name field must be an array")
 	}
 	lvl, err := resolveLevel(l.index)
 	if err != nil {
-		return fmt.Errorf("level name: %w", err)
+		return coded(codeShiftLevel, fmt.Errorf("level name: %w", err))
 	}
 	name, err := resolveString(value)
 	if err != nil {
@@ -282,6 +314,12 @@ func setLevelName(t *typeInfo, l lhs, value expr) error {
 	}
 	for int(lvl) >= len(t.levelNames) {
 		t.levelNames = append(t.levelNames, "")
+	}
+	if old := t.levelNames[lvl]; old == name {
+		info.ctx.verbose(verbosityVerbose, warnDuplicateEntry, "Duplicate names for level %d of key type %s; Ignored\n", lvl+1, t.name)
+		return nil
+	} else if old != "" {
+		info.ctx.verbose(verbosityBrief, warnConflictingLevelNames, "Multiple names for level %d of key type %s; Using %s, ignoring %s\n", lvl+1, t.name, name, old)
 	}
 	t.levelNames[lvl] = name
 	return nil

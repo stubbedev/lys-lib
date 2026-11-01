@@ -31,14 +31,24 @@ func newKeycodesInfo(ctx *session, depth int) *keycodesInfo {
 	return &keycodesInfo{depth: depth, byName: map[string]keyMatchInfo{}, byCode: map[Keycode]string{}, ctx: ctx}
 }
 
-func (info *keycodesInfo) addLEDName(l ledNameInfo, idx uint32) {
+func (info *keycodesInfo) addLEDName(l ledNameInfo, idx uint32, report bool) {
 	replace := l.merge != mergeAugment
 	for i := range info.numLEDs {
 		if info.ledNames[i].name != l.name {
 			continue
 		}
 		if i == idx {
+			if report {
+				info.ctx.warn(0, "Multiple indicators named \"%s\"; Identical definitions ignored\n", l.name)
+			}
 			return
+		}
+		if report {
+			use, ignore := idx, i
+			if !replace {
+				use, ignore = i, idx
+			}
+			info.ctx.warn(0, "Multiple indicators named %s; Using %d, ignoring %d\n", l.name, use+1, ignore+1)
 		}
 		if !replace {
 			return
@@ -51,6 +61,13 @@ func (info *keycodesInfo) addLEDName(l ledNameInfo, idx uint32) {
 	}
 	old := &info.ledNames[idx]
 	if old.name != "" {
+		if report {
+			use, ignore := l.name, old.name
+			if !replace {
+				use, ignore = old.name, l.name
+			}
+			info.ctx.warn(0, "Multiple names for indicator %d; Using %s, ignoring %s\n", idx+1, use, ignore)
+		}
 		if replace {
 			*old = l
 		}
@@ -59,15 +76,25 @@ func (info *keycodesInfo) addLEDName(l ledNameInfo, idx uint32) {
 	*old = l
 }
 
-func (info *keycodesInfo) addKeyName(kc Keycode, name string, merge mergeMode) {
+func (info *keycodesInfo) addKeyName(kc Keycode, name string, merge mergeMode, report bool) {
 	clobber := merge != mergeAugment
 	if match, ok := info.byName[name]; ok {
 		if match.alias {
+			if report {
+				info.ctx.warn(warnConflictingKeyName, "Key name <%s> already assigned to an alias; Using %s, ignoring %s\n", name, useFirstOrLast(clobber), useFirstOrLast(!clobber))
+			}
 			if !clobber {
 				return
 			}
 			delete(info.byName, name)
 		} else if match.kc != kc {
+			if report {
+				use, ignore := kc, match.kc
+				if !clobber {
+					use, ignore = match.kc, kc
+				}
+				info.ctx.warn(warnConflictingKeyName, "Key name <%s> assigned to multiple keys; Using %d, ignoring %d\n", name, use, ignore)
+			}
 			if !clobber {
 				return
 			}
@@ -78,7 +105,17 @@ func (info *keycodesInfo) addKeyName(kc Keycode, name string, merge mergeMode) {
 	old, named := info.byCode[kc]
 	if named {
 		if old == name {
+			if report {
+				info.ctx.warn(0, "Multiple identical key name definitions; Later occurrences of \"<%s> = %d\" ignored\n", old, kc)
+			}
 			return
+		}
+		if report {
+			use, ignore := name, old
+			if !clobber {
+				use, ignore = old, name
+			}
+			info.ctx.warn(0, "Multiple names for keycode %d; Using <%s>, ignoring <%s>\n", kc, use, ignore)
 		}
 		if !clobber {
 			return
@@ -89,14 +126,28 @@ func (info *keycodesInfo) addKeyName(kc Keycode, name string, merge mergeMode) {
 	info.byName[name] = keyMatchInfo{kc: kc}
 }
 
-func (info *keycodesInfo) addAlias(alias, real string, merge mergeMode) {
+func (info *keycodesInfo) addAlias(alias, real string, merge mergeMode, report bool) {
 	clobber := merge != mergeAugment
 	if match, ok := info.byName[alias]; ok {
 		if match.alias {
+			if report {
+				if match.real == real {
+					info.ctx.warn(warnConflictingKeyName, "Alias of <%s> for <%s> declared more than once; First definition ignored\n", alias, real)
+				} else {
+					use, ignore := real, match.real
+					if !clobber {
+						use, ignore = match.real, real
+					}
+					info.ctx.warn(warnConflictingKeyName, "Multiple definitions for alias <%s>; Using <%s>, ignoring <%s>\n", alias, use, ignore)
+				}
+			}
 			if clobber {
 				info.byName[alias] = keyMatchInfo{alias: true, real: real}
 			}
 			return
+		}
+		if report {
+			info.ctx.warn(warnConflictingKeyName, "Alias name <%s> already assigned to a real key; Using %s, ignoring %s\n", alias, useFirstOrLast(clobber), useFirstOrLast(!clobber))
 		}
 		if !clobber {
 			return
@@ -107,6 +158,7 @@ func (info *keycodesInfo) addAlias(alias, real string, merge mergeMode) {
 }
 
 func (info *keycodesInfo) merge(from *keycodesInfo, merge mergeMode) {
+	report := info.ctx.report(false)
 	if info.name == "" {
 		info.name = from.name
 	}
@@ -120,7 +172,7 @@ func (info *keycodesInfo) merge(from *keycodesInfo, merge mergeMode) {
 		}
 		slices.Sort(codes)
 		for _, kc := range codes {
-			info.addKeyName(kc, from.byCode[kc], merge)
+			info.addKeyName(kc, from.byCode[kc], merge, report)
 		}
 		names := make([]string, 0, len(from.byName))
 		for name := range from.byName {
@@ -129,7 +181,7 @@ func (info *keycodesInfo) merge(from *keycodesInfo, merge mergeMode) {
 		slices.Sort(names)
 		for _, name := range names {
 			if m := from.byName[name]; m.alias {
-				info.addAlias(name, m.real, merge)
+				info.addAlias(name, m.real, merge, report)
 			}
 		}
 	}
@@ -144,12 +196,14 @@ func (info *keycodesInfo) merge(from *keycodesInfo, merge mergeMode) {
 			continue
 		}
 		l.merge = merge
-		info.addLEDName(l, idx)
+		info.addLEDName(l, idx, report)
 	}
 }
 
 func (info *keycodesInfo) handleFile(f *xkbFile) error {
 	info.name = f.name
+	report := info.ctx.report(true)
+	var errs sectionErrors
 	for _, d := range f.decls {
 		var err error
 		switch v := d.(type) {
@@ -157,11 +211,12 @@ func (info *keycodesInfo) handleFile(f *xkbFile) error {
 			err = info.handleInclude(v)
 		case keycodeDecl:
 			if v.value < 0 || v.value > keycodeMax {
-				return fmt.Errorf("illegal keycode %d for <%s>", v.value, v.name)
+				err = fmt.Errorf("illegal keycode %d for <%s>", v.value, v.name)
+				break
 			}
-			info.addKeyName(Keycode(v.value), v.name, v.merge)
+			info.addKeyName(Keycode(v.value), v.name, v.merge, report)
 		case aliasDecl:
-			info.addAlias(v.alias, v.real, v.merge)
+			info.addAlias(v.alias, v.real, v.merge, report)
 		case varDecl:
 			err = checkKeycodesVar(v)
 		case ledNameDecl:
@@ -169,11 +224,11 @@ func (info *keycodesInfo) handleFile(f *xkbFile) error {
 		default:
 			err = fmt.Errorf("keycode files may define key and indicator names only, not %T", d)
 		}
-		if err != nil {
-			return fmt.Errorf("%s: %w", mapDisplayName(f), err)
+		if err != nil && errs.add(info.ctx.Context, fmt.Errorf("%s: %w", mapDisplayName(f), err), "keycodes file", mapDisplayName(f)) {
+			break
 		}
 	}
-	return nil
+	return errs.err()
 }
 
 func mapDisplayName(f *xkbFile) string {
@@ -189,10 +244,10 @@ func checkKeycodesVar(v varDecl) error {
 		return err
 	}
 	if l.elem != "" {
-		return fmt.Errorf("cannot set global defaults for %q", l.elem)
+		return codedf(codeDefaultsScope, "cannot set global defaults for %q", l.elem)
 	}
 	if !strings.EqualFold(l.field, "minimum") && !strings.EqualFold(l.field, "maximum") {
-		return fmt.Errorf("default defined for unknown field %q", l.field)
+		return codedf(codeUnknownDefault, "default defined for unknown field %q", l.field)
 	}
 	return nil
 }
@@ -205,7 +260,7 @@ func (info *keycodesInfo) handleLEDName(v ledNameDecl) error {
 	if err != nil {
 		return fmt.Errorf("indicator %d name: %w", v.index, err)
 	}
-	info.addLEDName(ledNameInfo{merge: v.merge, name: name}, uint32(v.index-1))
+	info.addLEDName(ledNameInfo{merge: v.merge, name: name}, uint32(v.index-1), info.ctx.report(true))
 	return nil
 }
 
@@ -298,6 +353,11 @@ func (m *Keymap) copyKeycodes(info *keycodesInfo) {
 	for _, alias := range aliases {
 		real := info.byName[alias].real
 		if target, ok := info.byName[real]; !ok || target.alias {
+			if !ok {
+				m.ctx.verbose(verbosityDetailed, warnUndefinedKeycode, "Attempt to alias <%s> to non-existent key <%s>; Ignored\n", alias, real)
+			} else {
+				m.ctx.verbose(verbosityDetailed, 101, "Attempt to create alias with the name of a real key; Alias \"<%s> = <%s>\" ignored\n", alias, real)
+			}
 			continue
 		}
 		m.names[alias] = keyMatch{alias: true, real: real}

@@ -174,18 +174,23 @@ type (
 )
 
 type parser struct {
-	exprDepth int
-	lex       *lexer
-	tok       token
-	next      token
+	declScratch  [1]decl
+	levelScratch []levelItem
+	syms         chunk[Keysym]
+	symLists     chunk[exprKeysymList]
+	ctx          *Context
+	exprDepth    int
+	lex          *lexer
+	tok          token
+	next         token
 }
 
-func newParser(name, src string) (*parser, error) {
+func newParser(c *Context, name, src string) (*parser, error) {
 	src = strings.TrimPrefix(src, "\xef\xbb\xbf")
 	if len(src) > 0 && (src[0] >= 0x80 || src[0] == 0) && !strings.HasPrefix(src, "\u200e") && !strings.HasPrefix(src, "\u200f") {
 		return nil, fmt.Errorf("%s: the file encoding is not backward compatible with ASCII", name)
 	}
-	p := &parser{lex: newLexer(name, src)}
+	p := &parser{ctx: c, lex: newLexer(c, name, src)}
 	var err error
 	if p.tok, err = p.lex.next(); err != nil {
 		return nil, err
@@ -226,6 +231,7 @@ func (p *parser) acceptComma() (bool, error) {
 }
 
 type parsedFile struct {
+	ctx      *Context
 	name     string
 	parser   *parser
 	err      error
@@ -235,9 +241,12 @@ type parsedFile struct {
 	finished bool
 }
 
-func newParsedFile(name, src string) *parsedFile {
-	pf := &parsedFile{name: name, maps: map[string]*xkbFile{}}
-	pf.parser, pf.err = newParser(name, src)
+func newParsedFile(c *Context, name, src string) *parsedFile {
+	pf := &parsedFile{ctx: c, name: name, maps: map[string]*xkbFile{}}
+	pf.parser, pf.err = newParser(c, name, src)
+	if pf.err != nil {
+		c.log(LogError, 0, invalidSyntaxCode, "%v\n", pf.err)
+	}
 	return pf
 }
 
@@ -251,6 +260,7 @@ func (pf *parsedFile) step() bool {
 	}
 	f, err := pf.parser.parseMap()
 	if err != nil {
+		pf.ctx.log(LogError, 0, invalidSyntaxCode, "%v\n", err)
 		pf.err = err
 		return false
 	}
@@ -294,6 +304,7 @@ func (pf *parsedFile) defaultMap() (*xkbFile, error) {
 		return pf.def, nil
 	}
 	if pf.first != nil {
+		pf.ctx.verbose(verbosityDetailed, 433, "No map in include statement, but \"%s\" contains several; Using first defined map, \"%s\"\n", pf.name, mapDisplayName(pf.first))
 		return pf.first, nil
 	}
 	return nil, fmt.Errorf("%s: no map", pf.name)
@@ -395,6 +406,7 @@ func (p *parser) parseConfig(flags mapFlags) (*xkbFile, error) {
 	}
 	f := &xkbFile{typ: typ, name: escapeMapName(name), flags: flags}
 	if typ == fileGeometry {
+		p.ctx.verbose(verbosityBrief, warnGeometrySection, "Geometry sections are not supported; ignoring\n")
 		if err := p.skipBlock(); err != nil {
 			return nil, err
 		}
@@ -481,7 +493,7 @@ func (p *parser) parseDecl() ([]decl, error) {
 		if len(inc.stmts) == 0 {
 			return nil, nil
 		}
-		return []decl{inc}, nil
+		return p.oneDecl(inc), nil
 	case tokVirtualMods:
 		return p.parseVMods(merge)
 	case tokKeyName:
@@ -500,7 +512,7 @@ func (p *parser) parseDecl() ([]decl, error) {
 			if err != nil {
 				return nil, err
 			}
-			return []decl{typeDecl{merge: merge, name: name, body: body}}, nil
+			return p.oneDecl(typeDecl{merge: merge, name: name, body: body}), nil
 		}
 	case tokKey:
 		if p.next.kind == tokKeyName {
@@ -521,7 +533,7 @@ func (p *parser) parseDecl() ([]decl, error) {
 			if err != nil {
 				return nil, err
 			}
-			return []decl{ledMapDecl{merge: merge, name: name, body: body}}, nil
+			return p.oneDecl(ledMapDecl{merge: merge, name: name, body: body}), nil
 		case tokDigit, tokInteger:
 			return p.parseLedName(merge, false)
 		}
@@ -531,7 +543,7 @@ func (p *parser) parseDecl() ([]decl, error) {
 		return nil, err
 	}
 	v.merge = merge
-	return []decl{v}, nil
+	return p.oneDecl(v), nil
 }
 
 func (p *parser) parseNamedBody() (string, []varDecl, error) {
@@ -621,7 +633,7 @@ func (p *parser) parseKeycode(merge mergeMode) ([]decl, error) {
 		return nil, err
 	}
 	_, err := p.expect(tokSemi, "';'")
-	return []decl{keycodeDecl{merge: merge, name: name, value: value}}, err
+	return p.oneDecl(keycodeDecl{merge: merge, name: name, value: value}), err
 }
 
 func (p *parser) parseAlias(merge mergeMode) ([]decl, error) {
@@ -640,7 +652,7 @@ func (p *parser) parseAlias(merge mergeMode) ([]decl, error) {
 		return nil, err
 	}
 	_, err = p.expect(tokSemi, "';'")
-	return []decl{aliasDecl{merge: merge, alias: alias.text, real: real.text}}, err
+	return p.oneDecl(aliasDecl{merge: merge, alias: alias.text, real: real.text}), err
 }
 
 func (p *parser) parseLedName(merge mergeMode, virtual bool) ([]decl, error) {
@@ -667,7 +679,7 @@ func (p *parser) parseLedName(merge mergeMode, virtual bool) ([]decl, error) {
 		return nil, err
 	}
 	_, err = p.expect(tokSemi, "';'")
-	return []decl{ledNameDecl{merge: merge, index: index, name: value}}, err
+	return p.oneDecl(ledNameDecl{merge: merge, index: index, name: value}), err
 }
 
 func (p *parser) parseInterpret(merge mergeMode) ([]decl, error) {
@@ -690,7 +702,7 @@ func (p *parser) parseInterpret(merge mergeMode) ([]decl, error) {
 	if d.body, err = p.parseVarBlock(); err != nil {
 		return nil, err
 	}
-	return []decl{d}, nil
+	return p.oneDecl(d), nil
 }
 
 func (p *parser) parseGroupCompat() ([]decl, error) {
@@ -707,7 +719,7 @@ func (p *parser) parseGroupCompat() ([]decl, error) {
 		return nil, err
 	}
 	_, err := p.expect(tokSemi, "';'")
-	return []decl{groupCompatDecl{}}, err
+	return p.oneDecl(groupCompatDecl{}), err
 }
 
 func (p *parser) parseModMap(merge mergeMode) ([]decl, error) {
@@ -747,7 +759,7 @@ func (p *parser) parseModMap(merge mergeMode) ([]decl, error) {
 		return nil, err
 	}
 	_, err = p.expect(tokSemi, "';'")
-	return []decl{d}, err
+	return p.oneDecl(d), err
 }
 
 func (p *parser) parseKeySymbols(merge mergeMode) ([]decl, error) {
@@ -761,7 +773,7 @@ func (p *parser) parseKeySymbols(merge mergeMode) ([]decl, error) {
 	if _, err := p.expect(tokOBrace, "'{'"); err != nil {
 		return nil, err
 	}
-	d := symbolsDecl{merge: merge, name: name}
+	d := symbolsDecl{merge: merge, name: name, body: make([]varDecl, 0, 2)}
 	if p.tok.kind != tokCBrace {
 		for {
 			v, err := p.parseSymbolsVar()
@@ -782,7 +794,7 @@ func (p *parser) parseKeySymbols(merge mergeMode) ([]decl, error) {
 		return nil, err
 	}
 	_, err := p.expect(tokSemi, "';'")
-	return []decl{d}, err
+	return p.oneDecl(d), err
 }
 
 func (p *parser) parseSymbolsVar() (varDecl, error) {
@@ -1107,7 +1119,8 @@ func (p *parser) parseLevels() (expr, error) {
 	if err := p.advance(); err != nil {
 		return nil, err
 	}
-	var items []levelItem
+	items := p.levelScratch[:0]
+	defer func() { p.levelScratch = items[:0] }()
 	kind := levelEmpty
 	if p.tok.kind != tokCBracket {
 		for {
@@ -1136,7 +1149,7 @@ func (p *parser) parseLevels() (expr, error) {
 	}
 	switch kind {
 	case levelSyms:
-		levels := make([]exprKeysymList, len(items))
+		levels := p.symLists.take(len(items))
 		for i, item := range items {
 			levels[i] = item.syms
 		}
@@ -1179,7 +1192,8 @@ func (p *parser) parseLevelItem() (levelItem, error) {
 	}
 	item := levelItem{kind: levelSyms}
 	if sym != KeyNoSymbol {
-		item.syms.syms = []Keysym{sym}
+		item.syms.syms = p.syms.take(1)
+		item.syms.syms[0] = sym
 	}
 	return item, nil
 }
@@ -1283,7 +1297,8 @@ func (p *parser) parseKeysym() (Keysym, error) {
 func (p *parser) parseKeysymLit() (Keysym, error) {
 	switch p.tok.kind {
 	case tokIdent:
-		sym := resolveKeysym(p.tok.text)
+		sym, known := resolveKeysymName(p.tok.text)
+		p.warnKeysymName(p.tok.text, known)
 		return sym, p.advance()
 	case tokSection:
 		return KeySection, p.advance()
@@ -1294,20 +1309,55 @@ func (p *parser) parseKeysymLit() (Keysym, error) {
 		sym := KeyNoSymbol
 		if p.tok.num >= 0 && p.tok.num <= keysymMax {
 			sym = Keysym(p.tok.num)
+			if p.ctx.LogVerbosity() >= minVerbosityDeprecated && checkDeprecatedValue(sym) {
+				p.warnf(warnDeprecatedKeysym, "deprecated keysym \"%#06x\".", uint32(sym))
+			}
+		} else {
+			p.warnf(errInvalidNumericKeysym, "unrecognized keysym \"%#06x\" (%d)", p.tok.num, p.tok.num)
 		}
 		return sym, p.advance()
 	}
 	return 0, p.errorf("syntax error: expected a keysym")
 }
 
-func resolveKeysym(name string) Keysym {
+func resolveKeysymName(name string) (Keysym, bool) {
 	switch strings.ToLower(name) {
 	case "any", "nosymbol":
-		return KeyNoSymbol
+		return KeyNoSymbol, true
 	case "none", "voidsymbol":
-		return KeyVoidSymbol
+		return KeyVoidSymbol, true
 	}
-	return KeysymFromName(name, KeysymNoFlags)
+	sym := KeysymFromName(name, KeysymNoFlags)
+	return sym, sym != KeyNoSymbol
+}
+
+const (
+	warnUnrecognizedKeysym  = 107
+	errInvalidNumericKeysym = 82
+	warnDeprecatedKeysym    = 301
+	warnDeprecatedName      = 302
+	minVerbosityDeprecated  = 2
+)
+
+func (p *parser) warnf(code int, format string, args ...any) {
+	p.ctx.warn(code, "%s:%d:%d: "+format+"\n", append([]any{p.lex.name, p.tok.line, 0}, args...)...)
+}
+
+func (p *parser) warnKeysymName(name string, known bool) {
+	if !known {
+		p.warnf(warnUnrecognizedKeysym, "unrecognized keysym \"%s\"", name)
+		return
+	}
+	if p.ctx.LogVerbosity() < minVerbosityDeprecated {
+		return
+	}
+	if deprecated, reference := checkDeprecatedName(name); deprecated {
+		if reference == "" {
+			p.warnf(warnDeprecatedKeysym, "deprecated keysym \"%s\".", name)
+		} else {
+			p.warnf(warnDeprecatedName, "deprecated keysym name \"%s\"; please use \"%s\" instead.", name, reference)
+		}
+	}
 }
 
 func parseInclude(text string, merge mergeMode) (includeDecl, error) {
@@ -1360,4 +1410,24 @@ func parseIncludeMap(s string) (includeStmt, string, byte, error) {
 		stmt.file = cur
 	}
 	return stmt, next, op, nil
+}
+
+// chunk hands out small slices from one block, so a file's thousands of
+// one-keysym levels are a few allocations rather than one each.
+type chunk[T any] struct{ free []T }
+
+const chunkSize = 512
+
+func (c *chunk[T]) take(n int) []T {
+	if n > len(c.free) {
+		c.free = make([]T, max(n, chunkSize))
+	}
+	s := c.free[:n:n]
+	c.free = c.free[n:]
+	return s
+}
+
+func (p *parser) oneDecl(d decl) []decl {
+	p.declScratch[0] = d
+	return p.declScratch[:1]
 }

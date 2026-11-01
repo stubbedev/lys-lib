@@ -4,6 +4,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"unicode/utf8"
 )
 
 type flatKey struct {
@@ -34,21 +35,29 @@ type flatLevel struct {
 	syms       uint32
 	upper      uint32
 	actions    uint32
+	text       uint32
+	upperText  uint32
 	numSyms    uint16
 	numActions uint16
+	textLen    uint16
+	upperLen   uint16
 }
 
 type flatType struct {
-	mask      uint32
-	lookup    uint32
-	wide      uint32
-	numWide   uint16
-	numLevels uint16
+	entries    uint32
+	numEntries uint32
+	mask       uint32
+	lookup     uint32
+	wide       uint32
+	numWide    uint16
+	numLevels  uint16
 }
 
 type flatEntry struct {
 	level    uint32
 	preserve uint32
+	mask     uint32
+	active   bool
 }
 
 type wideEntry struct {
@@ -125,8 +134,8 @@ func (m *Keymap) buildFlat() {
 			vmodmap:    k.vmodmap,
 			nameOff:    uint32(names.Len()),  //nolint:gosec // bounded by the keymap's size
 			nameLen:    uint16(len(k.name)),  //nolint:gosec // a key name
-			numGroups:  uint8(len(k.groups)), //nolint:gosec // at most maxGroupsV1
-			rangeNum:   uint8(k.rangeNum),    //nolint:gosec // at most maxGroupsV1
+			numGroups:  uint8(len(k.groups)), //nolint:gosec // at most maxGroups
+			rangeNum:   uint8(k.rangeNum),    //nolint:gosec // at most maxGroups
 			rangeAct:   k.rangeAct,
 			explicit:   k.explicit,
 			repeats:    k.repeats,
@@ -137,11 +146,13 @@ func (m *Keymap) buildFlat() {
 			m.appendGroup(&k.groups[g], typeIndex)
 		}
 	}
+	m.buildLevelText()
 	m.buildNameIndex(&names)
 	m.detachStrings()
 	m.buildLEDs()
 	m.keys, m.names = nil, nil
-	kept := m.interprets[:0]
+	m.allInterprets = m.interprets
+	kept := make([]*interpret, 0, len(m.interprets))
 	for _, in := range m.interprets {
 		if in.required {
 			kept = append(kept, in)
@@ -187,6 +198,7 @@ func (m *Keymap) appendGroup(g *keyGroup, typeIndex map[*keyType]uint16) {
 }
 
 func (m *Keymap) buildTypes() map[*keyType]uint16 {
+	m.allTypes = m.types
 	kept := make([]*keyType, 0, len(m.types))
 	for _, t := range m.types {
 		if t.required {
@@ -213,7 +225,7 @@ func (m *Keymap) flattenType(i int, t *keyType) {
 	base := uint32(len(m.flatEntries)) //nolint:gosec // bounded by the file's size
 	for j := range t.entries {
 		e := &t.entries[j]
-		m.flatEntries = append(m.flatEntries, flatEntry{level: e.level, preserve: e.preserveMask})
+		m.flatEntries = append(m.flatEntries, flatEntry{level: e.level, preserve: e.preserveMask, mask: e.mask, active: e.active()})
 		if !e.active() {
 			continue
 		}
@@ -232,11 +244,13 @@ func (m *Keymap) flattenType(i int, t *keyType) {
 		m.wideEntries = slices.Insert(m.wideEntries, wideStart+pos, wideEntry{mask: e.mask, entry: idx})
 	}
 	m.flatTypes[i] = flatType{
-		mask:      t.mask,
-		lookup:    uint32(i * modLookupSize),              //nolint:gosec // bounded by the file's size
-		wide:      uint32(wideStart),                      //nolint:gosec // bounded by the file's size
-		numWide:   uint16(len(m.wideEntries) - wideStart), //nolint:gosec // bounded by the file's size
-		numLevels: uint16(t.numLevels),                    //nolint:gosec // at most levelMaxImpl
+		entries:    base,
+		numEntries: uint32(len(t.entries)), //nolint:gosec // bounded by the file's size
+		mask:       t.mask,
+		lookup:     uint32(i * modLookupSize),              //nolint:gosec // bounded by the file's size
+		wide:       uint32(wideStart),                      //nolint:gosec // bounded by the file's size
+		numWide:    uint16(len(m.wideEntries) - wideStart), //nolint:gosec // bounded by the file's size
+		numLevels:  uint16(t.numLevels),                    //nolint:gosec // at most levelMaxImpl
 	}
 }
 
@@ -254,8 +268,10 @@ func (m *Keymap) buildNameIndex(names *strings.Builder) {
 		names.WriteString(a.alias)
 		realOff := uint32(names.Len()) //nolint:gosec // bounded by the keymap's size
 		names.WriteString(a.real)
-		entries = append(entries, flatName{off: off, size: uint16(len(a.alias)), key: uint32(m.names[a.real].index)}) //nolint:gosec // bounded by the keymap's size
-		m.aliasPairs = append(m.aliasPairs, flatAlias{off, realOff, uint16(len(a.alias)), uint16(len(a.real))})       //nolint:gosec // key names
+		if target, ok := m.names[a.real]; ok && !target.alias {
+			entries = append(entries, flatName{off: off, size: uint16(len(a.alias)), key: uint32(target.index)}) //nolint:gosec // bounded by the keymap's size
+		}
+		m.aliasPairs = append(m.aliasPairs, flatAlias{off, realOff, uint16(len(a.alias)), uint16(len(a.real))}) //nolint:gosec // key names
 	}
 	m.nameBlob = names.String()
 	slices.SortFunc(entries, func(a, b flatName) int {
@@ -279,7 +295,7 @@ func (m *Keymap) buildLEDs() {
 	}
 	for i := range m.leds {
 		l := &m.leds[i]
-		if (l.whichMods != 0 && l.mask != 0) || l.whichGroups != 0 {
+		if (l.whichMods != 0 && l.mask != 0) || l.whichGroups != 0 || l.ctrls&m.enabledCtrls != 0 {
 			m.liveLEDs = append(m.liveLEDs, liveLED{led: uint32(i)})
 		}
 	}
@@ -452,4 +468,30 @@ func (m *Keymap) KeyModMap(kc Keycode) ModMask {
 		return 0
 	}
 	return ModMask(m.flatKeys[i].modmap)
+}
+
+func symsText(b *[]byte, syms []Keysym) (uint32, uint16) {
+	start := len(*b)
+	for _, sym := range syms {
+		r := KeysymToUTF32(sym)
+		if r == 0 {
+			*b = (*b)[:start]
+			return uint32(start), 0 //nolint:gosec // bounded by the keymap's size
+		}
+		*b = utf8.AppendRune(*b, r)
+	}
+	return uint32(start), uint16(len(*b) - start) //nolint:gosec // bounded by the keymap's size
+}
+
+func (m *Keymap) buildLevelText() {
+	b := make([]byte, 0, len(m.flatLevels)*2)
+	for i := range m.flatLevels {
+		l := &m.flatLevels[i]
+		l.text, l.textLen = symsText(&b, m.levelSyms(l))
+		l.upperText, l.upperLen = l.text, l.textLen
+		if l.upper != l.syms {
+			l.upperText, l.upperLen = symsText(&b, m.levelUpper(l))
+		}
+	}
+	m.textBlob = string(b)
 }

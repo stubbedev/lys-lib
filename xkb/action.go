@@ -199,17 +199,17 @@ func newActionDefaults() *actionDefaults {
 	return &d
 }
 
-func (d *actionDefaults) setField(mods *modSet, elem, field string, index, value expr, merge mergeMode) error {
+func (d *actionDefaults) setField(format KeymapFormat, mods *modSet, elem, field string, index, value expr, merge mergeMode) error {
 	typ, ok := lookupName(actionTypeNames, elem)
 	if !ok {
-		return fmt.Errorf("unknown action %q", elem)
+		return codedf(codeUnknownAction, "unknown action %q", elem)
 	}
 	f, ok := lookupName(fieldNames, field)
 	if !ok {
-		return fmt.Errorf("%q is not a legal action field", field)
+		return codedf(codeActionField, "%q is not a legal action field", field)
 	}
 	from := d[typ]
-	if err := setActionField(actionType(typ), mods, &from, actionField(f), index, value); err != nil { //nolint:gosec // the table's own values
+	if err := setActionField(format, actionType(typ), mods, &from, actionField(f), index, value); err != nil { //nolint:gosec // the table's own values
 		return err
 	}
 	if merge != mergeAugment {
@@ -218,19 +218,20 @@ func (d *actionDefaults) setField(mods *modSet, elem, field string, index, value
 	return nil
 }
 
-func (d *actionDefaults) parse(mods *modSet, def expr) (action, error) {
+func (d *actionDefaults) parse(c *Context, format KeymapFormat, mods *modSet, def expr) (action, error) {
 	call, ok := def.(exprAction)
 	if !ok {
 		return action{}, fmt.Errorf("expected an action definition, found %T", def)
 	}
 	typ, ok := lookupName(actionTypeNames, call.name)
 	if !ok {
-		return action{}, fmt.Errorf("unknown action %q", call.name)
+		return action{}, codedf(codeUnknownAction, "unknown action %q", call.name)
 	}
 	handler := actionType(typ) //nolint:gosec // the table's own values
 	a := d[typ]
 	if handler == actLegacy {
 		a.typ = actNone
+		c.warn(warnUnsupportedLegacyAction, "Unsupported legacy action type \"%s\".\n", call.name)
 	}
 	for _, arg := range call.args {
 		fieldExpr, value := splitActionArg(arg)
@@ -243,9 +244,9 @@ func (d *actionDefaults) parse(mods *modSet, def expr) (action, error) {
 		}
 		f, ok := lookupName(fieldNames, l.field)
 		if !ok {
-			return action{}, fmt.Errorf("action %s: unknown field %q", call.name, l.field)
+			return action{}, codedf(codeActionField, "action %s: unknown field %q", call.name, l.field)
 		}
-		if err := setActionField(handler, mods, &a, actionField(f), l.index, value); err != nil { //nolint:gosec // the table's own values
+		if err := setActionField(format, handler, mods, &a, actionField(f), l.index, value); err != nil { //nolint:gosec // the table's own values
 			return action{}, fmt.Errorf("action %s: %w", call.name, err)
 		}
 	}
@@ -295,14 +296,14 @@ func setAffect(index, value expr, flags *actionFlags) error {
 	return nil
 }
 
-func setActionField(handler actionType, mods *modSet, a *action, f actionField, index, value expr) error {
+func setActionField(format KeymapFormat, handler actionType, mods *modSet, a *action, f actionField, index, value expr) error {
 	switch handler {
 	case actNone, actVoid, actTerminate:
 		return errors.New("this action takes no argument")
 	case actModSet, actModLatch, actModLock:
-		return setModsField(handler, mods, a, f, index, value)
+		return setModsField(format, handler, mods, a, f, index, value)
 	case actGroupSet, actGroupLatch, actGroupLock:
-		return setGroupField(handler, a, f, index, value)
+		return setGroupField(format, handler, a, f, index, value)
 	case actPtrMove:
 		return setMovePtrField(a, f, index, value)
 	case actPtrButton, actPtrLock:
@@ -321,7 +322,7 @@ func setActionField(handler actionType, mods *modSet, a *action, f actionField, 
 	return fmt.Errorf("no handler for action type %d", handler)
 }
 
-func setModsField(handler actionType, mods *modSet, a *action, f actionField, index, value expr) error {
+func setModsField(format KeymapFormat, handler actionType, mods *modSet, a *action, f actionField, index, value expr) error {
 	switch {
 	case f == fieldModifiers:
 		if index != nil {
@@ -336,26 +337,32 @@ func setModsField(handler actionType, mods *modSet, a *action, f actionField, in
 		}
 		mask, err := resolveModMask(value, modBoth, mods)
 		if err != nil {
-			return err
+			return coded(codeWrongFieldType, err)
 		}
 		a.flags &^= flagLookupModmap
 		a.mods = mask
 		return nil
 	case f == fieldUnlockOnPress:
-		return errors.New("unlockOnPress requires keymap text format 2")
+		if format < FormatTextV2 {
+			return errors.New("unlockOnPress requires keymap text format 2")
+		}
+		return setBoolFlag(flagUnlockOnPress, index, value, &a.flags)
 	case f == fieldClearLocks && (handler == actModSet || handler == actModLatch):
 		return setBoolFlag(flagLockClear, index, value, &a.flags)
 	case f == fieldLatchToLock && handler == actModLatch:
 		return setBoolFlag(flagLatchToLock, index, value, &a.flags)
 	case f == fieldLatchOnPress && handler == actModLatch:
-		return errors.New("latchOnPress requires keymap text format 2")
+		if format < FormatTextV2 {
+			return errors.New("latchOnPress requires keymap text format 2")
+		}
+		return setBoolFlag(flagLatchOnPress, index, value, &a.flags)
 	case f == fieldAffect && handler == actModLock:
 		return setAffect(index, value, &a.flags)
 	}
-	return fmt.Errorf("field %s is not defined for this action", lookupValue(fieldNames, uint32(f)))
+	return codedf(codeActionField, "field %s is not defined for this action", lookupValue(fieldNames, uint32(f)))
 }
 
-func setGroupField(handler actionType, a *action, f actionField, index, value expr) error {
+func setGroupField(format KeymapFormat, handler actionType, a *action, f actionField, index, value expr) error {
 	switch {
 	case f == fieldGroup:
 		if index != nil {
@@ -369,17 +376,17 @@ func setGroupField(handler actionType, a *action, f actionField, index, value ex
 			flags &^= flagAbsoluteSwitch
 			spec = unary.child
 		}
-		idx, err := resolveGroup(spec)
+		idx, err := resolveGroup(spec, format.maxGroups())
 		if err != nil {
 			return err
 		}
 		switch {
 		case signed && unary.op == tokMinus:
-			a.group = -int32(idx) //nolint:gosec // at most maxGroupsV1
+			a.group = -int32(idx) //nolint:gosec // at most maxGroups
 		case signed:
-			a.group = int32(idx) //nolint:gosec // at most maxGroupsV1
+			a.group = int32(idx) //nolint:gosec // at most maxGroups
 		default:
-			a.group = int32(idx - 1) //nolint:gosec // at most maxGroupsV1
+			a.group = int32(idx - 1) //nolint:gosec // at most maxGroups
 		}
 		a.flags = flags
 		return nil
@@ -388,9 +395,12 @@ func setGroupField(handler actionType, a *action, f actionField, index, value ex
 	case f == fieldLatchToLock && handler == actGroupLatch:
 		return setBoolFlag(flagLatchToLock, index, value, &a.flags)
 	case f == fieldLockOnRelease && handler == actGroupLock:
-		return errors.New("lockOnRelease requires keymap text format 2")
+		if format < FormatTextV2 {
+			return errors.New("lockOnRelease requires keymap text format 2")
+		}
+		return setBoolFlag(flagLockOnRelease, index, value, &a.flags)
 	}
-	return fmt.Errorf("field %s is not defined for this action", lookupValue(fieldNames, uint32(f)))
+	return codedf(codeActionField, "field %s is not defined for this action", lookupValue(fieldNames, uint32(f)))
 }
 
 func isSigned(value expr) bool {
@@ -427,7 +437,7 @@ func setMovePtrField(a *action, f actionField, index, value expr) error {
 	case fieldAccel:
 		return setBoolFlag(flagAccel, index, value, &a.flags)
 	}
-	return fmt.Errorf("field %s is not defined for this action", lookupValue(fieldNames, uint32(f)))
+	return codedf(codeActionField, "field %s is not defined for this action", lookupValue(fieldNames, uint32(f)))
 }
 
 func setPtrBtnField(handler actionType, a *action, f actionField, index, value expr) error {
@@ -461,7 +471,7 @@ func setPtrBtnField(handler actionType, a *action, f actionField, index, value e
 		a.count = uint8(v)
 		return nil
 	}
-	return fmt.Errorf("field %s is not defined for this action", lookupValue(fieldNames, uint32(f)))
+	return codedf(codeActionField, "field %s is not defined for this action", lookupValue(fieldNames, uint32(f)))
 }
 
 func setPtrDfltField(a *action, f actionField, index, value expr) error {
@@ -496,7 +506,7 @@ func setPtrDfltField(a *action, f actionField, index, value expr) error {
 		a.value = int8(btn)
 		return nil
 	}
-	return fmt.Errorf("field %s is not defined for this action", lookupValue(fieldNames, uint32(f)))
+	return codedf(codeActionField, "field %s is not defined for this action", lookupValue(fieldNames, uint32(f)))
 }
 
 func setSwitchField(a *action, f actionField, index, value expr) error {
@@ -527,7 +537,7 @@ func setSwitchField(a *action, f actionField, index, value expr) error {
 	case fieldSame:
 		return setBoolFlag(flagSameScreen, index, value, &a.flags)
 	}
-	return fmt.Errorf("field %s is not defined for this action", lookupValue(fieldNames, uint32(f)))
+	return codedf(codeActionField, "field %s is not defined for this action", lookupValue(fieldNames, uint32(f)))
 }
 
 func setCtrlsField(handler actionType, a *action, f actionField, index, value expr) error {
@@ -545,7 +555,7 @@ func setCtrlsField(handler actionType, a *action, f actionField, index, value ex
 	case f == fieldAffect && handler == actCtrlLock:
 		return setAffect(index, value, &a.flags)
 	}
-	return fmt.Errorf("field %s is not defined for this action", lookupValue(fieldNames, uint32(f)))
+	return codedf(codeActionField, "field %s is not defined for this action", lookupValue(fieldNames, uint32(f)))
 }
 
 func setPrivateField(a *action, f actionField, index, value expr) error {
@@ -570,7 +580,7 @@ func setPrivateField(a *action, f actionField, index, value expr) error {
 	case fieldData:
 		return setPrivateData(a, index, value)
 	}
-	return fmt.Errorf("field %s is not defined for this action", lookupValue(fieldNames, uint32(f)))
+	return codedf(codeActionField, "field %s is not defined for this action", lookupValue(fieldNames, uint32(f)))
 }
 
 func setPrivateData(a *action, index, value expr) error {

@@ -2,7 +2,6 @@ package xkb
 
 import (
 	"math/bits"
-	"unicode/utf8"
 )
 
 // KeyDirection says whether a key went down or up.
@@ -80,6 +79,7 @@ type State struct {
 	modCount  [maxMods]int16
 	filters   []filter
 	live      []uint64
+	synth     [1]action
 }
 
 // NewState opens a state with nothing held, latched or locked.
@@ -109,21 +109,6 @@ func (s *State) keyLevel(k *flatKey, layout uint32) uint32 {
 		return e.level
 	}
 	return 0
-}
-
-var noActions = [1]action{{typ: actNone}}
-
-func (s *State) keyActions(k *flatKey) []action {
-	layout := s.keyLayout(k)
-	lvl := s.keyLevel(k, layout)
-	if lvl == levelInvalid {
-		return noActions[:]
-	}
-	l := s.keymap.keyLevel(k, layout, lvl)
-	if l == nil || l.numActions == 0 {
-		return noActions[:]
-	}
-	return s.keymap.levelActions(l)
 }
 
 func (s *State) newFilter() *filter {
@@ -157,43 +142,6 @@ func applyGroupDelta(f *filter, component *int32) {
 	}
 }
 
-func (s *State) filterNew(f *filter) {
-	switch f.kind {
-	case actModSet:
-		f.priv = f.act.mask
-		s.setMods |= f.priv
-	case actModLock:
-		f.priv = s.c.lockedMods & f.act.mask
-		s.setMods |= f.act.mask
-		if f.act.flags&flagLockNoLock == 0 {
-			s.c.lockedMods |= f.act.mask
-		}
-	case actModLatch:
-		f.latch = latchKeyDown
-		s.setMods |= f.act.mask
-	case actGroupSet:
-		f.priv = uint32(s.c.baseGroup) //nolint:gosec // a bit-for-bit copy, restored as int32
-		applyGroupDelta(f, &s.c.baseGroup)
-	case actGroupLock:
-		applyGroupDelta(f, &s.c.lockedGroup)
-	case actGroupLatch:
-		f.latch = latchKeyDown
-		f.delta = f.act.group
-		if f.act.flags&flagAbsoluteSwitch != 0 {
-			f.delta = f.act.group - s.c.baseGroup
-		}
-		applyGroupDelta(f, &s.c.baseGroup)
-	}
-}
-
-func breaksLatch(t actionType) bool {
-	switch t {
-	case actNone, actVoid, actPtrButton, actPtrLock, actCtrlSet, actCtrlLock, actSwitchVT, actTerminate:
-		return true
-	}
-	return false
-}
-
 func (s *State) filterRun(f *filter, ki int32, k *flatKey, dir KeyDirection) bool {
 	switch f.kind {
 	case actModSet:
@@ -209,97 +157,6 @@ func (s *State) filterRun(f *filter, ki int32, k *flatKey, dir KeyDirection) boo
 	case actGroupLatch:
 		return s.groupLatchFunc(f, ki, k, dir)
 	}
-	return false
-}
-
-func (s *State) modSetFunc(f *filter, ki int32, dir KeyDirection) bool {
-	if ki != f.key {
-		f.act.flags &^= flagLockClear
-		return false
-	}
-	if dir == KeyPressed {
-		f.refcnt++
-		return true
-	}
-	f.refcnt--
-	if f.refcnt > 0 {
-		return true
-	}
-	s.clearMods |= f.priv
-	if f.act.flags&flagLockClear != 0 {
-		s.c.lockedMods &^= f.act.mask
-	}
-	s.release(f)
-	return false
-}
-
-func (s *State) modLockFunc(f *filter, ki int32, dir KeyDirection) bool {
-	if ki != f.key {
-		return false
-	}
-	if dir == KeyPressed {
-		f.refcnt++
-		return true
-	}
-	f.refcnt--
-	if f.refcnt > 0 {
-		return true
-	}
-	s.clearMods |= f.act.mask
-	if f.act.flags&flagLockNoUnlock == 0 {
-		s.c.lockedMods &^= f.priv
-	}
-	s.release(f)
-	return false
-}
-
-func (s *State) modLatchFunc(f *filter, ki int32, k *flatKey, dir KeyDirection) bool {
-	latch := f.latch
-	switch {
-	case dir == KeyPressed && latch == latchKeyDown:
-		latch = noLatch
-	case dir == KeyPressed && latch == latchPending:
-		actions := s.keyActions(k)
-		for i := range actions {
-			a := &actions[i]
-			if a.typ == actModLatch && a.flags == f.act.flags && a.mask == f.act.mask {
-				f.act = *a
-				if a.flags&flagLatchToLock != 0 {
-					f.act.typ, f.kind = actModLock, actModLock
-				} else {
-					f.act.typ, f.kind = actModSet, actModSet
-				}
-				s.filterNew(f)
-				f.key = ki
-				s.c.latchedMods &^= f.act.mask
-				return true
-			}
-			if breaksLatch(a.typ) {
-				s.c.latchedMods &^= f.act.mask
-				s.release(f)
-				return false
-			}
-		}
-	case dir == KeyReleased && ki == f.key:
-		switch {
-		case f.act.flags&flagLockClear != 0 && s.c.lockedMods&f.act.mask == f.act.mask:
-			if latch == latchPending {
-				s.c.latchedMods &^= f.act.mask
-			} else {
-				s.clearMods |= f.act.mask
-			}
-			s.c.lockedMods &^= f.act.mask
-			s.release(f)
-		case latch == noLatch:
-			s.clearMods |= f.act.mask
-			s.release(f)
-		default:
-			latch = latchPending
-			s.clearMods |= f.act.mask
-			s.c.latchedMods |= f.act.mask
-		}
-	}
-	f.latch = latch
 	return false
 }
 
@@ -321,71 +178,6 @@ func (s *State) groupSetFunc(f *filter, ki int32, dir KeyDirection) bool {
 		s.c.lockedGroup = 0
 	}
 	s.release(f)
-	return false
-}
-
-func (s *State) groupLockFunc(f *filter, ki int32, dir KeyDirection) bool {
-	if ki != f.key {
-		return false
-	}
-	if dir == KeyPressed {
-		f.refcnt++
-		return true
-	}
-	f.refcnt--
-	if f.refcnt > 0 {
-		return true
-	}
-	s.release(f)
-	return false
-}
-
-func (s *State) groupLatchFunc(f *filter, ki int32, k *flatKey, dir KeyDirection) bool {
-	latch := f.latch
-	switch {
-	case dir == KeyPressed && latch == latchKeyDown:
-		latch = noLatch
-	case dir == KeyPressed && latch == latchPending:
-		actions := s.keyActions(k)
-		for i := range actions {
-			a := &actions[i]
-			if a.typ == actGroupLatch && a.group == f.act.group && a.flags == f.act.flags {
-				f.act = *a
-				if a.flags&flagLatchToLock != 0 && a.group != 0 {
-					f.act.typ, f.kind = actGroupLock, actGroupLock
-					s.filterNew(f)
-					s.c.latchedGroup -= f.delta
-					f.key = ki
-					return true
-				}
-				continue
-			}
-			if breaksLatch(a.typ) {
-				s.c.latchedGroup -= f.delta
-				s.release(f)
-				return false
-			}
-		}
-	case dir == KeyReleased && ki == f.key:
-		switch {
-		case f.act.flags&flagLockClear != 0 && s.c.lockedGroup != 0:
-			if latch == latchPending {
-				s.c.latchedGroup -= f.delta
-			} else {
-				s.c.baseGroup -= f.delta
-			}
-			s.c.lockedGroup = 0
-			s.release(f)
-		case latch == noLatch:
-			s.c.baseGroup -= f.delta
-			s.release(f)
-		case latch == latchKeyDown:
-			latch = latchPending
-			s.c.baseGroup -= f.delta
-			s.c.latchedGroup += f.delta
-		}
-	}
-	f.latch = latch
 	return false
 }
 
@@ -437,6 +229,13 @@ func (s *State) updateLEDs() {
 }
 
 func (s *State) ledActive(l *led) bool {
+	if s.groupsOrModsLit(l) {
+		return true
+	}
+	return l.ctrls&s.keymap.enabledCtrls != 0
+}
+
+func (s *State) groupsOrModsLit(l *led) bool {
 	if l.whichMods != 0 && l.mask != 0 {
 		var mask uint32
 		if l.whichMods&StateModEffective != 0 {
@@ -608,17 +407,7 @@ func (s *State) KeyGetLevel(kc Keycode, layout uint32) (uint32, bool) {
 }
 
 func (s *State) consumedMods(k *flatKey) uint32 {
-	layout := s.keyLayout(k)
-	if layout == layoutInvalid {
-		return 0
-	}
-	m := s.keymap
-	t := &m.flatTypes[m.flatGroups[k.firstGroup+layout].typ]
-	var preserve uint32
-	if e := m.typeEntry(t, s.c.mods&t.mask); e != nil {
-		preserve = e.preserve
-	}
-	return t.mask &^ preserve
+	return s.keyConsumed(k, ConsumedModeXKB)
 }
 
 func (s *State) modUnconsumed(k *flatKey, idx uint32) bool {
@@ -734,39 +523,66 @@ func (s *State) KeyGetUTF32(kc Keycode) rune {
 	return cp
 }
 
-// KeyGetUTF8 is the text the key types now, "" when it types none.
+// KeyGetUTF8 is the text the key types now, "" when it types none. It
+// allocates nothing: the text belongs to the keymap.
 func (s *State) KeyGetUTF8(kc Keycode) string {
-	var buf [32]byte
-	return string(s.AppendKeyUTF8(buf[:0], kc))
+	k := s.flatKey(kc)
+	if k == nil {
+		return ""
+	}
+	return s.keyText(k)
+}
+
+var singleBytes = func() string {
+	var b [128]byte
+	for i := range b {
+		b[i] = byte(i)
+	}
+	return string(b[:])
+}()
+
+func (s *State) keyText(k *flatKey) string {
+	m := s.keymap
+	l := s.currentLevel(k)
+	if l == nil || l.numSyms == 0 {
+		return ""
+	}
+	caps := s.modUnconsumed(k, modIndexCaps)
+	var text string
+	switch {
+	case l.numSyms != 1:
+		if caps {
+			text = m.textBlob[l.upperText : l.upperText+uint32(l.upperLen)]
+		} else {
+			text = m.textBlob[l.text : l.text+uint32(l.textLen)]
+		}
+	default:
+		if s.modUnconsumed(k, modIndexCtrl) && m.flatSyms[l.syms] > 127 {
+			for i := range uint32(k.numGroups) {
+				other := m.keyLevel(k, i, s.keyLevel(k, i))
+				if other != nil && other.numSyms == 1 && m.flatSyms[other.syms] <= 127 {
+					l = other
+					break
+				}
+			}
+		}
+		if caps {
+			text = m.textBlob[l.upperText : l.upperText+uint32(l.upperLen)]
+		} else {
+			text = m.textBlob[l.text : l.text+uint32(l.textLen)]
+		}
+	}
+	if len(text) == 1 && text[0] <= 127 && s.modUnconsumed(k, modIndexCtrl) {
+		c := toControl(text[0])
+		return singleBytes[c : c+1]
+	}
+	return text
 }
 
 // AppendKeyUTF8 appends the text the key types now to dst, allocating
 // nothing when dst has room.
 func (s *State) AppendKeyUTF8(dst []byte, kc Keycode) []byte {
-	k := s.flatKey(kc)
-	if k == nil {
-		return dst
-	}
-	start := len(dst)
-	if sym := s.oneSymForString(k); sym != KeyNoSymbol {
-		r := KeysymToUTF32(sym)
-		if r == 0 {
-			return dst
-		}
-		dst = utf8.AppendRune(dst, r)
-	} else {
-		for _, sym := range s.KeyGetSyms(kc) {
-			r := KeysymToUTF32(sym)
-			if r == 0 {
-				return dst[:start]
-			}
-			dst = utf8.AppendRune(dst, r)
-		}
-	}
-	if len(dst)-start == 1 && dst[start] <= 127 && s.modUnconsumed(k, modIndexCtrl) {
-		dst[start] = toControl(dst[start])
-	}
-	return dst
+	return append(dst, s.KeyGetUTF8(kc)...)
 }
 
 // SerializeMods is the modifiers of the given components, for

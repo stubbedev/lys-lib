@@ -100,6 +100,7 @@ const (
 	actCtrlLock
 	actLegacy
 	actPrivate
+	actInternal
 )
 
 type actionFlags uint16
@@ -115,6 +116,9 @@ const (
 	flagAbsoluteY
 	flagAccel
 	flagSameScreen
+	flagUnlockOnPress
+	flagLatchOnPress
+	flagLockOnRelease
 )
 
 const controlAll = 0x7ff
@@ -260,6 +264,10 @@ type keyMatch struct {
 // concurrent use once built. Every State over it holds its own mutable
 // part.
 type Keymap struct {
+	ctx            *Context
+	format         KeymapFormat
+	allTypes       []*keyType
+	allInterprets  []*interpret
 	minKey, maxKey Keycode
 	numLow         int
 	keys           []key
@@ -286,17 +294,19 @@ type Keymap struct {
 	modLookup      []int32
 	wideEntries    []wideEntry
 	nameBlob       string
+	textBlob       string
 	nameIndex      []flatName
 	aliasPairs     []flatAlias
 	interpsAny     bool
+	enabledCtrls   uint32
 	textOnce       sync.Once
 	text           string
 }
 
 type keyAlias struct{ alias, real string }
 
-func newKeymap() *Keymap {
-	return &Keymap{mods: newBuiltinMods(), canonicalMask: realModMask}
+func newKeymap(c *Context, format KeymapFormat) *Keymap {
+	return &Keymap{ctx: c, format: format, mods: newBuiltinMods(), canonicalMask: realModMask}
 }
 
 func (m *Keymap) keyByName(name string, aliases bool) *key {
@@ -378,12 +388,29 @@ func (m *Keymap) LEDIndex(name string) (uint32, bool) {
 	return i, ok
 }
 
-// Text is the keymap serialized in the xkb_v1 text format wl_keyboard
-// carries, with no includes: libxkbcommon and this package both parse it
-// without any xkeyboard-config data.
+// Text is the keymap serialized in FormatTextV1, the xkb_v1 text format
+// wl_keyboard carries, with no includes: libxkbcommon and this package both
+// parse it without any xkeyboard-config data.
 func (m *Keymap) Text() string {
-	m.textOnce.Do(func() { m.text = m.serialize() })
+	m.textOnce.Do(func() { m.text = m.serialize(FormatTextV1, 0) })
 	return m.text
+}
+
+// AsString serializes the keymap in a format, FormatOriginal for the one it
+// was compiled in. Text that a format cannot express degrades as
+// libxkbcommon degrades it, with an error logged: groups beyond the limit
+// are dropped and several actions on a level become a void action.
+func (m *Keymap) AsString(format KeymapFormat, flags SerializeFlags) (string, error) {
+	if format == FormatOriginal {
+		format = m.format
+	}
+	if !format.valid() {
+		return "", fmt.Errorf("xkb: serialize keymap: unsupported format %d", format)
+	}
+	if flags&^(SerializePretty|SerializeKeepUnused) != 0 {
+		return "", fmt.Errorf("xkb: serialize keymap: unrecognized flags %#x", uint8(flags))
+	}
+	return m.serialize(format, flags), nil
 }
 
 func wrapGroup(group int32, numGroups uint32, act rangeAction, num uint32) uint32 {
@@ -447,6 +474,7 @@ func (m *Keymap) findInterp(k *key, sym Keysym, lvl uint32, previous []*interpre
 		}
 		if i > 0 && in.sym == KeyNoSymbol {
 			if slices.Contains(previous, in) {
+				m.ctx.warn(0, "Repeated interpretation ignored for keysym \"%s\" at level %d on key <%s>.\n", KeysymGetName(sym), lvl+1, k.name)
 				return &defaultInterpret
 			}
 		}
@@ -555,6 +583,15 @@ func (m *Keymap) deriveFields() {
 		for idx := uint32(8); idx < m.mods.num; idx++ {
 			if k.vmodmap&(1<<idx) != 0 {
 				m.mods.mods[idx].mapping |= k.modmap
+			}
+		}
+	}
+	if m.format >= FormatTextV2 {
+		for idx := uint32(8); idx < m.mods.num; idx++ {
+			mask := uint32(1) << idx
+			if m.mods.mods[idx].mapping == 0 && m.mods.explicit&mask == 0 {
+				m.mods.mods[idx].mapping = mask
+				m.mods.explicit |= mask
 			}
 		}
 	}

@@ -133,7 +133,8 @@ memfd, whose file offset a `read()` would move for all of them. Hyprland does.
 ## xkb
 
 `xkb` is the XKB keyboard model in pure Go, held to libxkbcommon by differential
-tests and linking no C. A `Context` finds its include files the way libxkbcommon
+tests and linking no C. [Its own page](/xkb) maps every libxkbcommon function to
+Go. A `Context` finds its include files the way libxkbcommon
 does: `$XDG_CONFIG_HOME/xkb` or `~/.config/xkb`, `~/.xkb`, `$XKB_CONFIG_EXTRA_PATH` or
 `/etc/xkb`, then `$XKB_CONFIG_ROOT` or the system's xkeyboard-config data.
 
@@ -150,7 +151,7 @@ sym := state.KeyGetOneSym(xkb.Keycode(evdevCode + 8))
 
 Keymap text is untrusted: a keymap that fails to compile returns an error and no
 keymap, and a caller must stop reading keys through its old one. `UpdateKey`,
-`KeyGetOneSym`, `SerializeMods` and `AppendKeyUTF8` allocate nothing, so they are
+`KeyGetOneSym`, `SerializeMods` and `KeyGetUTF8` allocate nothing, so they are
 safe on a per-key path. Compiling reads each file at most once, and a build for a
 distribution sets `xkb.defaultRoot` and `xkb.defaultXLocaleDir` with `-X` where the
 usual paths do not hold its data.

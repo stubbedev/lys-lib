@@ -51,7 +51,7 @@ func TestCompileFromNamesMatchesLibxkbcommon(t *testing.T) {
 	for _, n := range namesMatrix {
 		t.Run(namesLabel(n), func(t *testing.T) {
 			n := fillNames(n)
-			g, err := ctx.NewKeymapFromNames(n)
+			g, err := ctx.NewKeymapFromNamesFormat(n, FormatTextV1)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -72,7 +72,7 @@ func TestSerializedTextRoundTripsThroughLibxkbcommon(t *testing.T) {
 	ctx := testData(t)
 	for _, n := range namesMatrix {
 		t.Run(namesLabel(n), func(t *testing.T) {
-			g, err := ctx.NewKeymapFromNames(fillNames(n))
+			g, err := ctx.NewKeymapFromNamesFormat(fillNames(n), FormatTextV1)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -511,6 +511,7 @@ func TestSystemComposeFromLocale(t *testing.T) {
 }
 
 func TestKeyEventPathAllocatesNothing(t *testing.T) {
+	var textSink string
 	ctx := testData(t)
 	km, err := ctx.NewKeymapFromNames(Names{Layout: "us,ru", Options: "grp:alt_shift_toggle"})
 	if err != nil {
@@ -528,8 +529,21 @@ func TestKeyEventPathAllocatesNothing(t *testing.T) {
 		"KeyGetSyms":       func() { sink += uint32(len(st.KeyGetSyms(38))) },
 		"KeyGetUTF32":      func() { sink += uint32(st.KeyGetUTF32(38)) },
 		"AppendKeyUTF8":    func() { sink += uint32(len(st.AppendKeyUTF8(buf[:0], 38))) },
-		"SerializeMods":    func() { sink += uint32(st.SerializeMods(StateModEffective)) },
-		"SerializeLayout":  func() { sink += st.SerializeLayout(StateLayoutEffective) },
+		"KeyGetUTF8":       func() { textSink = st.KeyGetUTF8(38) },
+		"KeyGetUTF8 ctrl": func() {
+			st.UpdateMask(4, 0, 0, 0, 0, 0)
+			textSink = st.KeyGetUTF8(38)
+			st.UpdateMask(0, 0, 0, 0, 0, 0)
+		},
+		"KeyGetConsumedMods XKB": func() { sink += uint32(st.KeyGetConsumedMods(38, ConsumedModeXKB)) },
+		"KeyGetConsumedMods GTK": func() { sink += uint32(st.KeyGetConsumedMods(38, ConsumedModeGTK)) },
+		"ModMaskRemoveConsumed":  func() { sink += uint32(st.ModMaskRemoveConsumed(38, 3)) },
+		"UpdateLatchedLocked": func() {
+			st.UpdateLatchedLocked(1, 1, true, 1, 2, 2, true, 1)
+			st.UpdateMask(0, 0, 0, 0, 0, 0)
+		},
+		"SerializeMods":   func() { sink += uint32(st.SerializeMods(StateModEffective)) },
+		"SerializeLayout": func() { sink += st.SerializeLayout(StateLayoutEffective) },
 		"LEDNameIsActive": func() {
 			if st.LEDNameIsActive("Caps Lock") {
 				sink++
@@ -546,5 +560,5 @@ func TestKeyEventPathAllocatesNothing(t *testing.T) {
 			t.Errorf("%s allocates %v times", name, a)
 		}
 	}
-	_ = sink
+	_, _ = sink, textSink
 }

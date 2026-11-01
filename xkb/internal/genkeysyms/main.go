@@ -8,15 +8,18 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"flag"
 	"fmt"
 	"go/format"
 	"log"
 	"os"
 	"regexp"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
+	"unsafe"
 
 	"github.com/ebitengine/purego"
 
@@ -39,6 +42,10 @@ type library struct {
 	fromUTF32  func(ucs uint32) uint32
 	toUpper    func(sym uint32) uint32
 	toLower    func(sym uint32) uint32
+	context    func(flags int32) uintptr
+	fromString func(ctx uintptr, s *byte, format, flags int32) uintptr
+	modsLevel  func(km uintptr, kc, layout, level uint32, out *uint32, size uintptr) uintptr
+	unref      func(km uintptr)
 	symbolBase uintptr
 }
 
@@ -58,6 +65,10 @@ func load() (*library, error) {
 		{&l.fromUTF32, "xkb_utf32_to_keysym"},
 		{&l.toUpper, "xkb_keysym_to_upper"},
 		{&l.toLower, "xkb_keysym_to_lower"},
+		{&l.context, "xkb_context_new"},
+		{&l.fromString, "xkb_keymap_new_from_string"},
+		{&l.modsLevel, "xkb_keymap_key_get_mods_for_level"},
+		{&l.unref, "xkb_keymap_unref"},
 	} {
 		if _, err := purego.Dlsym(h, f.name); err != nil {
 			return nil, fmt.Errorf("libxkbcommon lacks %s: %w", f.name, err)
@@ -235,10 +246,22 @@ func generate(defines []define, l *library) ([]byte, error) {
 	b.WriteString("}\n\n")
 
 	b.WriteString("var keysymCase = []caseMapping{\n")
+	all := append(slices.Clone(scan), unicodeSyms()...)
+	lowers, uppers, err := l.caseProperties(all)
+	if err != nil {
+		return nil, err
+	}
 	emit := func(s uint32) {
 		upper, lower := l.toUpper(s), l.toLower(s)
-		if upper != s || lower != s {
-			fmt.Fprintf(&b, "\t{%#x, %#x, %#x},\n", s, upper, lower)
+		var flags uint8
+		if lowers[s] {
+			flags |= 1
+		}
+		if uppers[s] {
+			flags |= 2
+		}
+		if upper != s || lower != s || flags != 0 {
+			fmt.Fprintf(&b, "\t{%#x, %#x, %#x, %d},\n", s, upper, lower, flags)
 		}
 	}
 	for _, s := range scan {
@@ -254,7 +277,12 @@ func generate(defines []define, l *library) ([]byte, error) {
 			emit(s)
 		}
 	}
-	b.WriteString("}\n")
+	b.WriteString("}\n\n")
+	deprecated, err := l.deprecations(defines)
+	if err != nil {
+		return nil, err
+	}
+	b.WriteString(deprecated)
 	return format.Source(b.Bytes())
 }
 
@@ -298,4 +326,169 @@ func main() {
 	if err := os.Rename(tmp, *out); err != nil {
 		log.Fatalf("genkeysyms: %v", err)
 	}
+}
+
+func unicodeSyms() []uint32 {
+	out := make([]uint32, 0, unicodeMax-unicodeOffset+1)
+	for s := uint32(unicodeOffset); s <= unicodeMax; s++ {
+		out = append(out, s)
+	}
+	return out
+}
+
+const caseBatch = 8192
+
+const caseProbeHeader = `xkb_keymap {
+xkb_keycodes { minimum = 8; maximum = %d;
+%s};
+xkb_types {
+	virtual_modifiers NumLock;
+	type "ONE_LEVEL" { modifiers= none; };
+	type "TWO_LEVEL" { modifiers= Shift; map[Shift]= 2; };
+	type "ALPHABETIC" { modifiers= Shift+Lock; map[Shift]= 2; map[Lock]= 2; };
+};
+xkb_compatibility { };
+xkb_symbols {
+%s};
+};
+`
+
+// caseProperties asks libxkbcommon which keysyms count as lower and upper
+// case when it picks a key's automatic type: the Unicode properties, which
+// include characters with no case mapping and so cannot be derived from
+// xkb_keysym_to_upper and xkb_keysym_to_lower. A key of [sym, A] is ALPHABETIC
+// when sym is lower case and one of [a, sym] when sym is upper case; ALPHABETIC
+// is the type that maps Lock to level 2.
+func (l *library) caseProperties(syms []uint32) (lowers, uppers map[uint32]bool, err error) {
+	ctx := l.context(0)
+	if ctx == 0 {
+		return nil, nil, errors.New("xkb_context_new failed")
+	}
+	lowers, uppers = map[uint32]bool{}, map[uint32]bool{}
+	for start := 0; start < len(syms); start += caseBatch {
+		batch := syms[start:min(start+caseBatch, len(syms))]
+		var codes, keys strings.Builder
+		for i, s := range batch {
+			fmt.Fprintf(&codes, "<L%d> = %d;\n<U%d> = %d;\n", i, 2*i+8, i, 2*i+9)
+			fmt.Fprintf(&keys, "key <L%d> { [ %#x, A ] };\nkey <U%d> { [ a, %#x ] };\n", i, s, i, s)
+		}
+		text := append(fmt.Appendf(nil, caseProbeHeader, 2*len(batch)+9, codes.String(), keys.String()), 0)
+		km := l.fromString(ctx, &text[0], 1, 0)
+		runtime.KeepAlive(text)
+		if km == 0 {
+			return nil, nil, fmt.Errorf("the case probe keymap for keysyms from %#x does not compile", batch[0])
+		}
+		for i, s := range batch {
+			var masks [4]uint32
+			if n := l.modsLevel(km, uint32(2*i+8), 0, 1, &masks[0], 4); n == 2 {
+				lowers[s] = true
+			}
+			if n := l.modsLevel(km, uint32(2*i+9), 0, 1, &masks[0], 4); n == 2 {
+				uppers[s] = true
+			}
+		}
+		l.unref(km)
+	}
+	return lowers, uppers, nil
+}
+
+const deprecationProbe = `xkb_keymap {
+xkb_keycodes { minimum = 8; maximum = 9; <K> = 8; };
+xkb_types { type "ONE_LEVEL" { modifiers= none; }; };
+xkb_compatibility { };
+xkb_symbols { key <K> { [ %s ] }; };
+};
+`
+
+type deprecationProber struct {
+	lib       *library
+	ctx       uintptr
+	vsnprintf func(buf *byte, size uintptr, format, args unsafe.Pointer) int32
+	message   string
+}
+
+var activeProber *deprecationProber
+
+// deprecation asks libxkbcommon whether it warns about a keysym spelled a
+// given way, and which name it recommends instead, from its own log: the table
+// of deprecated keysyms is private to the library.
+func (p *deprecationProber) deprecation(spelling string) (deprecated bool, reference string) {
+	p.message = ""
+	text := append(fmt.Appendf(nil, deprecationProbe, spelling), 0)
+	km := p.lib.fromString(p.ctx, &text[0], 1, 0)
+	runtime.KeepAlive(text)
+	if km != 0 {
+		p.lib.unref(km)
+	}
+	switch {
+	case strings.Contains(p.message, "[XKB-302]"):
+		_, rest, _ := strings.Cut(p.message, "please use \"")
+		name, _, _ := strings.Cut(rest, "\"")
+		return true, name
+	case strings.Contains(p.message, "[XKB-301]"):
+		return true, ""
+	}
+	return false, ""
+}
+
+func newDeprecationProber(l *library) (*deprecationProber, error) {
+	c, err := clib.Open([]string{"libc.so.6"})
+	if err != nil {
+		return nil, fmt.Errorf("load libc: %w", err)
+	}
+	p := &deprecationProber{lib: l, ctx: l.context(0)}
+	purego.RegisterLibFunc(&p.vsnprintf, c, "vsnprintf")
+	var setLevel func(ctx uintptr, level int32)
+	var setVerbosity func(ctx uintptr, verbosity int32)
+	var setLogFn func(ctx, fn uintptr)
+	purego.RegisterLibFunc(&setLevel, l.symbolBase, "xkb_context_set_log_level")
+	purego.RegisterLibFunc(&setVerbosity, l.symbolBase, "xkb_context_set_log_verbosity")
+	purego.RegisterLibFunc(&setLogFn, l.symbolBase, "xkb_context_set_log_fn")
+	setLevel(p.ctx, 30)
+	setVerbosity(p.ctx, 2)
+	activeProber = p
+	setLogFn(p.ctx, purego.NewCallback(func(_ uintptr, _ int32, format, args unsafe.Pointer) uintptr {
+		var buf [512]byte
+		n := activeProber.vsnprintf(&buf[0], uintptr(len(buf)), format, args)
+		if n > 0 {
+			activeProber.message += string(buf[:min(int(n), len(buf)-1)])
+		}
+		return 0
+	}))
+	return p, nil
+}
+
+func (l *library) deprecations(defines []define) (string, error) {
+	p, err := newDeprecationProber(l)
+	if err != nil {
+		return "", err
+	}
+	var b bytes.Buffer
+	b.WriteString("var keysymDeprecatedNames = []deprecatedName{\n")
+	names := make([]string, 0, len(defines))
+	seen := map[uint32]bool{}
+	syms := make([]uint32, 0, len(defines))
+	for _, d := range defines {
+		names = append(names, d.name)
+		if !seen[d.sym] {
+			seen[d.sym] = true
+			syms = append(syms, d.sym)
+		}
+	}
+	slices.Sort(names)
+	names = slices.Compact(names)
+	for _, name := range names {
+		if deprecated, ref := p.deprecation(name); deprecated {
+			fmt.Fprintf(&b, "\t{%q, %q},\n", name, ref)
+		}
+	}
+	b.WriteString("}\n\nvar keysymDeprecatedValues = []Keysym{\n")
+	slices.Sort(syms)
+	for _, s := range syms {
+		if deprecated, _ := p.deprecation(fmt.Sprintf("%#x", s)); deprecated {
+			fmt.Fprintf(&b, "\t%#x,\n", s)
+		}
+	}
+	b.WriteString("}\n")
+	return b.String(), nil
 }

@@ -144,8 +144,15 @@ func mergeActions(into, from *level, clobber bool) int {
 	return 0
 }
 
-func mergeGroups(into, from *groupInfo, clobber bool) {
+func (info *symbolsInfo) mergeGroups(into, from *groupInfo, clobber, report bool, group int, keyName string) {
 	if into.typ != from.typ {
+		if into.typ != "" && from.typ != "" && report {
+			use, ignore := into.typ, from.typ
+			if clobber {
+				use, ignore = from.typ, into.typ
+			}
+			info.ctx.warn(warnConflictingGroupMerge, "Multiple definitions for group %d type of key <%s>; Using %s, ignoring %s\n", group+1, keyName, use, ignore)
+		}
 		if into.typ == "" || (from.typ != "" && clobber) {
 			into.typ = from.typ
 		}
@@ -174,9 +181,15 @@ func mergeGroups(into, from *groupInfo, clobber bool) {
 			continue
 		}
 		if !fl.sameSyms(il) {
+			if report && len(il.syms) > 0 && len(fl.syms) > 0 {
+				info.ctx.warn(warnConflictingKeySymbol, "Multiple symbols for level %d/group %d on key <%s>; Using %s, ignoring %s\n", i+1, group+1, keyName, useFromTo(clobber), useFromTo(!clobber))
+			}
 			fromSyms += mergeSyms(il, fl, clobber)
 		}
 		if !il.sameActions(fl) {
+			if report && len(il.actions) > 0 && len(fl.actions) > 0 {
+				info.ctx.warn(warnConflictingKeyAction, "Multiple actions for level %d/group %d on key <%s>; Using %s, ignoring %s\n", i+1, group+1, keyName, useFromTo(clobber), useFromTo(!clobber))
+			}
 			fromActs += mergeActions(il, fl, clobber)
 		}
 	}
@@ -199,17 +212,28 @@ func mergeGroups(into, from *groupInfo, clobber bool) {
 	}
 }
 
-func mergeKeys(into, from *keyInfo) {
+func useFromTo(from bool) string {
+	if from {
+		return "from"
+	}
+	return "to"
+}
+
+func (info *symbolsInfo) mergeKeys(into, from *keyInfo, sameFile bool) {
 	clobber := from.merge != mergeAugment
+	report := info.ctx.report(sameFile)
 	if from.merge == mergeReplace {
 		*into = *from
 		return
 	}
 	both := min(len(into.groups), len(from.groups))
 	for i := range both {
-		mergeGroups(&into.groups[i], &from.groups[i], clobber)
+		info.mergeGroups(&into.groups[i], &from.groups[i], clobber, report, i, into.name)
 	}
 	into.groups = append(into.groups, from.groups[both:]...)
+	if collides(report, keyVmodmap|keyRepeat|keyDefaultType|keyGroupInfo, into.defined, from.defined) {
+		info.ctx.warn(warnConflictingKeyFields, "Symbol map for key <%s> redefined; Using %s definition for conflicting fields\n", into.name, useFirstOrLast(!clobber))
+	}
 	if useNewField(keyVmodmap, into.defined, from.defined, clobber) {
 		into.vmodmap = from.vmodmap
 		into.defined |= keyVmodmap
@@ -229,7 +253,7 @@ func mergeKeys(into, from *keyInfo) {
 	}
 }
 
-func (info *symbolsInfo) addKey(k *keyInfo) {
+func (info *symbolsInfo) addKey(k *keyInfo, sameFile bool) {
 	k.name = info.keymap.compileResolveAlias(k.name)
 	if info.keysByName == nil {
 		info.keysByName = make(map[string]*keyInfo, len(info.keys)+1)
@@ -238,7 +262,7 @@ func (info *symbolsInfo) addKey(k *keyInfo) {
 		}
 	}
 	if old, ok := info.keysByName[k.name]; ok {
-		mergeKeys(old, k)
+		info.mergeKeys(old, k, sameFile)
 		return
 	}
 	info.keysByName[k.name] = k
@@ -252,9 +276,19 @@ func (info *symbolsInfo) addModMap(entry modMapEntry) {
 		if entry.haveSymbol != old.haveSymbol || (entry.haveSymbol && entry.sym != old.sym) || (!entry.haveSymbol && entry.keyName != old.keyName) {
 			continue
 		}
-		if clobber {
-			old.modifier = entry.modifier
+		if entry.modifier == old.modifier {
+			return
 		}
+		use, ignore := old.modifier, entry.modifier
+		if clobber {
+			use, ignore = entry.modifier, old.modifier
+		}
+		if entry.haveSymbol {
+			info.ctx.warn(warnConflictingModmap, "Symbol \"%s\" added to modifier map for multiple modifiers; Using %s, ignoring %s\n", KeysymGetName(entry.sym), info.modIndexText(use), info.modIndexText(ignore))
+		} else {
+			info.ctx.warn(warnConflictingModmap, "Key \"<%s>\" added to modifier map for multiple modifiers; Using %s, ignoring %s\n", entry.keyName, info.modIndexText(use), info.modIndexText(ignore))
+		}
+		old.modifier = use
 		return
 	}
 	info.modmaps = append(info.modmaps, entry)
@@ -278,7 +312,7 @@ func (info *symbolsInfo) merge(from *symbolsInfo, merge mergeMode) {
 	} else {
 		for _, k := range from.keys {
 			k.merge = merge
-			info.addKey(k)
+			info.addKey(k, false)
 		}
 	}
 	if len(info.modmaps) == 0 {
@@ -318,7 +352,7 @@ func (info *symbolsInfo) handleInclude(inc includeDecl) error {
 		switch {
 		case stmt.modifier != "":
 			next.explicitGroup = explicitGroupFromModifier(stmt.modifier)
-			if next.explicitGroup >= maxGroupsV1 {
+			if next.explicitGroup >= info.keymap.format.maxGroups() {
 				next.explicitGroup = info.explicitGroup
 			}
 		case info.keymap.numGroups != 0 && next.depth == 1:
@@ -337,6 +371,7 @@ func (info *symbolsInfo) handleInclude(inc includeDecl) error {
 
 func (info *symbolsInfo) handleFile(f *xkbFile) error {
 	info.name = f.name
+	var errs sectionErrors
 	for _, d := range f.decls {
 		var err error
 		switch v := d.(type) {
@@ -353,11 +388,11 @@ func (info *symbolsInfo) handleFile(f *xkbFile) error {
 		default:
 			err = fmt.Errorf("symbols files may not include %T", d)
 		}
-		if err != nil {
-			return fmt.Errorf("%s: %w", mapDisplayName(f), err)
+		if err != nil && errs.add(info.ctx.Context, fmt.Errorf("%s: %w", mapDisplayName(f), err), "symbols file", mapDisplayName(f)) {
+			break
 		}
 	}
-	return nil
+	return errs.err()
 }
 
 func (info *symbolsInfo) groupIndex(k *keyInfo, index expr, field groupField) (uint32, error) {
@@ -367,15 +402,15 @@ func (info *symbolsInfo) groupIndex(k *keyInfo, index expr, field groupField) (u
 				return uint32(i), nil
 			}
 		}
-		if len(k.groups) >= maxGroupsV1 {
-			return 0, fmt.Errorf("too many groups for key <%s>", k.name)
+		if uint32(len(k.groups)) >= info.keymap.format.maxGroups() { //nolint:gosec // at most maxGroups
+			return 0, codedf(codeGroupIndex, "too many groups for key <%s>", k.name)
 		}
 		k.groups = append(k.groups, groupInfo{})
-		return uint32(len(k.groups) - 1), nil //nolint:gosec // at most maxGroupsV1
+		return uint32(len(k.groups) - 1), nil //nolint:gosec // at most maxGroups
 	}
-	g, err := resolveGroup(index)
+	g, err := resolveGroup(index, info.keymap.format.maxGroups())
 	if err != nil {
-		return 0, fmt.Errorf("group index of key <%s>: %w", k.name, err)
+		return 0, coded(codeGroupIndex, fmt.Errorf("group index of key <%s>: %w", k.name, err))
 	}
 	g--
 	for int(g) >= len(k.groups) {
@@ -446,8 +481,9 @@ func (info *symbolsInfo) addActions(k *keyInfo, index, value expr) error {
 		l := &g.levels[i]
 		var actions []action
 		for _, def := range list.actions {
-			a, err := info.defaults.parse(&info.mods, def)
+			a, err := info.defaults.parse(info.ctx.Context, info.keymap.format, &info.mods, def)
 			if err != nil {
+				info.ctx.logError(coded(codeInvalidValue, fmt.Errorf("illegal action definition for <%s>: %w", k.name, err)))
 				a = action{typ: actNone}
 			}
 			if a.typ != actNone {
@@ -482,12 +518,16 @@ func (info *symbolsInfo) setField(k *keyInfo, field string, index, value expr) e
 		k.vmodmap = mask
 		k.defined |= keyVmodmap
 		return nil
-	case "locking", "lock", "locks", "radiogroup", "permanentradiogroup", "allownone":
+	case "locking", "lock", "locks":
+		info.ctx.verbose(verbosityBrief, warnUnsupportedSymbolsField, "Key behaviors not supported; Ignoring locking specification for key <%s>\n", k.name)
+		return nil
+	case "radiogroup", "permanentradiogroup", "allownone":
+		info.ctx.verbose(verbosityBrief, warnUnsupportedSymbolsField, "Radio groups not supported; Ignoring radio group specification for key <%s>\n", k.name)
 		return nil
 	case "repeating", "repeats", "repeat":
 		v, err := resolveEnum(value, repeatEntries)
 		if err != nil {
-			return fmt.Errorf("repeat of key <%s>: %w", k.name, err)
+			return coded(codeInvalidValue, fmt.Errorf("repeat of key <%s>: %w", k.name, err))
 		}
 		k.repeat = keyRepeatSetting(v) //nolint:gosec // the table's own values
 		k.defined |= keyRepeat
@@ -515,9 +555,9 @@ func (info *symbolsInfo) setField(k *keyInfo, field string, index, value expr) e
 		k.defined |= keyGroupInfo
 		return nil
 	case "groupsredirect", "redirectgroups":
-		g, err := resolveGroup(value)
+		g, err := resolveGroup(value, info.keymap.format.maxGroups())
 		if err != nil {
-			return fmt.Errorf("groupsRedirect of key <%s>: %w", k.name, err)
+			return coded(codeGroupIndex, fmt.Errorf("groupsRedirect of key <%s>: %w", k.name, err))
 		}
 		k.rangeAct = rangeRedirect
 		k.rangeNum = g - 1
@@ -525,24 +565,25 @@ func (info *symbolsInfo) setField(k *keyInfo, field string, index, value expr) e
 		return nil
 	}
 	if strings.HasPrefix(name, "overlay") || strings.HasPrefix(name, "permanentoverlay") {
+		info.ctx.verbose(verbosityBrief, warnUnsupportedSymbolsField, "Overlays not supported; Ignoring overlay specification for key <%s>\n", k.name)
 		return nil
 	}
-	return fmt.Errorf("unknown field %q for key <%s>", field, k.name)
+	return codedf(codeUnknownField, "unknown field %q for key <%s>", field, k.name)
 }
 
 func (info *symbolsInfo) setType(k *keyInfo, index, value expr) error {
 	val, err := resolveString(value)
 	if err != nil {
-		return fmt.Errorf("the type of key <%s>: %w", k.name, err)
+		return coded(codeWrongFieldType, fmt.Errorf("the type of key <%s>: %w", k.name, err))
 	}
 	if index == nil {
 		k.defaultType = val
 		k.defined |= keyDefaultType
 		return nil
 	}
-	g, err := resolveGroup(index)
+	g, err := resolveGroup(index, info.keymap.format.maxGroups())
 	if err != nil {
-		return fmt.Errorf("the type of key <%s>: %w", k.name, err)
+		return coded(codeGroupIndex, fmt.Errorf("the type of key <%s>: %w", k.name, err))
 	}
 	g--
 	for int(g) >= len(k.groups) {
@@ -555,19 +596,21 @@ func (info *symbolsInfo) setType(k *keyInfo, index, value expr) error {
 
 func (info *symbolsInfo) setGroupName(index, value expr, merge mergeMode) error {
 	if index == nil {
+		info.ctx.verbose(verbosityBrief, warnMissingGroupNameIndex, "You must specify an index when specifying a group name; Group name definition without array subscript ignored\n")
 		return errors.New("a group name needs an index")
 	}
-	group, err := resolveGroup(index)
+	group, err := resolveGroup(index, info.keymap.format.maxGroups())
 	if err != nil {
-		return fmt.Errorf("group name: %w", err)
+		return coded(codeGroupIndex, fmt.Errorf("group name: %w", err))
 	}
 	name, err := resolveString(value)
 	if err != nil {
-		return fmt.Errorf("group %d name: %w", group, err)
+		return coded(codeWrongFieldType, fmt.Errorf("group %d name: %w", group, err))
 	}
 	target := group - 1
 	if info.explicitGroup != layoutInvalid {
 		if group != 1 {
+			info.ctx.warn(warnNonBaseGroupName, "An explicit group was specified for the '%s' map, but it provides a name for a group other than Group1 (%d); Ignoring group name '%s'\n", info.name, group, name)
 			return fmt.Errorf("an explicit group was given, but map %q names group %d", info.name, group)
 		}
 		target = info.explicitGroup
@@ -576,8 +619,13 @@ func (info *symbolsInfo) setGroupName(index, value expr, merge mergeMode) error 
 		for int(target) >= len(info.groupNames) {
 			info.groupNames = append(info.groupNames, "")
 		}
-	} else if old := info.groupNames[target]; old != "" && old != name && merge == mergeAugment {
-		name = old
+	} else if old := info.groupNames[target]; old != "" && old != name {
+		use, ignore := name, old
+		if merge == mergeAugment {
+			use, ignore = old, name
+		}
+		info.ctx.warn(0, "Multiple definitions of group %d name in map '%s'; Using '%s', ignoring '%s'\n", target, info.name, use, ignore)
+		name = use
 	}
 	info.groupNames[target] = name
 	return nil
@@ -593,11 +641,11 @@ func (info *symbolsInfo) handleGlobalVar(v varDecl) error {
 		if err := info.setField(temp, l.field, l.index, v.value); err != nil {
 			return err
 		}
-		mergeKeys(info.defaultKey, temp)
+		info.mergeKeys(info.defaultKey, temp, true)
 		return nil
 	}
 	if l.elem != "" {
-		return info.defaults.setField(&info.mods, l.elem, l.field, l.index, v.value, v.merge)
+		return info.defaults.setField(info.keymap.format, &info.mods, l.elem, l.field, l.index, v.value, v.merge)
 	}
 	switch strings.ToLower(l.field) {
 	case "name", "groupname":
@@ -605,13 +653,14 @@ func (info *symbolsInfo) handleGlobalVar(v varDecl) error {
 	case "groupswrap", "wrapgroups", "groupsclamp", "clampgroups", "groupsredirect", "redirectgroups", "allownone":
 		return nil
 	}
-	return fmt.Errorf("default defined for unknown field %q", l.field)
+	return codedf(codeUnknownDefault, "default defined for unknown field %q", l.field)
 }
 
 func (info *symbolsInfo) handleSymbols(d symbolsDecl) error {
 	k := info.defaultKey.clone()
 	k.merge = d.merge
 	k.name = d.name
+	var errs []error
 	for _, v := range d.body {
 		field := "symbols"
 		var index expr
@@ -622,19 +671,24 @@ func (info *symbolsInfo) handleSymbols(d symbolsDecl) error {
 		} else {
 			l, err := resolveLhs(v.name)
 			if err != nil {
-				return err
+				errs = append(errs, err)
+				continue
 			}
 			if l.elem != "" {
-				return fmt.Errorf("cannot set defaults for %q in a key statement", l.elem)
+				errs = append(errs, codedf(codeDefaultsScope, "cannot set defaults for %q in a key statement", l.elem))
+				continue
 			}
 			field, index = l.field, l.index
 		}
 		if err := info.setField(k, field, index, v.value); err != nil {
-			return err
+			errs = append(errs, err)
 		}
 	}
+	if len(errs) > 0 {
+		return errors.Join(errs...)
+	}
 	info.setExplicitGroup(k)
-	info.addKey(k)
+	info.addKey(k, true)
 	return nil
 }
 
@@ -642,10 +696,15 @@ func (info *symbolsInfo) setExplicitGroup(k *keyInfo) {
 	if info.explicitGroup == layoutInvalid {
 		return
 	}
+	warn := false
 	for i := 1; i < len(k.groups); i++ {
 		if k.groups[i].defined != 0 {
+			warn = true
 			k.groups[i] = groupInfo{}
 		}
+	}
+	if warn {
+		info.ctx.warn(warnMultipleGroupsAtOnce, "For the map %s the explicit group %d is specified, but key <%s> has more than one group defined; All groups except first one will be ignored\n", info.name, info.explicitGroup+1, k.name)
 	}
 	groups := make([]groupInfo, info.explicitGroup+1)
 	copy(groups, k.groups)
@@ -663,7 +722,7 @@ func (info *symbolsInfo) handleModMap(d modMapDecl) error {
 	} else {
 		i, ok := info.mods.index(d.modifier, modReal)
 		if !ok {
-			return fmt.Errorf("modifier map for non-modifier %q", d.modifier)
+			return codedf(codeInvalidReal, "modifier map for non-modifier %q", d.modifier)
 		}
 		modifier = i
 	}
@@ -752,7 +811,7 @@ func automaticType(g *groupInfo) string {
 	return "FOUR_LEVEL"
 }
 
-func (m *Keymap) typeForGroup(k *keyInfo, g *groupInfo) (*keyType, bool) {
+func (m *Keymap) typeForGroup(k *keyInfo, g *groupInfo, group int) (*keyType, bool) {
 	name := g.typ
 	explicit := true
 	if name == "" {
@@ -762,13 +821,16 @@ func (m *Keymap) typeForGroup(k *keyInfo, g *groupInfo) (*keyType, bool) {
 			explicit = false
 		}
 	}
-	if name != "" {
+	if name == "" {
+		m.ctx.warn(warnCannotInferKeyType, "Couldn't find an automatic type for key '<%s>' group %d with %d levels; Using the default type\n", k.name, group+1, len(g.levels))
+	} else {
 		for _, t := range m.types {
 			if t.name == name {
 				t.required = true
 				return t, explicit
 			}
 		}
+		m.ctx.warn(warnUndefinedKeyType, "The type \"%s\" for key '<%s>' group %d was not previously defined; Using the default type\n", name, k.name, group+1)
 	}
 	m.types[0].required = true
 	return m.types[0], explicit
@@ -791,6 +853,7 @@ func upperSyms(syms []Keysym) []Keysym {
 func (m *Keymap) copyKey(ki *keyInfo) {
 	k := m.keyByName(ki.name, false)
 	if k == nil {
+		m.ctx.verbose(verbosityDetailed, warnUndefinedKeycode, "Key <%s> not found in keycodes; Symbols ignored\n", ki.name)
 		return
 	}
 	k.numGroups = 0
@@ -820,7 +883,10 @@ func (m *Keymap) copyKey(ki *keyInfo) {
 	k.groups = make([]keyGroup, k.numGroups)
 	for i := range groups {
 		g := &groups[i]
-		t, explicit := m.typeForGroup(ki, g)
+		t, explicit := m.typeForGroup(ki, g, i)
+		if int(t.numLevels) < len(g.levels) {
+			m.ctx.verbose(verbosityBrief, warnExtraSymbolsIgnored, "Type \"%s\" has %d levels, but <%s> has %d levels; Ignoring extra symbols\n", t.name, t.numLevels, ki.name, len(g.levels))
+		}
 		levels := make([]level, t.numLevels)
 		copy(levels, g.levels)
 		k.groups[i] = keyGroup{explicitType: explicit, typ: t, levels: levels}
@@ -865,7 +931,15 @@ func (m *Keymap) copyModMap(entry modMapEntry) {
 	} else {
 		k = m.keyByName(entry.keyName, true)
 	}
-	if k == nil || entry.modifier == modNone {
+	if k == nil {
+		if entry.haveSymbol {
+			m.ctx.verbose(verbosityDetailed, warnUnresolvedKeymapSymbol, "Key \"%s\" not found in symbol map; Modifier map entry for %s not updated\n", KeysymGetName(entry.sym), m.modIndexName(entry.modifier))
+		} else {
+			m.ctx.verbose(verbosityDetailed, warnUndefinedKeycode, "Key <%s> not found in keycodes; Modifier map entry for %s not updated\n", entry.keyName, m.modIndexName(entry.modifier))
+		}
+		return
+	}
+	if entry.modifier == modNone {
 		return
 	}
 	k.modmap |= 1 << entry.modifier
@@ -888,4 +962,18 @@ func (m *Keymap) compileSymbols(f *xkbFile, ctx *session) error {
 		m.copyModMap(mm)
 	}
 	return nil
+}
+
+func (info *symbolsInfo) modIndexText(idx uint32) string {
+	if idx == modNone {
+		return "None"
+	}
+	return info.mods.mods[idx].name
+}
+
+func (m *Keymap) modIndexName(idx uint32) string {
+	if idx == modNone {
+		return "None"
+	}
+	return m.mods.mods[idx].name
 }

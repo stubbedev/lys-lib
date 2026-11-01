@@ -65,14 +65,14 @@ func resolveBoolean(e expr) (bool, error) {
 		case "false", "no", "off":
 			return false, nil
 		}
-		return false, fmt.Errorf("identifier %q of type boolean is unknown", v.name)
+		return false, codedf(codeInvalidIdentifier, "identifier %q of type boolean is unknown", v.name)
 	case exprUnary:
 		if v.op == tokExclam || v.op == tokInvert {
 			b, err := resolveBoolean(v.child)
 			return !b, err
 		}
 	}
-	return false, fmt.Errorf("found %T where a boolean was expected", e)
+	return false, codedf(codeWrongFieldType, "found %T where a boolean was expected", e)
 }
 
 func resolveInteger(e expr, lookup identLookup) (int64, error) {
@@ -85,7 +85,7 @@ func resolveInteger(e expr, lookup identLookup) (int64, error) {
 				return int64(u), nil
 			}
 		}
-		return 0, fmt.Errorf("identifier %q of type int is unknown", v.name)
+		return 0, codedf(codeInvalidIdentifier, "identifier %q of type int is unknown", v.name)
 	case exprBinary:
 		l, err := resolveInteger(v.left, lookup)
 		if err != nil {
@@ -111,7 +111,7 @@ func resolveInteger(e expr, lookup identLookup) (int64, error) {
 		}
 		return 0, errors.New("the ! operator cannot be applied to an integer")
 	}
-	return 0, fmt.Errorf("found %T where an int was expected", e)
+	return 0, codedf(codeWrongFieldType, "found %T where an int was expected", e)
 }
 
 func integerOp(op tokenKind, l, r int64) (int64, error) {
@@ -119,18 +119,18 @@ func integerOp(op tokenKind, l, r int64) (int64, error) {
 	case tokPlus:
 		s := l + r
 		if (s > l) != (r > 0) {
-			return 0, fmt.Errorf("%d + %d overflows", l, r)
+			return 0, codedf(codeIntegerOverflow, "%d + %d overflows", l, r)
 		}
 		return s, nil
 	case tokMinus:
 		s := l - r
 		if (s < l) != (r > 0) {
-			return 0, fmt.Errorf("%d - %d overflows", l, r)
+			return 0, codedf(codeIntegerOverflow, "%d - %d overflows", l, r)
 		}
 		return s, nil
 	case tokTimes:
 		if l != 0 && (l*r)/l != r {
-			return 0, fmt.Errorf("%d * %d overflows", l, r)
+			return 0, codedf(codeIntegerOverflow, "%d * %d overflows", l, r)
 		}
 		return l * r, nil
 	case tokDivide:
@@ -156,15 +156,15 @@ func namedIndexLookup(prefix string, minimum, maximum uint32, entries []lookupEn
 	}
 }
 
-func resolveGroup(e expr) (uint32, error) {
-	v, err := resolveInteger(e, namedIndexLookup("Group", 1, maxGroupsV1, nil))
+func resolveGroup(e expr, limit uint32) (uint32, error) {
+	v, err := resolveInteger(e, namedIndexLookup("Group", 1, limit, nil))
 	if err != nil {
 		return 0, err
 	}
-	if v < 1 || v > maxGroupsV1 {
-		return 0, fmt.Errorf("group index %d is out of range (1..%d)", v, maxGroupsV1)
+	if v < 1 || v > int64(limit) {
+		return 0, codedf(codeGroupIndex, "group index %d is out of range (1..%d)", v, limit)
 	}
-	return uint32(v), nil
+	return uint32(v), nil //nolint:gosec // checked in range above
 }
 
 const levelMaxImpl = 2048
@@ -175,7 +175,7 @@ func resolveLevel(e expr) (uint32, error) {
 		return 0, err
 	}
 	if v < 1 || v > levelMaxImpl {
-		return 0, fmt.Errorf("shift level %d is out of range (1..%d)", v, levelMaxImpl)
+		return 0, codedf(codeShiftLevel, "shift level %d is out of range (1..%d)", v, levelMaxImpl)
 	}
 	return uint32(v - 1), nil
 }
@@ -183,7 +183,7 @@ func resolveLevel(e expr) (uint32, error) {
 func resolveString(e expr) (string, error) {
 	v, ok := e.(exprString)
 	if !ok {
-		return "", fmt.Errorf("found %T, expected a string", e)
+		return "", codedf(codeWrongFieldType, "found %T, expected a string", e)
 	}
 	return v.value, nil
 }
@@ -191,11 +191,11 @@ func resolveString(e expr) (string, error) {
 func resolveEnum(e expr, table []lookupEntry) (uint32, error) {
 	v, ok := e.(exprIdent)
 	if !ok {
-		return 0, fmt.Errorf("found %T where an enumerated value was expected", e)
+		return 0, codedf(codeWrongFieldType, "found %T where an enumerated value was expected", e)
 	}
 	value, ok := lookupName(table, v.name)
 	if !ok {
-		return 0, fmt.Errorf("illegal identifier %q", v.name)
+		return 0, codedf(codeInvalidIdentifier, "illegal identifier %q", v.name)
 	}
 	return value, nil
 }
@@ -210,7 +210,7 @@ func resolveMask(e expr, lookup identLookup) (uint32, error) {
 	case exprIdent:
 		value, ok := lookup(v.name)
 		if !ok {
-			return 0, fmt.Errorf("identifier %q of type mask is unknown", v.name)
+			return 0, codedf(codeInvalidIdentifier, "identifier %q of type mask is unknown", v.name)
 		}
 		return value, nil
 	case exprBinary:
@@ -242,7 +242,7 @@ func resolveMask(e expr, lookup identLookup) (uint32, error) {
 		}
 		return ^uint32(child), nil
 	}
-	return 0, fmt.Errorf("found %T where a mask was expected", e)
+	return 0, codedf(codeWrongFieldType, "found %T where a mask was expected", e)
 }
 
 func resolveModMask(e expr, typ modType, mods *modSet) (uint32, error) {
@@ -264,11 +264,11 @@ func resolveModMask(e expr, typ modType, mods *modSet) (uint32, error) {
 func resolveVirtualMod(e expr, mods *modSet) (uint32, error) {
 	v, ok := e.(exprIdent)
 	if !ok {
-		return 0, fmt.Errorf("found %T where a virtual modifier name was expected", e)
+		return 0, codedf(codeWrongFieldType, "found %T where a virtual modifier name was expected", e)
 	}
 	i, ok := mods.index(v.name, modVirtual)
 	if !ok {
-		return 0, fmt.Errorf("virtual modifier %q was not declared", v.name)
+		return 0, codedf(codeUndeclaredVmod, "virtual modifier %q was not declared", v.name)
 	}
 	return i, nil
 }

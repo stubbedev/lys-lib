@@ -131,14 +131,15 @@ type token struct {
 }
 
 type lexer struct {
+	ctx  *Context
 	name string
 	src  string
 	pos  int
 	line int
 }
 
-func newLexer(name, src string) *lexer {
-	return &lexer{name: name, src: src, line: 1}
+func newLexer(c *Context, name, src string) *lexer {
+	return &lexer{ctx: c, name: name, src: src, line: 1}
 }
 
 const maxKeywordLen = len("xkb_compatibility_map")
@@ -363,27 +364,39 @@ func (l *lexer) escape(b *strings.Builder) {
 		l.pos += n
 		if v > 0 {
 			b.WriteByte(v)
+		} else {
+			l.ctx.warn(193, "%s:%d: invalid octal escape sequence in string literal\n", l.name, l.line)
 		}
+		return
 	}
+	l.ctx.warn(645, "%s:%d: unknown escape sequence \"\\%c\" in string literal\n", l.name, l.line, c)
 }
 
 func (l *lexer) unicodeEscape(b *strings.Builder) {
+	if !l.tryUnicodeEscape(b) {
+		l.ctx.warn(607, "%s:%d: invalid Unicode escape sequence in string literal\n", l.name, l.line)
+	}
+}
+
+func (l *lexer) tryUnicodeEscape(b *strings.Builder) bool {
 	rest := l.src[l.pos:]
 	if !strings.HasPrefix(rest, "{") {
-		return
+		return false
 	}
 	end := strings.IndexByte(rest, '}')
 	if end < 2 {
-		return
+		return false
 	}
 	v, err := strconv.ParseUint(rest[1:end], 16, 32)
 	if err != nil {
-		return
+		return false
 	}
 	l.pos += end + 1
 	if r := rune(v); v > 0 && utf8.ValidRune(r) { //nolint:gosec // ValidRune checks it
 		b.WriteRune(r)
+		return true
 	}
+	return false
 }
 
 func octal(s string) (byte, int) {
