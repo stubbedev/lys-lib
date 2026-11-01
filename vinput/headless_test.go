@@ -1,6 +1,7 @@
 package vinput
 
 import (
+	"bytes"
 	"errors"
 	"os"
 	"testing"
@@ -74,5 +75,23 @@ func TestClosedDeviceRefusesInput(t *testing.T) {
 func TestDialWithoutACompositor(t *testing.T) {
 	if _, err := Dial("wayland-vinput-nonexistent", Options{}); err == nil {
 		t.Error("dialed a missing socket")
+	}
+}
+
+func TestAKeymapOfItsOwnWinsOverTheSeats(t *testing.T) {
+	if os.Getenv("LYS_TEST_HEADLESS") == "" {
+		t.Skip("LYS_TEST_HEADLESS is not set; vinput tests run under just check-headless")
+	}
+	own := []byte("xkb_keymap { xkb_keycodes { <K1> = 9; }; xkb_types { include \"complete\" }; xkb_compat { include \"complete\" }; xkb_symbols { key <K1> {[Return]}; }; };\n")
+	d, err := Dial("", Options{Keyboard: true, Keymap: own, FallbackKeymap: []byte("unused")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Close()
+	if !bytes.Equal(d.Keymap(), own) {
+		t.Errorf("the keyboard carries %q", d.Keymap())
+	}
+	if err := errors.Join(d.Key(1, true), d.Key(1, false), d.Roundtrip()); err != nil {
+		t.Fatal(err)
 	}
 }

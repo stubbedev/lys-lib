@@ -123,7 +123,8 @@ func main() {
 for `WAYLAND_DISPLAY`. The seat's keymap is relayed to the virtual keyboard, so
 key codes mean what they mean on the real keyboard. A seat that announces none,
 such as a headless compositor's, needs `Options.FallbackKeymap`, since the
-protocol refuses key events before any keymap is set. A `Device`'s methods are
+protocol refuses key events before any keymap is set. `Options.Keymap` makes the
+keyboard carry a keymap of its own instead, the way wtype does. A `Device`'s methods are
 safe to call from any goroutine.
 
 `keymapfd.Read` reads the xkb keymap a `wl_keyboard.keymap` event carries. It maps

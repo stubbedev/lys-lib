@@ -31,6 +31,10 @@ type Options struct {
 	// none (a virtual-only seat, a headless compositor): the protocol
 	// refuses key events before any keymap is set.
 	FallbackKeymap []byte
+	// Keymap is xkb_v1 text the keyboard carries instead of the seat's, the
+	// way a tool such as wtype numbers keys its own way. It wins over the
+	// seat's keymap and FallbackKeymap.
+	Keymap []byte
 }
 
 // Device is one virtual pointer and, optionally, keyboard. Its methods
@@ -121,6 +125,17 @@ func Dial(display string, opts Options) (*Device, error) {
 			return fail(errors.New("vinput: the seat never reported the keyboard capability"))
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+	if len(opts.Keymap) > 0 {
+		if err := v.upload(opts.Keymap); err != nil {
+			return fail(fmt.Errorf("vinput: upload the keymap: %w", err))
+		}
+		v.keymap = append([]byte(nil), opts.Keymap...)
+		v.keymapArmed = true
+		if err := v.roundtrip(); err != nil {
+			return fail(fmt.Errorf("vinput: keymap install roundtrip: %w (protocol error: %w)", err, v.protoErr))
+		}
+		return v, nil
 	}
 	kb, err := v.seat.GetKeyboard()
 	if err != nil {
