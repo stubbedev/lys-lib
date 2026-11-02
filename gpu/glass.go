@@ -73,7 +73,7 @@ func (g Glass) RefractPlan(box RoundRect) render.RefractPlan {
 // Adjust is the shader's glassAdjust over a premultiplied R, G, B, A in
 // 0..255.
 func (g Glass) Adjust(c [4]float32) [4]float32 {
-	if c[3] <= 0 {
+	if c[3] <= 0 || (g.Saturation == 1 && g.Brightness == 1 && g.Contrast == 1) {
 		return c
 	}
 	unit := func(v float32) float32 { return min(max(v, 0), 1) }

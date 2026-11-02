@@ -20,9 +20,10 @@ vec4 glassBackdrop(sampler2D tex, vec2 uv, vec2 px, vec2 perPixel, vec4 box, flo
 }
 
 // glassAdjust is Glass.Adjust: saturate(), brightness() and contrast()
-// over a premultiplied colour, each clamped as filter-effects-1 says.
+// over a premultiplied colour, each clamped as filter-effects-1 says; an
+// identity leaves it alone, so light above 1 on a float target survives.
 vec4 glassAdjust(vec4 c, vec3 adjust) {
-    if (c.a <= 0.0) {
+    if (c.a <= 0.0 || adjust == vec3(1.0)) {
         return c;
     }
     vec3 rgb = c.rgb / c.a;
