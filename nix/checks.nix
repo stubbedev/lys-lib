@@ -36,11 +36,13 @@
       # The KMS tests on a real card: a NixOS VM whose only DRM device is
       # vkms runs the drm package's tests as root, so master handling and
       # CLOSEFB are exercised; on a host without a card they skip. vkms has
-      # no render node, so the timeline syncobj test is left out.
+      # no render node, so the timeline syncobj test is left out. udmabuf
+      # gives SyncFileSignalTime a real sync file without a GPU, the
+      # signalled stub fence of a dma-buf with no fences.
       vm-kms = pkgs.testers.runNixOSTest {
         name = "lys-lib-kms";
         nodes.machine = {
-          boot.kernelModules = ["vkms"];
+          boot.kernelModules = ["vkms" "udmabuf"];
           virtualisation.graphics = false;
           virtualisation.qemu.options = ["-vga none"];
         };
@@ -50,6 +52,7 @@
           out = machine.succeed("${drmTests}/bin/drm.test -test.v -test.count=1 -test.skip TestTimelinePointsSignalEventFDs 2>&1")
           print(out)
           assert "--- SKIP" not in out, "a KMS test skipped on the vkms card"
+          print(machine.succeed("${drmTests}/bin/drm.test -test.run '^$' -test.bench '^BenchmarkSyncFileSignalTime' -test.benchmem -test.benchtime=200000x 2>&1"))
         '';
       };
     };
