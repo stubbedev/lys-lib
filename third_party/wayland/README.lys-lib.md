@@ -1,7 +1,7 @@
-# github.com/neurlang/wayland v0.4.6, patched for lys-lib
+# github.com/neurlang/wayland ee95389, patched for lys-lib
 
-A copy of the packages of github.com/neurlang/wayland at v0.4.6
-(be3122b, MIT, LICENSE) that lys-lib and lys-ui use, with upstream's
+A copy of the packages of github.com/neurlang/wayland at master ee95389,
+v0.4.6 and neurlang/wayland#50 and #51, not yet in a tag (MIT, LICENSE), that lys-lib and lys-ui use, with upstream's
 tests: `wl`, `os`, `xdg`, `wlclient`, `wlcursor`, `wlcursor/xcursor`,
 `external/swizzle`, `unstable/text-input-v3`,
 `unstable/xdg-decoration-v1`, and `cmd/wayland-scanner`, which
@@ -24,7 +24,8 @@ shares the same `wl` types.
 Each bug fix goes upstream as its own pull request; drop it here once
 merged. neurlang/wayland#45 to #49 (a nil object argument, an absolute
 `WAYLAND_DISPLAY`, the fd queue, fd ownership per event, one read per
-burst) are merged and released in v0.4.6, so they are upstream's code
+burst) and #50 and #51 (`encoding/binary.NativeEndian`, dispatching what
+is pending without blocking) are merged, so they are upstream's code
 here now.
 
 ### A destructor request unregisters its proxy
@@ -60,33 +61,28 @@ zombie until `delete_id` retires it and `Run` ignores its events, while
 an id nothing holds is still an error (lys-lib#58). `wl/fd_batch_test.go`
 expects no error for the destroyed object accordingly.
 
-### Byte order comes from encoding/binary
-
-`wl/event.go`, `wl/request.go`: the wire's native byte order is
-`encoding/binary.NativeEndian` instead of
-github.com/yalue/native_endian, which kept a dependency for what the
-standard library has had since Go 1.21. This is a lys-lib integration
-choice rather than an upstream bug.
-
-### Dispatching what is pending without blocking
-
-`wl/event.go`, `Context.Buffered` and `Context.ReadReady`: `Run` reads
-one event and blocks when none is buffered, and nothing else could
-tell a caller whether it would, so a loop could only dispatch one
-event per pass. As libwayland's `wl_display_dispatch_pending` and
-`wl_display_prepare_read` pair lets a client do, `Buffered` reports a
-whole event already read, and `ReadReady` polls the socket with a zero
-timeout and reads once when it has data. A loop drains a burst with
-them in one pass and a bounded number of reads (lys-ui#432).
-`wl/pending_test.go` holds the tests. This is a lys-lib integration
-choice rather than an upstream bug.
-
 ### A read deadline wakes a parked loop
 
 Context.SetReadDeadline exposes the socket's read deadline, so a loop parked in
 Run can wake for its own timer without a wl_display.sync round trip through the
 compositor. Run now reports a deadline as ErrContextRunTimeout: upstream's check
 never matched, since the error reaches it wrapped.
+
+### Dispatching an event allocates nothing
+
+Not upstream yet.
+
+`wl/event.go`, `wl/context.go`: every event allocated an `Event` that lived
+for one dispatch, a thousand a second from a 1 kHz pointer. They now come from
+a pool, a pool rather than one per context because a handler can dispatch again.
+
+### Waiting for the socket without holding a lock
+
+Not upstream yet.
+
+`wl/event.go`, `Context.WaitReadable`: blocks until the socket may have data,
+and is the one call that may run alongside the context's others, so a caller
+waiting for events leaves the lock serializing them free.
 
 ### Requests are buffered until something can depend on them
 
@@ -98,7 +94,8 @@ Requests now encode into one buffer on the context; a proxy implementing
 applies (`wl_surface`'s other than commit and destroy, `wp_viewport`'s
 in `wlr`), and those stay in the buffer. Nothing can wait on them, so a
 client needs no flush call as libwayland's do; any other request carries
-them ahead of itself, in order. `Request` and `BytePool` are gone. A
+them ahead of itself, in order. `Request` and `BytePool` are gone, with
+`wl/utils.go`'s helpers that only they used. A
 `[]int32` argument now states its length in bytes, as the protocol says.
 A write larger than the socket takes at once continues rather than
 failing. `wl/request_test.go` holds the tests. This is a lys-lib
