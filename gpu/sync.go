@@ -571,10 +571,17 @@ func (d *Device) ensureQueries() error {
 	return nil
 }
 
-func (d *Device) waitOldest() error {
-	d.args.fence = d.inflight[0].fence
+func (d *Device) waitFence(f vk.Fence) error {
+	d.args.fence = f
 	if r := d.cmds.WaitForFences(d.device, 1, &d.args.fence, vk.True, ^uint64(0)); r != vk.Success {
 		return fmt.Errorf("gpu: vkWaitForFences: %w", resultError(r))
+	}
+	return nil
+}
+
+func (d *Device) waitOldest() error {
+	if err := d.waitFence(d.inflight[0].fence); err != nil {
+		return err
 	}
 	d.reap(false)
 	return d.checkLost()
@@ -660,6 +667,9 @@ func (d *Device) idle() error {
 	}
 	if len(d.inflight) == 0 {
 		return d.checkLost()
+	}
+	if err := d.waitFence(d.inflight[len(d.inflight)-1].fence); err != nil {
+		return err
 	}
 	if r := d.cmds.QueueWaitIdle(d.queue); r != vk.Success {
 		return fmt.Errorf("gpu: vkQueueWaitIdle: %w", resultError(r))
