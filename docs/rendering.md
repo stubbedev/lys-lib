@@ -204,3 +204,11 @@ orders the modifiers the compositor imports, linear first, then the ones the
 device renders in, then the ones it only exports. `First` tries them one at a
 time until a buffer allocates, imports and takes a frame, since a compositor may
 advertise a tiling it then fails to import.
+
+## motion
+
+The maths of animation, pure and the same bits on every architecture.
+`SpringStep` is the damped harmonic oscillator's closed form, from any position
+and velocity, so a retargeted spring keeps its motion. `NewCubicBezier` is the CSS
+timing function, which clamps its time controls as CSS does. lys-ui's `anim` and
+lys-wm's `anim` are both built on them and keep their own configuration on top.

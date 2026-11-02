@@ -48,6 +48,7 @@ neither.
 | [`render`](/rendering#render) | The 2D canvas and its CPU rasterizer |
 | [`text`](/rendering#text) | Word and grapheme motion, bidirectional runs |
 | [`gpu`](/rendering#gpu) | Vulkan devices, the GPU renderer, exportable dmabufs |
+| [`motion`](/rendering#motion) | The spring and cubic-bezier solvers both animation engines share |
 | [`drm`, `fourcc`, `edid`](/rendering#drm-fourcc-edid) | DRM ioctls, pixel formats and modifiers, a display's identity |
 | [`dmabuf`, `dmabufwl`, `udmabuf`, `dmabufprobe`](/rendering#dmabufs) | dmabuf descriptions, their protocol plumbing, memfd-backed allocation, modifier probing |
 
