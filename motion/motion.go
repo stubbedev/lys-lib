@@ -20,6 +20,17 @@ import (
 // negative one reads as 0, and a dt that is not positive returns the
 // start unchanged.
 func SpringStep(omega, zeta, x0, v0, dt float64) (x, v float64) {
+	return springSolve(omega, zeta, x0, v0, dt, true)
+}
+
+// SpringPosition is SpringStep's displacement alone, the same bits, for a
+// caller that has no use for the velocity.
+func SpringPosition(omega, zeta, x0, v0, dt float64) float64 {
+	x, _ := springSolve(omega, zeta, x0, v0, dt, false)
+	return x
+}
+
+func springSolve(omega, zeta, x0, v0, dt float64, wantVelocity bool) (x, v float64) {
 	if dt <= 0 {
 		return x0, v0
 	}
@@ -28,22 +39,28 @@ func SpringStep(omega, zeta, x0, v0, dt float64) (x, v float64) {
 	case z < 1:
 		wd := w * math.Sqrt(1-float64(z*z))
 		e := gomath.Exp(-z * w * dt)
-		c, s := gomath.Cos(wd*dt), gomath.Sin(wd*dt)
+		s, c := gomath.Sincos(wd * dt)
 		b := (v0 + float64(z*w*x0)) / wd
 		x = e * (float64(x0*c) + float64(b*s))
-		v = e * (float64((float64(b*wd)-float64(z*w*x0))*c) - float64((float64(x0*wd)+float64(z*w*b))*s))
+		if wantVelocity {
+			v = e * (float64((float64(b*wd)-float64(z*w*x0))*c) - float64((float64(x0*wd)+float64(z*w*b))*s))
+		}
 	case z == 1:
 		e := gomath.Exp(-w * dt)
 		b := v0 + float64(w*x0)
 		x = (x0 + float64(b*dt)) * e
-		v = (b - float64(w*(x0+float64(b*dt)))) * e
+		if wantVelocity {
+			v = (b - float64(w*(x0+float64(b*dt)))) * e
+		}
 	default:
 		r1, r2 := OverdampedRoots(w, z)
 		c1 := (v0 - float64(r2*x0)) / (r1 - r2)
 		c2 := x0 - c1
 		e1, e2 := gomath.Exp(r1*dt), gomath.Exp(r2*dt)
 		x = float64(c1*e1) + float64(c2*e2)
-		v = float64(r1*c1*e1) + float64(r2*c2*e2)
+		if wantVelocity {
+			v = float64(r1*c1*e1) + float64(r2*c2*e2)
+		}
 	}
 	return x, v
 }
@@ -69,16 +86,29 @@ const (
 type CubicBezier struct {
 	ax, bx, cx float64
 	ay, by, cy float64
+	// The slope's coefficients, kept so a Newton step need not form them.
+	sa, sb float64
 }
 
 // NewCubicBezier returns cubic-bezier(x1, y1, x2, y2). x1 and x2 clamp
 // to [0, 1], the range CSS admits, so the curve stays a function of
 // time; the y controls are free, and overshoot when they leave [0, 1].
 func NewCubicBezier(x1, y1, x2, y2 float64) CubicBezier {
-	x1, x2 = min(max(x1, 0), 1), min(max(x2, 0), 1)
+	x1, x2 = clampUnit(x1), clampUnit(x2)
 	cx, cy := float64(3*x1), float64(3*y1)
 	bx, by := float64(3*(x2-x1))-cx, float64(3*(y2-y1))-cy
-	return CubicBezier{ax: 1 - cx - bx, bx: bx, cx: cx, ay: 1 - cy - by, by: by, cy: cy}
+	ax := 1 - cx - bx
+	return CubicBezier{ax: ax, bx: bx, cx: cx, ay: 1 - cy - by, by: by, cy: cy, sa: float64(3 * ax), sb: float64(2 * bx)}
+}
+
+func clampUnit(v float64) float64 {
+	switch {
+	case v < 0:
+		return 0
+	case v > 1:
+		return 1
+	}
+	return v
 }
 
 // Ease is the progress at time x: exactly 0 at or before 0, exactly 1 at
@@ -107,7 +137,7 @@ func (b CubicBezier) param(x float64) float64 {
 		if math.Abs(d) < bezierSolveEpsilon {
 			return u
 		}
-		slope := float64((float64(float64(3*b.ax)*u)+float64(2*b.bx))*u) + b.cx
+		slope := float64((float64(b.sa*u)+b.sb)*u) + b.cx
 		if math.Abs(slope) < bezierFlatSlope {
 			break
 		}

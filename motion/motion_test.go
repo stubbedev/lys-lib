@@ -3,6 +3,8 @@ package motion
 import (
 	"math"
 	"testing"
+
+	"github.com/stubbedev/lys-lib/third_party/gomath"
 )
 
 // The closed form is exact: one long step lands where many short ones
@@ -116,6 +118,39 @@ func TestBezierSteepCurveInvertsItsTime(t *testing.T) {
 		if got := b.sampleX(u); math.Abs(got-x) > 2e-9 {
 			t.Fatalf("param(%v) = %v, whose x is %v", x, u, got)
 		}
+	}
+}
+
+// SpringPosition and Sincos are shortcuts and must change no bit: the
+// position matches SpringStep's, and the underdamped branch matches the
+// Sin and Cos it was first written with.
+func TestSpringPositionIsSpringStepsPosition(t *testing.T) {
+	for _, zeta := range []float64{0, 0.3, 0.86, 1, 1.6, 30} {
+		for _, w := range []float64{0.7, 14, 21, 200} {
+			for _, dt := range []float64{1e-4, 0.016, 0.12, 0.4, 3, 300} {
+				x, _ := SpringStep(w, zeta, -80, 40, dt)
+				if got := SpringPosition(w, zeta, -80, 40, dt); got != x {
+					t.Errorf("w %v zeta %v dt %v: %x, step %x", w, zeta, dt, got, x)
+				}
+			}
+		}
+	}
+}
+
+func TestSincosIsSinAndCos(t *testing.T) {
+	for i := range 200000 {
+		a := float64(i) * 0.000371
+		s, c := gomath.Sincos(a)
+		if s != gomath.Sin(a) || c != gomath.Cos(a) {
+			t.Fatalf("Sincos(%v) = %x, %x; Sin %x, Cos %x", a, s, c, gomath.Sin(a), gomath.Cos(a))
+		}
+	}
+}
+
+func BenchmarkSpringPosition(b *testing.B) {
+	b.ReportAllocs()
+	for b.Loop() {
+		SpringPosition(21, 0.7, -1, 0, 0.016)
 	}
 }
 
