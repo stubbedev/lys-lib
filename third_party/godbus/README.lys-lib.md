@@ -79,3 +79,10 @@ applied to the v5.2.2 sources: `reflect.TypeFor` and `TypeAssert`,
 predates them. No behaviour changes; upstream's tests passed under -race
 on a private session bus when they were applied, in lys-shell. The
 v5.2.2..v5.2.4 changes are carried as upstream wrote them.
+
+## No dbus-launch
+
+`getSessionBusPlatformAddress` returns `ErrNoSessionBus` where upstream runs
+`dbus-launch`. That forked a session bus nothing ever stopped, once per call: test
+runs without a bus left 596 daemons behind, which used up the host's inotify
+instances, and a program joined a bus no other program was on.

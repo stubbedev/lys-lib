@@ -3,36 +3,21 @@
 package dbus
 
 import (
-	"bytes"
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"os/user"
 	"path"
 	"strings"
 )
 
-var execCommand = exec.Command
+// ErrNoSessionBus reports that no session bus was found. Upstream runs
+// dbus-launch here, which forks a daemon nothing ever stops and joins the
+// caller to a bus no other program is on.
+var ErrNoSessionBus = errors.New("dbus: no session bus: DBUS_SESSION_BUS_ADDRESS is unset and none was found in the runtime directory")
 
 func getSessionBusPlatformAddress() (string, error) {
-	cmd := execCommand("dbus-launch")
-	b, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", err
-	}
-
-	i := bytes.IndexByte(b, '=')
-	j := bytes.IndexByte(b, '\n')
-
-	if i == -1 || j == -1 || i > j {
-		return "", errors.New("dbus: couldn't determine address of session bus")
-	}
-
-	env, addr := string(b[0:i]), string(b[i+1:j])
-	os.Setenv(env, addr)
-
-	return addr, nil
+	return "", ErrNoSessionBus
 }
 
 // tryDiscoverDbusSessionBusAddress tries to discover an existing dbus session
