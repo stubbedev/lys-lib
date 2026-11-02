@@ -181,7 +181,8 @@ bindings under `unstable`. Every family member shares those `wl` types.
 
 `xcursor` reads Xcursor files and resolves themes through `XCURSOR_PATH`, `Inherits` and
 nominal sizes, refusing malformed files with an error. `Nearest` reads one image and
-leaves the rest of the file unread; `NearestFrames` and `Theme.Frames` read an animated
+leaves the rest of the file unread; `Widest` reads one by its width; `NearestFrames` and
+`Theme.Frames` read an animated
 cursor at one size. `Pixels` is the file's own bytes, which are `wl_shm`'s `argb8888`.
 lys-wm draws its cursors from it and lys-ui's client sessions theirs. `Shapes`, `Names`
 and `Builtin` hold cursor-shape-v1's names and the arrow for a machine without a theme.

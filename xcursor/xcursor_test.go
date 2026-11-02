@@ -53,13 +53,15 @@ func encode(entries ...entry) []byte {
 }
 
 type countingReader struct {
-	r    *bytes.Reader
-	read int
+	r     *bytes.Reader
+	read  int
+	reads int
 }
 
 func (c *countingReader) ReadAt(p []byte, off int64) (int, error) {
 	n, err := c.r.ReadAt(p, off)
 	c.read += n
+	c.reads++
 	return n, err
 }
 
@@ -244,18 +246,143 @@ func TestNearestFramesReadsOneSizesAnimationInOrder(t *testing.T) {
 	}
 }
 
-func TestAllReadsEveryImageAndNoOtherChunk(t *testing.T) {
+func TestWidestReadsOnlyThatImagesPixels(t *testing.T) {
 	data := encode(
-		entry{nominal: 24, size: image.Pt(24, 24)},
+		entry{nominal: 24, size: image.Pt(24, 24), fill: 1},
 		entry{nominal: 1, notAnImage: true},
-		entry{nominal: 48, size: image.Pt(48, 48)},
+		entry{nominal: 48, size: image.Pt(48, 48), fill: 2},
+		entry{nominal: 32, size: image.Pt(32, 32), fill: 3},
 	)
-	images, err := All(bytes.NewReader(data), int64(len(data)))
+	r := &countingReader{r: bytes.NewReader(data)}
+	img, err := Widest(r, int64(len(data)))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(images) != 2 || images[0].Nominal != 24 || images[1].Nominal != 48 {
-		t.Fatalf("images %+v", images)
+	if img.Size.X != 48 || img.Pixels[0] != 2 {
+		t.Fatalf("got %v filled %d", img.Size, img.Pixels[0])
+	}
+	if limit := tocProbe + 4*12 + 3*imageSize + imageSize + 48*48*4; r.read > limit {
+		t.Errorf("read %d bytes, more than the headers and one image's %d", r.read, limit)
+	}
+}
+
+// Whatever the files' layout, the frames that come back are the same, and
+// the layouts xcursorgen writes take one read for all the frames.
+func TestNearestFramesInEveryLayout(t *testing.T) {
+	frame := func(fill byte, delay uint32) entry {
+		return entry{nominal: 24, size: image.Pt(24, 24), fill: fill, delay: delay}
+	}
+	big := entry{nominal: 48, size: image.Pt(48, 48), fill: 9}
+	notSquare := entry{nominal: 24, size: image.Pt(24, 32), fill: 5, delay: 50}
+	for name, c := range map[string]struct {
+		entries []entry
+		want    []byte
+		reads   int
+	}{
+		"adjacent":      {[]entry{big, frame(1, 10), frame(2, 20), frame(3, 30), big}, []byte{1, 2, 3}, 3},
+		"apart":         {[]entry{frame(1, 10), big, frame(2, 20), big, frame(3, 30)}, []byte{1, 2, 3}, 5},
+		"not square":    {[]entry{notSquare, frame(1, 10)}, []byte{5, 1}, 4},
+		"a smaller one": {[]entry{frame(1, 10), {nominal: 24, size: image.Pt(8, 8), fill: 6}}, []byte{1, 6}, 3},
+		"one":           {[]entry{frame(1, 10)}, []byte{1}, 2},
+	} {
+		t.Run(name, func(t *testing.T) {
+			data := encode(c.entries...)
+			r := &countingReader{r: bytes.NewReader(data)}
+			frames, err := NearestFrames(r, int64(len(data)), 24)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if len(frames) != len(c.want) {
+				t.Fatalf("%d frames, want %d", len(frames), len(c.want))
+			}
+			for i, f := range frames {
+				if len(f.Pixels) != f.Size.X*f.Size.Y*4 || f.Pixels[0] != c.want[i] || f.Pixels[len(f.Pixels)-1] != c.want[i] {
+					t.Errorf("frame %d: %v, %d bytes, filled %d", i, f.Size, len(f.Pixels), f.Pixels[0])
+				}
+			}
+			if r.reads > c.reads {
+				t.Errorf("%d reads, want at most %d", r.reads, c.reads)
+			}
+		})
+	}
+}
+
+func TestATocLargerThanTheProbeIsRead(t *testing.T) {
+	entries := make([]entry, tocProbe/12+1)
+	for i := range entries {
+		entries[i] = entry{nominal: 8, size: image.Pt(8, 8), fill: byte(i), delay: uint32(i)}
+	}
+	data := encode(entries...)
+	frames, err := NearestFrames(bytes.NewReader(data), int64(len(data)), 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(frames) != len(entries) || frames[len(frames)-1].Delay != uint32(len(entries)-1) {
+		t.Fatalf("%d frames, last delay %d", len(frames), frames[len(frames)-1].Delay)
+	}
+}
+
+// A header lying about an image it cannot hold costs an error, not the
+// allocation the lie asks for.
+func TestALyingSizeAllocatesNothingLarge(t *testing.T) {
+	data := encode(entry{nominal: 24, size: image.Pt(24, 24)})
+	binary.LittleEndian.PutUint32(data[headerSize+12+16:], maxSide)
+	binary.LittleEndian.PutUint32(data[headerSize+12+20:], maxSide)
+	allocs := testing.AllocsPerRun(1, func() {
+		if _, err := Nearest(bytes.NewReader(data), int64(len(data)), 24); err == nil {
+			t.Error("accepted")
+		}
+	})
+	if allocs > 16 {
+		t.Errorf("%v allocations", allocs)
+	}
+}
+
+func TestReadWidestReportsAMissingFile(t *testing.T) {
+	if _, err := ReadWidest(filepath.Join(t.TempDir(), "gone")); !errors.Is(err, fs.ErrNotExist) {
+		t.Fatalf("got %v", err)
+	}
+}
+
+// Every shape of a real theme, if the dev shell provides one, including an
+// animated one.
+func TestARealThemeLoads(t *testing.T) {
+	path := os.Getenv("LYS_TEST_XCURSOR_PATH")
+	if path == "" {
+		t.Skip("LYS_TEST_XCURSOR_PATH is not set")
+	}
+	theme, err := Open("Vanilla-DMZ", []string{path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, shape := range Shapes {
+		img, err := theme.Load(24, Names(shape.Name)...)
+		if err != nil {
+			continue
+		}
+		if len(img.Pixels) != img.Size.X*img.Size.Y*4 {
+			t.Errorf("%s: %v with %d bytes", shape.Name, img.Size, len(img.Pixels))
+		}
+	}
+	if _, err := theme.Load(24, Names("default")...); err != nil {
+		t.Errorf("the arrow: %v", err)
+	}
+	frames, err := theme.Frames(24, "watch")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(frames) < 2 {
+		t.Fatalf("watch has %d frames", len(frames))
+	}
+	for i, f := range frames {
+		if f.Delay == 0 || f.Nominal != 24 || len(f.Pixels) != f.Size.X*f.Size.Y*4 {
+			t.Errorf("frame %d: delay %d nominal %d, %v with %d bytes", i, f.Delay, f.Nominal, f.Size, len(f.Pixels))
+		}
+	}
+	first := frames[0]
+	load, err := theme.Load(24, "watch")
+	if err != nil || !bytes.Equal(load.Pixels, first.Pixels) {
+		t.Errorf("Load and Frames disagree on the first frame: %v", err)
 	}
 }
 

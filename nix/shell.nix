@@ -92,6 +92,7 @@
         # third_party/typesetting's heap-budget and lazy-table tests
         # parse a real font of thousands of glyphs.
         LYS_TEST_DEJAVU_SANS = "${pkgs.dejavu_fonts.minimal}/share/fonts/truetype/DejaVuSans.ttf";
+        LYS_TEST_XCURSOR_PATH = "${pkgs.vanilla-dmz}/share/icons";
       }
       // {
         # The GPU renderer (package gpu) loads libvulkan at runtime, and
