@@ -1,4 +1,4 @@
-{
+{inputs, ...}: {
   perSystem = {
     buildGoModule,
     go,
@@ -20,6 +20,7 @@
         packages =
           [
             go
+            "${inputs.lys-ci}" # no-fused
             pkgs.git
             pkgs.gh
 
