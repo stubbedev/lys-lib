@@ -13,6 +13,7 @@ import _ "embed" // the compiled shaders below
 //go:generate glslangValidator -V --quiet -o shaders/goo.frag.spv shaders/goo.frag
 //go:generate glslangValidator -V --quiet -o shaders/ycbcr444.frag.spv shaders/ycbcr444.frag
 //go:generate glslangValidator -V --quiet -o shaders/ycbcrplanes.frag.spv shaders/ycbcrplanes.frag
+//go:generate glslangValidator -V --quiet -o testdata/fragment_test.frag.spv testdata/fragment_test.frag
 
 //go:embed shaders/prim.vert.spv
 var primVert []byte
