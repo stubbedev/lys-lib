@@ -82,15 +82,8 @@ var ErrInvalid = errors.New("edid: invalid")
 // the product code and the numeric serial in hex; a zero numeric
 // serial leaves Serial empty. It fails with ErrInvalid.
 func Parse(b []byte, vendors Vendors) (Info, error) {
-	if len(b) < blockSize || !bytes.Equal(b[:8], header) {
-		return Info{}, fmt.Errorf("%w: %d bytes without the EDID header", ErrInvalid, len(b))
-	}
-	var sum byte
-	for _, c := range b[:blockSize] {
-		sum += c
-	}
-	if sum != 0 {
-		return Info{}, fmt.Errorf("%w: base block checksum is off by %d", ErrInvalid, sum)
+	if err := checkBase(b); err != nil {
+		return Info{}, err
 	}
 	id := binary.BigEndian.Uint16(b[8:])
 	pnp := string([]byte{byte(id>>10&0x1f) + 'A' - 1, byte(id>>5&0x1f) + 'A' - 1, byte(id&0x1f) + 'A' - 1})
@@ -118,6 +111,20 @@ func Parse(b []byte, vendors Vendors) (Info, error) {
 		info.Serial = fmt.Sprintf("0x%08X", serial)
 	}
 	return info, nil
+}
+
+func checkBase(b []byte) error {
+	if len(b) < blockSize || !bytes.Equal(b[:8], header) {
+		return fmt.Errorf("%w: %d bytes without the EDID header", ErrInvalid, len(b))
+	}
+	var sum byte
+	for _, c := range b[:blockSize] {
+		sum += c
+	}
+	if sum != 0 {
+		return fmt.Errorf("%w: base block checksum is off by %d", ErrInvalid, sum)
+	}
+	return nil
 }
 
 func descriptorText(b []byte) string {
