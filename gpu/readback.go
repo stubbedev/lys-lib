@@ -54,6 +54,8 @@ func (r *Readback) Copy(src *Target) error {
 		return fmt.Errorf("gpu: Readback.Copy of a %v target into a %dx%d readback", src.Size(), r.w, r.h)
 	case src.s.layout == vk.ImageLayoutUndefined:
 		return errors.New("gpu: Readback.Copy of a target never drawn")
+	case src.s.vf == floatTargetFormat:
+		return errors.New("gpu: Readback.Copy of a float target")
 	}
 	if r.copied {
 		if s := d.cmds.GetFenceStatus(d.device, r.fence); s != vk.Success {

@@ -92,6 +92,7 @@ type ycbcrKind struct {
 	sets    setPools
 	layout  vk.PipelineLayout
 	pipes   map[vk.Format]vk.Pipeline
+	colored coloredPipes
 }
 
 func (c YCbCr) key(pf pixelFormat, features vk.FormatFeatureFlags) (ycbcrKey, error) {
@@ -220,6 +221,7 @@ func (kind *ycbcrKind) pipeline(d *Device, target vk.Format) (vk.Pipeline, error
 }
 
 func (kind *ycbcrKind) destroy(d *Device) {
+	kind.colored.destroy(d)
 	for _, p := range kind.pipes {
 		d.cmds.DestroyPipeline(d.device, p, nil)
 	}

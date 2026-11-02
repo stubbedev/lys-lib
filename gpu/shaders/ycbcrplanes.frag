@@ -16,5 +16,5 @@ layout(location = 0) out vec4 color;
 void main() {
     vec2 chromaUV = vUV + vec2(chromaShiftX, chromaShiftY) / vec2(textureSize(blueTex, 0));
     vec3 rgb = ycbcrToRGB(texture(lumaTex, vUV).r, texture(blueTex, chromaUV).r, texture(redTex, chromaUV).r);
-    color = vec4(rgb, 1.0) * (draw.target.z * maskCoverage(gl_FragCoord.xy, draw.keep, draw.cut, draw.radii, draw.merge, draw.target.w));
+    color = COLORED(vec4(rgb, 1.0)) * (draw.target.z * maskCoverage(gl_FragCoord.xy, draw.keep, draw.cut, draw.radii, draw.merge, draw.target.w));
 }

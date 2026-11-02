@@ -10,5 +10,5 @@ layout(location = 0) out vec4 color;
 
 void main() {
     vec4 s = texture(tex, vUV);
-    color = vec4(ycbcrToRGB(s.r, s.g, s.b), s.a) * (draw.target.z * maskCoverage(gl_FragCoord.xy, draw.keep, draw.cut, draw.radii, draw.merge, draw.target.w));
+    color = COLORED(vec4(ycbcrToRGB(s.r, s.g, s.b), s.a)) * (draw.target.z * maskCoverage(gl_FragCoord.xy, draw.keep, draw.cut, draw.radii, draw.merge, draw.target.w));
 }

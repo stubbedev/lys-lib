@@ -30,6 +30,9 @@ type Pass struct {
 	ops    []passOp
 	err    error
 	ended  bool
+	// color is what SetColor last set; colorSet holds it for the shaders.
+	color    *ColorTransform
+	colorSet vk.DescriptorSet
 }
 
 type opKind uint8
@@ -47,6 +50,7 @@ type passOp struct {
 	set    vk.DescriptorSet
 	pipe   vk.Pipeline
 	layout vk.PipelineLayout
+	color  vk.DescriptorSet
 	dc     drawConstants
 }
 
@@ -66,6 +70,9 @@ func (d *Device) Begin(t *Target, damage []image.Rectangle) (*Pass, error) {
 		return nil, err
 	}
 	if err := t.s.ready(); err != nil {
+		return nil, err
+	}
+	if err := d.settleColors(); err != nil {
 		return nil, err
 	}
 	p := &d.reused
@@ -150,7 +157,7 @@ func (p *Pass) Clear(c color.RGBA) {
 		p.fail(err)
 		return
 	}
-	p.ops = append(p.ops, passOp{kind: opClear, dc: drawConstants{extra: [2][4]float32{col}}})
+	p.ops = append(p.ops, passOp{kind: opClear, dc: drawConstants{extra: [2][4]float32{p.coloredFill(col)}}})
 }
 
 func (dc *drawConstants) setMask(m Mask) {
@@ -175,7 +182,7 @@ func (p *Pass) FillRect(r image.Rectangle, c color.RGBA, m Mask) {
 		p.fail(err)
 		return
 	}
-	dc := drawConstants{extra: [2][4]float32{col}}
+	dc := drawConstants{extra: [2][4]float32{p.coloredFill(col)}}
 	dc.setMask(m)
 	p.ops = append(p.ops, passOp{kind: opFill, dst: r, pipe: p.ct.fill, layout: p.d.comp.layout, dc: dc})
 }
@@ -228,7 +235,15 @@ func (p *Pass) FillGradient(r image.Rectangle, g Gradient, m Mask) {
 	}
 	dc := drawConstants{extra: [2][4]float32{{g.From[0], g.From[1], g.To[0], g.To[1]}, {float32(t.w), g.Alpha}}}
 	dc.setMask(m)
-	p.ops = append(p.ops, passOp{kind: opTexture, dst: r, tex: t, set: set, pipe: p.ct.grad, layout: p.d.comp.layout, dc: dc})
+	op := passOp{kind: opTexture, dst: r, tex: t, set: set, pipe: p.ct.grad, layout: p.d.comp.layout, dc: dc}
+	if p.colorSet != 0 {
+		if op.pipe, err = p.d.colorGradPipeline(p.ct); err != nil {
+			p.fail(err)
+			return
+		}
+		op.layout, op.color = p.d.comp.color.layout, p.colorSet
+	}
+	p.ops = append(p.ops, op)
 }
 
 // Goo is two rounded rectangles merged into one blob: their distance
@@ -270,7 +285,7 @@ func (p *Pass) FillGoo(r image.Rectangle, c color.RGBA, g Goo) {
 	rect := func(r image.Rectangle) [4]float32 {
 		return [4]float32{float32(r.Min.X), float32(r.Min.Y), float32(r.Max.X), float32(r.Max.Y)}
 	}
-	dc := drawConstants{extra: [2][4]float32{col}, keep: rect(g.A.Rect), merge: rect(g.B.Rect), radii: [4]float32{g.A.Radius, g.B.Radius, g.Smooth}}
+	dc := drawConstants{extra: [2][4]float32{p.coloredFill(col)}, keep: rect(g.A.Rect), merge: rect(g.B.Rect), radii: [4]float32{g.A.Radius, g.B.Radius, g.Smooth}}
 	p.ops = append(p.ops, passOp{kind: opFill, dst: r, pipe: p.ct.goo, layout: p.d.comp.layout, dc: dc})
 }
 
@@ -370,6 +385,14 @@ func (p *Pass) DrawTexture(t *Texture, src FRect, dst image.Rectangle, tr Transf
 		dc.extra[i/2][i%2*2+1] = float32((src.Y + float64(s[1]*src.H)) / float64(t.h))
 	}
 	op := passOp{kind: opTexture, dst: dst, tex: t, set: set, pipe: p.ct.tex, layout: p.d.comp.layout, dc: dc}
+	if p.colorSet != 0 {
+		op.color = p.colorSet
+		if op.pipe, op.layout, err = p.d.colorTexturePipeline(t, p.ct, p.t.s.vf); err != nil {
+			p.fail(err)
+		}
+		p.ops = append(p.ops, op)
+		return
+	}
 	if t.ycbcr != nil {
 		if op.pipe, err = t.ycbcr.pipeline(p.d, p.t.s.vf); err != nil {
 			p.fail(err)
@@ -522,7 +545,7 @@ func (p *Pass) record(cb vk.CommandBuffer) {
 	d.cmds.CmdSetViewport(cb, 0, 1, &d.args.viewport)
 	stages := vk.ShaderStageFlags(vk.ShaderStageVertexBit | vk.ShaderStageFragmentBit)
 	var bound vk.Pipeline
-	var set vk.DescriptorSet
+	var set, colorBound vk.DescriptorSet
 	for i := range p.ops {
 		op := &p.ops[i]
 		if op.kind == opClear {
@@ -535,7 +558,11 @@ func (p *Pass) record(cb vk.CommandBuffer) {
 		}
 		if op.kind == opTexture && op.set != set {
 			d.cmds.CmdBindDescriptorSets(cb, vk.PipelineBindPointGraphics, op.layout, 0, 1, &op.set, 0, nil)
-			set = op.set
+			set, colorBound = op.set, 0
+		}
+		if op.color != 0 && op.color != colorBound {
+			d.cmds.CmdBindDescriptorSets(cb, vk.PipelineBindPointGraphics, op.layout, 1, 1, &op.color, 0, nil)
+			colorBound = op.color
 		}
 		op.dc.rect = [4]float32{float32(op.dst.Min.X), float32(op.dst.Min.Y), float32(op.dst.Dx()), float32(op.dst.Dy())}
 		op.dc.target[0], op.dc.target[1] = float32(s.w), float32(s.h)

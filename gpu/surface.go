@@ -12,6 +12,10 @@ import (
 // byte order of render's ARGB8888 canvases and of the targets.
 const surfaceFormat = vk.FormatB8g8r8a8Unorm
 
+// floatTargetFormat is NewOffscreenFloat's format. Vulkan requires every
+// device to draw into, blend in and filter it.
+const floatTargetFormat = vk.FormatR16g16b16a16Sfloat
+
 // surface is an image the renderer draws into and samples: a target, a
 // layer, an upload page. Its view, framebuffer and descriptor set come
 // with its first use.
@@ -29,14 +33,19 @@ type surface struct {
 	set    vk.DescriptorSet
 }
 
-// newSurface allocates a w x h device-local surface.
+// newSurface allocates a w x h device-local surface in surfaceFormat.
 func (d *Device) newSurface(w, h int) (*surface, error) {
+	return d.newSurfaceIn(w, h, surfaceFormat)
+}
+
+// newSurfaceIn allocates a w x h device-local surface in vf.
+func (d *Device) newSurfaceIn(w, h int, vf vk.Format) (*surface, error) {
 	if err := d.checkSize(w, h); err != nil {
 		return nil, err
 	}
-	s := &surface{d: d, w: w, h: h, vf: surfaceFormat, layout: vk.ImageLayoutUndefined}
+	s := &surface{d: d, w: w, h: h, vf: vf, layout: vk.ImageLayoutUndefined}
 	ici := vk.ImageCreateInfo{
-		SType: vk.StructureTypeImageCreateInfo, ImageType: vk.ImageType2d, Format: surfaceFormat,
+		SType: vk.StructureTypeImageCreateInfo, ImageType: vk.ImageType2d, Format: vf,
 		Extent: extent3D(w, h), MipLevels: 1, ArrayLayers: 1,
 		Samples: vk.SampleCount1Bit, Tiling: vk.ImageTilingOptimal,
 		Usage:       vk.ImageUsageFlags(vk.ImageUsageTransferDstBit | vk.ImageUsageTransferSrcBit | vk.ImageUsageColorAttachmentBit | vk.ImageUsageSampledBit),

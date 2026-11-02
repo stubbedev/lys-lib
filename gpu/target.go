@@ -44,6 +44,25 @@ func (d *Device) NewOffscreen(width, height int) (*Target, error) {
 	return t, nil
 }
 
+// NewOffscreenFloat is NewOffscreen in half floats: premultiplied linear light
+// that keeps values above one and below zero, for a compositor's working
+// space. A pass draws into it and samples it as any other, with the same
+// premultiplied blending; its pixels are not read back. It starts transparent:
+// a NaN in fresh memory would survive every blend over it.
+func (d *Device) NewOffscreenFloat(width, height int) (*Target, error) {
+	s, err := d.newSurfaceIn(width, height, floatTargetFormat)
+	if err != nil {
+		return nil, err
+	}
+	t := &Target{s: *s, offscreen: true, buf: dmabuf.Buffer{Width: width, Height: height}}
+	d.targets[t] = struct{}{}
+	if err := t.clear([4]float32{}); err != nil {
+		t.Close()
+		return nil, err
+	}
+	return t, nil
+}
+
 // vkFormatOf maps a DRM format to the Vulkan format with the same byte
 // order in memory.
 func vkFormatOf(format fourcc.Format) (vk.Format, error) {
@@ -101,7 +120,11 @@ func (t *Target) Texture() (*Texture, error) {
 	if err := t.s.ready(); err != nil {
 		return nil, err
 	}
-	t.tex = &Texture{d: t.s.d, format: fourcc.ARGB8888, pf: pixelFormats[fourcc.ARGB8888], w: t.s.w, h: t.s.h, view: t.s.view, surf: &t.s}
+	format := fourcc.ARGB8888
+	if t.s.vf == floatTargetFormat {
+		format = fourcc.ABGR16161616F
+	}
+	t.tex = &Texture{d: t.s.d, format: format, pf: pixelFormats[format], w: t.s.w, h: t.s.h, view: t.s.view, surf: &t.s}
 	return t.tex, nil
 }
 
@@ -232,6 +255,9 @@ func (d *Device) CopyRects(dst, src *Target, rects []image.Rectangle) error {
 // ReadPixels copies the target back into memory as premultiplied
 // RGBA: tests and screenshots.
 func (t *Target) ReadPixels() (*image.RGBA, error) {
+	if t.s.vf == floatTargetFormat {
+		return nil, errors.New("gpu: a float target's pixels are not read back")
+	}
 	w, h := t.buf.Width, t.buf.Height
 	return t.s.d.readPixels(w, h, t.s.vf, false, func(cb vk.CommandBuffer, staging *buffer) {
 		t.acquire(cb)

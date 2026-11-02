@@ -9,3 +9,14 @@ layout(push_constant) uniform Draw {
 } draw;
 
 #include "mask.glsl"
+
+#ifdef COLOR
+layout(set = 1, binding = 0) uniform Color {
+    vec4 cp[9];
+} colorBlock;
+#define CP colorBlock.cp
+#include "color.glsl"
+#define COLORED(c) colorApply(c)
+#else
+#define COLORED(c) (c)
+#endif

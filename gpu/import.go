@@ -38,7 +38,7 @@ var (
 )
 
 func (d *Device) importFormats() []fourcc.Format {
-	return slices.Concat(textureFormats, yuv444Formats, ycbcrFormats)
+	return slices.Concat(textureFormats, floatFormats, yuv444Formats, ycbcrFormats)
 }
 
 // ImportFormats are the DRM formats ImportTexture may take: what to ask

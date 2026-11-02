@@ -29,4 +29,18 @@ func TestShadersAreCurrent(t *testing.T) {
 			t.Errorf("shaders/%s.spv is stale: run go generate ./gpu", name)
 		}
 	}
+	for name, embedded := range map[string][]byte{"comp": compColorFrag, "grad": gradColorFrag, "ycbcr444": ycbcr444ColorFrag, "ycbcrplanes": ycbcrPlanesColorFrag} {
+		out := filepath.Join(t.TempDir(), name+".spv")
+		cmd := exec.Command("glslangValidator", "-V", "--quiet", "-DCOLOR", "-o", out, filepath.Join("shaders", name+".frag"))
+		if msg, err := cmd.CombinedOutput(); err != nil {
+			t.Fatalf("compiling %s with COLOR: %v\n%s", name, err, msg)
+		}
+		got, err := os.ReadFile(out)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(got, embedded) {
+			t.Errorf("shaders/%s.color.frag.spv is stale: run go generate ./gpu", name)
+		}
+	}
 }

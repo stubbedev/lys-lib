@@ -25,6 +25,7 @@ type compositor struct {
 	ycbcr    map[ycbcrKey]*ycbcrKind
 	yuv444   map[yuv444Key]*yuv444Kind
 	planes   map[planesKey]*planesKind
+	color    colorState
 }
 
 // The YUV shaders' places in a compositor's frags.
@@ -36,6 +37,7 @@ const (
 type compTarget struct {
 	pass                         vk.RenderPass
 	tex, fill, grad, kawase, goo vk.Pipeline
+	colorTex, colorGrad          vk.Pipeline
 }
 
 type drawConstants struct {
@@ -138,7 +140,7 @@ func (d *Device) compTargetOf(format vk.Format) (*compTarget, error) {
 }
 
 func (ct *compTarget) destroy(d *Device) {
-	for _, p := range []vk.Pipeline{ct.tex, ct.fill, ct.grad, ct.kawase, ct.goo} {
+	for _, p := range []vk.Pipeline{ct.tex, ct.fill, ct.grad, ct.kawase, ct.goo, ct.colorTex, ct.colorGrad} {
 		if p != 0 {
 			d.cmds.DestroyPipeline(d.device, p, nil)
 		}
@@ -234,6 +236,7 @@ func (d *Device) destroyComp() {
 	for _, k := range c.ycbcr {
 		k.destroy(d)
 	}
+	c.color.destroy(d)
 	c.sets.destroy(d)
 	for _, m := range append([]vk.ShaderModule{c.vert}, c.frags[:]...) {
 		if m != 0 {

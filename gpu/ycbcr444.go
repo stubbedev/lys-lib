@@ -26,6 +26,7 @@ type yuv444Key struct {
 type yuv444Kind struct {
 	constants yuv444Constants
 	pipes     map[vk.Format]vk.Pipeline
+	colored   coloredPipes
 }
 
 // constants derives the conversion, as Vulkan's own model conversions
@@ -93,6 +94,7 @@ func (kind *yuv444Kind) pipeline(d *Device, target vk.Format) (vk.Pipeline, erro
 }
 
 func (kind *yuv444Kind) destroy(d *Device) {
+	kind.colored.destroy(d)
 	for _, p := range kind.pipes {
 		d.cmds.DestroyPipeline(d.device, p, nil)
 	}

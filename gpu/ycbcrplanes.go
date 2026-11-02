@@ -172,6 +172,7 @@ type planesKind struct {
 	sets      setPools
 	layout    vk.PipelineLayout
 	pipes     map[vk.Format]vk.Pipeline
+	colored   coloredPipes
 }
 
 // cosited reports chroma sited with the first luma sample along an axis
@@ -227,6 +228,7 @@ func (kind *planesKind) pipeline(d *Device, target vk.Format) (vk.Pipeline, erro
 }
 
 func (kind *planesKind) destroy(d *Device) {
+	kind.colored.destroy(d)
 	for _, p := range kind.pipes {
 		d.cmds.DestroyPipeline(d.device, p, nil)
 	}
@@ -239,6 +241,10 @@ func (kind *planesKind) destroy(d *Device) {
 // constantsPipeline is a compositing pipeline into target whose fragment
 // shader takes its float constants, in order, from size bytes at data.
 func (d *Device) constantsPipeline(target vk.Format, frag int, layout vk.PipelineLayout, data unsafe.Pointer, size uintptr) (vk.Pipeline, error) {
+	return d.constantsPipelineOf(target, d.comp.frags[frag], layout, data, size)
+}
+
+func (d *Device) constantsPipelineOf(target vk.Format, frag vk.ShaderModule, layout vk.PipelineLayout, data unsafe.Pointer, size uintptr) (vk.Pipeline, error) {
 	ct, err := d.compTargetOf(target)
 	if err != nil {
 		return 0, err
@@ -249,7 +255,7 @@ func (d *Device) constantsPipeline(target vk.Format, frag int, layout vk.Pipelin
 		entries[i] = vk.SpecializationMapEntry{ConstantID: uint32(i), Offset: uint32(uintptr(i) * float), Size: float}
 	}
 	spec := vk.SpecializationInfo{MapEntryCount: count(entries), PMapEntries: &entries[0], DataSize: size, PData: (*uintptr)(data)}
-	p, err := d.specializedPipeline([2]vk.ShaderModule{d.comp.vert, d.comp.frags[frag]}, layout, ct.pass, blendOver, &spec)
+	p, err := d.specializedPipeline([2]vk.ShaderModule{d.comp.vert, frag}, layout, ct.pass, blendOver, &spec)
 	runtime.KeepAlive(entries)
 	return p, err
 }
