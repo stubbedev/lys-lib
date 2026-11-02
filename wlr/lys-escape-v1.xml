@@ -1,0 +1,99 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="lys_escape_v1">
+  <copyright>
+    Copyright (c) 2026 Alexander Bugge Stage
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software and associated documentation files (the "Software"),
+    to deal in the Software without restriction, including without limitation
+    the rights to use, copy, modify, merge, publish, distribute, sublicense,
+    and/or sell copies of the Software, and to permit persons to whom the
+    Software is furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice (including the next
+    paragraph) shall be included in all copies or substantial portions of the
+    Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+    THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+    DEALINGS IN THE SOFTWARE.
+  </copyright>
+
+  <description summary="one Escape press for a transient surface without the keyboard">
+    A dropdown that leaves the keyboard with the focused window still closes
+    on Escape in every other toolkit's idiom, yet no standard protocol lets a
+    client take one key from the window that holds the keyboard. Taking the
+    whole keyboard brings back the trap the dropdown exists to avoid.
+
+    This protocol takes that one key and nothing else: while a client holds
+    an arm, the compositor keeps the next unmodified Escape press from the
+    focused client, and its matching release, and tells the armed client.
+
+    The keysym is resolved in the keymap of the keyboard that produced the
+    key, so a key remapped to Escape counts and a key remapped away does not.
+    Escape is unmodified when no modifier is depressed or latched; locked
+    modifiers such as Caps Lock do not count.
+
+    The arm takes precedence over the focused client and over nothing else.
+    In this order, the key goes to:
+
+    - the compositor's own key bindings, so a client cannot shadow a binding
+      on bare Escape;
+    - the session lock surface, while the session is locked;
+    - a popup grab, a keyboard-interactive exclusive layer surface, an input
+      method's keyboard grab or a drag and drop session, of any client,
+      while one exists;
+    - the focused surface, while it has a keyboard shortcuts inhibitor, which
+      asked for every key including this one;
+    - the armed client's wl_keyboard, while it holds the keyboard focus, as
+      any key: no pressed event is sent, so one press never arrives twice;
+    - the newest arm;
+    - the focused surface.
+  </description>
+
+  <interface name="lys_escape_manager_v1" version="1">
+    <description summary="creates escape arms">
+      A privileged global: compositors hide it from sandboxed clients.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the manager">
+        Arms already created stay armed.
+      </description>
+    </request>
+
+    <request name="arm">
+      <description summary="take the next Escape press">
+        Creates an arm that lasts until its pressed event or its destruction.
+        When several clients hold one, only the newest receives the press.
+      </description>
+      <arg name="id" type="new_id" interface="lys_escape_arm_v1"/>
+    </request>
+  </interface>
+
+  <interface name="lys_escape_arm_v1" version="1">
+    <description summary="a claim on one Escape press">
+      A one-shot claim: a client that stopped reading its socket costs the
+      user a single key press. The arm dies with the client that holds it.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="disarm">
+        Disarms. A press already taken stays taken: its release is still kept
+        from the focused client, so the client never sees half a key.
+      </description>
+    </request>
+
+    <event name="pressed">
+      <description summary="the press was taken">
+        Escape went down and the focused client did not see it, and will not
+        see its release or any repeat. The arm is spent and takes no further
+        press; the client destroys it.
+      </description>
+    </event>
+  </interface>
+</protocol>

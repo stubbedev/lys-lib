@@ -168,7 +168,7 @@ regenerates it with `third_party/wayland/cmd/wayland-scanner`.
 | Shell and windows | wlr-layer-shell, ext-session-lock, wlr-foreign-toplevel-management, ext-foreign-toplevel-list, xdg-activation, xdg-dialog, xdg-foreign, xdg-output, xdg-system-bell, xdg-toplevel-icon |
 | Capture | wlr-screencopy, ext-image-capture-source, ext-image-copy-capture, hyprland-toplevel-export |
 | Buffers and presentation | linux-dmabuf, viewporter, fractional-scale, presentation-time, alpha-modifier, content-type, ext-background-effect |
-| Input | pointer-constraints, pointer-gestures, relative-pointer, tablet, cursor-shape, keyboard-shortcuts-inhibit, hyprland-global-shortcuts, zwlr-virtual-pointer, zwp-virtual-keyboard |
+| Input | pointer-constraints, pointer-gestures, relative-pointer, tablet, cursor-shape, keyboard-shortcuts-inhibit, hyprland-global-shortcuts, zwlr-virtual-pointer, zwp-virtual-keyboard, lys-escape |
 | Clipboard | ext-data-control, wlr-data-control, primary-selection |
 | Session | ext-idle-notify, idle-inhibit, wlr-gamma-control, hyprland-ctm-control |
 
