@@ -20,6 +20,7 @@ type compositor struct {
 	samplers [2]vk.Sampler
 	vert     vk.ShaderModule
 	frags    [7]vk.ShaderModule
+	glass    vk.ShaderModule
 	sets     setPools
 	targets  map[vk.Format]*compTarget
 	ycbcr    map[ycbcrKey]*ycbcrKind
@@ -35,9 +36,9 @@ const (
 )
 
 type compTarget struct {
-	pass                         vk.RenderPass
-	tex, fill, grad, kawase, goo vk.Pipeline
-	colorTex, colorGrad          vk.Pipeline
+	pass                                vk.RenderPass
+	tex, fill, grad, kawase, goo, glass vk.Pipeline
+	colorTex, colorGrad, colorGlass     vk.Pipeline
 }
 
 type drawConstants struct {
@@ -139,8 +140,30 @@ func (d *Device) compTargetOf(format vk.Format) (*compTarget, error) {
 	return ct, nil
 }
 
+// glassPipeline is DrawGlass's pipeline, built at its first use on a
+// target format, so a compositor drawing no glass never pays for it.
+func (d *Device) glassPipeline(ct *compTarget) (vk.Pipeline, error) {
+	if ct.glass != 0 {
+		return ct.glass, nil
+	}
+	c := &d.comp
+	if c.glass == 0 {
+		m, err := d.shaderModule(glassFrag)
+		if err != nil {
+			return 0, err
+		}
+		c.glass = m
+	}
+	p, err := d.graphicsPipeline([2]vk.ShaderModule{c.vert, c.glass}, c.layout, ct.pass, blendOver)
+	if err != nil {
+		return 0, err
+	}
+	ct.glass = p
+	return p, nil
+}
+
 func (ct *compTarget) destroy(d *Device) {
-	for _, p := range []vk.Pipeline{ct.tex, ct.fill, ct.grad, ct.kawase, ct.goo, ct.colorTex, ct.colorGrad} {
+	for _, p := range []vk.Pipeline{ct.tex, ct.fill, ct.grad, ct.kawase, ct.goo, ct.glass, ct.colorTex, ct.colorGrad, ct.colorGlass} {
 		if p != 0 {
 			d.cmds.DestroyPipeline(d.device, p, nil)
 		}
@@ -238,7 +261,7 @@ func (d *Device) destroyComp() {
 	}
 	c.color.destroy(d)
 	c.sets.destroy(d)
-	for _, m := range append([]vk.ShaderModule{c.vert}, c.frags[:]...) {
+	for _, m := range append([]vk.ShaderModule{c.vert, c.glass}, c.frags[:]...) {
 		if m != 0 {
 			d.cmds.DestroyShaderModule(dev, m, nil)
 		}

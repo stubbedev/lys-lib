@@ -23,6 +23,7 @@ const (
 	colorFragGradient
 	colorFragYCbCr444
 	colorFragYCbCrPlanes
+	colorFragGlass
 	colorFrags
 )
 
@@ -82,7 +83,7 @@ func (d *Device) createColor(cs *colorState) error {
 		d.cmds.UpdateDescriptorSets(d.device, 1, &w, 0, nil)
 	}
 	cs.slots = make(map[ColorTransform]int, colorSlots)
-	for i, spv := range [colorFrags][]byte{compColorFrag, gradColorFrag, ycbcr444ColorFrag, ycbcrPlanesColorFrag} {
+	for i, spv := range [colorFrags][]byte{compColorFrag, gradColorFrag, ycbcr444ColorFrag, ycbcrPlanesColorFrag, glassColorFrag} {
 		if cs.frags[i], err = d.shaderModule(spv); err != nil {
 			return err
 		}
@@ -203,6 +204,16 @@ func (d *Device) colorGradPipeline(ct *compTarget) (vk.Pipeline, error) {
 	var err error
 	ct.colorGrad, err = d.graphicsPipeline([2]vk.ShaderModule{d.comp.vert, cs.frags[colorFragGradient]}, cs.layout, ct.pass, blendOver)
 	return ct.colorGrad, err
+}
+
+func (d *Device) colorGlassPipeline(ct *compTarget) (vk.Pipeline, error) {
+	if ct.colorGlass != 0 {
+		return ct.colorGlass, nil
+	}
+	cs := &d.comp.color
+	var err error
+	ct.colorGlass, err = d.graphicsPipeline([2]vk.ShaderModule{d.comp.vert, cs.frags[colorFragGlass]}, cs.layout, ct.pass, blendOver)
+	return ct.colorGlass, err
 }
 
 // colorTexturePipeline is how t, of any kind, draws through a colour transform

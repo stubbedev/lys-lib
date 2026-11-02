@@ -166,7 +166,7 @@ The kinds of image are distinct types:
 
 There are two ways to draw. `Render` draws a recorded `List`. `Begin` opens a
 `Pass` for a compositor's frame, clipped to its damage, with `Clear`,
-`FillRect`, `FillGradient`, `DrawTexture`, `FillGoo` and `Kawase`. The first
+`FillRect`, `FillGradient`, `DrawTexture`, `DrawGlass`, `FillGoo` and `Kawase`. The first
 bad call fails the pass: `End` reports it and draws nothing.
 
 Vulkan comes from the patched [vk](/third-party/vk) bindings. The shaders are

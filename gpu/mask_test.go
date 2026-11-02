@@ -142,6 +142,21 @@ func TestMaskGLSLIsGLSLES(t *testing.T) {
 	}
 }
 
+func TestGlassGLSLIsGLSLES(t *testing.T) {
+	if _, err := exec.LookPath("glslangValidator"); err != nil {
+		t.Skip("no glslangValidator: run inside the dev shell")
+	}
+	src := "#version 100\nprecision highp float;\n#define SAMPLE texture2D\nuniform sampler2D tex;\nuniform vec4 keep;\n" + MaskGLSL + GlassGLSL +
+		"void main() { gl_FragColor = glassAdjust(glassBackdrop(tex, keep.xy, gl_FragCoord.xy, keep.zw, keep, 2.0, 0.5, 1.0), keep.xyz); }\n"
+	path := filepath.Join(t.TempDir(), "glass.frag")
+	if err := os.WriteFile(path, []byte(src), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if out, err := exec.Command("glslangValidator", path).CombinedOutput(); err != nil {
+		t.Fatalf("GlassGLSL is not GLSL ES 1.00: %v\n%s", err, out)
+	}
+}
+
 func TestPassFillsGradientsLikeGradientAt(t *testing.T) {
 	d := openDevice(t)
 	tg, err := d.NewOffscreen(40, 24)

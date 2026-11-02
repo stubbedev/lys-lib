@@ -11,10 +11,12 @@ import _ "embed" // the compiled shaders below
 //go:generate glslangValidator -V --quiet -o shaders/grad.frag.spv shaders/grad.frag
 //go:generate glslangValidator -V --quiet -o shaders/kawase.frag.spv shaders/kawase.frag
 //go:generate glslangValidator -V --quiet -o shaders/goo.frag.spv shaders/goo.frag
+//go:generate glslangValidator -V --quiet -o shaders/glass.frag.spv shaders/glass.frag
 //go:generate glslangValidator -V --quiet -o shaders/ycbcr444.frag.spv shaders/ycbcr444.frag
 //go:generate glslangValidator -V --quiet -o shaders/ycbcrplanes.frag.spv shaders/ycbcrplanes.frag
 //go:generate glslangValidator -V --quiet -o testdata/fragment_test.frag.spv testdata/fragment_test.frag
 //go:generate glslangValidator -V --quiet -DCOLOR -o shaders/comp.color.frag.spv shaders/comp.frag
+//go:generate glslangValidator -V --quiet -DCOLOR -o shaders/glass.color.frag.spv shaders/glass.frag
 //go:generate glslangValidator -V --quiet -DCOLOR -o shaders/grad.color.frag.spv shaders/grad.frag
 //go:generate glslangValidator -V --quiet -DCOLOR -o shaders/ycbcr444.color.frag.spv shaders/ycbcr444.frag
 //go:generate glslangValidator -V --quiet -DCOLOR -o shaders/ycbcrplanes.color.frag.spv shaders/ycbcrplanes.frag
@@ -46,6 +48,9 @@ var kawaseFrag []byte
 //go:embed shaders/goo.frag.spv
 var gooFrag []byte
 
+//go:embed shaders/glass.frag.spv
+var glassFrag []byte
+
 //go:embed shaders/ycbcr444.frag.spv
 var ycbcr444Frag []byte
 
@@ -54,6 +59,9 @@ var ycbcrPlanesFrag []byte
 
 //go:embed shaders/comp.color.frag.spv
 var compColorFrag []byte
+
+//go:embed shaders/glass.color.frag.spv
+var glassColorFrag []byte
 
 //go:embed shaders/grad.color.frag.spv
 var gradColorFrag []byte

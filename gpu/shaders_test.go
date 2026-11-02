@@ -15,7 +15,7 @@ func TestShadersAreCurrent(t *testing.T) {
 	if _, err := exec.LookPath("glslangValidator"); err != nil {
 		t.Skip("no glslangValidator: run inside the dev shell")
 	}
-	for name, embedded := range map[string][]byte{"prim.vert": primVert, "prim.frag": primFrag, "comp.vert": compVert, "comp.frag": compFrag, "fill.frag": fillFrag, "grad.frag": gradFrag, "kawase.frag": kawaseFrag, "goo.frag": gooFrag, "ycbcr444.frag": ycbcr444Frag, "ycbcrplanes.frag": ycbcrPlanesFrag} {
+	for name, embedded := range map[string][]byte{"prim.vert": primVert, "prim.frag": primFrag, "comp.vert": compVert, "comp.frag": compFrag, "fill.frag": fillFrag, "grad.frag": gradFrag, "kawase.frag": kawaseFrag, "goo.frag": gooFrag, "glass.frag": glassFrag, "ycbcr444.frag": ycbcr444Frag, "ycbcrplanes.frag": ycbcrPlanesFrag} {
 		out := filepath.Join(t.TempDir(), name+".spv")
 		cmd := exec.Command("glslangValidator", "-V", "--quiet", "-o", out, filepath.Join("shaders", name))
 		if msg, err := cmd.CombinedOutput(); err != nil {
@@ -29,7 +29,7 @@ func TestShadersAreCurrent(t *testing.T) {
 			t.Errorf("shaders/%s.spv is stale: run go generate ./gpu", name)
 		}
 	}
-	for name, embedded := range map[string][]byte{"comp": compColorFrag, "grad": gradColorFrag, "ycbcr444": ycbcr444ColorFrag, "ycbcrplanes": ycbcrPlanesColorFrag} {
+	for name, embedded := range map[string][]byte{"comp": compColorFrag, "glass": glassColorFrag, "grad": gradColorFrag, "ycbcr444": ycbcr444ColorFrag, "ycbcrplanes": ycbcrPlanesColorFrag} {
 		out := filepath.Join(t.TempDir(), name+".spv")
 		cmd := exec.Command("glslangValidator", "-V", "--quiet", "-DCOLOR", "-o", out, filepath.Join("shaders", name+".frag"))
 		if msg, err := cmd.CombinedOutput(); err != nil {

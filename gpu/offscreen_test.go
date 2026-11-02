@@ -149,3 +149,148 @@ func TestKawasePassesMatchKawaseAt(t *testing.T) {
 		prev = next
 	}
 }
+
+func TestDrawGlassMatchesGo(t *testing.T) {
+	d := openDevice(t)
+	src, err := d.NewOffscreen(48, 36)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer src.Close()
+	runPass(t, d, src, []image.Rectangle{{Max: src.Size()}}, func(p *Pass) {
+		p.Clear(color.RGBA{0x10, 0x20, 0x30, 0xff})
+		p.FillRect(image.Rect(0, 0, 24, 18), color.RGBA{0xe0, 0x40, 0x10, 0xff}, Mask{})
+		p.FillRect(image.Rect(24, 18, 48, 36), color.RGBA{0x30, 0xa0, 0x80, 0xff}, Mask{})
+		p.FillRect(image.Rect(10, 8, 38, 28), color.RGBA{0x20, 0x10, 0x30, 0x80}, Mask{})
+	})
+	tx, err := src.Texture()
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := readTarget(t, src)
+	w, h := want.Rect.Dx(), want.Rect.Dy()
+	pix := bgra(want)
+	for _, c := range []struct {
+		name string
+		g    Glass
+		m    Mask
+		src  FRect
+		dst  image.Rectangle
+	}{
+		{"colour", Glass{Saturation: 1.6, Brightness: 0.8, Contrast: 1.3}, Mask{}, FRect{W: 48, H: 36}, image.Rect(0, 0, 48, 36)},
+		{"bezel along dst", Glass{Saturation: 1, Brightness: 1, Contrast: 1, Bezel: 9, Amount: 6}, Mask{}, FRect{X: 4, Y: 3, W: 40, H: 30}, image.Rect(4, 3, 44, 33)},
+		{"bezel along a rounded keep", Glass{Saturation: 1, Brightness: 1, Contrast: 1, Bezel: 7, Amount: 5}, Mask{Keep: RoundRect{Rect: image.Rect(6, 5, 42, 31), Radius: 9}}, FRect{W: 48, H: 36}, image.Rect(0, 0, 48, 36)},
+		{"everything scaled", Glass{Saturation: 0.4, Brightness: 1.2, Contrast: 0.8, Bezel: 6, Amount: 4}, Mask{Keep: RoundRect{Rect: image.Rect(2, 2, 22, 16), Radius: 4}, Cut: RoundRect{Rect: image.Rect(8, 6, 12, 10), Radius: 1}}, FRect{W: 48, H: 36}, image.Rect(0, 0, 24, 18)},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			next, err := d.NewOffscreen(48, 36)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer next.Close()
+			runPass(t, d, next, []image.Rectangle{{Max: next.Size()}}, func(p *Pass) {
+				p.Clear(color.RGBA{})
+				p.DrawGlass(tx, c.src, c.dst, 0.75, c.m, c.g)
+			})
+			got := readTarget(t, next)
+			m := c.g.Mask(c.m, c.dst)
+			plan := c.g.RefractPlan(m.Keep)
+			kx, ky := float32(c.src.W)/float32(c.dst.Dx()), float32(c.src.H)/float32(c.dst.Dy())
+			for y := c.dst.Min.Y; y < c.dst.Max.Y; y++ {
+				for x := c.dst.Min.X; x < c.dst.Max.X; x++ {
+					u := (float32(c.src.X) + (float32(x-c.dst.Min.X)+0.5)*kx) / float32(w)
+					v := (float32(c.src.Y) + (float32(y-c.dst.Min.Y)+0.5)*ky) / float32(h)
+					if c.g.Refracts() {
+						if dx, dy, ok := plan.At(x, y); ok {
+							u += float32(dx) / 256 * kx / float32(w)
+							v += float32(dy) / 256 * ky / float32(h)
+						}
+					}
+					s := Bilinear(pix, w*4, w, h, u, v)
+					a := c.g.Adjust([4]float32{s[2], s[1], s[0], s[3]})
+					k := 0.75 * m.Coverage(float32(x)+0.5, float32(y)+0.5)
+					exp := color.RGBA{uint8(a[0]*k + 0.5), uint8(a[1]*k + 0.5), uint8(a[2]*k + 0.5), uint8(a[3]*k + 0.5)}
+					if g := got.RGBAAt(x, y); !within(g, exp, 3) {
+						t.Fatalf("pixel %d,%d: %v, want %v", x, y, g, exp)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestDrawGlassRefusesBadInput(t *testing.T) {
+	d := openDevice(t)
+	src, err := d.NewOffscreen(8, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer src.Close()
+	tx, err := src.Texture()
+	if err != nil {
+		t.Fatal(err)
+	}
+	dst, err := d.NewOffscreen(8, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dst.Close()
+	plain := Glass{Saturation: 1, Brightness: 1, Contrast: 1}
+	all := image.Rect(0, 0, 8, 8)
+	for name, draw := range map[string]func(*Pass){
+		"a negative factor": func(p *Pass) { p.DrawGlass(tx, FRect{W: 8, H: 8}, all, 1, Mask{}, Glass{Saturation: -1}) },
+		"a falloff": func(p *Pass) {
+			p.DrawGlass(tx, FRect{W: 8, H: 8}, all, 1, Mask{Falloff: Falloff{Range: 2, Power: 1}}, plain)
+		},
+		"a merge":                   func(p *Pass) { p.DrawGlass(tx, FRect{W: 8, H: 8}, all, 1, Mask{Merge: all}, plain) },
+		"a source past the texture": func(p *Pass) { p.DrawGlass(tx, FRect{W: 9, H: 8}, all, 1, Mask{}, plain) },
+		"an alpha above one":        func(p *Pass) { p.DrawGlass(tx, FRect{W: 8, H: 8}, all, 2, Mask{}, plain) },
+	} {
+		p, err := d.Begin(dst, []image.Rectangle{all})
+		if err != nil {
+			t.Fatal(err)
+		}
+		draw(p)
+		if err := p.End(); err == nil {
+			t.Errorf("%s drew without an error", name)
+		}
+	}
+}
+
+func TestDrawGlassGoesThroughTheColorTransform(t *testing.T) {
+	d := openDevice(t)
+	src, err := d.NewOffscreen(8, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer src.Close()
+	all := image.Rect(0, 0, 8, 8)
+	runPass(t, d, src, []image.Rectangle{all}, func(p *Pass) { p.Clear(color.RGBA{0x40, 0x80, 0xc0, 0xff}) })
+	tx, err := src.Texture()
+	if err != nil {
+		t.Fatal(err)
+	}
+	identity := Glass{Saturation: 1, Brightness: 1, Contrast: 1}
+	draw := func(ct *ColorTransform) color.RGBA {
+		dst, err := d.NewOffscreen(8, 8)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer dst.Close()
+		runPass(t, d, dst, []image.Rectangle{all}, func(p *Pass) {
+			p.Clear(color.RGBA{})
+			p.SetColor(ct)
+			p.DrawGlass(tx, FRect{W: 8, H: 8}, all, 1, Mask{}, identity)
+		})
+		return readTarget(t, dst).RGBAAt(4, 4)
+	}
+	ct := ColorTransform{Matrix: [9]float32{1, 0, 0, 0, 1, 0, 0, 0, 1}, Scale: 0.5}
+	want := draw(nil)
+	got := draw(&ct)
+	if !within(want, color.RGBA{0x40, 0x80, 0xc0, 0xff}, 1) {
+		t.Fatalf("without a transform: %v", want)
+	}
+	if !within(got, color.RGBA{0x20, 0x40, 0x60, 0xff}, 2) {
+		t.Fatalf("through a transform scaling by a half: %v", got)
+	}
+}
