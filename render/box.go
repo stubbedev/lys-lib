@@ -820,12 +820,7 @@ func (c *Canvas) PaintGrain(r Rect, radii Corners, opacity float64, ox, oy int) 
 			if !solid || px < xa || px > xb {
 				cov = cov255(coverage(sdBoxF(px, py, b32, rc32)))
 			}
-			n := grainNoise(x-o.X, y-o.Y)
-			// Signed around the midpoint: above lightens, below darkens.
-			ink, amt := RGB(255, 255, 255), n-128
-			if n < 128 {
-				ink, amt = RGB(0, 0, 0), 127-n
-			}
+			ink, amt := grainInk(grainNoise(x-o.X, y-o.Y))
 			if a := amt * 2 * strength / 255 * cov / 255; a > 0 {
 				c.blend(x, y, coverageScale(ink, a))
 			}
@@ -837,6 +832,37 @@ func (c *Canvas) PaintGrain(r Rect, radii Corners, opacity float64, ox, oy int) 
 // scales by.
 func GrainStrength(opacity float64) uint32 {
 	return uint32(math.Round(math.Min(opacity, 1) * 255))
+}
+
+// grainInk is the noise n as what PaintGrain blends: above the midpoint
+// white lightens, below it black darkens, each by amt out of 127.
+func grainInk(n uint32) (ink Color, amt uint32) {
+	if n < 128 {
+		return RGB(0, 0, 0), 127 - n
+	}
+	return RGB(255, 255, 255), n - 128
+}
+
+// GrainTile is PaintGrain at full strength as w x h premultiplied BGRA
+// pixels whose top left is the origin: a renderer without PaintGrain
+// draws it at the strength's alpha, within one level of PaintGrain's
+// blend, for the same grain at the same offsets.
+func GrainTile(w, h int) []byte {
+	pix := make([]byte, w*h*4)
+	black := RGB(0, 0, 0)
+	for y := range h {
+		row := pix[y*w*4 : (y+1)*w*4]
+		for x := range w {
+			ink, amt := grainInk(grainNoise(x, y))
+			a := byte(amt * 2) //nolint:gosec // amt is at most 127
+			px := row[x*4 : x*4+4]
+			px[3] = a
+			if ink != black {
+				px[0], px[1], px[2] = a, a, a
+			}
+		}
+	}
+	return pix
 }
 
 // grainNoise is a hashed byte for a pixel offset: white noise without

@@ -254,3 +254,23 @@ func TestPaintGrain(t *testing.T) {
 		t.Error("grain painted outside its rect")
 	}
 }
+
+func TestGrainTileIsPaintGrain(t *testing.T) {
+	const w, h, strength = 64, 48, 0.3
+	tile := GrainTile(w, h)
+	cv, painted := newTestCanvas(w, h)
+	cv.Clear(cv.Rect(), RGB(0x40, 0x80, 0xc0))
+	cv.PaintGrain(Rect{W: w, H: h}, Corners{}, strength, 0, 0)
+	k := GrainStrength(strength)
+	base := [4]uint32{0xc0, 0x80, 0x40, 0xff}
+	for i := 0; i < len(tile); i += 4 {
+		for c := range 4 {
+			a := (uint32(tile[i+3])*k + 127) / 255
+			src := (uint32(tile[i+c])*k + 127) / 255
+			want := src + (base[c]*(255-a)+127)/255
+			if d := int(painted[i+c]) - int(want); d < -2 || d > 2 {
+				t.Fatalf("pixel %d channel %d: PaintGrain %d, the tile at its strength %d", i/4, c, painted[i+c], want)
+			}
+		}
+	}
+}
