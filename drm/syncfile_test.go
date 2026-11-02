@@ -2,7 +2,6 @@ package drm
 
 import (
 	"errors"
-	"os"
 	"testing"
 	"time"
 	"unsafe"
@@ -157,12 +156,9 @@ func BenchmarkSyncFileSignalTime(b *testing.B) {
 // udmabuf with no fences exports the signalled stub fence.
 func realSyncFile(tb testing.TB) int {
 	tb.Helper()
-	if _, err := os.Stat("/dev/udmabuf"); err != nil {
-		tb.Skipf("no udmabuf: %v", err)
-	}
 	buf, err := udmabuf.New(4096)
 	if err != nil {
-		tb.Fatal(err)
+		tb.Skipf("no udmabuf: %v", err)
 	}
 	tb.Cleanup(func() { _ = buf.Close() })
 	const exportSyncFile = ioctlReadWrite<<ioctlDirShift | 8<<ioctlSizeShift | 'b'<<ioctlTypeShift | 2
