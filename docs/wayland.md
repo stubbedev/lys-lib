@@ -174,7 +174,7 @@ regenerates it with `third_party/wayland/cmd/wayland-scanner`.
 
 The core protocol and xdg-shell come from
 [`third_party/wayland`](/third-party/wayland), as `wl` and `xdg`, with the client
-helpers `wlclient` and `wlcursor` and the `text-input-v3` and `xdg-decoration-v1`
+helper `wlclient` and the `text-input-v3` and `xdg-decoration-v1`
 bindings under `unstable`. Every family member shares those `wl` types.
 
 ## xcursor

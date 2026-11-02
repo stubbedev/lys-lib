@@ -1,9 +1,9 @@
 # github.com/neurlang/wayland ee95389, patched for lys-lib
 
 A copy of the packages of github.com/neurlang/wayland at master ee95389,
-v0.4.6 and neurlang/wayland#50 and #51, not yet in a tag (MIT, LICENSE), that lys-lib and lys-ui use, with upstream's
-tests: `wl`, `os`, `xdg`, `wlclient`, `wlcursor`, `wlcursor/xcursor`,
-`external/swizzle`, `unstable/text-input-v3`,
+v0.4.6 and neurlang/wayland#50 and #51, not yet in a tag (MIT, LICENSE), that
+lys-lib and lys-ui use, with upstream's tests: `wl`, `os`, `xdg`, `wlclient`,
+`unstable/text-input-v3`,
 `unstable/xdg-decoration-v1`, and `cmd/wayland-scanner`, which
 generates `wlr`'s bindings (`go tool wayland-scanner`). They are
 carried as packages of the lys-lib module and imported as
