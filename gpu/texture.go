@@ -142,11 +142,18 @@ func (t *Texture) Update(r image.Rectangle, stride int, pix []byte) error {
 		return fmt.Errorf("gpu: %d bytes for %v at stride %d, want %d", len(pix), r, stride, n)
 	}
 	d := t.d
-	at, err := d.reserveUpload(n)
+	at, err := d.reserveUpload(row * r.Dy())
 	if err != nil {
 		return err
 	}
-	copy(d.upload.mapped[at:], pix[:n])
+	if stride == row {
+		copy(d.upload.mapped[at:], pix[:n])
+	} else {
+		dst := d.upload.mapped[at:]
+		for y := range r.Dy() {
+			copy(dst[y*row:], pix[y*stride:y*stride+row])
+		}
+	}
 	if d.batch == 0 {
 		if d.batch, err = d.recording(); err != nil {
 			return err
@@ -158,7 +165,7 @@ func (t *Texture) Update(r image.Rectangle, stride int, pix []byte) error {
 	region := &d.args.region
 	*region = vk.BufferImageCopy{
 		BufferOffset:     intconv.Must[vk.DeviceSize](at),
-		BufferRowLength:  intconv.Must[uint32](stride / px),
+		BufferRowLength:  intconv.Must[uint32](r.Dx()),
 		ImageSubresource: vk.ImageSubresourceLayers{AspectMask: vk.ImageAspectFlags(vk.ImageAspectColorBit), LayerCount: 1},
 		ImageOffset:      offset3D(r.Min),
 		ImageExtent:      extent3D(r.Dx(), r.Dy()),

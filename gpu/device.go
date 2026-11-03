@@ -100,6 +100,7 @@ type Device struct {
 	reused    Pass
 	passOps   []passOp
 	passRects rectScratch
+	passWork  passWork
 }
 
 // Open picks the first Vulkan device with a graphics queue that

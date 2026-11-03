@@ -94,6 +94,7 @@ type callArgs struct {
 	passBegin   vk.RenderPassBeginInfo
 	viewport    vk.Viewport
 	scissor     vk.Rect2D
+	frame       frameConstants
 	clear       vk.ClearAttachment
 	clearRects  []vk.ClearRect
 	timestamp   uint64

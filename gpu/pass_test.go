@@ -304,3 +304,74 @@ func TestASteadyPassDoesNotAllocate(t *testing.T) {
 		t.Fatalf("a steady pass allocated %v times", n)
 	}
 }
+
+func TestAPassRecordsNothingForDrawsOutsideTheDamage(t *testing.T) {
+	d := openDevice(t)
+	tg, err := d.NewOffscreen(32, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tg.Close()
+	tx := newTexture(t, d, fourcc.ARGB8888, 1, 1, [][4]byte{{1, 2, 3, 255}})
+	inside, outside := image.Rect(0, 0, 8, 8), image.Rect(16, 16, 24, 24)
+	runPass(t, d, tg, []image.Rectangle{inside}, func(p *Pass) {
+		p.DrawTexture(tx, FRect{W: 1, H: 1}, outside, TransformNormal, 1, Mask{})
+		p.FillRect(inside, color.RGBA{A: 255}, Mask{})
+		p.DrawTexture(tx, FRect{W: 1, H: 1}, outside, TransformNormal, 1, Mask{})
+	})
+	if err := d.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	if want := (passWork{binds: 1, pushes: 1, scissors: 1, draws: 1}); d.passWork != want {
+		t.Errorf("one draw in the damage recorded %+v, want %+v", d.passWork, want)
+	}
+}
+
+func TestAPassSetsTheScissorOncePerDamageRect(t *testing.T) {
+	d := openDevice(t)
+	tg, err := d.NewOffscreen(32, 32)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tg.Close()
+	all := image.Rect(0, 0, 32, 32)
+	runPass(t, d, tg, []image.Rectangle{all}, func(p *Pass) {
+		for range 5 {
+			p.FillRect(image.Rect(4, 4, 12, 12), color.RGBA{A: 255}, Mask{})
+		}
+	})
+	if err := d.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	if want := (passWork{binds: 1, pushes: 5, scissors: 1, draws: 5}); d.passWork != want {
+		t.Errorf("five draws under one damage rect recorded %+v, want %+v", d.passWork, want)
+	}
+}
+
+func TestAScissorOnTheDamageStillClipsToTheDraw(t *testing.T) {
+	d := openDevice(t)
+	tg, err := d.NewOffscreen(16, 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tg.Close()
+	black, white := color.RGBA{A: 255}, color.RGBA{255, 255, 255, 255}
+	runPass(t, d, tg, []image.Rectangle{{Max: tg.Size()}}, func(p *Pass) {
+		p.Clear(black)
+		p.FillRect(image.Rect(4, 4, 8, 8), white, Mask{})
+		p.FillRect(image.Rect(10, 10, 12, 12), white, Mask{})
+	})
+	img := readTarget(t, tg)
+	for y := range 16 {
+		for x := range 16 {
+			pt := image.Pt(x, y)
+			want := black
+			if pt.In(image.Rect(4, 4, 8, 8)) || pt.In(image.Rect(10, 10, 12, 12)) {
+				want = white
+			}
+			if got := img.RGBAAt(x, y); got != want {
+				t.Fatalf("pixel %d,%d is %v, want %v", x, y, got, want)
+			}
+		}
+	}
+}

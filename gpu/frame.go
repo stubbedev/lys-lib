@@ -442,15 +442,15 @@ func (f *frame) record(cb vk.CommandBuffer, final bool) {
 func (f *frame) begin(cb vk.CommandBuffer, s *surface) {
 	d := f.d
 	s.to(cb, vk.ImageLayoutColorAttachmentOptimal)
-	area := vk.Rect2D{Extent: extent2D(s.w, s.h)}
-	bi := vk.RenderPassBeginInfo{SType: vk.StructureTypeRenderPassBeginInfo, RenderPass: d.pass, Framebuffer: s.fb, RenderArea: area}
-	d.cmds.CmdBeginRenderPass(cb, &bi, vk.SubpassContentsInline)
-	vp := vk.Viewport{Width: float32(s.w), Height: float32(s.h), MaxDepth: 1}
-	d.cmds.CmdSetViewport(cb, 0, 1, &vp)
-	d.cmds.CmdSetScissor(cb, 0, 1, &area)
+	d.args.scissor = vk.Rect2D{Extent: extent2D(s.w, s.h)}
+	d.args.passBegin = vk.RenderPassBeginInfo{SType: vk.StructureTypeRenderPassBeginInfo, RenderPass: d.pass, Framebuffer: s.fb, RenderArea: d.args.scissor}
+	d.cmds.CmdBeginRenderPass(cb, &d.args.passBegin, vk.SubpassContentsInline)
+	d.args.viewport = vk.Viewport{Width: float32(s.w), Height: float32(s.h), MaxDepth: 1}
+	d.cmds.CmdSetViewport(cb, 0, 1, &d.args.viewport)
+	d.cmds.CmdSetScissor(cb, 0, 1, &d.args.scissor)
 	d.cmds.CmdBindDescriptorSets(cb, vk.PipelineBindPointGraphics, d.layout, 0, 1, &d.current.set, 0, nil)
-	fc := frameConstants{w: float32(s.w), h: float32(s.h)}
-	d.cmds.CmdPushConstants(cb, d.layout, vk.ShaderStageFlags(vk.ShaderStageVertexBit|vk.ShaderStageFragmentBit), 0, uint32(unsafe.Sizeof(fc)), unsafe.Pointer(&fc))
+	d.args.frame = frameConstants{w: float32(s.w), h: float32(s.h)}
+	d.cmds.CmdPushConstants(cb, d.layout, vk.ShaderStageFlags(vk.ShaderStageVertexBit|vk.ShaderStageFragmentBit), 0, uint32(unsafe.Sizeof(d.args.frame)), unsafe.Pointer(&d.args.frame))
 }
 
 func (f *frame) ClearDevice(s render.State, r render.Rect, col render.Color) {

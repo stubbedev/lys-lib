@@ -35,6 +35,12 @@ type Pass struct {
 	colorSet vk.DescriptorSet
 }
 
+// passWork counts the commands the last recorded pass issued for its
+// draws.
+type passWork struct {
+	binds, pushes, scissors, draws int
+}
+
 type opKind uint8
 
 const (
@@ -546,15 +552,21 @@ func (p *Pass) record(cb vk.CommandBuffer) {
 	stages := vk.ShaderStageFlags(vk.ShaderStageVertexBit | vk.ShaderStageFragmentBit)
 	var bound vk.Pipeline
 	var set, colorBound vk.DescriptorSet
+	var scissor image.Rectangle
+	d.passWork = passWork{}
 	for i := range p.ops {
 		op := &p.ops[i]
 		if op.kind == opClear {
 			p.clear(cb, op.dc.extra[0])
 			continue
 		}
+		if !p.touchesDamage(op.dst) {
+			continue
+		}
 		if op.pipe != bound {
 			d.cmds.CmdBindPipeline(cb, vk.PipelineBindPointGraphics, op.pipe)
 			bound = op.pipe
+			d.passWork.binds++
 		}
 		if op.kind == opTexture && op.set != set {
 			d.cmds.CmdBindDescriptorSets(cb, vk.PipelineBindPointGraphics, op.layout, 0, 1, &op.set, 0, nil)
@@ -567,14 +579,19 @@ func (p *Pass) record(cb vk.CommandBuffer) {
 		op.dc.rect = [4]float32{float32(op.dst.Min.X), float32(op.dst.Min.Y), float32(op.dst.Dx()), float32(op.dst.Dy())}
 		op.dc.target[0], op.dc.target[1] = float32(s.w), float32(s.h)
 		d.cmds.CmdPushConstants(cb, op.layout, stages, 0, uint32(unsafe.Sizeof(op.dc)), unsafe.Pointer(&op.dc))
+		d.passWork.pushes++
 		for _, r := range p.damage {
-			clip := op.dst.Intersect(r)
-			if clip.Empty() {
+			if !op.dst.Overlaps(r) {
 				continue
 			}
-			d.args.scissor = rect2D(clip)
-			d.cmds.CmdSetScissor(cb, 0, 1, &d.args.scissor)
+			if r != scissor {
+				scissor = r
+				d.args.scissor = rect2D(r)
+				d.cmds.CmdSetScissor(cb, 0, 1, &d.args.scissor)
+				d.passWork.scissors++
+			}
 			d.cmds.CmdDraw(cb, 4, 1, 0, 0)
+			d.passWork.draws++
 		}
 	}
 	d.cmds.CmdEndRenderPass(cb)
@@ -582,6 +599,10 @@ func (p *Pass) record(cb vk.CommandBuffer) {
 		t.releaseForeign(cb)
 	}
 	p.t.release(cb)
+}
+
+func (p *Pass) touchesDamage(dst image.Rectangle) bool {
+	return slices.ContainsFunc(p.damage, dst.Overlaps)
 }
 
 func (p *Pass) clear(cb vk.CommandBuffer, col [4]float32) {

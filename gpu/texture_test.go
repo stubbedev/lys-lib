@@ -370,3 +370,35 @@ func TestManyTinyUploadsBoundTheBatch(t *testing.T) {
 		}
 	}
 }
+
+func TestAWideStrideUploadsOnlyItsRows(t *testing.T) {
+	d := openDevice(t)
+	tx, err := d.NewTexture(fourcc.ARGB8888, 8, 6)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tx.Close()
+	if err := tx.Update(image.Rect(0, 0, 1, 1), 4, make([]byte, 4)); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	const stride = 4096
+	r := image.Rect(2, 1, 5, 4)
+	px := [4]byte{50, 60, 70, 80}
+	if err := tx.Update(r, stride, fill(3, 3, stride, px)[:stride*2+12]); err != nil {
+		t.Fatal(err)
+	}
+	if used, want := d.uploads.head-d.uploads.tail, 3*3*4; used != want {
+		t.Errorf("staging took %d bytes for %d bytes of rows", used, want)
+	}
+	got := textureBytes(t, tx)
+	for y := range 6 {
+		for x := range 8 {
+			if image.Pt(x, y).In(r) && [4]byte(got[(y*8+x)*4:]) != px {
+				t.Fatalf("pixel %d,%d is %v, want %v", x, y, got[(y*8+x)*4:(y*8+x)*4+4], px)
+			}
+		}
+	}
+}
