@@ -3,6 +3,9 @@ package gpu
 import "testing"
 
 func TestBeginningARenderPassAllocatesNothing(t *testing.T) {
+	if raceEnabled {
+		t.Skip("the race detector allocates on its own")
+	}
 	d := openDevice(t)
 	tg, err := d.NewOffscreen(8, 8)
 	if err != nil {
