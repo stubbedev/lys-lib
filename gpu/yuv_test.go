@@ -70,6 +70,8 @@ var yuvLayouts = map[fourcc.Format]yuvLayout{
 	fourcc.Y216:   {[]string{"YUYV"}, 2, 1, 16},
 }
 
+const yuvPlaneAlignment = 64 << 10
+
 type yuvPlanes struct {
 	format   fourcc.Format
 	w, h     int
@@ -113,7 +115,7 @@ func (p yuvPlanes) buffer(t *testing.T, y, u, v uint16) dmabuf.Buffer {
 			}
 		}
 		planes = append(planes, dmabuf.Plane{FD: mem.FD, Offset: uint32(offset), Stride: linearStride})
-		offset = (offset + rows*linearStride + 4095) &^ 4095
+		offset = (offset + rows*linearStride + yuvPlaneAlignment - 1) &^ (yuvPlaneAlignment - 1)
 	}
 	return dmabuf.Buffer{Width: p.w, Height: p.h, Format: p.format, Modifier: fourcc.Linear, Planes: planes}
 }

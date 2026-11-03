@@ -208,6 +208,9 @@ func (im *imported) create(d *Device, b dmabuf.Buffer, usage vk.ImageUsageFlags,
 	if create == 0 {
 		var req vk.MemoryRequirements
 		d.cmds.GetImageMemoryRequirements(d.device, im.image, &req)
+		if err := d.checkSharedPlanes(im.image, b, req); err != nil {
+			return err
+		}
 		mem, err := d.importMemory(b.Planes[0].FD, req, &vk.MemoryDedicatedAllocateInfo{Image: im.image})
 		if err != nil {
 			return err
@@ -231,6 +234,11 @@ func (im *imported) bindPlanes(d *Device, b dmabuf.Buffer) error {
 		req := vk.MemoryRequirements2{SType: vk.StructureTypeMemoryRequirements2}
 		d.cmds.GetImageMemoryRequirements2(d.device, &ri, &req)
 		runtime.KeepAlive(&pi)
+		if d.mapsPlanesWhole {
+			if err := planeAligned(i, vk.DeviceSize(p.Offset), req.MemoryRequirements.Alignment); err != nil {
+				return fmt.Errorf("gpu: %s cannot map a %dx%d %s dmabuf: %w", d.name, b.Width, b.Height, b.Format, err)
+			}
+		}
 		mem, err := d.importMemory(p.FD, req.MemoryRequirements, nil)
 		if err != nil {
 			return err
@@ -243,6 +251,38 @@ func (im *imported) bindPlanes(d *Device, b dmabuf.Buffer) error {
 	runtime.KeepAlive(planes)
 	if r != vk.Success {
 		return fmt.Errorf("gpu: vkBindImageMemory2 (disjoint import): %w", resultError(r))
+	}
+	return nil
+}
+
+func (d *Device) checkSharedPlanes(image vk.Image, b dmabuf.Buffer, req vk.MemoryRequirements) error {
+	if !d.mapsPlanesWhole || len(b.Planes) < 2 {
+		return nil
+	}
+	for i := range b.Planes {
+		sub := vk.ImageSubresource{AspectMask: vk.ImageAspectFlags(vk.ImageAspectMemoryPlane0BitExt << i)}
+		var lay vk.SubresourceLayout
+		d.cmds.GetImageSubresourceLayout(d.device, image, &sub, &lay)
+		if err := sharedPlaneMappable(i, lay, req); err != nil {
+			return fmt.Errorf("gpu: %s cannot map a %dx%d %s dmabuf: %w", d.name, b.Width, b.Height, b.Format, err)
+		}
+	}
+	return nil
+}
+
+func sharedPlaneMappable(plane int, lay vk.SubresourceLayout, req vk.MemoryRequirements) error {
+	if err := planeAligned(plane, lay.Offset, req.Alignment); err != nil {
+		return err
+	}
+	if end := lay.Offset + lay.Size; end > req.Size {
+		return fmt.Errorf("plane %d ends at %d, past the %d bytes the image binds", plane, end, req.Size)
+	}
+	return nil
+}
+
+func planeAligned(plane int, offset, alignment vk.DeviceSize) error {
+	if offset%alignment != 0 {
+		return fmt.Errorf("plane %d at offset %d is not aligned to %d", plane, offset, alignment)
 	}
 	return nil
 }

@@ -66,9 +66,10 @@ type Device struct {
 	renderNode string
 	// sync2 is whether the device has Vulkan 1.3's synchronization2,
 	// enabled for the encoders.
-	sync2    bool
-	ycbcr    bool
-	vulkan13 bool
+	sync2           bool
+	ycbcr           bool
+	vulkan13        bool
+	mapsPlanesWhole bool
 	// video is the video encode queue, nil on a device that encodes
 	// none; videoWhy says why for each codec it does not encode.
 	video    *videoQueue
@@ -300,6 +301,7 @@ func (d *Device) pick(p vk.PhysicalDevice, exporting bool, node *drmNode) error 
 			d.vulkan13 = props.ApiVersion >= vkVersion(1, 3)
 			d.timingExts = d.probeTiming(p, have, &props, f)
 			d.implicitFences = d.syncFiles && exporting && props.VendorID != nvidiaVendor
+			d.mapsPlanesWhole = props.VendorID == nvidiaVendor
 			d.ycbcr = d.probeYCbCr(p)
 			d.video, d.videoWhy = d.probeVideo(p, d.sync2, have)
 			return nil

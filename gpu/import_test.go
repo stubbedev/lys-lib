@@ -5,11 +5,13 @@ import (
 	"image"
 	"image/color"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/stubbedev/lys-lib/dmabuf"
 	"github.com/stubbedev/lys-lib/fourcc"
 	"github.com/stubbedev/lys-lib/render"
+	"github.com/stubbedev/lys-lib/third_party/vk"
 	"github.com/stubbedev/lys-lib/udmabuf"
 )
 
@@ -236,4 +238,90 @@ func TestImportNeedsDmabufs(t *testing.T) {
 	if _, err := d.ImportTexture(dmabuf.Buffer{}); !errors.Is(err, ErrNoDmabuf) {
 		t.Errorf("ImportTexture on a device without dmabufs: %v", err)
 	}
+}
+
+func TestSharedPlaneMappable(t *testing.T) {
+	req := vk.MemoryRequirements{Size: 128 << 10, Alignment: 64 << 10}
+	for _, c := range []struct {
+		name   string
+		offset vk.DeviceSize
+		ok     bool
+	}{
+		{"first page", 0, true},
+		{"second page", 64 << 10, true},
+		{"inside a page", 16 << 10, false},
+		{"one small page past a page", 68 << 10, false},
+		{"past the image", 128 << 10, false},
+	} {
+		err := sharedPlaneMappable(1, vk.SubresourceLayout{Offset: c.offset, Size: 64 << 10}, req)
+		if (err == nil) != c.ok {
+			t.Errorf("%s: %v", c.name, err)
+		}
+	}
+}
+
+func nv12Layout(w, h int, stride uint32, fds [2]int, offsets [2]uint32) dmabuf.Buffer {
+	return dmabuf.Buffer{Width: w, Height: h, Format: fourcc.NV12, Modifier: fourcc.Linear, Planes: []dmabuf.Plane{
+		{FD: fds[0], Offset: offsets[0], Stride: stride},
+		{FD: fds[1], Offset: offsets[1], Stride: stride},
+	}}
+}
+
+func TestImportRefusesPlanesNVIDIACannotMap(t *testing.T) {
+	d := exportingDevice(t)
+	if !d.mapsPlanesWhole {
+		t.Skipf("%s maps planes at any offset", d.Name())
+	}
+	linearOrSkip(t, d, d.TextureModifiers, fourcc.NV12)
+	newCarrier := func() int {
+		c, err := d.NewBuffer(2048, 2048, fourcc.XRGB8888, []fourcc.Modifier{fourcc.Linear})
+		if err != nil {
+			t.Fatal(err)
+		}
+		t.Cleanup(c.Close)
+		return c.Dmabuf().Planes[0].FD
+	}
+	fd, other := newCarrier(), newCarrier()
+	shared := [2]int{fd, fd}
+	for name, b := range map[string]dmabuf.Buffer{
+		"chroma right after luma":   nv12Layout(16, 16, 1024, shared, [2]uint32{0, 16 << 10}),
+		"packed 1080p":              nv12Layout(1920, 1080, 1920, shared, [2]uint32{0, 1920 * 1080}),
+		"chroma overruns the image": nv12Layout(16, 16, 1024, shared, [2]uint32{0, 128 << 10}),
+		"luma inside a page":        nv12Layout(16, 16, 1024, shared, [2]uint32{4096, 68 << 10}),
+		"disjoint inside a page":    nv12Layout(16, 16, 1024, [2]int{fd, other}, [2]uint32{0, 4096}),
+	} {
+		tx, err := d.ImportTexture(b)
+		if err == nil {
+			tx.Close()
+			t.Errorf("%s: imported", name)
+		} else if !strings.Contains(err.Error(), "cannot map") {
+			t.Errorf("%s: %v", name, err)
+		}
+	}
+	for name, b := range map[string]dmabuf.Buffer{
+		"chroma on the next page": nv12Layout(16, 16, 1024, shared, [2]uint32{0, 64 << 10}),
+		"luma on a later page":    nv12Layout(16, 16, 1024, shared, [2]uint32{64 << 10, 64 << 10}),
+		"1080p on pages":          nv12Layout(1920, 1080, 1920, shared, [2]uint32{0, 2 << 20}),
+	} {
+		tx, err := d.ImportTexture(b)
+		if err != nil {
+			t.Errorf("%s: %v", name, err)
+			continue
+		}
+		tx.Close()
+	}
+}
+
+func TestImportTakesPackedPlanesElsewhere(t *testing.T) {
+	d := exportingDevice(t)
+	if d.mapsPlanesWhole {
+		t.Skipf("%s cannot map packed planes", d.Name())
+	}
+	linearOrSkip(t, d, d.TextureModifiers, fourcc.NV12)
+	u := newUdmabuf(t, 1<<20)
+	tx, err := d.ImportTexture(nv12Layout(16, 16, linearStride, [2]int{u.FD, u.FD}, [2]uint32{0, 16 * linearStride}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tx.Close()
 }
