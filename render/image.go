@@ -240,14 +240,7 @@ func (c *Canvas) DrawImageRect(img image.Image, r Rect) {
 	if dst.Empty() || b.Empty() {
 		return
 	}
-	for py := dst.Y; py < dst.Y+dst.H; py++ {
-		for px := dst.X; px < dst.X+dst.W; px++ {
-			sx := b.Min.X + (px-full.X)*b.Dx()/full.W
-			sy := b.Min.Y + (py-full.Y)*b.Dy()/full.H
-			sr, sg, sb, sa := img.At(sx, sy).RGBA()
-			c.blend(px, py, Color(sa>>8<<24|sr>>8<<16|sg>>8<<8|sb>>8))
-		}
-	}
+	c.blendSampled(img, full, dst)
 }
 
 // ImageID is a raster's identity, independent of the memory its pixels

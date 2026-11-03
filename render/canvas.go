@@ -676,6 +676,11 @@ func (c *Canvas) DrawImage(img image.Image, x, y int) {
 	if dst.Empty() {
 		return
 	}
+	c.blendSampled(img, full, dst)
+}
+
+func (c *Canvas) blendSampled(img image.Image, full, dst Rect) {
+	b := img.Bounds()
 	rgba := rgbaOf(img)
 	for py := dst.Y; py < dst.Y+dst.H; py++ {
 		sy := b.Min.Y + (py-full.Y)*b.Dy()/full.H

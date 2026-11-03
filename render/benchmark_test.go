@@ -7,6 +7,7 @@
 package render
 
 import (
+	"image"
 	"strings"
 	"testing"
 
@@ -118,5 +119,21 @@ func BenchmarkDrawTextCold(b *testing.B) {
 	for b.Loop() {
 		glyphs.dropAll()
 		tf.Draw(cv, s, 0, 24, RGB(255, 255, 255))
+	}
+}
+
+func BenchmarkDrawImageRect(b *testing.B) {
+	src := image.NewRGBA(image.Rect(0, 0, 64, 64))
+	for i := range src.Pix {
+		src.Pix[i] = 0x80
+	}
+	cv, _ := newTestCanvas(48, 48)
+	for name, img := range map[string]image.Image{"rgba": src, "still": NewStillImage(src)} {
+		b.Run(name, func(b *testing.B) {
+			b.ReportAllocs()
+			for b.Loop() {
+				cv.DrawImageRect(img, Rect{W: 48, H: 48})
+			}
+		})
 	}
 }

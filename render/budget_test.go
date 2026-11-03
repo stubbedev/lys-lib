@@ -5,7 +5,12 @@
 // here in the same commit.
 package render
 
-import "testing"
+import (
+	"bytes"
+	"image"
+	"image/color"
+	"testing"
+)
 
 // TestAllocBudgetShape pins the warm text path: one Shape of a stable
 // line and one DrawAligned over a fixed box must both be map hits, so
@@ -91,6 +96,36 @@ func TestAllocBudgetIconDraw(t *testing.T) {
 	for name, ic := range map[string]*Icon{"logical": icon, "native": icon.AtScale(1, 1)} {
 		if allocs := testing.AllocsPerRun(100, func() { ic.Draw(cv, 2, 2) }); allocs > 0 {
 			t.Errorf("drawing a %s icon allocates %v allocs/op", name, allocs)
+		}
+	}
+}
+
+func TestAllocBudgetDrawImageRect(t *testing.T) {
+	src := image.NewRGBA(image.Rect(0, 0, 16, 16))
+	cv, _ := newTestCanvas(8, 8)
+	var img image.Image = NewStillImage(src)
+	if allocs := testing.AllocsPerRun(100, func() { cv.DrawImageRect(img, Rect{W: 8, H: 8}) }); allocs > 0 {
+		t.Errorf("DrawImageRect of an RGBA raster allocates %v allocs/op", allocs)
+	}
+}
+
+func TestDrawImageRectSamplesTheSamePixelsThroughTheFastPath(t *testing.T) {
+	src := image.NewNRGBA(image.Rect(2, 3, 18, 19))
+	premul := image.NewRGBA(src.Rect)
+	for y := src.Rect.Min.Y; y < src.Rect.Max.Y; y++ {
+		for x := src.Rect.Min.X; x < src.Rect.Max.X; x++ {
+			c := color.RGBA{R: uint8(x * 12), G: uint8(y * 11), B: uint8(x + y), A: 255}
+			src.Set(x, y, c)
+			premul.Set(x, y, c)
+		}
+	}
+	for _, r := range []Rect{{W: 8, H: 8}, {X: 1, Y: 2, W: 32, H: 21}} {
+		slow, slowData := newTestCanvas(40, 40)
+		fast, fastData := newTestCanvas(40, 40)
+		slow.DrawImageRect(src, r)
+		fast.DrawImageRect(premul, r)
+		if !bytes.Equal(slowData, fastData) {
+			t.Errorf("%+v: the RGBA path differs from the generic one", r)
 		}
 	}
 }
