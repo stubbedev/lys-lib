@@ -40,5 +40,22 @@ jobs:
       - uses: stubbedev/lys-ci/.github/actions/nix-setup@a8e349536974213f8abf2fc082e72e0731262fbb
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
-      - name: Gates (formatting, vet, lint, test, build, race, GPU, headless)
-        run: nix develop -c just gates
+      - name: Gates (formatting, vet, lint, test, build)
+        run: nix develop -c just fmt-check check
+
+  race:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: stubbedev/lys-ci/.github/actions/nix-setup@a8e349536974213f8abf2fc082e72e0731262fbb
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Gates (race, GPU, headless)
+        run: nix develop -c just race gpu headless
