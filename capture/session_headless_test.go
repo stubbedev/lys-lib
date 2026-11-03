@@ -212,7 +212,7 @@ func TestHeadlessToplevelDmabufSession(t *testing.T) {
 	const appID = "dev.stubbe.lys.ui.dmabufsession"
 	c := captureClient(t)
 	win, target := showWindow(t, c, appID, 320, 200)
-	s, formats := openDmabufSession(t, c, target)
+	s, formats := openSettledSession(t, c, target, win)
 	wantWindowSize(t, c, formats, win)
 	t.Logf("session formats %+v", formats)
 	first := allocate(t, c, formats)
@@ -407,7 +407,7 @@ func TestHeadlessDmabufSessionWaitLeavesTheClientFree(t *testing.T) {
 	const appID = "dev.stubbe.lys.ui.dmabufwait"
 	c := captureClient(t)
 	win, target := showWindow(t, c, appID, 320, 200)
-	s, formats := openDmabufSession(t, c, target)
+	s, formats := openSettledSession(t, c, target, win)
 	buf := allocate(t, c, formats)
 	if err := captureRepainting(t, s, buf.imported, win); err != nil {
 		t.Fatalf("first frame: %v", err)
@@ -477,4 +477,27 @@ func TestHeadlessRegionDmabuf(t *testing.T) {
 		}
 		return wltest.WantColor(img, 100, 50, fillRed)
 	})
+}
+
+// openSettledSession opens a session on a window once the compositor has
+// stopped resizing it: a tiling compositor may lay a new window out after a
+// session opens, and a session whose constraints changed reports every
+// misfit as ErrReconfigured, so the session kept is one that opened settled.
+func openSettledSession(t *testing.T, c *capture.Client, src capture.Source, win *wltest.Window) (*capture.DmabufSession, []capture.DmabufFormat) {
+	t.Helper()
+	for range 5 {
+		s, formats := openDmabufSession(t, c, src)
+		err := captureRepainting(t, s, allocate(t, c, formats).imported, win)
+		if err == nil {
+			return s, formats
+		}
+		if !errors.Is(err, capture.ErrReconfigured) {
+			t.Fatalf("first frame: %v", err)
+		}
+		if err := s.Close(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Fatal("the window's size did not settle in 5 sessions")
+	return nil, nil
 }

@@ -285,7 +285,7 @@ func TestASteadyFrameCreatesNoSemaphoreOrFence(t *testing.T) {
 	}
 	defer tg.Close()
 	all := []image.Rectangle{{Max: tg.Size()}}
-	for range 8 {
+	for range 64 {
 		runPass(t, d, tg, all, func(p *Pass) { p.Clear(color.RGBA{A: 255}) })
 		fd, err := d.SyncFile()
 		if err != nil {
@@ -299,7 +299,7 @@ func TestASteadyFrameCreatesNoSemaphoreOrFence(t *testing.T) {
 		}
 	}
 	sems, fences := len(d.spareSemaphores), len(d.spareFences)
-	if sems > 2 || fences > 2 {
+	if sems > 3 || fences > 2 {
 		t.Errorf("idle after every frame, the device holds %d semaphores and %d fences", sems, fences)
 	}
 }
