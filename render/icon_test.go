@@ -589,7 +589,7 @@ func solidIcon(px int) *Icon {
 	for i := range img.Pix {
 		img.Pix[i] = 0xff
 	}
-	return &Icon{img: NewStillImage(img)}
+	return stillIcon(img, 0, 0)
 }
 
 // An icon rasterized at a device scale covers its logical size on a

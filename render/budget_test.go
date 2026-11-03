@@ -81,3 +81,18 @@ func TestAllocBudgetCanvasPaint(t *testing.T) {
 		t.Errorf("canvas paint allocates %v allocs/op, budget %d", allocs, budget)
 	}
 }
+
+// TestAllocBudgetIconDraw pins a warm icon's paint, once per visible icon
+// per frame: at logical pixels and blitted at the canvas's own scale.
+func TestAllocBudgetIconDraw(t *testing.T) {
+	icon, err := LoadSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8"><rect width="8" height="8"/></svg>`), 8, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	cv, _ := newTestCanvas(16, 16)
+	for name, ic := range map[string]*Icon{"logical": icon, "native": icon.AtScale(1, 1)} {
+		if allocs := testing.AllocsPerRun(100, func() { ic.Draw(cv, 2, 2) }); allocs > 0 {
+			t.Errorf("drawing a %s icon allocates %v allocs/op", name, allocs)
+		}
+	}
+}
