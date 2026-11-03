@@ -82,8 +82,6 @@ func TestAllocBudgetCanvasPaint(t *testing.T) {
 	}
 }
 
-// TestAllocBudgetIconDraw pins a warm icon's paint, once per visible icon
-// per frame: at logical pixels and blitted at the canvas's own scale.
 func TestAllocBudgetIconDraw(t *testing.T) {
 	icon, err := LoadSVG([]byte(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 8"><rect width="8" height="8"/></svg>`), 8, 8)
 	if err != nil {
