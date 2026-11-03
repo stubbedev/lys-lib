@@ -68,6 +68,7 @@ func TestCompileFromNamesMatchesLibxkbcommon(t *testing.T) {
 }
 
 func TestSerializedTextRoundTripsThroughLibxkbcommon(t *testing.T) {
+	t.Parallel()
 	l := loadLibxkb(t)
 	ctx := testData(t)
 	for _, n := range namesMatrix {
@@ -367,6 +368,7 @@ func TestNoDataIsAnError(t *testing.T) {
 }
 
 func TestKeysymTablesMatchLibxkbcommon(t *testing.T) {
+	t.Parallel()
 	l := loadLibxkb(t)
 	var buf [128]byte
 	cname := func(sym uint32) string {

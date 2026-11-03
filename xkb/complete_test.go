@@ -384,6 +384,7 @@ type matrixCase struct {
 // option and model evdev.xml and evdev.extras.xml offer to libxkbcommon, in
 // both keymap formats.
 func TestEveryRegistryEntryMatchesLibxkbcommon(t *testing.T) {
+	t.Parallel()
 	l := loadLibxkb(t)
 	more := loadMore(t)
 	models, layouts, options := registryNames(t)
@@ -600,15 +601,17 @@ func bindC(t testing.TB, h uintptr, fn any, name string) {
 // consumed-modifier and active query on every key, over the keymap matrix in
 // both formats. The registry-wide test does this more thinly per keymap.
 func TestStateQueriesAcrossTheMatrix(t *testing.T) {
+	t.Parallel()
 	l := loadLibxkb(t)
 	more := loadMore(t)
 	ctx := quietContext(t)
-	setCLogLevel(l.ctx, 10)
+	cctx := l.contextNew(0)
+	setCLogLevel(cctx, 10)
 	for _, n := range namesMatrix {
 		n := fillNames(n)
 		for _, format := range formats {
 			names := &ruleNamesC{cstr(n.Rules), cstr(n.Model), cstr(n.Layout), cstr(n.Variant), cstr(n.Options)}
-			c := l.newFromNames2(l.ctx, names, int32(format), 0)
+			c := l.newFromNames2(cctx, names, int32(format), 0)
 			g, err := ctx.NewKeymapFromNamesFormat(n, format)
 			if c == 0 || err != nil {
 				t.Fatalf("%+v format %d: c %v, go %v", n, format, c != 0, err)
