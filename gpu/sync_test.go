@@ -12,6 +12,7 @@ import (
 
 	"github.com/stubbedev/lys-lib/drm"
 	"github.com/stubbedev/lys-lib/fourcc"
+	"github.com/stubbedev/lys-lib/render"
 	"github.com/stubbedev/lys-lib/third_party/vk"
 )
 
@@ -554,5 +555,42 @@ func TestASyncFileOfMinusOneMeansAllFinished(t *testing.T) {
 				t.Fatalf("all finished, but the pass drew %v", got)
 			}
 		}
+	}
+}
+
+func TestRenderExplicitNeverWaitsWhereImplicitFencesDoNotExist(t *testing.T) {
+	d := openDevice(t)
+	if !d.SyncFiles() {
+		t.Skipf("%s has no sync_file semaphores", d.Name())
+	}
+	d.implicitFences = false
+	tg, err := d.NewOffscreen(16, 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := render.NewRecorder(16, 16, 1, 1)
+	defer rec.Recording().End()
+	rec.Clear(rec.Rect(), render.RGB(0, 255, 0))
+	if err := d.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	waits := d.BlockingWaits()
+	fd, err := d.RenderExplicit(rec.Recording(), tg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fd < 0 {
+		t.Logf("%s exported no fd for a pending signal: it had to wait", d.Name())
+	} else {
+		defer unix.Close(fd)
+		if n := d.BlockingWaits() - waits; n != 0 {
+			t.Errorf("%d blocking waits rendering with an explicit consumer", n)
+		}
+		if _, err := drm.SyncFileSignalled(fd); err != nil {
+			t.Errorf("the returned fd is no sync_file: %v", err)
+		}
+	}
+	if got := readTarget(t, tg).RGBAAt(1, 1); got != (color.RGBA{0, 255, 0, 255}) {
+		t.Errorf("the frame drew %v", got)
 	}
 }

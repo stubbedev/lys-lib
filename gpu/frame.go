@@ -63,6 +63,8 @@ type frame struct {
 	uploads     []upload
 	carries     []Carry
 	filterSteps []render.FilterStep
+	explicit    bool
+	syncFile    int
 	cpuCanvases []*render.Canvas
 	pathScratch render.PathScratch
 	copies      []vk.ImageCopy
@@ -85,6 +87,27 @@ type frame struct {
 // done, means the GPU is too far behind for one more frame. carry is copied into t first, in
 // the frame's own submission.
 func (d *Device) Render(l *render.List, t *Target, carry ...Carry) error {
+	return d.render(l, t, false, carry)
+}
+
+// RenderExplicit is Render for a consumer that takes its fence explicitly,
+// never waiting for the GPU: the sync_file it returns, the caller's to close,
+// signals when the frame is done, for wp_linux_drm_syncobj_surface_v1's acquire
+// point (drm.Device.ImportSyncFile then SetAcquirePoint). -1 means it is done
+// already. ErrNoSyncFile reports a device with no sync_files.
+func (d *Device) RenderExplicit(l *render.List, t *Target, carry ...Carry) (int, error) {
+	if !d.syncFiles {
+		return -1, ErrNoSyncFile
+	}
+	if err := d.render(l, t, true, carry); err != nil {
+		return -1, err
+	}
+	fd := d.frame.syncFile
+	d.frame.syncFile = -1
+	return fd, nil
+}
+
+func (d *Device) render(l *render.List, t *Target, explicit bool, carry []Carry) error {
 	if t.s.vf != surfaceFormat {
 		return fmt.Errorf("gpu: Render draws into ARGB8888 and XRGB8888 targets, not %s", t.buf.Format)
 	}
@@ -118,7 +141,7 @@ func (d *Device) Render(l *render.List, t *Target, carry ...Carry) error {
 	}
 	num, denom := l.Scale()
 	f := &d.frame
-	f.d, f.target, f.num, f.denom, f.err = d, t, num, denom, nil
+	f.d, f.target, f.num, f.denom, f.err, f.explicit = d, t, num, denom, nil, explicit
 	f.clear()
 	f.mapSegment()
 	f.carries = append(f.carries[:0], carry...)
@@ -374,7 +397,7 @@ func (f *frame) flush(final bool) error {
 	}
 	f.stats.segments++
 	fb.staged = f.staged
-	publishes := final && d.publishes(f.target)
+	publishes := final && (f.explicit || d.publishes(f.target))
 	err = d.submitAsync(func(cb vk.CommandBuffer) { f.record(cb, final) }, submission{signals: publishes})
 	f.clear()
 	if err != nil {
@@ -382,6 +405,17 @@ func (f *frame) flush(final bool) error {
 	}
 	d.inflight[len(d.inflight)-1].buffers = fb
 	d.current = nil
+	if final && f.explicit {
+		fd, err := d.exportFrameSignal()
+		if err != nil {
+			return err
+		}
+		if fd < 0 {
+			err = d.idle()
+		}
+		f.syncFile = fd
+		return err
+	}
 	if final {
 		return d.publish(f.target, publishes)
 	}
