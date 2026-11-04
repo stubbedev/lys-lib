@@ -77,7 +77,8 @@ type frame struct {
 // Render draws l onto t and hands t back to its consumer, without
 // waiting for the GPU where the device can tell the consumer when it is
 // done (publish). l is recorded at t's size; its layers keep their GPU
-// surfaces on this device across frames. carry is copied into t first, in
+// surfaces on this device across frames. ErrBusy, before anything is
+// done, means the GPU is too far behind for one more frame. carry is copied into t first, in
 // the frame's own submission.
 func (d *Device) Render(l *render.List, t *Target, carry ...Carry) error {
 	if t.s.vf != surfaceFormat {
@@ -87,6 +88,13 @@ func (d *Device) Render(l *render.List, t *Target, carry ...Carry) error {
 		if err := d.checkCarry(t, c); err != nil {
 			return err
 		}
+	}
+	d.reap(false)
+	if err := d.checkLost(); err != nil {
+		return err
+	}
+	if d.framesBusy() {
+		return ErrBusy
 	}
 	d.freeDeadLayers()
 	d.images.frames++

@@ -18,11 +18,20 @@ import (
 // ErrNoSyncFile reports a device that exports or imports no sync_file.
 var ErrNoSyncFile = errors.New("gpu: the device has no sync_file semaphores")
 
+// ErrBusy reports a frame Render refused, having done nothing, because
+// the GPU is too far behind for one more: try again once the frames ahead
+// of it finish, as FrameDone or a compositor's release will show.
+var ErrBusy = errors.New("gpu: frames in flight are at their bound")
+
 // ErrNoFrameTime reports a device whose GPU timestamps do not map onto
 // CLOCK_MONOTONIC (no calibrated timestamps).
 var ErrNoFrameTime = errors.New("gpu: the device has no calibrated timestamps")
 
 const queryRing = 64
+
+// fenceTimeout bounds a wait for the GPU: past it the GPU has hung and the
+// wait is an error instead of a frozen process.
+const fenceTimeout = 10 * time.Second
 
 type timing struct {
 	timingExts []string
@@ -42,6 +51,8 @@ type timing struct {
 	graves         []grave
 	blockingWaits  uint64
 	framing        bool
+	reaps          uint64
+	waitLimit      time.Duration
 	waits          []vk.Semaphore
 	passes         uint64
 	done           uint64
@@ -391,9 +402,11 @@ func (d *Device) queue1(cb vk.CommandBuffer, signal vk.Semaphore, query int, sub
 	if err := d.retireSyncFile(); err != nil {
 		return err
 	}
-	d.reap(false)
 	if err := d.checkLost(); err != nil {
 		return err
+	}
+	if len(d.inflight) >= queryRing {
+		d.reap(false)
 	}
 	for len(d.inflight) >= queryRing {
 		if err := d.waitOldest(); err != nil {
@@ -587,8 +600,11 @@ func (d *Device) ensureQueries() error {
 func (d *Device) waitFence(f vk.Fence) error {
 	d.blockingWaits++
 	d.args.fence = f
-	if r := d.cmds.WaitForFences(d.device, 1, &d.args.fence, vk.True, ^uint64(0)); r != vk.Success {
-		return fmt.Errorf("gpu: vkWaitForFences: %w", resultError(r))
+	if r := d.cmds.WaitForFences(d.device, 1, &d.args.fence, vk.True, intconv.Must[uint64](d.waitLimit.Nanoseconds())); r != vk.Success {
+		if r == vk.ErrorDeviceLost {
+			d.lost = true
+		}
+		return fmt.Errorf("gpu: vkWaitForFences, %d submissions in flight, %v at most: %w", len(d.inflight), d.waitLimit, resultError(r))
 	}
 	return nil
 }
@@ -638,6 +654,7 @@ func (d *Device) checkLost() error {
 }
 
 func (d *Device) reap(all bool) {
+	d.reaps++
 	n := len(d.inflight)
 	if !all {
 		n = d.finished()
@@ -687,9 +704,6 @@ func (d *Device) idle() error {
 	}
 	if err := d.waitFence(d.inflight[len(d.inflight)-1].fence); err != nil {
 		return err
-	}
-	if r := d.cmds.QueueWaitIdle(d.queue); r != vk.Success {
-		return fmt.Errorf("gpu: vkQueueWaitIdle: %w", resultError(r))
 	}
 	d.reap(true)
 	d.buryAll()

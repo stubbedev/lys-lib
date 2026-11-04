@@ -71,6 +71,7 @@ func (d *Device) Begin(t *Target, damage []image.Rectangle) (*Pass, error) {
 	case d.active != nil:
 		return nil, errors.New("gpu: Begin while a pass is open")
 	}
+	d.reap(false)
 	ct, err := d.compTargetOf(t.s.format())
 	if err != nil {
 		return nil, err

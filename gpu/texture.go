@@ -210,6 +210,10 @@ const maxBatchedUploads = 64
 
 const flushBatchBytes = 1 << 20
 
+// maxUploadRing is how far a full staging ring grows rather than make
+// Update wait for the GPU.
+const maxUploadRing = 64 << 20
+
 // reserveUpload is the offset of n free bytes in the staging ring,
 // waiting for earlier uploads only when the ring is full.
 func (d *Device) reserveUpload(n int) (int, error) {
@@ -229,6 +233,12 @@ func (d *Device) reserveUpload(n int) (int, error) {
 		if at, ok := d.uploads.reserve(n); ok {
 			return at, nil
 		}
+		if size := len(d.upload.mapped); size < maxUploadRing {
+			if err := d.growUpload(size); err != nil {
+				return 0, err
+			}
+			continue
+		}
 		if err := d.waitOldest(); err != nil {
 			return 0, err
 		}
@@ -236,11 +246,6 @@ func (d *Device) reserveUpload(n int) (int, error) {
 }
 
 func (d *Device) growUpload(n int) error {
-	if d.batched > 0 {
-		if err := d.flushBatch(); err != nil {
-			return err
-		}
-	}
 	grown, err := d.newBuffer(max(2*n, stagingMin), vk.BufferUsageTransferSrcBit)
 	if err != nil {
 		return err
@@ -251,6 +256,7 @@ func (d *Device) growUpload(n int) error {
 	for i := range d.inflight {
 		d.inflight[i].staged = false
 	}
+	d.batched = 0
 	d.upload = grown
 	d.uploads = stagingRing{size: len(grown.mapped)}
 	return nil

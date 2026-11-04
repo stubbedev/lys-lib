@@ -194,6 +194,7 @@ func open(node *drmNode) (*Device, error) {
 		return nil, err
 	}
 	d := &Device{cmds: cmds, instance: instance, targets: map[*Target]struct{}{}, buffers: map[*Buffer]struct{}{}, textures: map[*Texture]struct{}{}, linears: map[*Linear]struct{}{}, readbacks: map[*Readback]struct{}{}}
+	d.waitLimit = fenceTimeout
 	d.inflight = make([]inflight, 0, queryRing)
 	d.spareFences = make([]vk.Fence, 0, queryRing)
 	d.spareBuffers = make([]vk.CommandBuffer, 0, queryRing)

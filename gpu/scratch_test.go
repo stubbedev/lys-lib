@@ -8,7 +8,7 @@ import (
 )
 
 // A large upload grows the staging buffer for its frame, written
-// straight into it, and the next frame that needs less shrinks it back:
+// straight into it, and a run of frames that need less shrinks it back:
 // one wallpaper's upload does not keep its buffer for good (#17).
 func TestStagingShrinksAfterALargeUpload(t *testing.T) {
 	d := openDevice(t)
@@ -25,9 +25,11 @@ func TestStagingShrinksAfterALargeUpload(t *testing.T) {
 	if n := heldStaging(d); n < len(big.Pix) {
 		t.Fatalf("staging holds %d bytes after a %d-byte upload", n, len(big.Pix))
 	}
-	drawImage(rec, render.NewStillImage(rasterIn(make([]byte, 8*8*4), blue)))
-	if px, _ := renderImage(t, d, tg, rec); px != blue {
-		t.Fatalf("the small upload drew %v, want %v", px, blue)
+	for range stagingShrinkAfter {
+		drawImage(rec, render.NewStillImage(rasterIn(make([]byte, 8*8*4), blue)))
+		if px, _ := renderImage(t, d, tg, rec); px != blue {
+			t.Fatalf("the small upload drew %v, want %v", px, blue)
+		}
 	}
 	if n := heldStaging(d); n > 4*stagingMin {
 		t.Errorf("staging kept %d bytes after a frame that staged 256", n)

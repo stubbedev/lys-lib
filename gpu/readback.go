@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"image"
 
+	"github.com/stubbedev/lys-lib/intconv"
 	"github.com/stubbedev/lys-lib/third_party/vk"
 )
 
@@ -91,7 +92,7 @@ func (r *Readback) Wait() error {
 	if r.closed || !r.copied {
 		return errors.New("gpu: Readback.Wait with no copy running")
 	}
-	if s := r.d.cmds.WaitForFences(r.d.device, 1, &r.fence, vk.True, ^uint64(0)); s != vk.Success {
+	if s := r.d.cmds.WaitForFences(r.d.device, 1, &r.fence, vk.True, intconv.Must[uint64](r.d.waitLimit.Nanoseconds())); s != vk.Success {
 		return fmt.Errorf("gpu: vkWaitForFences (readback): %w", resultError(s))
 	}
 	return nil
