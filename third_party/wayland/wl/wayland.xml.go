@@ -5,6 +5,7 @@
 package wl
 
 import (
+	"slices"
 	"sync"
 )
 
@@ -854,19 +855,31 @@ func (p *Registry) RemoveGlobalRemoveHandler(h RegistryGlobalRemoveHandler) {
 // Callback callback object
 type Callback struct {
 	BaseProxy
-	mu                   sync.RWMutex
-	privateCallbackDones map[CallbackDoneHandler]struct{}
+	mu sync.RWMutex
+	// done is the handler nearly every callback has, more the rest.
+	done CallbackDoneHandler
+	more []CallbackDoneHandler
 }
 
-// initCallback initializes the Callback object's handler maps
-func (ret *Callback) initCallback() {
-	ret.privateCallbackDones = make(map[CallbackDoneHandler]struct{})
+func (p *Callback) reset() {
+	p.mu.Lock()
+	p.done, p.more = nil, nil
+	p.mu.Unlock()
 }
 
-// NewCallback is a constructor for the Callback object
+// NewCallback is a constructor for the Callback object: one delete_id
+// retired, as a frame costs one and they are all alike.
 func NewCallback(ctx *Context) *Callback {
-	ret := new(Callback)
-	ret.initCallback()
+	ctx.mu.Lock()
+	var ret *Callback
+	if n := len(ctx.freeCallbacks); n > 0 {
+		ret = ctx.freeCallbacks[n-1]
+		ctx.freeCallbacks = ctx.freeCallbacks[:n-1]
+	}
+	ctx.mu.Unlock()
+	if ret == nil {
+		ret = new(Callback)
+	}
 	ctx.Register(ret)
 	return ret
 }
@@ -875,16 +888,17 @@ func NewCallback(ctx *Context) *Callback {
 func (p *Callback) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
-		if len(p.privateCallbackDones) > 0 {
-			ev := CallbackDoneEvent{}
-			ev.C = p
-			ev.CallbackData = event.Uint32()
-			p.mu.RLock()
-			for h := range p.privateCallbackDones {
-				h.HandleCallbackDone(ev)
-			}
-			p.mu.RUnlock()
+		ev := CallbackDoneEvent{}
+		ev.C = p
+		ev.CallbackData = event.Uint32()
+		p.mu.RLock()
+		if p.done != nil {
+			p.done.HandleCallbackDone(ev)
 		}
+		for _, h := range p.more {
+			h.HandleCallbackDone(ev)
+		}
+		p.mu.RUnlock()
 
 	}
 }
@@ -903,10 +917,17 @@ type CallbackDoneHandler interface {
 
 // AddDoneHandler adds the Done handler
 func (p *Callback) AddDoneHandler(h CallbackDoneHandler) {
-	if h != nil {
-		p.mu.Lock()
-		p.privateCallbackDones[h] = struct{}{}
-		p.mu.Unlock()
+	if h == nil {
+		return
+	}
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	switch {
+	case p.done == h || slices.Contains(p.more, h):
+	case p.done == nil:
+		p.done = h
+	default:
+		p.more = append(p.more, h)
 	}
 }
 
@@ -914,8 +935,13 @@ func (p *Callback) AddDoneHandler(h CallbackDoneHandler) {
 func (p *Callback) RemoveDoneHandler(h CallbackDoneHandler) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-
-	delete(p.privateCallbackDones, h)
+	if p.done == h {
+		p.done = nil
+		return
+	}
+	if i := slices.Index(p.more, h); i >= 0 {
+		p.more = slices.Delete(p.more, i, i+1)
+	}
 }
 
 // Compositor the compositor singleton

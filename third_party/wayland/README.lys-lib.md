@@ -100,3 +100,28 @@ them ahead of itself, in order. `Request` and `BytePool` are gone, with
 A write larger than the socket takes at once continues rather than
 failing. `wl/request_test.go` holds the tests. This is a lys-lib
 integration choice rather than an upstream bug.
+
+### Writing never blocks
+
+`wl/request.go`, `wl/sock_linux.go`: a compositor that stopped reading parked a
+client's loop inside `WriteMsgUnix`, with `sendMu` held. Every write is now one
+non-blocking `sendmsg`; what the socket does not take stays in the buffer,
+`Flush` reports it, `WaitWritable` waits for room, `Backlog` lets a frame loop
+skip a frame, and past `maxBacklog` a request fails with `ErrContextBacklogFull`.
+Reads flush first, so a blocking read never parks with requests waiting. With
+requests staying in the buffer past their call, the context holds a duplicate of
+every fd until it is sent. `SetBuffered` makes every request wait for a flush,
+not only `CommitDeferred`'s; it is opt-in, since a client that never reads
+(`vinput`) has nothing else to flush it. `sockFD` is gone: only tests used it.
+
+### A read allocates nothing
+
+`wl/sock_linux.go`: `ReadMsgUnix` allocates two socket addresses and a `UnixAddr`
+per read for a peer a connected socket already knows. Reads are now `recvmsg`
+with no name, through `SyscallConn` so the poller and read deadlines still apply.
+
+### A frame callback costs no allocation
+
+`wl/wayland.xml.go`, hand edited, as the scanner has no notion of it:
+`wl_callback` keeps its handler in a slot instead of a map, and `delete_id` puts
+it on a free list `NewCallback` takes from, as a window's every frame made one.

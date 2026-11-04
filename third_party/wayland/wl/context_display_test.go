@@ -16,9 +16,8 @@ func TestFirstRequestAfterConnectDoesNotWaitForDisplay(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer syscall.Close(fds[0])
 	defer syscall.Close(fds[1])
-	ctx := &Context{sockFD: fds[0], objects: make(map[ProxyId]Proxy)}
+	ctx, _ := socketContext(t, [2]int{fds[0], dupForTest(t, fds[1])})
 	display := NewDisplay(ctx)
 
 	done := make(chan error, 1)

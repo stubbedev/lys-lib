@@ -35,7 +35,7 @@ func socketContext(t testing.TB, fds [2]int) (*Context, int) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := &Context{conn: conn.(*net.UnixConn), sockFD: -1, objects: make(map[ProxyId]Proxy)}
+	ctx := &Context{conn: conn.(*net.UnixConn), objects: make(map[ProxyId]Proxy)}
 	t.Cleanup(func() { ctx.Close() })
 	return ctx, fds[1]
 }
@@ -238,4 +238,13 @@ func fcntlGetFD(fd int) (uintptr, error) {
 		return r, errno
 	}
 	return r, nil
+}
+
+func dupForTest(t *testing.T, fd int) int {
+	t.Helper()
+	dup, err := syscall.Dup(fd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dup
 }

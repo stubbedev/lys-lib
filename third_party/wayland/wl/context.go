@@ -7,7 +7,6 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
-	"syscall"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -20,7 +19,6 @@ import (
 type Context struct {
 	mu        sync.RWMutex
 	conn      *net.UnixConn
-	sockFD    int
 	currentId ProxyId
 	objects   map[ProxyId]Proxy
 	zombies   map[ProxyId]fdEvents
@@ -28,7 +26,7 @@ type Context struct {
 	in        []byte
 	inStart   int
 	control   []byte
-	raw       syscall.RawConn
+	sock      socketIO
 	pollFn    func(fd uintptr)
 	pollFds   [1]unix.PollFd
 	pollErr   error
@@ -49,6 +47,15 @@ type Context struct {
 	// sendMu; see CommitDeferred.
 	out    []byte
 	outOOB []byte
+	// outFDs are the fds outOOB names, the context's own duplicates, as a
+	// caller closes its fd when the request returns.
+	outFDs []int
+	// buffered holds every request for a flush (SetBuffered); sends counts
+	// the sendmsg calls.
+	buffered bool
+	sends    int
+	// freeCallbacks are the frame and sync callbacks delete_id retired.
+	freeCallbacks []*Callback
 }
 
 // markUnsent records a freshly allocated client id as not yet on the wire.
@@ -168,6 +175,10 @@ func (r idReaper) HandleDisplayDeleteId(ev DisplayDeleteIdEvent) {
 	id := ProxyId(ev.Id)
 	r.ctx.mu.Lock()
 	delete(r.ctx.zombies, id)
+	if cb, ok := r.ctx.objects[id].(*Callback); ok {
+		cb.reset()
+		r.ctx.freeCallbacks = append(r.ctx.freeCallbacks, cb)
+	}
 	delete(r.ctx.objects, id)
 	r.ctx.mu.Unlock()
 	r.ctx.forgetUnsent(id)
@@ -356,12 +367,15 @@ func (ctx *Context) Close() (err error) {
 	if ctx == nil {
 		return
 	}
+	ctx.sendMu.Lock()
+	ctx.closeSentFDs()
+	ctx.out = nil
+	ctx.sendMu.Unlock()
 	ctx.mu.Lock()
 	if ctx.conn != nil {
 		err = ctx.conn.Close()
 		ctx.conn = nil
 	}
-	ctx.sockFD = -1
 	/*
 		for i, v := range ctx.objects {
 			print("close-time garbage: ")

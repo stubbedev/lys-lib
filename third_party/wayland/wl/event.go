@@ -88,6 +88,9 @@ func (ctx *Context) fill(n int) ([]byte, error) {
 }
 
 func (ctx *Context) readOnce(n int) error {
+	if _, err := ctx.Flush(); err != nil {
+		return err
+	}
 	if ctx.inStart > 0 {
 		ctx.in = ctx.in[:copy(ctx.in, ctx.in[ctx.inStart:])]
 		ctx.inStart = 0
@@ -118,15 +121,17 @@ func (ctx *Context) ReadReady() (bool, error) {
 	if ctx.conn == nil {
 		return false, ErrContextConnNil
 	}
+	if _, err := ctx.Flush(); err != nil {
+		return false, err
+	}
+	raw, err := ctx.rawConn()
+	if err != nil {
+		return false, err
+	}
 	if ctx.pollFn == nil {
-		raw, err := ctx.conn.SyscallConn()
-		if err != nil {
-			return false, fmt.Errorf("wl: socket for a readiness poll: %w", err)
-		}
-		ctx.raw = raw
 		ctx.pollFn = ctx.pollReadable
 	}
-	if err := ctx.raw.Control(ctx.pollFn); err != nil {
+	if err := raw.Control(ctx.pollFn); err != nil {
 		return false, fmt.Errorf("wl: readiness poll: %w", err)
 	}
 	if ctx.pollErr != nil {
@@ -147,8 +152,15 @@ func (ctx *Context) ReadReady() (bool, error) {
 // without holding the lock that serializes them, and needs ReadReady to
 // have been called once.
 func (ctx *Context) WaitReadable() error {
+	if _, err := ctx.Flush(); err != nil {
+		return err
+	}
+	raw, err := ctx.rawConn()
+	if err != nil {
+		return err
+	}
 	polled := false
-	err := ctx.raw.Read(func(uintptr) bool {
+	err = raw.Read(func(uintptr) bool {
 		done := polled
 		polled = true
 		return done
@@ -174,7 +186,7 @@ func (ctx *Context) read(b []byte) (int, error) {
 	if ctx.control == nil {
 		ctx.control = make([]byte, controlLen)
 	}
-	n, oobn, flags, _, err := ctx.conn.ReadMsgUnix(b, ctx.control)
+	n, oobn, flags, err := ctx.socketRecv(b, ctx.control)
 	if oobn > 0 {
 		if qerr := ctx.queueFDs(ctx.control[:oobn]); qerr != nil {
 			return n, qerr

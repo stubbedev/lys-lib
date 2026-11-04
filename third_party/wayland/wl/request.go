@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"syscall"
 	"unsafe"
 
 	"github.com/stubbedev/lys-lib/third_party/wayland/os"
@@ -23,8 +24,20 @@ var ErrContextSendRequestConn = errors.New("unable to send request using conn")
 var ErrContextSendRequestUnixLength = errors.New("unable to send request using unix, WriteMsgUnix length check failed")
 
 // maxBufferedRequests is how many bytes of requests wait for a flush
-// before one goes out regardless.
-const maxBufferedRequests = 4096
+// before one goes out regardless, and maxBufferedFDs how many fds: libwayland
+// takes no more with one read.
+const (
+	maxBufferedRequests = 4096
+	maxBufferedFDs      = 28
+)
+
+// maxBacklog bounds the requests a compositor that stopped reading can pile
+// up in the client. Past it SendRequest fails with ErrContextBacklogFull.
+const maxBacklog = 1 << 20
+
+// ErrContextBacklogFull reports a request refused, nothing buffered, because
+// maxBacklog bytes already wait for a compositor that is not reading.
+var ErrContextBacklogFull = errors.New("wl: the compositor is not reading: request backlog full")
 
 // CommitDeferred is implemented by a proxy with requests whose only
 // effect is on state a later request applies: nothing can wait on them,
@@ -49,8 +62,16 @@ func (p *Surface) DeferredRequest(opcode uint32) bool {
 func (ctx *Context) SendRequest(proxy Proxy, opcode uint32, args ...interface{}) error {
 	ctx.sendMu.Lock()
 	defer ctx.sendMu.Unlock()
-	if ctx.conn == nil && ctx.sockFD == -1 {
+	if ctx.conn == nil {
 		return ErrContextSendRequestNotPossible
+	}
+	if len(ctx.out) >= maxBacklog {
+		if _, err := ctx.flushLocked(); err != nil {
+			return err
+		}
+		if len(ctx.out) >= maxBacklog {
+			return fmt.Errorf("%w: %d bytes to object %d's opcode %d", ErrContextBacklogFull, len(ctx.out), proxy.Id(), opcode)
+		}
 	}
 	// A new id may only go out once every smaller id is on the wire; see
 	// the comment on Context.sendMu. Requests without a new id never wait.
@@ -78,27 +99,40 @@ func (ctx *Context) SendRequest(proxy Proxy, opcode uint32, args ...interface{})
 			}
 		}
 	}
-	if d, ok := proxy.(CommitDeferred); ok && d.DeferredRequest(opcode) && len(ctx.out) < maxBufferedRequests {
-		return nil
+	if len(ctx.out) < maxBufferedRequests && len(ctx.outFDs) < maxBufferedFDs {
+		if ctx.buffered {
+			return nil
+		}
+		if d, ok := proxy.(CommitDeferred); ok && d.DeferredRequest(opcode) {
+			return nil
+		}
 	}
-	return ctx.flushRequests()
+	_, err := ctx.flushLocked()
+	return err
 }
 
 // encodeRequest appends the request to the buffer, or nothing on a bad
 // argument.
 func (ctx *Context) encodeRequest(id ProxyId, opcode uint32, args []interface{}) error {
-	start, oob := len(ctx.out), len(ctx.outOOB)
+	start, oob, fds := len(ctx.out), len(ctx.outOOB), len(ctx.outFDs)
+	undo := func() {
+		ctx.out, ctx.outOOB = ctx.out[:start], ctx.outOOB[:oob]
+		for _, fd := range ctx.outFDs[fds:] {
+			_ = syscall.Close(fd)
+		}
+		ctx.outFDs = ctx.outFDs[:fds]
+	}
 	ctx.out = binary.NativeEndian.AppendUint32(ctx.out, uint32(id))
 	ctx.out = binary.NativeEndian.AppendUint32(ctx.out, 0)
 	for _, arg := range args {
 		if err := ctx.encodeArgument(arg); err != nil {
-			ctx.out, ctx.outOOB = ctx.out[:start], ctx.outOOB[:oob]
+			undo()
 			return err
 		}
 	}
 	size := len(ctx.out) - start
 	if size > math.MaxUint16 {
-		ctx.out, ctx.outOOB = ctx.out[:start], ctx.outOOB[:oob]
+		undo()
 		return fmt.Errorf("wl: a request of %d bytes to object %d exceeds the wire's 16-bit size", size, id)
 	}
 	binary.NativeEndian.PutUint32(ctx.out[start+4:], uint32(size)<<16|opcode&0xffff)
@@ -129,7 +163,12 @@ func (ctx *Context) encodeArgument(arg interface{}) error {
 			ctx.out = binary.NativeEndian.AppendUint32(ctx.out, uint32(e))
 		}
 	case uintptr:
-		ctx.outOOB = append(ctx.outOOB, os.UnixRights(int(t))...)
+		fd, _, errno := syscall.Syscall(syscall.SYS_FCNTL, t, syscall.F_DUPFD_CLOEXEC, 0)
+		if errno != 0 {
+			return fmt.Errorf("wl: hold fd %d until it is sent: %w", t, errno)
+		}
+		ctx.outFDs = append(ctx.outFDs, int(fd))
+		ctx.outOOB = append(ctx.outOOB, os.UnixRights(int(fd))...)
 	default:
 		return fmt.Errorf("invalid Wayland request parameter type %T", arg)
 	}
@@ -143,28 +182,74 @@ func isNil(p Proxy) bool {
 	return (*[2]unsafe.Pointer)(unsafe.Pointer(&p))[1] == nil
 }
 
-// flushRequests writes out the buffered requests. The socket may take
-// fewer bytes than a whole buffer at once; the fds went with the first.
-func (ctx *Context) flushRequests() error {
-	out, oob := ctx.out, ctx.outOOB
-	ctx.out, ctx.outOOB = out[:0], oob[:0]
-	if ctx.conn == nil {
-		if err := os.Sendmsg(ctx.sockFD, out, oob, nil, 0); err != nil {
-			return combinedError{ErrContextSendRequestUnix, err}
-		}
-		return nil
+// Flush makes one non-blocking try at writing the buffered requests and
+// reports whether some are left: the socket is full because the compositor
+// has not read it, and WaitWritable says when to try again. It never blocks.
+func (ctx *Context) Flush() (pending bool, err error) {
+	ctx.sendMu.Lock()
+	defer ctx.sendMu.Unlock()
+	return ctx.flushLocked()
+}
+
+func (ctx *Context) flushLocked() (bool, error) {
+	if len(ctx.out) == 0 {
+		return false, nil
 	}
-	d, c, err := ctx.conn.WriteMsgUnix(out, oob, nil)
+	n, err := ctx.socketSend()
+	ctx.sends++
 	if err != nil {
-		return combinedError{ErrContextSendRequestConn, err}
+		return true, combinedError{ErrContextSendRequestConn, err}
 	}
-	if c != len(oob) {
-		return ErrContextSendRequestUnixLength
+	if n == 0 {
+		return true, nil
 	}
-	if d < len(out) {
-		if _, err := ctx.conn.Write(out[d:]); err != nil {
-			return combinedError{ErrContextSendRequestConn, err}
-		}
+	ctx.closeSentFDs()
+	ctx.out = ctx.out[:copy(ctx.out, ctx.out[n:])]
+	return len(ctx.out) > 0, nil
+}
+
+func (ctx *Context) closeSentFDs() {
+	for _, fd := range ctx.outFDs {
+		_ = syscall.Close(fd)
+	}
+	ctx.outFDs = ctx.outFDs[:0]
+	ctx.outOOB = ctx.outOOB[:0]
+}
+
+// Backlog is how many bytes of requests wait for the socket. A frame loop
+// that finds some left after Flush skips its frame instead of queueing more
+// behind a compositor that is not reading.
+func (ctx *Context) Backlog() int {
+	ctx.sendMu.Lock()
+	defer ctx.sendMu.Unlock()
+	return len(ctx.out)
+}
+
+// SetBuffered makes every request wait in the buffer for Flush, a read that
+// may block or the buffer filling, so a burst of requests costs the compositor
+// one wakeup. A caller setting it flushes before it parks anywhere else than
+// Run, ReadReady or WaitReadable, which flush themselves.
+func (ctx *Context) SetBuffered(buffered bool) {
+	ctx.sendMu.Lock()
+	ctx.buffered = buffered
+	ctx.sendMu.Unlock()
+}
+
+// WaitWritable blocks until the socket may take more requests or is closed;
+// a wakeup with no room is possible.
+func (ctx *Context) WaitWritable() error {
+	raw, err := ctx.rawConn()
+	if err != nil {
+		return err
+	}
+	polled := false
+	err = raw.Write(func(uintptr) bool {
+		done := polled
+		polled = true
+		return done
+	})
+	if err != nil {
+		return fmt.Errorf("wl: wait for room in the socket: %w", err)
 	}
 	return nil
 }

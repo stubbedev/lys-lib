@@ -19,7 +19,7 @@ func TestNewIdsReachTheWireInOrder(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := &Context{sockFD: fds[0], objects: make(map[ProxyId]Proxy)}
+	ctx, _ := socketContext(t, [2]int{fds[0], dupForTest(t, fds[1])})
 	display := NewDisplay(ctx) // id 1, never sent; the compositor owns it
 	reader := os.NewFile(uintptr(fds[1]), "compositor")
 	defer reader.Close()
@@ -40,7 +40,20 @@ func TestNewIdsReachTheWireInOrder(t *testing.T) {
 	}
 	go func() {
 		wg.Wait()
-		syscall.Close(fds[0])
+		for {
+			pending, err := ctx.Flush()
+			if err != nil {
+				t.Error(err)
+				return
+			}
+			if !pending {
+				return
+			}
+			if err := ctx.WaitWritable(); err != nil {
+				t.Error(err)
+				return
+			}
+		}
 	}()
 
 	want := ProxyId(2)
@@ -63,8 +76,7 @@ func TestNilObjectArgument(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer syscall.Close(fds[0])
-	ctx := &Context{sockFD: fds[0], objects: make(map[ProxyId]Proxy)}
+	ctx, _ := socketContext(t, [2]int{fds[0], dupForTest(t, fds[1])})
 	reader := os.NewFile(uintptr(fds[1]), "compositor")
 	defer reader.Close()
 
