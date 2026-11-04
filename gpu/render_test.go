@@ -806,3 +806,49 @@ func TestAShiftedCarryScrollsLikeAFullRepaint(t *testing.T) {
 		})
 	}
 }
+
+func TestCarriesApplyInOrderAndDisjointOnesCostNoBarrier(t *testing.T) {
+	d := openDevice(t)
+	const w, h = 32, 16
+	fill := func(col render.Color) *Target {
+		tg := newTarget(t, d, w, h)
+		rec := render.NewRecorder(w, h, 1, 1)
+		defer rec.Recording().End()
+		rec.Clear(rec.Rect(), col)
+		if err := d.Render(rec.Recording(), tg); err != nil {
+			t.Fatal(err)
+		}
+		return tg
+	}
+	red, green, dst := fill(render.RGB(200, 0, 0)), fill(render.RGB(0, 200, 0)), fill(render.RGB(0, 0, 200))
+	empty := render.NewRecorder(w, h, 1, 1)
+	t.Cleanup(empty.Recording().End)
+	run := func(carries ...Carry) *image.RGBA {
+		t.Helper()
+		if err := d.Render(empty.Recording(), dst, carries...); err != nil {
+			t.Fatal(err)
+		}
+		px, err := dst.ReadPixels()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return px
+	}
+	px := run(Carry{From: red, Rects: []image.Rectangle{image.Rect(0, 0, 8, 8)}}, Carry{From: green, Rects: []image.Rectangle{image.Rect(8, 0, 16, 8)}})
+	if n := d.frame.stats.carryBarriers; n != 0 {
+		t.Errorf("disjoint carries placed %d barriers", n)
+	}
+	if px.RGBAAt(4, 4) != (color.RGBA{200, 0, 0, 255}) || px.RGBAAt(12, 4) != (color.RGBA{0, 200, 0, 255}) {
+		t.Errorf("disjoint carries drew %v and %v", px.RGBAAt(4, 4), px.RGBAAt(12, 4))
+	}
+	px = run(Carry{From: red, Rects: []image.Rectangle{image.Rect(0, 0, 20, 16)}}, Carry{From: green, Rects: []image.Rectangle{image.Rect(10, 0, 32, 16)}})
+	if n := d.frame.stats.carryBarriers; n != 1 {
+		t.Errorf("overlapping carries placed %d barriers, want 1", n)
+	}
+	if got := px.RGBAAt(15, 8); got != (color.RGBA{0, 200, 0, 255}) {
+		t.Errorf("the overlap holds %v, want the second carry's", got)
+	}
+	if got := px.RGBAAt(5, 8); got != (color.RGBA{200, 0, 0, 255}) {
+		t.Errorf("the first carry's own part holds %v", got)
+	}
+}

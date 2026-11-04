@@ -214,6 +214,9 @@ type Carry struct {
 	Offset image.Point
 }
 
+// Carries apply in order: where several write a pixel, the last one's source
+// is what it holds.
+
 func (d *Device) checkCarry(dst *Target, c Carry) error {
 	src := c.From
 	switch {
@@ -239,47 +242,102 @@ func (f *frame) recordCarry(cb vk.CommandBuffer, carry Carry) {
 		return
 	}
 	layers := vk.ImageSubresourceLayers{AspectMask: vk.ImageAspectFlags(vk.ImageAspectColorBit), LayerCount: 1}
+	srcLayout := vk.ImageLayoutGeneral
+	acquired := false
 	f.copies = f.copies[:0]
+	issue := func() {
+		if len(f.copies) == 0 {
+			return
+		}
+		if !acquired {
+			acquired = true
+			src.acquire(cb)
+			if src.offscreen {
+				src.s.to(cb, vk.ImageLayoutTransferSrcOptimal)
+				srcLayout = vk.ImageLayoutTransferSrcOptimal
+			}
+		}
+		dst.s.to(cb, vk.ImageLayoutTransferDstOptimal)
+		d.cmds.CmdCopyImage(cb, src.s.image, srcLayout, dst.s.image, vk.ImageLayoutTransferDstOptimal, count(f.copies), &f.copies[0])
+		f.copies = f.copies[:0]
+	}
 	for _, r := range carry.Rects {
 		if r = r.Intersect(bounds).Intersect(bounds.Sub(carry.Offset)); r.Empty() {
 			continue
 		}
+		if f.overlapsCarried(r) {
+			issue()
+			f.orderCarry(cb)
+		}
+		f.carried = append(f.carried, r)
 		f.copies = append(f.copies, vk.ImageCopy{
 			SrcSubresource: layers, SrcOffset: offset3D(r.Min.Add(carry.Offset)), DstSubresource: layers, DstOffset: offset3D(r.Min),
 			Extent: extent3D(r.Dx(), r.Dy()),
 		})
 	}
-	if len(f.copies) == 0 {
-		return
+	issue()
+	if acquired {
+		src.release(cb)
 	}
-	src.acquire(cb)
-	srcLayout := vk.ImageLayoutGeneral
-	if src.offscreen {
-		src.s.to(cb, vk.ImageLayoutTransferSrcOptimal)
-		srcLayout = vk.ImageLayoutTransferSrcOptimal
+}
+
+// overlapsCarried reports whether r overlaps what earlier carries wrote since
+// the last barrier: a copy into it must wait for theirs to stay in order.
+func (f *frame) overlapsCarried(r image.Rectangle) bool {
+	for _, c := range f.carried {
+		if c.Overlaps(r) {
+			return true
+		}
 	}
-	dst.s.to(cb, vk.ImageLayoutTransferDstOptimal)
-	d.cmds.CmdCopyImage(cb, src.s.image, srcLayout, dst.s.image, vk.ImageLayoutTransferDstOptimal, count(f.copies), &f.copies[0])
-	src.release(cb)
+	return false
+}
+
+// orderCarry makes the copies recorded so far finish before the next.
+func (f *frame) orderCarry(cb vk.CommandBuffer) {
+	if f.target.s.layout == vk.ImageLayoutTransferDstOptimal {
+		fullBarrier(f.d, cb, f.target.s.image, vk.ImageLayoutTransferDstOptimal, vk.ImageLayoutTransferDstOptimal, vk.QueueFamilyIgnored, vk.QueueFamilyIgnored)
+		f.stats.carryBarriers++
+	}
+	f.carried = f.carried[:0]
 }
 
 // recordSelfCarry moves pixels within the frame's own target: each rect's source
-// into the filter surface at the rect's place, then all of them back.
+// into the filter surface at the rect's place, then all of them back. Rects that
+// overlap move one at a time, in order.
 func (f *frame) recordSelfCarry(cb vk.CommandBuffer, carry Carry) {
+	bounds := image.Rectangle{Max: f.target.Size()}
+	f.selfRects = f.selfRects[:0]
+	for _, r := range carry.Rects {
+		if r = r.Intersect(bounds).Intersect(bounds.Sub(carry.Offset)); !r.Empty() {
+			f.selfRects = append(f.selfRects, r)
+		}
+	}
+	disjoint := true
+	for i, r := range f.selfRects {
+		for _, o := range f.selfRects[:i] {
+			disjoint = disjoint && !r.Overlaps(o)
+		}
+	}
+	if disjoint {
+		f.moveWithin(cb, f.selfRects, carry.Offset)
+		return
+	}
+	for i := range f.selfRects {
+		f.moveWithin(cb, f.selfRects[i:i+1], carry.Offset)
+	}
+}
+
+func (f *frame) moveWithin(cb vk.CommandBuffer, rects []image.Rectangle, offset image.Point) {
+	if len(rects) == 0 {
+		return
+	}
 	d, dst, temp := f.d, f.target, f.d.filterTemp
-	bounds := image.Rectangle{Max: dst.Size()}
 	layers := vk.ImageSubresourceLayers{AspectMask: vk.ImageAspectFlags(vk.ImageAspectColorBit), LayerCount: 1}
 	f.copies, f.selfCopies = f.copies[:0], f.selfCopies[:0]
-	for _, r := range carry.Rects {
-		if r = r.Intersect(bounds).Intersect(bounds.Sub(carry.Offset)); r.Empty() {
-			continue
-		}
+	for _, r := range rects {
 		at, size := offset3D(r.Min), extent3D(r.Dx(), r.Dy())
-		f.copies = append(f.copies, vk.ImageCopy{SrcSubresource: layers, SrcOffset: offset3D(r.Min.Add(carry.Offset)), DstSubresource: layers, DstOffset: at, Extent: size})
+		f.copies = append(f.copies, vk.ImageCopy{SrcSubresource: layers, SrcOffset: offset3D(r.Min.Add(offset)), DstSubresource: layers, DstOffset: at, Extent: size})
 		f.selfCopies = append(f.selfCopies, vk.ImageCopy{SrcSubresource: layers, SrcOffset: at, DstSubresource: layers, DstOffset: at, Extent: size})
-	}
-	if len(f.copies) == 0 {
-		return
 	}
 	dst.s.to(cb, vk.ImageLayoutTransferSrcOptimal)
 	temp.to(cb, vk.ImageLayoutTransferDstOptimal)
@@ -287,6 +345,7 @@ func (f *frame) recordSelfCarry(cb vk.CommandBuffer, carry Carry) {
 	temp.to(cb, vk.ImageLayoutTransferSrcOptimal)
 	dst.s.to(cb, vk.ImageLayoutTransferDstOptimal)
 	d.cmds.CmdCopyImage(cb, temp.image, vk.ImageLayoutTransferSrcOptimal, dst.s.image, vk.ImageLayoutTransferDstOptimal, count(f.selfCopies), &f.selfCopies[0])
+	f.carried = append(f.carried[:0], rects...)
 }
 
 // ReadPixels copies the target back into memory as premultiplied

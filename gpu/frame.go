@@ -69,6 +69,8 @@ type frame struct {
 	pathScratch render.PathScratch
 	copies      []vk.ImageCopy
 	selfCopies  []vk.ImageCopy
+	selfRects   []image.Rectangle
+	carried     []image.Rectangle
 	// staged is how many bytes of the segment's staging buffer its
 	// uploads fill.
 	staged int
@@ -166,8 +168,8 @@ func (d *Device) render(l *render.List, t *Target, explicit bool, carry []Carry)
 // submitted in, its readbacks, the image textures and atlas masks it
 // uploaded, and the pixels of CPU sprites per call.
 type frameStats struct {
-	prims, segments, readbacks, textureUploads, imageBytes, maskBytes int
-	sprites                                                           map[string]int
+	prims, segments, readbacks, textureUploads, imageBytes, maskBytes, carryBarriers int
+	sprites                                                                          map[string]int
 }
 
 // reset empties the stats for a new frame, keeping the map.
@@ -484,6 +486,7 @@ func (f *frame) clear() {
 func (f *frame) record(cb vk.CommandBuffer, final bool) {
 	d := f.d
 	f.target.acquire(cb)
+	f.carried = f.carried[:0]
 	for _, c := range f.carries {
 		f.recordCarry(cb, c)
 	}
