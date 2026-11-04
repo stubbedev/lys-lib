@@ -69,3 +69,77 @@ func TestTrimFreesTheScratchCanvases(t *testing.T) {
 		t.Errorf("a scratch canvas after Trim: %v", err)
 	}
 }
+
+func TestAResizeMakesALogarithmicNumberOfSurfaces(t *testing.T) {
+	d := openDevice(t)
+	rec := render.NewRecorder(1, 1, 1, 1)
+	var fl render.Filters
+	fl.Append(render.FilterOp{Kind: render.FilterBlur, Amount: 2})
+	step := func(w, h int) {
+		t.Helper()
+		tg, err := d.NewOffscreen(w, h)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tg.Close()
+		box := render.Rect{W: w, H: h}
+		rec.ResetRecorder(w, h, 1, 1)
+		l := rec.ScratchLayer(box)
+		l.Canvas().RoundedRect(box, 4, render.RGBA(16, 32, 48, 255))
+		render.ApplyFilters(l, box, &fl, render.FilterShape{})
+		rec.DrawLayer(l, box, render.BlendNormal)
+		l.Release()
+		if err := d.Render(rec.Recording(), tg); err != nil {
+			t.Fatalf("%dx%d: %v", w, h, err)
+		}
+		if err := d.Finish(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	step(100, 100)
+	before := d.surfacesMade
+	const steps = 100
+	for i := 1; i <= steps; i++ {
+		step(100+i*2, 100+i)
+	}
+	working := d.surfacesMade - before - steps
+	const page, filters, layer = 1, 2, 1
+	const widthGrowths, heightGrowths = 3, 2
+	if want := uint64((page + filters + layer) * (widthGrowths + heightGrowths)); working > want {
+		t.Errorf("a %d-step resize made %d working surfaces, want at most %d", steps, working, want)
+	}
+	t.Logf("%d working surfaces over %d steps", working, steps)
+}
+
+func TestThePoolOfScratchLayersIsBoundedAndTrimFreesIt(t *testing.T) {
+	d := openDevice(t)
+	rec := render.NewRecorder(1, 1, 1, 1)
+	for i := range 300 {
+		w, h := 16+i, 16
+		tg, err := d.NewOffscreen(w, h)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec.ResetRecorder(w, h, 1, 1)
+		var open []*render.Layer
+		for range render.MaxPooledLayers + 2 {
+			open = append(open, rec.ScratchLayer(render.Rect{W: w, H: h}))
+		}
+		for _, l := range open {
+			l.Release()
+		}
+		if err := d.Render(rec.Recording(), tg); err != nil {
+			t.Fatalf("step %d: %v", i, err)
+		}
+		tg.Close()
+		if n := len(d.freeLayers); n > render.MaxPooledLayers {
+			t.Fatalf("step %d: %d pooled layer surfaces, want at most %d", i, n, render.MaxPooledLayers)
+		}
+	}
+	if err := d.Trim(); err != nil {
+		t.Fatal(err)
+	}
+	if n, live := len(d.freeLayers), len(d.layers); n != 0 || live != 0 {
+		t.Errorf("after Trim %d pooled and %d live layer surfaces", n, live)
+	}
+}

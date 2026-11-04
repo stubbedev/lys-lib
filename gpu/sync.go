@@ -41,6 +41,7 @@ type timing struct {
 	completed      uint64
 	graves         []grave
 	blockingWaits  uint64
+	framing        bool
 	waits          []vk.Semaphore
 	passes         uint64
 	done           uint64

@@ -6,9 +6,9 @@ import (
 	"sync"
 )
 
-// maxPooledLayers bounds the scratch layers kept for reuse: a few
+// MaxPooledLayers bounds the scratch layers kept for reuse: a few
 // nesting depths of effects, on a window and its popups.
-const maxPooledLayers = 6
+const MaxPooledLayers = 6
 
 // scratchLayers holds the released scratch layers. Any big enough
 // buffer serves any canvas, so a resize, which changes the canvas's
@@ -70,7 +70,7 @@ func (l *Layer) Release() {
 	scratchLayers.mu.Lock()
 	defer scratchLayers.mu.Unlock()
 	scratchLayers.free = append(scratchLayers.free, l)
-	if len(scratchLayers.free) > maxPooledLayers {
+	if len(scratchLayers.free) > MaxPooledLayers {
 		smallest := 0
 		for i, f := range scratchLayers.free {
 			if cap(f.buf) < cap(scratchLayers.free[smallest].buf) {

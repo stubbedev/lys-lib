@@ -43,6 +43,7 @@ func (d *Device) newSurfaceIn(w, h int, vf vk.Format) (*surface, error) {
 	if err := d.checkSize(w, h); err != nil {
 		return nil, err
 	}
+	d.surfacesMade++
 	s := &surface{d: d, w: w, h: h, vf: vf, layout: vk.ImageLayoutUndefined}
 	ici := vk.ImageCreateInfo{
 		SType: vk.StructureTypeImageCreateInfo, ImageType: vk.ImageType2d, Format: vf,

@@ -2,6 +2,7 @@ package gpu
 
 import (
 	"fmt"
+	"image"
 	"runtime"
 	"slices"
 	"sync"
@@ -22,13 +23,14 @@ type scratchCanvas struct {
 	cv  *render.Canvas
 }
 
-// newScratchCanvas allocates a w x h scratch canvas in pixels.
-func newScratchCanvas(pixels memory.Allocator, w, h, num, denom int) (*scratchCanvas, error) {
-	mem, err := memory.MakeSlice[byte](pixels, render.Stride(w)*h)
+// newScratchCanvas allocates a w x h scratch canvas in pixels with room
+// for a capW x capH one.
+func newScratchCanvas(pixels memory.Allocator, w, h, capW, capH, num, denom int) (*scratchCanvas, error) {
+	mem, err := memory.MakeSlice[byte](pixels, render.Stride(capW)*capH)
 	if err != nil {
-		return nil, fmt.Errorf("gpu: a %dx%d scratch canvas: %w", w, h, err)
+		return nil, fmt.Errorf("gpu: a %dx%d scratch canvas: %w", capW, capH, err)
 	}
-	buf := mem.Elems()
+	buf := mem.Elems()[:render.Stride(w)*h]
 	return &scratchCanvas{mem: mem, buf: buf, cv: render.NewScaled(buf, render.Stride(w), w, h, num, denom)}, nil
 }
 
@@ -98,6 +100,13 @@ type scratch struct {
 	forgotten []render.ImageID
 }
 
+func (d *Device) grown(have, need int) int {
+	if need <= have {
+		return have
+	}
+	return max(need, min(have*3/2, d.maxDim))
+}
+
 // ensureScratch sizes the working set for a w x h target.
 func (d *Device) ensureScratch(w, h int) error {
 	if d.blank == nil {
@@ -115,7 +124,7 @@ func (d *Device) ensureScratch(w, h int) error {
 	if w <= d.scratchW && h <= d.scratchH {
 		return nil
 	}
-	d.scratchW, d.scratchH = max(w, d.scratchW), max(h, d.scratchH)
+	d.scratchW, d.scratchH = d.grown(d.scratchW, w), d.grown(d.scratchH, h)
 	if d.page != nil {
 		d.retire(d.page)
 	}
@@ -161,6 +170,7 @@ func (d *Device) Trim() error {
 	if err := d.dropScratches(); err != nil {
 		return err
 	}
+	d.trimLayers()
 	if err := d.pixels.Trim(); err != nil {
 		return fmt.Errorf("gpu: trim the scratch canvases: %w", err)
 	}
@@ -178,7 +188,7 @@ func (d *Device) fitFilters(w, h int) error {
 	if w <= d.filterW && h <= d.filterH {
 		return nil
 	}
-	d.filterW, d.filterH = max(w, d.filterW), max(h, d.filterH)
+	d.filterW, d.filterH = d.grown(d.filterW, w), d.grown(d.filterH, h)
 	for _, t := range []**surface{&d.filterTemp, &d.filterTemp2} {
 		if *t != nil {
 			d.retire(*t)
@@ -210,7 +220,7 @@ func (d *Device) scratchCanvas(i, w, h, num, denom int) (*scratchCanvas, error) 
 				return nil, fmt.Errorf("gpu: free a scratch canvas: %w", err)
 			}
 		}
-		grown, err := newScratchCanvas(&d.pixels, w, h, num, denom)
+		grown, err := newScratchCanvas(&d.pixels, w, h, max(w, d.scratchW), max(h, d.scratchH), num, denom)
 		if err != nil {
 			d.scratches[i] = nil
 			return nil, err
@@ -227,26 +237,47 @@ func (d *Device) scratchCanvas(i, w, h, num, denom int) (*scratchCanvas, error) 
 	return sc, nil
 }
 
-// layerSurface is a recorded layer's GPU surface. A kept layer's is
-// freed when the layer is collected; a scratch layer's goes back to
-// the pool on Release.
+// layerSurface is a recorded layer's GPU surface, at least the w x h of
+// the target it last served: a resize reuses it until it outgrows it. A
+// kept layer's is freed when the layer is collected; a scratch layer's
+// goes back to the pool on Release.
 type layerSurface struct {
 	s       *surface
+	w, h    int
 	cleanup runtime.Cleanup
 }
 
-// takeLayer backs l with a w x h surface: a pooled one for a scratch
-// layer, else a new one freed with l.
-func (d *Device) takeLayer(l *render.Layer, w, h int, scratch bool) (*layerSurface, error) {
+func (ls *layerSurface) fits(w, h int) bool {
+	const maxWaste = 4
+	return ls.s.w >= w && ls.s.h >= h && ls.s.w*ls.s.h <= maxWaste*w*h
+}
+
+// takeLayer backs l with a surface of at least w x h: the smallest that
+// fits in the pool for a scratch layer, else a new one freed with l, 1.5
+// times what have or the pool it replaces held along a side that grows,
+// so a resize makes a logarithmic number of them. Pooled surfaces that
+// no longer fit go: the new one serves all they served.
+func (d *Device) takeLayer(l *render.Layer, w, h int, have image.Point, scratch bool) (*layerSurface, error) {
 	if scratch {
-		if i := slices.IndexFunc(d.freeLayers, func(ls *layerSurface) bool { return ls.s.w == w && ls.s.h == h }); i >= 0 {
-			ls := d.freeLayers[i]
-			d.freeLayers = slices.Delete(d.freeLayers, i, i+1)
+		best := -1
+		for i, ls := range d.freeLayers {
+			if ls.s.w >= w && ls.s.h >= h && (best < 0 || ls.s.w*ls.s.h < d.freeLayers[best].s.w*d.freeLayers[best].s.h) {
+				best = i
+			}
+		}
+		if best >= 0 {
+			ls := d.freeLayers[best]
+			d.freeLayers = slices.Delete(d.freeLayers, best, best+1)
 			l.SetBacking(ls)
 			return ls, nil
 		}
+		for _, ls := range d.freeLayers {
+			have = image.Pt(max(have.X, ls.s.w), max(have.Y, ls.s.h))
+			d.dropLayer(ls)
+		}
+		d.freeLayers = d.freeLayers[:0]
 	}
-	s, err := d.newSurface(w, h)
+	s, err := d.newSurface(d.grown(have.X, w), d.grown(have.Y, h))
 	if err != nil {
 		return nil, err
 	}
@@ -262,10 +293,29 @@ func (d *Device) takeLayer(l *render.Layer, w, h int, scratch bool) (*layerSurfa
 	return ls, nil
 }
 
-// poolLayer returns a released scratch layer's surface to the pool.
+// poolLayer returns a released scratch layer's surface to the pool; a
+// full pool keeps its largest.
 func (d *Device) poolLayer(ls *layerSurface) {
 	ls.cleanup.Stop()
 	d.freeLayers = append(d.freeLayers, ls)
+	if len(d.freeLayers) <= render.MaxPooledLayers {
+		return
+	}
+	smallest := 0
+	for i, f := range d.freeLayers {
+		if f.s.w*f.s.h < d.freeLayers[smallest].s.w*d.freeLayers[smallest].s.h {
+			smallest = i
+		}
+	}
+	d.dropLayer(d.freeLayers[smallest])
+	d.freeLayers = slices.Delete(d.freeLayers, smallest, smallest+1)
+}
+
+func (d *Device) trimLayers() {
+	for _, ls := range d.freeLayers {
+		d.dropLayer(ls)
+	}
+	d.freeLayers = nil
 }
 
 // dropLayer frees a surface its layer outgrew.

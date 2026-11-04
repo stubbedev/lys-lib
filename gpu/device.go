@@ -97,10 +97,11 @@ type Device struct {
 	// uploads tracks the free part of upload.
 	uploads stagingRing
 	// reused, passOps and passRects are the storage of the open pass.
-	reused    Pass
-	passOps   []passOp
-	passRects rectScratch
-	passWork  passWork
+	reused       Pass
+	passOps      []passOp
+	passRects    rectScratch
+	passWork     passWork
+	surfacesMade uint64
 }
 
 // Open picks the first Vulkan device with a graphics queue that

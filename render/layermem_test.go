@@ -25,14 +25,14 @@ func TestLayerBuffersLiveOffTheHeap(t *testing.T) {
 	}
 
 	var scratch []*Layer
-	for range maxPooledLayers + 1 {
+	for range MaxPooledLayers + 1 {
 		scratch = append(scratch, cv.ScratchLayer(cv.Rect()))
 	}
 	for _, s := range scratch {
 		s.Release()
 	}
-	if got := layerPixels.Stats().Live; got != base+maxPooledLayers {
-		t.Errorf("a full pool holds %d buffers, want the %d it keeps", got-base, maxPooledLayers)
+	if got := layerPixels.Stats().Live; got != base+MaxPooledLayers {
+		t.Errorf("a full pool holds %d buffers, want the %d it keeps", got-base, MaxPooledLayers)
 	}
 	if err := TrimLayers(); err != nil {
 		t.Fatal(err)

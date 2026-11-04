@@ -106,6 +106,8 @@ func (d *Device) Render(l *render.List, t *Target, carry ...Carry) error {
 	f.clear()
 	f.carries = append(f.carries[:0], carry...)
 	f.stats.reset()
+	d.framing = true
+	defer d.endFraming()
 	l.Play(f)
 	if f.err != nil {
 		return f.err
@@ -164,6 +166,8 @@ func (f *frame) stage(n int) ([]byte, int) {
 	f.staged = need
 	return fb.staging.mapped[at:need], at
 }
+
+func (f *frame) bounds() render.Rect { return render.Rect{W: f.target.s.w, H: f.target.s.h} }
 
 // on is the surface s names: the target, or a layer's.
 func (f *frame) on(s render.State) *surface {
@@ -284,7 +288,7 @@ func (f *frame) place(w, h int) (image.Point, bool) {
 // writes) into scratch canvases, runs fn over them, and uploads the
 // written region back.
 func (f *frame) cpu(region render.Rect, surfaces []*surface, fn func(cvs []*render.Canvas)) {
-	region = region.Intersect(render.Rect{W: f.target.s.w, H: f.target.s.h})
+	region = region.Intersect(f.bounds())
 	if f.err != nil || region.Empty() {
 		return
 	}
@@ -830,10 +834,10 @@ func (f *frame) ScratchLayer(s render.State, l *render.Layer, region render.Rect
 	f.readyLayer(l, region, true)
 }
 
-// readyLayer backs l with a target-sized surface, its own when it
-// fits, else a pooled one (scratch) or a new one, and clears region;
-// a new surface clears whole, as a new raster layer starts. A surface
-// another device made is that device's to free.
+// readyLayer backs l with a surface at least target-sized, its own when
+// it fits, else a pooled one (scratch) or a new one, and clears region;
+// a layer new to this target size clears whole, as a new raster layer
+// starts. A surface another device made is that device's to free.
 func (f *frame) readyLayer(l *render.Layer, region render.Rect, scratch bool) {
 	if f.err != nil {
 		return
@@ -843,22 +847,27 @@ func (f *frame) readyLayer(l *render.Layer, region render.Rect, scratch bool) {
 	if ls != nil && ls.s.d != f.d {
 		ls = nil
 	}
-	if ls == nil || ls.s.w != w || ls.s.h != h {
+	if ls == nil || !ls.fits(w, h) {
+		var have image.Point
 		if ls != nil {
+			have = image.Pt(ls.s.w, ls.s.h)
 			f.d.dropLayer(ls)
 		}
 		var err error
-		if ls, err = f.d.takeLayer(l, w, h, scratch); err != nil {
+		if ls, err = f.d.takeLayer(l, w, h, have, scratch); err != nil {
 			f.fail(err)
 			return
 		}
+	}
+	if ls.w != w || ls.h != h || scratch {
+		ls.w, ls.h = w, h
 		region = render.Rect{W: w, H: h}
 	}
 	if err := ls.s.ready(); err != nil {
 		f.fail(err)
 		return
 	}
-	clear := region.Intersect(render.Rect{W: w, H: h})
+	clear := region.Intersect(f.bounds())
 	if clear.Empty() {
 		return
 	}
@@ -866,7 +875,7 @@ func (f *frame) readyLayer(l *render.Layer, region render.Rect, scratch bool) {
 }
 
 func (f *frame) Snapshot(s render.State, l *render.Layer, region render.Rect) {
-	r := region.Intersect(render.Rect{W: f.target.s.w, H: f.target.s.h})
+	r := region.Intersect(f.bounds())
 	if f.err != nil || r.Empty() {
 		return
 	}
@@ -894,7 +903,7 @@ func (f *frame) CompositeProjective(s render.State, l *render.Layer, src render.
 // inverse-maps into src and samples it bilinearly.
 func (f *frame) composite(s render.State, l *render.Layer, src render.Rect, m render.M3, alpha float64) {
 	ls := f.layer(l)
-	src = src.Intersect(render.Rect{W: ls.w, H: ls.h})
+	src = src.Intersect(f.bounds())
 	mp, ok := render.MappedOf(m)
 	a := s.Alpha * min(1, max(0, alpha))
 	if src.Empty() || !ok || alphaScale(a) == 0 {
@@ -902,7 +911,7 @@ func (f *frame) composite(s render.State, l *render.Layer, src render.Rect, m re
 	}
 	s.Alpha = a
 	p := shaded(kindComposite, s, 0)
-	p.quad, p.inner = quadOf(s.Bounds.Intersect(render.Rect{W: f.target.s.w, H: f.target.s.h})), quadOf(src)
+	p.quad, p.inner = quadOf(s.Bounds.Intersect(f.bounds())), quadOf(src)
 	p.m0, p.m1, p.m2, p.widths = mappedRows(&mp)
 	f.draw(f.on(s), ls, pipeOver, p)
 }
@@ -923,7 +932,7 @@ func (f *frame) DrawLayer(s render.State, l *render.Layer, src render.Rect, mode
 // filter surfaces' reach blends on the CPU.
 func (f *frame) blendLayer(s render.State, l *render.Layer, src render.Rect, mode render.BlendMode) {
 	dst, ls := f.on(s), f.layer(l)
-	r := s.Bounds.Intersect(src).Intersect(render.Rect{W: ls.w, H: ls.h})
+	r := s.Bounds.Intersect(src).Intersect(f.bounds())
 	a := alphaScale(s.Alpha)
 	if r.Empty() || a == 0 || f.err != nil {
 		return
@@ -950,7 +959,7 @@ func (f *frame) CrossFade(l, other *render.Layer, region render.Rect, t float64)
 	o := f.layer(other)
 	var p prim
 	p.cols[0] = uint32(math.Round(min(1, max(0, t)) * 255))
-	f.inPlace(f.layer(l), region.Intersect(render.Rect{W: o.w, H: o.h}), o, kindCrossFade, p)
+	f.inPlace(f.layer(l), region.Intersect(f.bounds()), o, kindCrossFade, p)
 }
 
 func (f *frame) ApplyMaskLayer(l, mask *render.Layer, region render.Rect, luminance bool) {
@@ -959,12 +968,12 @@ func (f *frame) ApplyMaskLayer(l, mask *render.Layer, region render.Rect, lumina
 	if luminance {
 		p.cols[0] = 1
 	}
-	f.inPlace(f.layer(l), region.Intersect(render.Rect{W: m.w, H: m.h}), m, kindMaskLayer, p)
+	f.inPlace(f.layer(l), region.Intersect(f.bounds()), m, kindMaskLayer, p)
 }
 
 func (f *frame) ApplyPathMask(l *render.Layer, path *render.Path, region render.Rect) {
 	s := f.layer(l)
-	r := region.Intersect(render.Rect{W: s.w, H: s.h})
+	r := region.Intersect(f.bounds())
 	if f.err != nil || r.Empty() {
 		return
 	}
@@ -983,7 +992,7 @@ func (f *frame) ApplyPathMask(l *render.Layer, path *render.Path, region render.
 
 func (f *frame) ApplyFilters(l *render.Layer, region render.Rect, fl *render.Filters, shape render.FilterShape) {
 	s := f.layer(l)
-	region = region.Intersect(render.Rect{W: s.w, H: s.h})
+	region = region.Intersect(f.bounds())
 	if steps := fl.Steps(shape, f.num, f.denom); f.gpuSteps(steps, region) {
 		for _, st := range steps {
 			switch st.Kind {
@@ -1074,7 +1083,7 @@ func (f *frame) matrixStep(s *surface, region render.Rect, st render.MatrixStep)
 // 1/D the region area-averages into the first, the passes run there,
 // and it samples back into s.
 func (f *frame) blur(s *surface, region render.Rect, pl render.BlurPlan) {
-	r := region.Intersect(render.Rect{W: s.w, H: s.h})
+	r := region.Intersect(f.bounds())
 	if f.err != nil || r.Empty() {
 		return
 	}
@@ -1158,7 +1167,7 @@ func (f *frame) boxPasses(t1, t2 *surface, work render.Rect, radii [3]int) {
 // and draws a prim of kind over it that reads the copy (and tex2, the
 // other layer, mask or coverage it combines with), writing as is.
 func (f *frame) inPlace(s *surface, r render.Rect, tex2 *surface, kind uint32, p prim) {
-	r = r.Intersect(render.Rect{W: s.w, H: s.h})
+	r = r.Intersect(f.bounds())
 	if f.err != nil || r.Empty() {
 		return
 	}

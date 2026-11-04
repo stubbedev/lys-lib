@@ -11,7 +11,7 @@ type grave struct {
 
 func (d *Device) retire(item destroyer) {
 	after := d.submitted
-	if d.batch != 0 {
+	if d.batch != 0 || d.framing {
 		after++
 	}
 	if after <= d.completed {
@@ -35,6 +35,8 @@ func (d *Device) buryFinished(through uint64) {
 	clear(d.graves[left:])
 	d.graves = d.graves[:left]
 }
+
+func (d *Device) endFraming() { d.framing = false }
 
 func (d *Device) buryAll() { d.buryFinished(math.MaxUint64) }
 
