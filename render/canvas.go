@@ -360,7 +360,7 @@ func (c *Canvas) Clear(r Rect, col Color) {
 // bridge for frame pipelines that track damage in device pixels.
 func (c *Canvas) ClearDevice(r Rect, col Color) {
 	if c.rec != nil {
-		c.record(op{kind: opClear, r: r, col: col})
+		c.record(opArgs{kind: opClear, r: r, col: col})
 		return
 	}
 	r = c.clip.Intersect(r)
@@ -398,7 +398,7 @@ func (c *Canvas) BorderRect(r Rect, width int, col Color) {
 // compositing; the device counterpart of FillRect.
 func (c *Canvas) FillRectDevice(r Rect, col Color) {
 	if c.rec != nil {
-		c.record(op{kind: opFill, r: r, col: col})
+		c.record(opArgs{kind: opFill, r: r, col: col})
 		return
 	}
 	r = c.clip.Intersect(r)
@@ -428,10 +428,10 @@ func (c *Canvas) FillRectDevice(r Rect, col Color) {
 func (c *Canvas) DrawCanvasDevice(src *Canvas, x, y int) {
 	if c.rec != nil {
 		if src.owner != nil {
-			c.record(op{kind: opLayerAt, layer: src.owner, i: [5]int{x, y}})
+			c.record(opArgs{kind: opLayerAt, layer: src.owner, i: [5]int{x, y}})
 			return
 		}
-		c.record(op{kind: opCanvas, cv: src, i: [5]int{x, y}})
+		c.record(opArgs{kind: opCanvas, cv: src, i: [5]int{x, y}})
 		return
 	}
 	if src.rec != nil {
@@ -459,7 +459,7 @@ func (c *Canvas) DrawCanvasDevice(src *Canvas, x, y int) {
 // coverage. The rasterization runs at the device scale.
 func (c *Canvas) RoundedRect(r Rect, radius int, col Color) {
 	if c.rec != nil {
-		c.record(op{kind: opRoundedRect, r: r, i: [5]int{radius}, col: col})
+		c.record(opArgs{kind: opRoundedRect, r: r, i: [5]int{radius}, col: col})
 		return
 	}
 	full := c.MapRect(r)
@@ -564,7 +564,7 @@ func (c *Canvas) lineSpan(x0, y0, x1, y1, width int) Rect {
 // per-pixel signed-distance coverage at the device scale. Caps are round.
 func (c *Canvas) Line(x0, y0, x1, y1, width int, col Color) {
 	if c.rec != nil {
-		c.record(op{kind: opLine, i: [5]int{x0, y0, x1, y1, width}, col: col})
+		c.record(opArgs{kind: opLine, i: [5]int{x0, y0, x1, y1, width}, col: col})
 		return
 	}
 	if width < 1 || c.clip.Empty() {
@@ -635,7 +635,7 @@ func (g LineGeometry) Coverage(x, y int) float32 {
 // primitive, so a fading surface fades its shadow with it.
 func (c *Canvas) Shadow(r Rect, cornerRadius, blur int, col Color) {
 	if c.rec != nil {
-		c.record(op{kind: opShadow, r: r, i: [5]int{cornerRadius, blur}, col: col})
+		c.record(opArgs{kind: opShadow, r: r, i: [5]int{cornerRadius, blur}, col: col})
 		return
 	}
 	if col.A() == 0 || c.clip.Empty() {
@@ -659,7 +659,7 @@ func abs[T ~int | ~float32 | ~float64](v T) T {
 // size to the device rect its logical placement spans.
 func (c *Canvas) DrawImage(img image.Image, x, y int) {
 	if c.rec != nil {
-		c.record(op{kind: opImage, img: img, i: [5]int{x, y}})
+		c.record(opArgs{kind: opImage, img: img, i: [5]int{x, y}})
 		return
 	}
 	b := img.Bounds()
@@ -700,7 +700,7 @@ func (c *Canvas) blendSampled(img image.Image, full, dst Rect) {
 // the rounded rect.
 func (c *Canvas) DrawImageCover(img image.Image, r Rect, radii Corners) {
 	if c.rec != nil {
-		c.record(op{kind: opImageCover, img: img, r: r, radii: radii})
+		c.record(opArgs{kind: opImageCover, img: img, r: r, radii: radii})
 		return
 	}
 	b := img.Bounds()

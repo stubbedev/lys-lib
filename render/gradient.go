@@ -99,7 +99,7 @@ func (g Gradient) Repeating() Gradient {
 // angle, CSS's rule; radial and conic geometry sizes against the box.
 func (c *Canvas) PaintGradient(r Rect, radii Corners, g Gradient) {
 	if c.rec != nil {
-		c.record(op{kind: opGradient, r: r, radii: radii, grad: c.keepGradient(&g)})
+		c.record(opArgs{kind: opGradient, r: r, radii: radii, grad: c.keepGradient(&g)})
 		return
 	}
 	if len(g.Stops) == 0 {

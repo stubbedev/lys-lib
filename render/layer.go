@@ -227,7 +227,7 @@ func (c *Canvas) Composite(l *Layer, src Rect, m Affine, alpha float64) {
 		return
 	}
 	if c.rec != nil {
-		c.record(op{kind: opComposite, layer: l, r: src, aff: m, f: [6]float64{alpha}})
+		c.record(opArgs{kind: opComposite, layer: l, r: src, aff: m, f: [6]float64{alpha}})
 		return
 	}
 	src = src.Intersect(l.cv.Rect())
@@ -266,7 +266,7 @@ func (c *Canvas) Composite(l *Layer, src Rect, m Affine, alpha float64) {
 // exact where drawing one over the other at partial opacity is not.
 func (l *Layer) CrossFade(other *Layer, region Rect, t float64) {
 	if l.cv.rec != nil {
-		l.cv.record(op{kind: opCrossFade, layer: l, other: other, r: region, f: [6]float64{t}})
+		l.cv.record(opArgs{kind: opCrossFade, layer: l, other: other, r: region, f: [6]float64{t}})
 		return
 	}
 	region = region.Intersect(l.cv.Rect()).Intersect(other.cv.Rect())

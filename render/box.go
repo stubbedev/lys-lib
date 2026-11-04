@@ -241,7 +241,7 @@ func cov255(cov float32) uint32 {
 // CSS.
 func (c *Canvas) RoundedRectCorners(r Rect, radii Corners, col Color) {
 	if c.rec != nil {
-		c.record(op{kind: opRRect, r: r, radii: radii, col: col})
+		c.record(opArgs{kind: opRRect, r: r, radii: radii, col: col})
 		return
 	}
 	if col == 0 {
@@ -280,7 +280,7 @@ func (c *Canvas) RoundedBorder(r Rect, radii Corners, widths Insets, col Color) 
 // diagonals the way CSS borders join.
 func (c *Canvas) RoundedBorderSides(r Rect, radii Corners, widths Insets, cols [4]Color) {
 	if c.rec != nil {
-		c.record(op{kind: opBorder, r: r, radii: radii, ins: widths, cols: cols})
+		c.record(opArgs{kind: opBorder, r: r, radii: radii, ins: widths, cols: cols})
 		return
 	}
 	if widths.Zero() {
@@ -512,7 +512,7 @@ func (c *Canvas) boxShadowRaster(r Rect, radii Corners, s BoxShadow) (Rect, *Sha
 // distance.
 func (c *Canvas) BoxShadow(r Rect, radii Corners, s BoxShadow) {
 	if c.rec != nil {
-		c.record(op{kind: opBoxShadow, r: r, radii: radii, sh: s})
+		c.record(opArgs{kind: opBoxShadow, r: r, radii: radii, sh: s})
 		return
 	}
 	if s.Color.A() == 0 || c.clip.Empty() {
@@ -806,7 +806,7 @@ func RoundedRectRegion(r Rect, radii Corners) []Rect {
 // pixel's offset from the origin, deterministic on every machine.
 func (c *Canvas) PaintGrain(r Rect, radii Corners, opacity float64, ox, oy int) {
 	if c.rec != nil {
-		c.record(op{kind: opGrain, r: r, radii: radii, f: [6]float64{opacity}, i: [5]int{ox, oy}})
+		c.record(opArgs{kind: opGrain, r: r, radii: radii, f: [6]float64{opacity}, i: [5]int{ox, oy}})
 		return
 	}
 	if opacity <= 0 || c.clip.Empty() {

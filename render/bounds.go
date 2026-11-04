@@ -5,7 +5,7 @@ import "image"
 // bounds is the device rect o's call can touch on c, before the clip:
 // what a player draws it within and what culls it when it misses the
 // clip. Layer lifecycle and in-place layer calls report their region.
-func (c *Canvas) bounds(o *op) Rect {
+func (c *Canvas) bounds(o *opArgs) Rect {
 	switch o.kind {
 	case opClear, opFill:
 		return o.r

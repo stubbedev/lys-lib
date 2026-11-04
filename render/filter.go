@@ -242,7 +242,7 @@ func ApplyFilters(l *Layer, region Rect, f *Filters, shape FilterShape) {
 		return
 	}
 	if l.cv.rec != nil {
-		l.cv.record(op{kind: opFilters, layer: l, r: region, filt: f, shape: shape})
+		l.cv.record(opArgs{kind: opFilters, layer: l, r: region, filt: f, shape: shape})
 		return
 	}
 	region = region.Intersect(l.cv.Rect())

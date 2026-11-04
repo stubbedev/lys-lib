@@ -63,7 +63,7 @@ func (l *Layer) Release() {
 		panic("render: Release of a layer that is not a scratch layer")
 	}
 	if rec := l.cv.rec; rec != nil {
-		l.cv.record(op{kind: opRelease, layer: l})
+		l.cv.record(opArgs{kind: opRelease, layer: l})
 		rec.free = append(rec.free, l)
 		return
 	}

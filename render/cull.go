@@ -66,45 +66,62 @@ func (l *List) cull() {
 	l.culled = true
 	for i := len(l.ops) - 1; i >= 0; i-- {
 		o := &l.ops[i]
-		s := &o.state
+		on := l.states[o.state].layer
+		if o.kind == opGlyph {
+			l.cullDraw(o, on)
+			continue
+		}
+		a := &l.args[o.args]
 		switch o.kind {
 		case opRelease:
-			o.layer.needing, o.layer.need = true, Rect{}
+			a.layer.needing, a.layer.need = true, Rect{}
 		case opLayer:
 		case opScratch:
-			o.r = o.layer.wanted().Intersect(o.layer.cv.Rect())
-			o.layer.needing = false
+			a.r = a.layer.wanted().Intersect(a.layer.cv.Rect())
+			a.layer.needing = false
 		case opSnapshot:
-			o.r = o.r.Intersect(o.layer.wanted())
-			o.skip = o.r.Empty()
-			s.Layer.want(o.r)
+			a.r = a.r.Intersect(a.layer.wanted())
+			o.skip = a.r.Empty()
+			on.want(a.r)
 		case opComposite, opProjective:
-			s.Bounds = s.Bounds.Intersect(s.Layer.wanted())
-			o.skip = s.Bounds.Empty()
+			o.bounds = o.bounds.Intersect(on.wanted())
+			o.skip = o.bounds.Empty()
 			if !o.skip {
-				o.layer.want(o.r.Intersect(o.layer.cv.Rect()))
+				a.layer.want(a.r.Intersect(a.layer.cv.Rect()))
 			}
 		case opLayerAt, opDrawLayer:
-			s.Bounds = s.Bounds.Intersect(s.Layer.wanted())
-			o.skip = s.Bounds.Empty()
-			o.layer.want(s.Bounds)
+			o.bounds = o.bounds.Intersect(on.wanted())
+			o.skip = o.bounds.Empty()
+			a.layer.want(o.bounds)
 		case opCrossFade, opMaskLayer:
-			o.r = o.r.Intersect(o.layer.wanted())
-			o.skip = o.r.Empty()
-			o.other.want(o.r)
+			a.r = a.r.Intersect(a.layer.wanted())
+			o.skip = a.r.Empty()
+			a.other.want(a.r)
 		case opPathMask:
-			o.r = o.r.Intersect(o.layer.wanted())
-			o.skip = o.r.Empty()
+			a.r = a.r.Intersect(a.layer.wanted())
+			o.skip = a.r.Empty()
 		case opFilters:
-			region := o.r.Intersect(o.layer.cv.Rect())
-			reach, align := o.filt.reach(o.layer.cv.num, o.layer.cv.denom)
-			o.r = filterRegion(o.layer.wanted(), region, reach, align)
-			o.skip = o.r.Empty()
-			o.layer.want(o.r)
+			region := a.r.Intersect(a.layer.cv.Rect())
+			reach, align := a.filt.reach(a.layer.cv.num, a.layer.cv.denom)
+			a.r = filterRegion(a.layer.wanted(), region, reach, align)
+			o.skip = a.r.Empty()
+			a.layer.want(a.r)
 		default:
-			need := s.Layer.wanted()
-			s.Bounds, s.Clip = s.Bounds.Intersect(need), s.Clip.Intersect(need)
-			o.skip = s.Bounds.Empty()
+			l.cullDraw(o, on)
 		}
+	}
+}
+
+// cullDraw trims a drawing call on layer on to what is read of it, its clip
+// with it: the clip narrows in a state of its own.
+func (l *List) cullDraw(o *op, on *Layer) {
+	need := on.wanted()
+	o.bounds = o.bounds.Intersect(need)
+	o.skip = o.bounds.Empty()
+	st := l.states[o.state]
+	if clip := st.clip.Intersect(need); clip != st.clip {
+		st.clip = clip
+		l.states = append(l.states, st)
+		o.state = index(len(l.states) - 1)
 	}
 }

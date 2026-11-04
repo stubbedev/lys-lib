@@ -14,7 +14,7 @@ import (
 // distance at the device scale.
 func (c *Canvas) Arc(cx, cy, radius, width, start, sweep float64, col Color) {
 	if c.rec != nil {
-		c.record(op{kind: opArc, f: [6]float64{cx, cy, radius, width, start, sweep}, col: col})
+		c.record(opArgs{kind: opArc, f: [6]float64{cx, cy, radius, width, start, sweep}, col: col})
 		return
 	}
 	if width <= 0 || radius <= 0 || sweep <= 0 || col == 0 || c.clip.Empty() {

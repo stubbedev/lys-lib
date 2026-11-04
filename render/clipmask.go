@@ -250,7 +250,7 @@ func PathCoverageMask(p *Path, num, denom int) (CoverageMask, Rect, bool) {
 // alpha mask both land here.
 func (l *Layer) ApplyPathMask(p *Path, region Rect) {
 	if l.cv.rec != nil {
-		l.cv.record(op{kind: opPathMask, layer: l, path: p, r: region})
+		l.cv.record(opArgs{kind: opPathMask, layer: l, path: p, r: region})
 		return
 	}
 	region = region.Intersect(l.cv.Rect())
@@ -320,7 +320,7 @@ func (l *Layer) ApplyMaskLayer(mask *Layer, region Rect, luminance bool) {
 		return
 	}
 	if l.cv.rec != nil {
-		l.cv.record(op{kind: opMaskLayer, layer: l, other: mask, r: region, flag: luminance})
+		l.cv.record(opArgs{kind: opMaskLayer, layer: l, other: mask, r: region, flag: luminance})
 		return
 	}
 	region = region.Intersect(l.cv.Rect()).Intersect(mask.cv.Rect())

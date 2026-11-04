@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"image"
 
+	"github.com/stubbedev/lys-lib/intconv"
 	"github.com/stubbedev/lys-lib/third_party/typesetting/font"
 )
 
@@ -18,7 +19,12 @@ import (
 // lists, retained canvases) rather than copying it; it is played before
 // they change, within the frame that recorded it.
 type List struct {
-	ops []op
+	// ops are the calls in order, each naming its state in states and its
+	// arguments in glyphs, for a glyph, or else args.
+	ops    []op
+	states []opState
+	args   []opArgs
+	glyphs []glyphOp
 	// stops holds the recorded gradients' stops, copied so a caller's
 	// stop slice need not outlive the call.
 	stops []GradientStop
@@ -136,11 +142,35 @@ const (
 	numOpKinds
 )
 
-// op is one recorded call and the state it ran under; only the fields
-// its kind passes on are set.
+// op is one recorded call: its kind, the state it ran under and its
+// arguments, both by index, and the device rect it can touch.
 type op struct {
+	kind   opKind
+	skip   bool
+	state  uint32
+	args   uint32
+	bounds Rect
+}
+
+// opState is the canvas state calls ran under; consecutive calls share one.
+type opState struct {
+	layer         *Layer
+	clip          Rect
+	alpha, bright float64
+}
+
+// glyphOp is a glyph's arguments, the call text records the most of.
+type glyphOp struct {
+	face              *Typeface
+	mask              *GlyphMask
+	scale, penX, penY float64
+	gid               font.GID
+	col               Color
+}
+
+// opArgs is a call's arguments; only the fields its kind passes on are set.
+type opArgs struct {
 	kind  opKind
-	state State
 	r     Rect
 	col   Color
 	cols  [4]Color
@@ -163,7 +193,6 @@ type op struct {
 	layer *Layer
 	other *Layer
 	flag  bool
-	skip  bool
 	face  *Typeface
 	gid   font.GID
 	glyph *GlyphMask
@@ -201,6 +230,10 @@ func (c *Canvas) ResetRecorder(width, height, num, denom int) *Canvas {
 func (c *Canvas) resetRecording(width, height, num, denom int) {
 	c.rec.ended, c.rec.scratchLayers, c.rec.culled = false, false, false
 	c.rec.ops, c.rec.stops = c.rec.ops[:0], c.rec.stops[:0]
+	clear(c.rec.args)
+	clear(c.rec.glyphs)
+	clear(c.rec.states)
+	c.rec.args, c.rec.glyphs, c.rec.states = c.rec.args[:0], c.rec.glyphs[:0], c.rec.states[:0]
 	c.rec.num, c.rec.denom = num, denom
 	c.resetFrame(width, height, num, denom)
 }
@@ -224,16 +257,41 @@ func (l *List) Len() int { return len(l.ops) }
 
 // record appends o under c's state; c must be recording. A drawing
 // call whose bounds miss the clip is dropped: it would paint nothing.
-func (c *Canvas) record(o op) {
-	if c.rec.ended {
+func (c *Canvas) record(o opArgs) {
+	rec := c.rec
+	if rec.ended {
 		panic("render: recording into an ended List")
 	}
-	o.state = State{Layer: c.owner, Clip: c.clip, Alpha: c.alpha, Bright: c.bright}
-	o.state.Bounds = c.clip.Intersect(c.bounds(&o))
-	if o.kind < opLayer && o.state.Bounds.Empty() {
+	bounds := c.clip.Intersect(c.bounds(&o))
+	if o.kind < opLayer && bounds.Empty() {
 		return
 	}
-	c.rec.ops = append(c.rec.ops, o)
+	compact := op{kind: o.kind, state: rec.stateOf(opState{layer: c.owner, clip: c.clip, alpha: c.alpha, bright: c.bright}), bounds: bounds}
+	if o.kind == opGlyph {
+		compact.args = index(len(rec.glyphs))
+		rec.glyphs = append(rec.glyphs, glyphOp{face: o.face, mask: o.glyph, scale: o.f[0], penX: o.f[1], penY: o.f[2], gid: o.gid, col: o.col})
+	} else {
+		compact.args = index(len(rec.args))
+		rec.args = append(rec.args, o)
+	}
+	rec.ops = append(rec.ops, compact)
+}
+
+// stateOf is st's index, the last state's when it is the same.
+func (l *List) stateOf(st opState) uint32 {
+	if n := len(l.states); n > 0 && l.states[n-1] == st {
+		return index(n - 1)
+	}
+	l.states = append(l.states, st)
+	return index(len(l.states) - 1)
+}
+
+func index(n int) uint32 { return intconv.Must[uint32](n) }
+
+// stateAt is the State op o ran under.
+func (l *List) stateAt(o *op) State {
+	st := &l.states[o.state]
+	return State{Layer: st.layer, Clip: st.clip, Bounds: o.bounds, Alpha: st.alpha, Bright: st.bright}
 }
 
 // keepGradient is *g with its stops copied into c's List, so the
@@ -271,7 +329,7 @@ func (c *Canvas) recordLayer(old *Layer, region Rect, scratch bool) *Layer {
 	if scratch {
 		kind = opScratch
 	}
-	c.record(op{kind: kind, layer: l, r: region})
+	c.record(opArgs{kind: kind, layer: l, r: region})
 	return l
 }
 
@@ -293,76 +351,80 @@ func (l *List) Play(p Player) {
 		if o.skip {
 			continue
 		}
-		s := o.state
-		switch o.kind {
+		s := l.stateAt(o)
+		if o.kind == opGlyph {
+			g := &l.glyphs[o.args]
+			p.Glyph(s, g.face, g.gid, g.scale, g.penX, g.penY, g.col, g.mask)
+			continue
+		}
+		a := &l.args[o.args]
+		switch a.kind {
 		case opClear:
-			p.ClearDevice(s, o.r, o.col)
+			p.ClearDevice(s, a.r, a.col)
 		case opFill:
-			p.FillRectDevice(s, o.r, o.col)
+			p.FillRectDevice(s, a.r, a.col)
 		case opCanvas:
-			p.DrawCanvasDevice(s, o.cv, o.i[0], o.i[1])
+			p.DrawCanvasDevice(s, a.cv, a.i[0], a.i[1])
 		case opLayerAt:
-			p.DrawLayerAt(s, o.layer, o.i[0], o.i[1])
+			p.DrawLayerAt(s, a.layer, a.i[0], a.i[1])
 		case opRoundedRect:
-			p.RoundedRect(s, o.r, o.i[0], o.col)
+			p.RoundedRect(s, a.r, a.i[0], a.col)
 		case opLine:
-			p.Line(s, o.i[0], o.i[1], o.i[2], o.i[3], o.i[4], o.col)
+			p.Line(s, a.i[0], a.i[1], a.i[2], a.i[3], a.i[4], a.col)
 		case opShadow:
-			p.Shadow(s, o.r, o.i[0], o.i[1], o.col)
+			p.Shadow(s, a.r, a.i[0], a.i[1], a.col)
 		case opImage:
-			p.DrawImage(s, o.img, o.i[0], o.i[1])
+			p.DrawImage(s, a.img, a.i[0], a.i[1])
 		case opImageCover:
-			p.DrawImageCover(s, o.img, o.r, o.radii)
+			p.DrawImageCover(s, a.img, a.r, a.radii)
 		case opImageDevice:
-			p.DrawImageDevice(s, o.img, o.i[0], o.i[1])
+			p.DrawImageDevice(s, a.img, a.i[0], a.i[1])
 		case opImageRect:
-			p.DrawImageRect(s, o.img, o.r)
+			p.DrawImageRect(s, a.img, a.r)
 		case opIcon:
-			p.DrawIcon(s, o.icon, o.i[0], o.i[1], o.aff)
+			p.DrawIcon(s, a.icon, a.i[0], a.i[1], a.aff)
 		case opArc:
-			p.Arc(s, o.f[0], o.f[1], o.f[2], o.f[3], o.f[4], o.f[5], o.col)
+			p.Arc(s, a.f[0], a.f[1], a.f[2], a.f[3], a.f[4], a.f[5], a.col)
 		case opBoxShadow:
-			p.BoxShadow(s, o.r, o.radii, o.sh)
+			p.BoxShadow(s, a.r, a.radii, a.sh)
 		case opGrain:
-			p.PaintGrain(s, o.r, o.radii, o.f[0], o.i[0], o.i[1])
+			p.PaintGrain(s, a.r, a.radii, a.f[0], a.i[0], a.i[1])
 		case opBorder:
-			p.RoundedBorderSides(s, o.r, o.radii, o.ins, o.cols)
+			p.RoundedBorderSides(s, a.r, a.radii, a.ins, a.cols)
 		case opRRect:
-			p.RoundedRectCorners(s, o.r, o.radii, o.col)
+			p.RoundedRectCorners(s, a.r, a.radii, a.col)
 		case opGradient:
-			p.PaintGradient(s, o.r, o.radii, o.grad)
+			p.PaintGradient(s, a.r, a.radii, a.grad)
 		case opGradientTiles:
-			p.PaintGradientTiles(s, o.grad, o.tile, o.r, o.radii)
+			p.PaintGradientTiles(s, a.grad, a.tile, a.r, a.radii)
 		case opImageTiles:
-			p.PaintImageTiles(s, o.img, o.tile, o.r, o.radii)
+			p.PaintImageTiles(s, a.img, a.tile, a.r, a.radii)
 		case opPath:
-			p.FillPath(s, o.path, o.col)
-		case opGlyph:
-			p.Glyph(s, o.face, o.gid, o.f[0], o.f[1], o.f[2], o.col, o.glyph)
+			p.FillPath(s, a.path, a.col)
 		case opLayer:
-			p.Layer(s, o.layer, o.r)
+			p.Layer(s, a.layer, a.r)
 		case opScratch:
-			p.ScratchLayer(s, o.layer, o.r)
+			p.ScratchLayer(s, a.layer, a.r)
 		case opSnapshot:
-			p.Snapshot(s, o.layer, o.r)
+			p.Snapshot(s, a.layer, a.r)
 		case opRelease:
-			p.Release(o.layer)
+			p.Release(a.layer)
 		case opComposite:
-			p.Composite(s, o.layer, o.r, o.aff, o.f[0])
+			p.Composite(s, a.layer, a.r, a.aff, a.f[0])
 		case opProjective:
-			p.CompositeProjective(s, o.layer, o.r, o.m3, o.f[0])
+			p.CompositeProjective(s, a.layer, a.r, a.m3, a.f[0])
 		case opDrawLayer:
-			p.DrawLayer(s, o.layer, o.r, o.mode)
+			p.DrawLayer(s, a.layer, a.r, a.mode)
 		case opCrossFade:
-			p.CrossFade(o.layer, o.other, o.r, o.f[0])
+			p.CrossFade(a.layer, a.other, a.r, a.f[0])
 		case opMaskLayer:
-			p.ApplyMaskLayer(o.layer, o.other, o.r, o.flag)
+			p.ApplyMaskLayer(a.layer, a.other, a.r, a.flag)
 		case opPathMask:
-			p.ApplyPathMask(o.layer, o.path, o.r)
+			p.ApplyPathMask(a.layer, a.path, a.r)
 		case opFilters:
-			p.ApplyFilters(o.layer, o.r, o.filt, o.shape)
+			p.ApplyFilters(a.layer, a.r, a.filt, a.shape)
 		default:
-			panic(fmt.Sprintf("render: play of unknown op %d", o.kind))
+			panic(fmt.Sprintf("render: play of unknown op %d", a.kind))
 		}
 	}
 }

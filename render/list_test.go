@@ -6,6 +6,7 @@ import (
 	"image/color"
 	"reflect"
 	"testing"
+	"unsafe"
 )
 
 // listScene paints one frame using every recordable call. kept is a
@@ -162,19 +163,20 @@ func TestListBoundsHoldEveryPixel(t *testing.T) {
 			for i := range l.ops {
 				o := &l.ops[i]
 				target := dst
-				if o.state.Layer != nil && o.state.Layer.backing != nil {
-					target = rasterOf(o.state.Layer).cv
+				on := l.states[o.state].layer
+				if on != nil && on.backing != nil {
+					target = rasterOf(on).cv
 				}
 				before := bytes.Clone(target.data)
-				(&List{ops: l.ops[i : i+1]}).Play(rasterPlayer{dst: dst})
+				(&List{ops: l.ops[i : i+1], states: l.states, args: l.args, glyphs: l.glyphs}).Play(rasterPlayer{dst: dst})
 				if o.kind >= opLayer && o.kind != opComposite && o.kind != opProjective && o.kind != opDrawLayer {
 					continue
 				}
 				for y := range target.h {
 					for x := range target.w {
 						at := y*target.stride + x*4
-						if !bytes.Equal(before[at:at+4], target.data[at:at+4]) && !o.state.Bounds.Contains(x, y) {
-							t.Fatalf("scale %d/%d: op %d (kind %d) changed (%d, %d) outside its bounds %v", sc[0], sc[1], i, o.kind, x, y, o.state.Bounds)
+						if !bytes.Equal(before[at:at+4], target.data[at:at+4]) && !o.bounds.Contains(x, y) {
+							t.Fatalf("scale %d/%d: op %d (kind %d) changed (%d, %d) outside its bounds %v", sc[0], sc[1], i, o.kind, x, y, o.bounds)
 						}
 					}
 				}
@@ -264,4 +266,23 @@ func TestClippedPaintMatchesFull(t *testing.T) {
 			}
 		}
 	}
+}
+
+func TestARecordedCallIsSmallAndAGlyphCostsLittle(t *testing.T) {
+	if n := unsafe.Sizeof(op{}); n > 64 {
+		t.Errorf("an op is %d bytes, want at most 64", n)
+	}
+	face, err := NewFixtureTypeface()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := NewRecorder(400, 40, 1, 1)
+	defer rec.Recording().End()
+	face.Shape("bytes per recorded glyph", 14).Draw(rec, 4, 20, RGB(0, 0, 0))
+	l := rec.Recording()
+	per := (len(l.ops)*int(unsafe.Sizeof(op{})) + len(l.glyphs)*int(unsafe.Sizeof(glyphOp{})) + len(l.states)*int(unsafe.Sizeof(opState{}))) / len(l.glyphs)
+	if per > 128 {
+		t.Errorf("%d bytes per recorded glyph, want at most 128", per)
+	}
+	t.Logf("op %d bytes, %d bytes per recorded glyph, %d states for %d glyphs", unsafe.Sizeof(op{}), per, len(l.states), len(l.glyphs))
 }

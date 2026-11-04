@@ -17,7 +17,7 @@ func (c *Canvas) Snapshot(old *Layer, region Rect) *Layer {
 // copyFrom copies c's device region into the layer's, row by row.
 func (l *Layer) copyFrom(c *Canvas, region Rect) {
 	if c.rec != nil {
-		c.record(op{kind: opSnapshot, layer: l, r: region})
+		c.record(opArgs{kind: opSnapshot, layer: l, r: region})
 		return
 	}
 	for y := region.Y; y < region.Y+region.H; y++ {
@@ -36,7 +36,7 @@ func (c *Canvas) DrawLayer(l *Layer, src Rect, mode BlendMode) {
 		return
 	}
 	if c.rec != nil {
-		c.record(op{kind: opDrawLayer, layer: l, r: src, mode: mode})
+		c.record(opArgs{kind: opDrawLayer, layer: l, r: src, mode: mode})
 		return
 	}
 	src = src.Intersect(l.cv.Rect()).Intersect(c.clip)
@@ -75,7 +75,7 @@ func (c *Canvas) CompositeProjective(l *Layer, src Rect, m M3, alpha float64) {
 		return
 	}
 	if c.rec != nil {
-		c.record(op{kind: opProjective, layer: l, r: src, m3: m, f: [6]float64{alpha}})
+		c.record(opArgs{kind: opProjective, layer: l, r: src, m3: m, f: [6]float64{alpha}})
 		return
 	}
 	src = src.Intersect(l.cv.Rect())

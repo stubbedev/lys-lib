@@ -179,7 +179,7 @@ func ResampleInto(dst, src *image.RGBA, srcRect image.Rectangle) {
 // premultiplied, exactly like the AA coverage ramps.
 func (c *Canvas) DrawImageDevice(img image.Image, x, y int) {
 	if c.rec != nil {
-		c.record(op{kind: opImageDevice, img: img, i: [5]int{x, y}})
+		c.record(opArgs{kind: opImageDevice, img: img, i: [5]int{x, y}})
 		return
 	}
 	b := img.Bounds()
@@ -231,7 +231,7 @@ func (c *Canvas) drawRGBADevice(img *image.RGBA, x, y int, r image.Rectangle) {
 // rect r: nearest-neighbor sampling, the mask-image rasterizer's own.
 func (c *Canvas) DrawImageRect(img image.Image, r Rect) {
 	if c.rec != nil {
-		c.record(op{kind: opImageRect, img: img, r: r})
+		c.record(opArgs{kind: opImageRect, img: img, r: r})
 		return
 	}
 	b := img.Bounds()

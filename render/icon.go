@@ -282,7 +282,7 @@ func (i *Icon) DrawXformed(cv *Canvas, x, y int, m Affine) {
 		return
 	}
 	if cv.rec != nil {
-		cv.record(op{kind: opIcon, icon: i, i: [5]int{x, y}, aff: m})
+		cv.record(opArgs{kind: opIcon, icon: i, i: [5]int{x, y}, aff: m})
 		return
 	}
 	num, denom := cv.DeviceScale()

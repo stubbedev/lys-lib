@@ -73,7 +73,7 @@ func TexelScale(n int, size float32) float32 { return float32(n) * Reciprocal(si
 // clip's rounded outline (radii in logical pixels).
 func (c *Canvas) PaintImageTiles(img image.Image, t Tile, clip Rect, radii Corners) {
 	if c.rec != nil {
-		c.record(op{kind: opImageTiles, img: img, tile: t, r: clip, radii: radii})
+		c.record(opArgs{kind: opImageTiles, img: img, tile: t, r: clip, radii: radii})
 		return
 	}
 	ib := img.Bounds()
@@ -98,7 +98,7 @@ func (c *Canvas) PaintImageTiles(img image.Image, t Tile, clip Rect, radii Corne
 // its own gradient box, clipped to clip's rounded outline.
 func (c *Canvas) PaintGradientTiles(g Gradient, t Tile, clip Rect, radii Corners) {
 	if c.rec != nil {
-		c.record(op{kind: opGradientTiles, grad: c.keepGradient(&g), tile: t, r: clip, radii: radii})
+		c.record(opArgs{kind: opGradientTiles, grad: c.keepGradient(&g), tile: t, r: clip, radii: radii})
 		return
 	}
 	if len(g.Stops) == 0 {
