@@ -68,6 +68,7 @@ type frame struct {
 	cpuCanvases []*render.Canvas
 	pathScratch render.PathScratch
 	copies      []vk.ImageCopy
+	selfCopies  []vk.ImageCopy
 	// staged is how many bytes of the segment's staging buffer its
 	// uploads fill.
 	staged int

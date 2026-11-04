@@ -736,3 +736,73 @@ func TestRenderCarriesRectsBetweenTargets(t *testing.T) {
 		})
 	}
 }
+
+func scrollScene(rec *render.Canvas, w, scroll int) {
+	rec.Clear(rec.Rect(), render.RGB(240, 240, 240))
+	for row := range 40 {
+		y := row*16 - scroll
+		rec.FillRectDevice(render.Rect{X: 4, Y: y, W: w - 8, H: 8}, render.RGB(uint8(row*6), 80, uint8(240-row*5)))
+	}
+}
+
+func TestAShiftedCarryScrollsLikeAFullRepaint(t *testing.T) {
+	d := openDevice(t)
+	const w, h, step = 96, 64, 9
+	rec := render.NewRecorder(w, h, 1, 1)
+	t.Cleanup(rec.Recording().End)
+	strip := render.Rect{Y: h - step, W: w, H: step}
+	for name, previous := range map[string]func(self *Target) *Target{
+		"the target itself": func(self *Target) *Target { return self },
+		"the previous buffer": func(*Target) *Target {
+			other := newTarget(t, d, w, h)
+			rec.ResetRecorder(w, h, 1, 1)
+			scrollScene(rec, w, 0)
+			if err := d.Render(rec.Recording(), other); err != nil {
+				t.Fatal(err)
+			}
+			return other
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tg := newTarget(t, d, w, h)
+			rec.ResetRecorder(w, h, 1, 1)
+			scrollScene(rec, w, 0)
+			if err := d.Render(rec.Recording(), tg); err != nil {
+				t.Fatal(err)
+			}
+			from := previous(tg)
+			rec.ResetRecorder(w, h, 1, 1)
+			prev := rec.PushClipDevice(strip)
+			scrollScene(rec, w, step)
+			rec.PopClip(prev)
+			before := d.submitted
+			carry := Carry{From: from, Rects: []image.Rectangle{image.Rect(0, 0, w, h-step)}, Offset: image.Pt(0, step)}
+			if err := d.Render(rec.Recording(), tg, carry); err != nil {
+				t.Fatal(err)
+			}
+			if n := d.submitted - before; n != 1 {
+				t.Errorf("%d submissions, want 1", n)
+			}
+			if a := d.args.passBegin.RenderArea; int(a.Offset.Y) != h-step || int(a.Extent.Height) != step {
+				t.Errorf("the frame painted %+v, want the exposed strip", a)
+			}
+			got, err := tg.ReadPixels()
+			if err != nil {
+				t.Fatal(err)
+			}
+			whole := newTarget(t, d, w, h)
+			rec.ResetRecorder(w, h, 1, 1)
+			scrollScene(rec, w, step)
+			if err := d.Render(rec.Recording(), whole); err != nil {
+				t.Fatal(err)
+			}
+			want, err := whole.ReadPixels()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(got.Pix, want.Pix) {
+				t.Error("the scrolled frame differs from a full repaint")
+			}
+		})
+	}
+}

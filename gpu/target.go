@@ -193,10 +193,15 @@ func (t *Target) clear(rgba [4]float32) error {
 // Carry is what a consumer rotating through targets copies into the one
 // it reuses before drawing: Rects of From, which was shown since, the
 // rest of the target already being up to date. From is read where it
-// stands, since it may still be on screen.
+// stands, since it may still be on screen. A rect r takes From's pixels at r
+// moved by Offset, as scrolling does, and the part of r without a source stays
+// as it was. From may be the target itself when Offset is not zero: the pixels
+// then go through a scratch surface, as one image's overlapping copies are
+// undefined.
 type Carry struct {
-	From  *Target
-	Rects []image.Rectangle
+	From   *Target
+	Rects  []image.Rectangle
+	Offset image.Point
 }
 
 func (d *Device) checkCarry(dst *Target, c Carry) error {
@@ -204,8 +209,8 @@ func (d *Device) checkCarry(dst *Target, c Carry) error {
 	switch {
 	case src == nil || src.closed:
 		return errors.New("gpu: Render carrying from a closed target")
-	case src == dst:
-		return errors.New("gpu: Render carrying onto its own source")
+	case src == dst && c.Offset == (image.Point{}):
+		return errors.New("gpu: Render carrying a target onto itself in place")
 	case src.s.d != d:
 		return errors.New("gpu: Render carrying across devices")
 	case dst.Size() != src.Size() || dst.s.vf != src.s.vf:
@@ -219,15 +224,18 @@ func (d *Device) checkCarry(dst *Target, c Carry) error {
 func (f *frame) recordCarry(cb vk.CommandBuffer, carry Carry) {
 	d, dst, src := f.d, f.target, carry.From
 	bounds := image.Rectangle{Max: dst.Size()}
+	if src == dst {
+		f.recordSelfCarry(cb, carry)
+		return
+	}
 	layers := vk.ImageSubresourceLayers{AspectMask: vk.ImageAspectFlags(vk.ImageAspectColorBit), LayerCount: 1}
 	f.copies = f.copies[:0]
 	for _, r := range carry.Rects {
-		if r = r.Intersect(bounds); r.Empty() {
+		if r = r.Intersect(bounds).Intersect(bounds.Sub(carry.Offset)); r.Empty() {
 			continue
 		}
-		at := offset3D(r.Min)
 		f.copies = append(f.copies, vk.ImageCopy{
-			SrcSubresource: layers, SrcOffset: at, DstSubresource: layers, DstOffset: at,
+			SrcSubresource: layers, SrcOffset: offset3D(r.Min.Add(carry.Offset)), DstSubresource: layers, DstOffset: offset3D(r.Min),
 			Extent: extent3D(r.Dx(), r.Dy()),
 		})
 	}
@@ -243,6 +251,32 @@ func (f *frame) recordCarry(cb vk.CommandBuffer, carry Carry) {
 	dst.s.to(cb, vk.ImageLayoutTransferDstOptimal)
 	d.cmds.CmdCopyImage(cb, src.s.image, srcLayout, dst.s.image, vk.ImageLayoutTransferDstOptimal, count(f.copies), &f.copies[0])
 	src.release(cb)
+}
+
+// recordSelfCarry moves pixels within the frame's own target: each rect's source
+// into the filter surface at the rect's place, then all of them back.
+func (f *frame) recordSelfCarry(cb vk.CommandBuffer, carry Carry) {
+	d, dst, temp := f.d, f.target, f.d.filterTemp
+	bounds := image.Rectangle{Max: dst.Size()}
+	layers := vk.ImageSubresourceLayers{AspectMask: vk.ImageAspectFlags(vk.ImageAspectColorBit), LayerCount: 1}
+	f.copies, f.selfCopies = f.copies[:0], f.selfCopies[:0]
+	for _, r := range carry.Rects {
+		if r = r.Intersect(bounds).Intersect(bounds.Sub(carry.Offset)); r.Empty() {
+			continue
+		}
+		at, size := offset3D(r.Min), extent3D(r.Dx(), r.Dy())
+		f.copies = append(f.copies, vk.ImageCopy{SrcSubresource: layers, SrcOffset: offset3D(r.Min.Add(carry.Offset)), DstSubresource: layers, DstOffset: at, Extent: size})
+		f.selfCopies = append(f.selfCopies, vk.ImageCopy{SrcSubresource: layers, SrcOffset: at, DstSubresource: layers, DstOffset: at, Extent: size})
+	}
+	if len(f.copies) == 0 {
+		return
+	}
+	dst.s.to(cb, vk.ImageLayoutTransferSrcOptimal)
+	temp.to(cb, vk.ImageLayoutTransferDstOptimal)
+	d.cmds.CmdCopyImage(cb, dst.s.image, vk.ImageLayoutTransferSrcOptimal, temp.image, vk.ImageLayoutTransferDstOptimal, count(f.copies), &f.copies[0])
+	temp.to(cb, vk.ImageLayoutTransferSrcOptimal)
+	dst.s.to(cb, vk.ImageLayoutTransferDstOptimal)
+	d.cmds.CmdCopyImage(cb, temp.image, vk.ImageLayoutTransferSrcOptimal, dst.s.image, vk.ImageLayoutTransferDstOptimal, count(f.selfCopies), &f.selfCopies[0])
 }
 
 // ReadPixels copies the target back into memory as premultiplied
