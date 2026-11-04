@@ -98,11 +98,12 @@ type Device struct {
 	// uploads tracks the free part of upload.
 	uploads stagingRing
 	// reused, passOps and passRects are the storage of the open pass.
-	reused       Pass
-	passOps      []passOp
-	passForeign  []*Texture
-	prep         preparer
-	cacheUUID    [16]uint8
+	reused      Pass
+	passOps     []passOp
+	passForeign []*Texture
+	prep        preparer
+	cacheUUID   [16]uint8
+	preparedTargets
 	passRects    rectScratch
 	passWork     passWork
 	surfacesMade atomic.Uint64
@@ -408,6 +409,7 @@ func (d *Device) Close() {
 		return
 	}
 	d.closed = true
+	d.adoptTargets()
 	for t := range d.targets {
 		t.Close()
 	}

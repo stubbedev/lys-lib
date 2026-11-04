@@ -102,6 +102,24 @@ func (s *surface) ready() error {
 		}
 		pass = ct.pass
 	}
+	if err := s.attachments(pass); err != nil {
+		return err
+	}
+	set, err := d.textureSet(s.view)
+	if err != nil {
+		return err
+	}
+	s.set = set
+	return nil
+}
+
+// attachments makes the view and framebuffer s lacks, thread-safe as nothing
+// else about a surface is.
+func (s *surface) attachments(pass vk.RenderPass) error {
+	if s.view != 0 {
+		return nil
+	}
+	d := s.d
 	vci := vk.ImageViewCreateInfo{
 		SType: vk.StructureTypeImageViewCreateInfo, Image: s.image, ViewType: vk.ImageViewType2d, Format: s.vf,
 		SubresourceRange: colorRange,
@@ -118,11 +136,6 @@ func (s *surface) ready() error {
 			return fmt.Errorf("gpu: vkCreateFramebuffer %dx%d: %w", s.w, s.h, resultError(r))
 		}
 	}
-	set, err := d.textureSet(s.view)
-	if err != nil {
-		return err
-	}
-	s.set = set
 	return nil
 }
 

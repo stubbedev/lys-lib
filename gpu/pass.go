@@ -87,6 +87,7 @@ func (d *Device) Begin(t *Target, damage []image.Rectangle) (*Pass, error) {
 		return nil, errors.New("gpu: Begin while a pass is open")
 	}
 	d.reap(false)
+	d.adoptTargets()
 	if err := d.publishPipelines(); err != nil {
 		return nil, err
 	}

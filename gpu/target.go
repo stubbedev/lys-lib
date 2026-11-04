@@ -39,10 +39,12 @@ func (d *Device) NewOffscreen(width, height int) (*Target, error) {
 	if err != nil {
 		return nil, err
 	}
-	t := &Target{s: *s, offscreen: true, buf: dmabuf.Buffer{Width: width, Height: height}}
+	t := &Target{s: *s, offscreen: true, buf: dmabufOf(width, height)}
 	d.targets[t] = struct{}{}
 	return t, nil
 }
+
+func dmabufOf(width, height int) dmabuf.Buffer { return dmabuf.Buffer{Width: width, Height: height} }
 
 // NewOffscreenFloat is NewOffscreen in half floats: premultiplied linear light
 // that keeps values above one and below zero, for a compositor's working
@@ -54,7 +56,7 @@ func (d *Device) NewOffscreenFloat(width, height int) (*Target, error) {
 	if err != nil {
 		return nil, err
 	}
-	t := &Target{s: *s, offscreen: true, buf: dmabuf.Buffer{Width: width, Height: height}}
+	t := &Target{s: *s, offscreen: true, buf: dmabufOf(width, height)}
 	d.targets[t] = struct{}{}
 	if err := t.clear([4]float32{}); err != nil {
 		t.Close()
@@ -95,14 +97,21 @@ func (d *Device) NewTarget(width, height int, format fourcc.Format, modifiers []
 	if !slices.Contains(textureFormats, format) {
 		return nil, fmt.Errorf("gpu: no target in DRM format %s (%v)", format, textureFormats)
 	}
+	t, err := d.exportedTarget(width, height, format, modifiers)
+	if err != nil {
+		return nil, err
+	}
+	d.targets[t] = struct{}{}
+	return t, nil
+}
+
+func (d *Device) exportedTarget(width, height int, format fourcc.Format, modifiers []fourcc.Modifier) (*Target, error) {
 	vf := pixelFormats[format].vk
 	e, err := d.export(width, height, format, modifiers, renderUse)
 	if err != nil {
 		return nil, err
 	}
-	t := &Target{s: surface{d: d, w: width, h: height, vf: vf, layout: vk.ImageLayoutUndefined, image: e.image}, memory: []vk.DeviceMemory{e.memory}, buf: e.buf}
-	d.targets[t] = struct{}{}
-	return t, nil
+	return &Target{s: surface{d: d, w: width, h: height, vf: vf, layout: vk.ImageLayoutUndefined, image: e.image}, memory: []vk.DeviceMemory{e.memory}, buf: e.buf}, nil
 }
 
 // Texture is an offscreen target as a texture a later Pass samples:
@@ -143,6 +152,7 @@ func (t *Target) Close() {
 	}
 	t.closed = true
 	d := t.s.d
+	d.adoptTargets()
 	delete(d.targets, t)
 	if t.tex != nil {
 		t.tex.closed = true

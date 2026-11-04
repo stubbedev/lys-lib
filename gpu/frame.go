@@ -118,6 +118,7 @@ func (d *Device) render(l *render.List, t *Target, explicit bool, carry []Carry)
 		}
 	}
 	d.reap(false)
+	d.adoptTargets()
 	if err := d.checkLost(); err != nil {
 		return err
 	}

@@ -1,6 +1,7 @@
 package gpu
 
 import (
+	"errors"
 	"image"
 	"image/color"
 	"os"
@@ -9,6 +10,7 @@ import (
 	"time"
 
 	"github.com/stubbedev/lys-lib/fourcc"
+	"github.com/stubbedev/lys-lib/render"
 )
 
 func awaitPrepared(t *testing.T, d *Device) {
@@ -139,5 +141,92 @@ func TestThePipelineCachePersistsAcrossDevices(t *testing.T) {
 	}
 	if len(leftovers) != 1 {
 		t.Errorf("%d files beside the cache: a temporary was left behind", len(leftovers)-1)
+	}
+}
+
+func TestTargetsPreparedOnAWorkerReachFramesWithoutStoppingThem(t *testing.T) {
+	d := openDevice(t)
+	tg := newTarget(t, d, 32, 32)
+	rec := render.NewRecorder(32, 32, 1, 1)
+	t.Cleanup(rec.Recording().End)
+	rec.Clear(rec.Rect(), render.RGB(1, 2, 3))
+	if err := d.Render(rec.Recording(), tg); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	const count = 16
+	made := make(chan *Target, count)
+	errs := make(chan error, 1)
+	go func() {
+		for range count {
+			p, err := d.PrepareOffscreen(32, 32)
+			if err != nil {
+				errs <- err
+				return
+			}
+			made <- p
+		}
+		close(made)
+	}()
+	waits := d.BlockingWaits()
+	var got []*Target
+	deadline := time.Now().Add(time.Minute)
+	for open := true; open; {
+		select {
+		case err := <-errs:
+			t.Fatal(err)
+		case p, more := <-made:
+			if !more {
+				open = false
+				break
+			}
+			got = append(got, p)
+		default:
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the worker never finished")
+		}
+		err := d.Render(rec.Recording(), tg)
+		if err != nil && !errors.Is(err, ErrBusy) {
+			t.Fatal(err)
+		}
+	}
+	if n := d.BlockingWaits() - waits; n != 0 {
+		t.Errorf("%d blocking waits while the worker allocated", n)
+	}
+	if len(got) != count {
+		t.Fatalf("%d targets of %d", len(got), count)
+	}
+	if err := d.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range got {
+		if p.s.view == 0 || p.s.fb == 0 {
+			t.Fatal("a prepared target left its view and framebuffer for its first draw")
+		}
+		if err := d.Render(rec.Recording(), p); err != nil {
+			t.Fatal(err)
+		}
+		px, err := p.ReadPixels()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if c := px.RGBAAt(1, 1); c != (color.RGBA{1, 2, 3, 255}) {
+			t.Errorf("a prepared target drew %v", c)
+		}
+		if _, ok := d.targets[p]; !ok {
+			t.Error("a prepared target is not registered after a frame")
+		}
+		p.Close()
+	}
+	last, err := d.PrepareOffscreen(8, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	last.Close()
+	if _, ok := d.targets[last]; ok {
+		t.Error("a closed prepared target stayed registered")
 	}
 }
