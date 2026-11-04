@@ -341,8 +341,8 @@ func TestAProtocolErrorIsReadAfterAWriteHitTheClosedSocket(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx, rawPeer := socketContext(t, fds)
-	peer := os.NewFile(uintptr(dupForTest(t, rawPeer)), "compositor")
+	ctx := clientContext(t, fds[0])
+	peer := os.NewFile(uintptr(fds[1]), "compositor")
 	display := ctx.newDisplay()
 	var got DisplayErrorEvent
 	display.AddErrorHandler(&errorHandler{func(ev DisplayErrorEvent) { got = ev }})
@@ -360,7 +360,6 @@ func TestAProtocolErrorIsReadAfterAWriteHitTheClosedSocket(t *testing.T) {
 		t.Fatal(err)
 	}
 	peer.Close()
-	syscall.Close(rawPeer)
 	if err := s.Commit(); err == nil {
 		t.Fatal("a commit to a closed socket reported nothing")
 	}
@@ -559,58 +558,84 @@ func TestAQueuedFdIsTheOriginalFileHoweverItsNumberIsReused(t *testing.T) {
 	}
 }
 
+func fileOf(fd int) (syscall.Stat_t, bool) {
+	var st syscall.Stat_t
+	return st, syscall.Fstat(fd, &st) == nil
+}
+
+func checkFDs(t *testing.T, closed, open map[int]syscall.Stat_t) {
+	t.Helper()
+	for fd, was := range closed {
+		if now, ok := fileOf(fd); ok && now.Dev == was.Dev && now.Ino == was.Ino {
+			t.Errorf("fd %d is still open", fd)
+		}
+	}
+	for fd, was := range open {
+		if now, ok := fileOf(fd); !ok || now.Dev != was.Dev || now.Ino != was.Ino {
+			t.Errorf("fd %d was closed by something that does not own it", fd)
+		}
+	}
+}
+
+func statFD(t *testing.T, fd int) syscall.Stat_t {
+	t.Helper()
+	st, ok := fileOf(fd)
+	if !ok {
+		t.Fatalf("fd %d is not open", fd)
+	}
+	return st
+}
+
+func socketFD(t *testing.T, ctx *Context) int {
+	t.Helper()
+	raw, err := ctx.conn.SyscallConn()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sock int
+	if err := raw.Control(func(fd uintptr) { sock = int(fd) }); err != nil {
+		t.Fatal(err)
+	}
+	return sock
+}
+
 func TestQueuedFdsAreClosedOnceSentAndWithTheConnection(t *testing.T) {
-	send := func(t *testing.T, ctx *Context) {
+	send := func(t *testing.T, ctx *Context) (queued int, held syscall.Stat_t) {
 		t.Helper()
 		f, err := os.Open("/dev/null")
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer f.Close()
+		ctx.SetBuffered(true)
+		defer ctx.SetBuffered(false)
 		if err := NewDataOffer(ctx).Receive("text/plain", f.Fd()); err != nil {
 			t.Fatal(err)
 		}
+		if len(ctx.outFDs) != 1 {
+			t.Fatalf("%d fds queued, want 1", len(ctx.outFDs))
+		}
+		return ctx.outFDs[0], statFD(t, ctx.outFDs[0])
 	}
 	t.Run("sent", func(t *testing.T) {
 		ctx, peer := requestContext(t)
 		defer peer.Close()
-		before := openFDs(t)
-		send(t, ctx)
+		queued, held := send(t, ctx)
 		if pending, err := ctx.Flush(); pending || err != nil {
 			t.Fatalf("Flush: pending %v, %v", pending, err)
 		}
-		buf, oob := make([]byte, 64), make([]byte, syscall.CmsgSpace(4))
-		_, oobn, _, _, err := syscall.Recvmsg(int(peer.Fd()), buf, oob, 0)
-		if err != nil {
-			t.Fatal(err)
-		}
-		scm, err := syscall.ParseSocketControlMessage(oob[:oobn])
-		if err != nil {
-			t.Fatal(err)
-		}
-		fds, err := syscall.ParseUnixRights(&scm[0])
-		if err != nil {
-			t.Fatal(err)
-		}
-		syscall.Close(fds[0])
-		if n := openFDs(t); n != before {
-			t.Errorf("%d open fds after the send, %d before", n, before)
-		}
+		checkFDs(t, map[int]syscall.Stat_t{queued: held}, map[int]syscall.Stat_t{socketFD(t, ctx): statFD(t, socketFD(t, ctx)), int(peer.Fd()): statFD(t, int(peer.Fd()))})
 	})
 	t.Run("queued when the connection closes", func(t *testing.T) {
 		ctx, peer := requestContext(t)
 		defer peer.Close()
-		before := openFDs(t)
 		fillSocket(t, ctx)
-		send(t, ctx)
-		if len(ctx.outFDs) != 1 {
-			t.Fatalf("%d fds queued, want 1", len(ctx.outFDs))
-		}
+		queued, held := send(t, ctx)
+		sock := socketFD(t, ctx)
+		sockFile, peerFile := statFD(t, sock), statFD(t, int(peer.Fd()))
 		if err := ctx.Close(); err != nil {
 			t.Fatal(err)
 		}
-		if n := openFDs(t); n != before-1 {
-			t.Errorf("%d open fds after the connection closed, want %d: its socket gone and nothing queued left", n, before-1)
-		}
+		checkFDs(t, map[int]syscall.Stat_t{queued: held, sock: sockFile}, map[int]syscall.Stat_t{int(peer.Fd()): peerFile})
 	})
 }

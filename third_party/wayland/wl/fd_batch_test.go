@@ -29,7 +29,14 @@ func newSocketContext(t *testing.T) (*Context, int) {
 func socketContext(t testing.TB, fds [2]int) (*Context, int) {
 	t.Helper()
 	t.Cleanup(func() { syscall.Close(fds[1]) })
-	f := os.NewFile(uintptr(fds[0]), "client")
+	return clientContext(t, fds[0]), fds[1]
+}
+
+// clientContext is a context over the client end fd, which it owns; the peer
+// end is the caller's.
+func clientContext(t testing.TB, fd int) *Context {
+	t.Helper()
+	f := os.NewFile(uintptr(fd), "client")
 	conn, err := net.FileConn(f)
 	f.Close()
 	if err != nil {
@@ -37,7 +44,7 @@ func socketContext(t testing.TB, fds [2]int) (*Context, int) {
 	}
 	ctx := &Context{conn: conn.(*net.UnixConn), objects: make(map[ProxyId]Proxy)}
 	t.Cleanup(func() { ctx.Close() })
-	return ctx, fds[1]
+	return ctx
 }
 
 func dataSourceSend(id ProxyId, mime string) []byte {
