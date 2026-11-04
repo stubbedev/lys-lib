@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"image"
-	"runtime"
 	"slices"
 	"syscall"
 	"unsafe"
@@ -191,61 +190,59 @@ func (t *Target) clear(rgba [4]float32) error {
 	}, submission{})
 }
 
-// CopyRects copies rects of src into the same rects of dst, two
-// targets of one size on this device: a consumer rotating through
-// targets brings the one it reuses up to date by copying in what
-// changed since it was last shown from the target shown since, instead
-// of drawing it again. src is read where it stands, since it may still
-// be on screen, and both go back to their consumer, without waiting
-// where the device can tell the consumer when dst is done (publish).
-func (d *Device) CopyRects(dst, src *Target, rects []image.Rectangle) error {
+// Carry is what a consumer rotating through targets copies into the one
+// it reuses before drawing: Rects of From, which was shown since, the
+// rest of the target already being up to date. From is read where it
+// stands, since it may still be on screen.
+type Carry struct {
+	From  *Target
+	Rects []image.Rectangle
+}
+
+func (d *Device) checkCarry(dst *Target, c Carry) error {
+	src := c.From
 	switch {
-	case dst == src:
-		return errors.New("gpu: CopyRects onto its own source")
-	case dst.closed || src.closed:
-		return errors.New("gpu: CopyRects with a closed target")
-	case dst.s.d != d || src.s.d != d:
-		return errors.New("gpu: CopyRects across devices")
+	case src == nil || src.closed:
+		return errors.New("gpu: Render carrying from a closed target")
+	case src == dst:
+		return errors.New("gpu: Render carrying onto its own source")
+	case src.s.d != d:
+		return errors.New("gpu: Render carrying across devices")
 	case dst.Size() != src.Size() || dst.s.vf != src.s.vf:
-		return fmt.Errorf("gpu: CopyRects from %v %s onto %v %s", src.Size(), src.buf.Format, dst.Size(), dst.buf.Format)
+		return fmt.Errorf("gpu: Render carrying from %v %s onto %v %s", src.Size(), src.buf.Format, dst.Size(), dst.buf.Format)
 	case src.s.layout == vk.ImageLayoutUndefined:
-		return errors.New("gpu: CopyRects from a target never drawn")
+		return errors.New("gpu: Render carrying from a target never drawn")
 	}
+	return nil
+}
+
+func (f *frame) recordCarry(cb vk.CommandBuffer, carry Carry) {
+	d, dst, src := f.d, f.target, carry.From
 	bounds := image.Rectangle{Max: dst.Size()}
 	layers := vk.ImageSubresourceLayers{AspectMask: vk.ImageAspectFlags(vk.ImageAspectColorBit), LayerCount: 1}
-	copies := make([]vk.ImageCopy, 0, len(rects))
-	for _, r := range rects {
+	f.copies = f.copies[:0]
+	for _, r := range carry.Rects {
 		if r = r.Intersect(bounds); r.Empty() {
 			continue
 		}
 		at := offset3D(r.Min)
-		copies = append(copies, vk.ImageCopy{
+		f.copies = append(f.copies, vk.ImageCopy{
 			SrcSubresource: layers, SrcOffset: at, DstSubresource: layers, DstOffset: at,
 			Extent: extent3D(r.Dx(), r.Dy()),
 		})
 	}
-	if len(copies) == 0 {
-		return nil
+	if len(f.copies) == 0 {
+		return
 	}
-	publishes := d.publishes(dst)
-	err := d.submitAsync(func(cb vk.CommandBuffer) {
-		src.acquire(cb)
-		dst.acquire(cb)
-		srcLayout := vk.ImageLayoutGeneral
-		if src.offscreen {
-			src.s.to(cb, vk.ImageLayoutTransferSrcOptimal)
-			srcLayout = vk.ImageLayoutTransferSrcOptimal
-		}
-		dst.s.to(cb, vk.ImageLayoutTransferDstOptimal)
-		d.cmds.CmdCopyImage(cb, src.s.image, srcLayout, dst.s.image, vk.ImageLayoutTransferDstOptimal, count(copies), &copies[0])
-		dst.release(cb)
-		src.release(cb)
-	}, submission{signals: publishes})
-	runtime.KeepAlive(copies)
-	if err != nil {
-		return err
+	src.acquire(cb)
+	srcLayout := vk.ImageLayoutGeneral
+	if src.offscreen {
+		src.s.to(cb, vk.ImageLayoutTransferSrcOptimal)
+		srcLayout = vk.ImageLayoutTransferSrcOptimal
 	}
-	return d.publish(dst, publishes)
+	dst.s.to(cb, vk.ImageLayoutTransferDstOptimal)
+	d.cmds.CmdCopyImage(cb, src.s.image, srcLayout, dst.s.image, vk.ImageLayoutTransferDstOptimal, count(f.copies), &f.copies[0])
+	src.release(cb)
 }
 
 // ReadPixels copies the target back into memory as premultiplied

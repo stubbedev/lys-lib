@@ -676,11 +676,11 @@ func TestRenderRefract(t *testing.T) {
 	}
 }
 
-// CopyRects brings a target up to date from another: the rects copied
+// A carry brings a target up to date from another: the rects copied
 // take the source's pixels, everything else keeps its own, for exported
 // targets (the source read in place, as if on screen) and offscreen
 // ones alike (#14).
-func TestCopyRectsBetweenTargets(t *testing.T) {
+func TestRenderCarriesRectsBetweenTargets(t *testing.T) {
 	d := openDevice(t)
 	newTarget := map[string]func() (*Target, error){
 		"offscreen": func() (*Target, error) { return d.NewOffscreen(32, 16) },
@@ -708,8 +708,14 @@ func TestCopyRectsBetweenTargets(t *testing.T) {
 				return tg
 			}
 			src, dst := fill(render.RGBA(200, 0, 0, 255)), fill(render.RGBA(0, 0, 200, 255))
-			if err := d.CopyRects(dst, src, []image.Rectangle{image.Rect(0, 0, 8, 16), image.Rect(24, 4, 40, 8)}); err != nil {
+			empty := render.NewRecorder(32, 16, 1, 1)
+			before := d.submitted
+			carry := Carry{From: src, Rects: []image.Rectangle{image.Rect(0, 0, 8, 16), image.Rect(24, 4, 40, 8)}}
+			if err := d.Render(empty.Recording(), dst, carry); err != nil {
 				t.Fatal(err)
+			}
+			if n := d.submitted - before; n != 1 || d.frame.stats.segments != 1 {
+				t.Errorf("a frame with a carry made %d submissions over %d segments, want 1 and 1", n, d.frame.stats.segments)
 			}
 			img, err := dst.ReadPixels()
 			if err != nil {
@@ -724,8 +730,8 @@ func TestCopyRectsBetweenTargets(t *testing.T) {
 					t.Errorf("(%d,%d) = %v, want %v", c.x, c.y, got, c.want)
 				}
 			}
-			if err := d.CopyRects(dst, dst, []image.Rectangle{image.Rect(0, 0, 4, 4)}); err == nil {
-				t.Error("a copy onto its own source went through")
+			if err := d.Render(empty.Recording(), dst, Carry{From: dst, Rects: []image.Rectangle{image.Rect(0, 0, 4, 4)}}); err == nil {
+				t.Error("a carry from the frame's own target went through")
 			}
 		})
 	}

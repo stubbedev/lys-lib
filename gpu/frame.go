@@ -60,6 +60,8 @@ type frame struct {
 	words   []uint32
 	steps   []step
 	uploads []upload
+	carries []Carry
+	copies  []vk.ImageCopy
 	// staged is how many bytes of the segment's staging buffer its
 	// uploads fill.
 	staged int
@@ -75,10 +77,16 @@ type frame struct {
 // Render draws l onto t and hands t back to its consumer, without
 // waiting for the GPU where the device can tell the consumer when it is
 // done (publish). l is recorded at t's size; its layers keep their GPU
-// surfaces on this device across frames.
-func (d *Device) Render(l *render.List, t *Target) error {
+// surfaces on this device across frames. carry is copied into t first, in
+// the frame's own submission.
+func (d *Device) Render(l *render.List, t *Target, carry ...Carry) error {
 	if t.s.vf != surfaceFormat {
 		return fmt.Errorf("gpu: Render draws into ARGB8888 and XRGB8888 targets, not %s", t.buf.Format)
+	}
+	for _, c := range carry {
+		if err := d.checkCarry(t, c); err != nil {
+			return err
+		}
 	}
 	d.freeDeadLayers()
 	d.images.frames++
@@ -96,6 +104,7 @@ func (d *Device) Render(l *render.List, t *Target) error {
 	f := &d.frame
 	f.d, f.target, f.num, f.denom, f.err = d, t, num, denom, nil
 	f.clear()
+	f.carries = append(f.carries[:0], carry...)
 	f.stats.reset()
 	l.Play(f)
 	if f.err != nil {
@@ -367,6 +376,11 @@ func (f *frame) clear() {
 func (f *frame) record(cb vk.CommandBuffer, final bool) {
 	d := f.d
 	f.target.acquire(cb)
+	for _, c := range f.carries {
+		f.recordCarry(cb, c)
+	}
+	clear(f.carries)
+	f.carries = f.carries[:0]
 	for _, u := range f.uploads {
 		u.dst.upload(cb, u.region, d.current.staging, u.offset, u.rowLength)
 	}
