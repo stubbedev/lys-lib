@@ -1,6 +1,7 @@
 package gpu
 
 import (
+	"cmp"
 	"fmt"
 	"image"
 	"math"
@@ -57,11 +58,12 @@ type frame struct {
 	num, denom int
 	prims      []prim
 	// words are the primitives' variable-length data: gradient stops.
-	words   []uint32
-	steps   []step
-	uploads []upload
-	carries []Carry
-	copies  []vk.ImageCopy
+	words       []uint32
+	steps       []step
+	uploads     []upload
+	carries     []Carry
+	pathScratch render.PathScratch
+	copies      []vk.ImageCopy
 	// staged is how many bytes of the segment's staging buffer its
 	// uploads fill.
 	staged int
@@ -220,15 +222,22 @@ func (f *frame) draw2(dst, tex, tex2 *surface, pp pipe, p prim) {
 		}
 	}
 	f.prims = append(f.prims, p)
+	area := image.Rect(int(p.quad[0]), int(p.quad[1]), int(p.quad[2]), int(p.quad[3]))
 	if n := len(f.steps); n > 0 {
 		last := &f.steps[n-1]
-		if last.kind == stepDraw && last.dst == dst && last.tex == tex && last.tex2 == tex2 && last.pipe == pp {
+		if last.kind == stepDraw && last.dst == dst && last.pipe == pp && samplesJoin(last.tex, tex) && samplesJoin(last.tex2, tex2) {
+			last.tex, last.tex2 = cmp.Or(last.tex, tex), cmp.Or(last.tex2, tex2)
+			last.region = last.region.Union(area)
 			last.count++
 			return
 		}
 	}
-	f.steps = append(f.steps, step{kind: stepDraw, dst: dst, tex: tex, tex2: tex2, pipe: pp, first: count(f.prims) - 1, count: 1})
+	f.steps = append(f.steps, step{kind: stepDraw, dst: dst, tex: tex, tex2: tex2, pipe: pp, first: count(f.prims) - 1, count: 1, region: area})
 }
+
+// samplesJoin reports whether draws sampling a and b can share a binding:
+// nil is a kind of primitive that reads no texture.
+func samplesJoin(a, b *surface) bool { return a == b || a == nil || b == nil }
 
 // sprite rasterizes one call on the CPU, within s's bounds, and draws
 // the result: exact for the source-over calls, whose pixels blended
@@ -438,7 +447,7 @@ func (f *frame) record(cb vk.CommandBuffer, final bool) {
 			}
 			if pass != st.dst {
 				end()
-				f.begin(cb, st.dst)
+				f.begin(cb, st.dst, f.passArea(i))
 				pass, pipe, tex, tex2 = st.dst, 0, nil, nil
 			}
 			want := d.pipelineOf(st.pipe)
@@ -463,12 +472,22 @@ func (f *frame) record(cb vk.CommandBuffer, final bool) {
 	}
 }
 
-// begin opens a render pass on s with the frame's viewport and
+// passArea is what the draws from step i on into its surface touch.
+func (f *frame) passArea(i int) image.Rectangle {
+	dst := f.steps[i].dst
+	area := f.steps[i].region
+	for j := i + 1; j < len(f.steps) && f.steps[j].kind == stepDraw && f.steps[j].dst == dst; j++ {
+		area = area.Union(f.steps[j].region)
+	}
+	return area
+}
+
+// begin opens a render pass on s over area with the frame's viewport and
 // bindings.
-func (f *frame) begin(cb vk.CommandBuffer, s *surface) {
+func (f *frame) begin(cb vk.CommandBuffer, s *surface, area image.Rectangle) {
 	d := f.d
 	s.to(cb, vk.ImageLayoutColorAttachmentOptimal)
-	d.args.scissor = vk.Rect2D{Extent: extent2D(s.w, s.h)}
+	d.args.scissor = rect2D(area.Intersect(image.Rect(0, 0, s.w, s.h)))
 	d.args.passBegin = vk.RenderPassBeginInfo{SType: vk.StructureTypeRenderPassBeginInfo, RenderPass: d.pass, Framebuffer: s.fb, RenderArea: d.args.scissor}
 	d.cmds.CmdBeginRenderPass(cb, &d.args.passBegin, vk.SubpassContentsInline)
 	d.args.viewport = vk.Viewport{Width: float32(s.w), Height: float32(s.h), MaxDepth: 1}
@@ -784,7 +803,19 @@ func (f *frame) FillPath(s render.State, path *render.Path, col render.Color) {
 	if f.err != nil || col == 0 {
 		return
 	}
-	mask, box := render.PathMask(path, s.Bounds, f.num, f.denom)
+	if r, radii, ok := path.RoundedRect(f.num, f.denom); ok {
+		f.RoundedRectCorners(s, r, radii, col)
+		return
+	}
+	if m, at, ok := render.PathCoverageMask(path, f.num, f.denom); ok {
+		if pos, placed := f.maskSlot(m); placed {
+			p := shaded(kindMask, s, 0)
+			p.quad, p.inner, p.cols[0] = quadOf(s.Bounds.Intersect(at)), [4]float32{float32(at.X - pos.X), float32(at.Y - pos.Y)}, uint32(col)
+			f.draw(f.on(s), f.d.masks.page, pipeOver, p)
+			return
+		}
+	}
+	mask, box := f.pathScratch.PathMask(path, s.Bounds, f.num, f.denom)
 	if mask == nil {
 		return
 	}
@@ -847,8 +878,9 @@ func (f *frame) ScratchLayer(s render.State, l *render.Layer, region render.Rect
 
 // readyLayer backs l with a surface at least target-sized, its own when
 // it fits, else a pooled one (scratch) or a new one, and clears region;
-// a layer new to this target size clears whole, as a new raster layer
-// starts. A surface another device made is that device's to free.
+// a kept layer new to this target size clears whole, as a new raster
+// layer starts, while a scratch layer's region is all that reads it
+// (List.Play trims it to that). A surface another device made is that device's to free.
 func (f *frame) readyLayer(l *render.Layer, region render.Rect, scratch bool) {
 	if f.err != nil {
 		return
@@ -870,10 +902,10 @@ func (f *frame) readyLayer(l *render.Layer, region render.Rect, scratch bool) {
 			return
 		}
 	}
-	if ls.w != w || ls.h != h || scratch {
-		ls.w, ls.h = w, h
+	if !scratch && (ls.w != w || ls.h != h) {
 		region = render.Rect{W: w, H: h}
 	}
+	ls.w, ls.h = w, h
 	if err := ls.s.ready(); err != nil {
 		f.fail(err)
 		return
@@ -988,8 +1020,20 @@ func (f *frame) ApplyPathMask(l *render.Layer, path *render.Path, region render.
 	if f.err != nil || r.Empty() {
 		return
 	}
-	mask, box := render.PathMask(path, r, f.num, f.denom)
 	var p prim
+	if rr, radii, ok := path.RoundedRect(f.num, f.denom); ok {
+		p.box, p.radii = render.DeviceBox(rr, radii, f.num, f.denom)
+		f.inPlace(s, r, nil, kindRRectMask, p)
+		return
+	}
+	if m, at, ok := render.PathCoverageMask(path, f.num, f.denom); ok {
+		if pos, placed := f.maskSlot(m); placed {
+			p.box, p.radii = quadOf(at), [4]float32{float32(pos.X), float32(pos.Y)}
+			f.inPlace(s, r, f.d.masks.page, kindPathMask, p)
+			return
+		}
+	}
+	mask, box := f.pathScratch.PathMask(path, r, f.num, f.denom)
 	var page *surface
 	if mask != nil {
 		at, ok := f.maskUpload(mask, box)

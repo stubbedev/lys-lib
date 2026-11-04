@@ -1,6 +1,9 @@
 package gpu
 
-import "testing"
+import (
+	"image"
+	"testing"
+)
 
 func TestBeginningARenderPassAllocatesNothing(t *testing.T) {
 	if raceEnabled {
@@ -27,7 +30,7 @@ func TestBeginningARenderPassAllocatesNothing(t *testing.T) {
 	}
 	f := &frame{d: d}
 	if n := testing.AllocsPerRun(100, func() {
-		f.begin(cb, &tg.s)
+		f.begin(cb, &tg.s, image.Rect(0, 0, 8, 8))
 		d.cmds.CmdEndRenderPass(cb)
 	}); n != 0 {
 		t.Errorf("beginning a render pass allocated %v times", n)

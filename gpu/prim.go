@@ -50,6 +50,7 @@ const (
 	kindGradientTiles
 	kindBlend
 	kindRefract
+	kindRRectMask
 )
 
 // The primitive flags, prim.frag's.

@@ -1,9 +1,12 @@
 package render
 
 import (
+	"encoding/binary"
+	"hash/maphash"
 	"image"
 	"image/draw"
 	"math"
+	"sync"
 
 	"github.com/stubbedev/lys-lib/third_party/vector"
 )
@@ -20,6 +23,7 @@ const kappa = 0.5522847498307936
 // RoundedRectPath appends the rounded rect r (logical pixels, radii
 // clockwise from top-left) to p as one closed subpath.
 func RoundedRectPath(p *Path, r Rect, radii Corners) {
+	alone := p.Empty()
 	tl := clampRadius(radii.TopLeft, r.W, r.H)
 	tr := clampRadius(radii.TopRight, r.W, r.H)
 	br := clampRadius(radii.BottomRight, r.W, r.H)
@@ -44,6 +48,28 @@ func RoundedRectPath(p *Path, r Rect, radii Corners) {
 		p.CubeTo(x0, y0+tl-k, x0+tl-k, y0, x0+tl, y0)
 	}
 	p.Close()
+	p.rounded, p.rect, p.radii = alone, r, radii
+}
+
+// RoundedRect is the rounded rect p is when RoundedRectPath alone made
+// it and it lands on whole device pixels at num/denom with radii that need
+// no clamping, the cases where a distance field paints the outline's shape:
+// a renderer then fills or masks it without rasterizing.
+func (p *Path) RoundedRect(num, denom int) (Rect, Corners, bool) {
+	if !p.rounded {
+		return Rect{}, Corners{}, false
+	}
+	r, c := p.rect, p.radii
+	for _, v := range [4]int{r.X, r.Y, r.W, r.H} {
+		if v*num%denom != 0 {
+			return Rect{}, Corners{}, false
+		}
+	}
+	limit := min(r.W, r.H)
+	if 2*max(c.TopLeft, c.TopRight, c.BottomRight, c.BottomLeft) > limit {
+		return Rect{}, Corners{}, false
+	}
+	return r, c, true
 }
 
 // clampRadius bounds a corner radius by half of each side it spans.
@@ -66,14 +92,35 @@ func EllipsePath(p *Path, cx, cy, rx, ry float64) {
 	p.Close()
 }
 
-// PathCoverage rasterizes p's fill coverage over box (device pixels,
-// p scaled by the device scale) into a fresh alpha image; nil when
+// PathScratch is what rasterizing a path works in, reused from call to
+// call: it allocates only to grow.
+type PathScratch struct {
+	z    *vector.Rasterizer
+	mask image.Alpha
+}
+
+var pathScratches sync.Pool
+
+func takePathScratch() *PathScratch {
+	if sc, ok := pathScratches.Get().(*PathScratch); ok {
+		return sc
+	}
+	return &PathScratch{}
+}
+
+// coverage rasterizes p's fill coverage over box (device pixels, p scaled
+// by the device scale); the image is valid until the next call. Nil when
 // nothing covers.
-func PathCoverage(p *Path, box Rect, scale float32) *image.Alpha {
+func (sc *PathScratch) coverage(p *Path, box Rect, scale float32) *image.Alpha {
 	if p == nil || p.Empty() || box.Empty() {
 		return nil
 	}
-	z := vector.NewRasterizer(box.W, box.H)
+	if sc.z == nil {
+		sc.z = vector.NewRasterizer(box.W, box.H)
+	} else {
+		sc.z.Reset(box.W, box.H)
+	}
+	z := sc.z
 	mx := func(x float64) float32 { return float32(float32(x)*scale) - float32(box.X) }
 	my := func(y float64) float32 { return float32(float32(y)*scale) - float32(box.Y) }
 	walkPath(p,
@@ -83,10 +130,15 @@ func PathCoverage(p *Path, box Rect, scale float32) *image.Alpha {
 			z.CubeTo(mx(x1), my(y1), mx(x2), my(y2), mx(x), my(y))
 		},
 		func() { z.ClosePath() })
-	mask := image.NewAlpha(image.Rect(0, 0, box.W, box.H))
+	if n := box.W * box.H; cap(sc.mask.Pix) < n {
+		sc.mask.Pix = make([]uint8, n)
+	} else {
+		sc.mask.Pix = sc.mask.Pix[:n]
+	}
+	sc.mask.Stride, sc.mask.Rect = box.W, image.Rect(0, 0, box.W, box.H)
 	z.DrawOp = draw.Src
-	z.Draw(mask, mask.Bounds(), image.Opaque, image.Point{})
-	return mask
+	z.Draw(&sc.mask, sc.mask.Bounds(), image.Opaque, image.Point{})
+	return &sc.mask
 }
 
 // walkPath replays p's segments through the move, line, cube and
@@ -118,16 +170,79 @@ func walkPath(p *Path, move func(float64, float64), line func(float64, float64),
 }
 
 // PathMask is the path's coverage at device scale num/denom over box,
-// the part of region its bounds reach (nil when they miss it); the rest
-// of region is uncovered. FillPath blends its color by it, and
-// ApplyPathMask multiplies a layer's region by it.
-func PathMask(p *Path, region Rect, num, denom int) (*image.Alpha, Rect) {
+// the part of region its bounds reach (nil when they miss it), valid until
+// the next call; the rest of region is uncovered. It is for a path too large
+// for PathCoverageMask.
+func (sc *PathScratch) PathMask(p *Path, region Rect, num, denom int) (*image.Alpha, Rect) {
 	scale := devScale(num, denom)
 	box := p.bounds(scale).Intersect(region)
 	if box.Empty() {
 		return nil, box
 	}
-	return PathCoverage(p, box, scale), box
+	return sc.coverage(p, box, scale), box
+}
+
+// maxCachedPathMask bounds the coverage kept per path: past it a path
+// rasterizes only the part a frame needs, each frame.
+const maxCachedPathMask = 512 * 512
+
+type pathMaskKey struct {
+	hash uint64
+	w, h int
+}
+
+type pathMask struct{ covRaster }
+
+func (m *pathMask) size() int { return len(m.cov) }
+
+var pathMasks rasterCache[pathMaskKey, *pathMask]
+
+var pathHashSeed = maphash.MakeSeed()
+
+func (p *Path) contentHash(scale float32, origin Rect) uint64 {
+	var h maphash.Hash
+	h.SetSeed(pathHashSeed)
+	var b [12]byte
+	for i := range p.ops {
+		op := &p.ops[i]
+		n := 1
+		switch op.kind {
+		case pathClose:
+			n = 0
+		case pathCube:
+			n = 3
+		}
+		b[0] = byte(op.kind)
+		_, _ = h.Write(b[:1])
+		for _, pt := range op.pts[:n] {
+			binary.LittleEndian.PutUint32(b[0:], math.Float32bits(float32(float32(pt[0])*scale)-float32(origin.X)))
+			binary.LittleEndian.PutUint32(b[4:], math.Float32bits(float32(float32(pt[1])*scale)-float32(origin.Y)))
+			_, _ = h.Write(b[:8])
+		}
+	}
+	return h.Sum64()
+}
+
+// PathCoverageMask is p's whole coverage at device scale num/denom, cached
+// by content whatever whole pixels it sits at, and the device rect it
+// covers; false for a path past maxCachedPathMask or with no area. FillPath
+// blends its color by it and ApplyPathMask multiplies a layer's region by it.
+func PathCoverageMask(p *Path, num, denom int) (CoverageMask, Rect, bool) {
+	scale := devScale(num, denom)
+	at := p.bounds(scale)
+	if at.Empty() || at.W*at.H > maxCachedPathMask {
+		return nil, Rect{}, false
+	}
+	m := pathMasks.get(pathMaskKey{hash: p.contentHash(scale, at), w: at.W, h: at.H}, func() *pathMask {
+		sc := takePathScratch()
+		defer pathScratches.Put(sc)
+		cov := sc.coverage(p, at, scale)
+		m := &pathMask{}
+		m.w, m.h = at.W, at.H
+		m.cov = append([]uint8(nil), cov.Pix...)
+		return m
+	})
+	return m, at, true
 }
 
 // ApplyPathMask multiplies l's pixels inside region by the path's
@@ -142,12 +257,28 @@ func (l *Layer) ApplyPathMask(p *Path, region Rect) {
 	if region.Empty() {
 		return
 	}
-	mask, box := PathMask(p, region, l.cv.num, l.cv.denom)
+	if r, radii, ok := p.RoundedRect(l.cv.num, l.cv.denom); ok {
+		l.applyRoundedMask(r, radii, region)
+		return
+	}
+	var pix []uint8
+	var stride int
+	var box Rect
+	if m, at, ok := PathCoverageMask(p, l.cv.num, l.cv.denom); ok {
+		pix, stride, box = m.Pix(), at.W, at
+	} else {
+		sc := takePathScratch()
+		defer pathScratches.Put(sc)
+		var mask *image.Alpha
+		if mask, box = sc.PathMask(p, region, l.cv.num, l.cv.denom); mask != nil {
+			pix, stride = mask.Pix, mask.Stride
+		}
+	}
 	for y := region.Y; y < region.Y+region.H; y++ {
 		for x := region.X; x < region.X+region.W; x++ {
 			var cov uint32
-			if mask != nil && x >= box.X && x < box.X+box.W && y >= box.Y && y < box.Y+box.H {
-				cov = uint32(mask.Pix[(y-box.Y)*mask.Stride+x-box.X])
+			if pix != nil && x >= box.X && x < box.X+box.W && y >= box.Y && y < box.Y+box.H {
+				cov = uint32(pix[(y-box.Y)*stride+x-box.X])
 			}
 			if cov == 255 {
 				continue
@@ -158,6 +289,24 @@ func (l *Layer) ApplyPathMask(p *Path, region Rect) {
 				continue
 			}
 			l.cv.set(x, y, coverageScale(col, cov))
+		}
+	}
+}
+
+func (l *Layer) applyRoundedMask(r Rect, radii Corners, region Rect) {
+	b, rc := DeviceBox(r, radii, l.cv.num, l.cv.denom)
+	for y := region.Y; y < region.Y+region.H; y++ {
+		py := float32(y) + 0.5
+		for x := region.X; x < region.X+region.W; x++ {
+			cov := cov255(coverage(sdBoxF(float32(x)+0.5, py, b, rc)))
+			if cov == 255 {
+				continue
+			}
+			if cov == 0 {
+				l.cv.set(x, y, 0)
+				continue
+			}
+			l.cv.set(x, y, coverageScale(l.cv.get(x, y), cov))
 		}
 	}
 }

@@ -104,7 +104,7 @@ func TestParsePathDataCommands(t *testing.T) {
 	if !ok {
 		t.Fatal("parse failed")
 	}
-	cov := PathCoverage(p, Rect{X: 0, Y: 0, W: 24, H: 24}, 1)
+	cov := (&PathScratch{}).coverage(p, Rect{X: 0, Y: 0, W: 24, H: 24}, 1)
 	if cov == nil {
 		t.Fatal("no coverage rasterized")
 	}
@@ -131,7 +131,7 @@ func TestParsePathDataArcApproximatesCircle(t *testing.T) {
 	if !ok {
 		t.Fatal("parse failed")
 	}
-	cov := PathCoverage(p, Rect{W: 22, H: 22}, 1)
+	cov := (&PathScratch{}).coverage(p, Rect{W: 22, H: 22}, 1)
 	if cov == nil {
 		t.Fatal("no coverage")
 	}

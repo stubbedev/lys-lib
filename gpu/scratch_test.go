@@ -134,6 +134,9 @@ func TestThePoolOfScratchLayersIsBoundedAndTrimFreesIt(t *testing.T) {
 			t.Fatalf("step %d: %v", i, err)
 		}
 		tg.Close()
+		if err := d.Finish(); err != nil {
+			t.Fatal(err)
+		}
 		if n := len(d.freeLayers); n > render.MaxPooledLayers {
 			t.Fatalf("step %d: %d pooled layer surfaces, want at most %d", i, n, render.MaxPooledLayers)
 		}

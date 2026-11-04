@@ -99,6 +99,7 @@ type Device struct {
 	// reused, passOps and passRects are the storage of the open pass.
 	reused       Pass
 	passOps      []passOp
+	passForeign  []*Texture
 	passRects    rectScratch
 	passWork     passWork
 	surfacesMade uint64

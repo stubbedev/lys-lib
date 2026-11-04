@@ -9,6 +9,11 @@ import (
 // move_to / line_to / curve_to / close_path).
 type Path struct {
 	ops []pathOp
+	// rounded marks a path that is exactly RoundedRectPath's shape of
+	// rect and radii, which a distance field fills without rasterizing it.
+	rounded bool
+	rect    Rect
+	radii   Corners
 }
 
 type pathKind uint8
@@ -29,22 +34,28 @@ type pathOp struct {
 
 // MoveTo starts a subpath at (x, y).
 func (p *Path) MoveTo(x, y float64) {
+	p.rounded = false
 	p.ops = append(p.ops, pathOp{kind: pathMove, pts: [3][2]float64{{x, y}}})
 }
 
 // LineTo adds a straight segment to (x, y).
 func (p *Path) LineTo(x, y float64) {
+	p.rounded = false
 	p.ops = append(p.ops, pathOp{kind: pathLine, pts: [3][2]float64{{x, y}}})
 }
 
 // CubeTo adds a cubic Bézier to (x, y) through the control points
 // (x1, y1) and (x2, y2).
 func (p *Path) CubeTo(x1, y1, x2, y2, x, y float64) {
+	p.rounded = false
 	p.ops = append(p.ops, pathOp{kind: pathCube, pts: [3][2]float64{{x1, y1}, {x2, y2}, {x, y}}})
 }
 
 // Close closes the current subpath back to its start.
-func (p *Path) Close() { p.ops = append(p.ops, pathOp{kind: pathClose}) }
+func (p *Path) Close() {
+	p.rounded = false
+	p.ops = append(p.ops, pathOp{kind: pathClose})
+}
 
 // Empty reports a path with no segments.
 func (p *Path) Empty() bool { return len(p.ops) == 0 }
@@ -85,9 +96,31 @@ func (c *Canvas) FillPath(p *Path, col Color) {
 	if p == nil || p.Empty() || col == 0 || c.clip.Empty() {
 		return
 	}
-	mask, box := PathMask(p, c.clip, c.num, c.denom)
+	if r, radii, ok := p.RoundedRect(c.num, c.denom); ok {
+		c.RoundedRectCorners(r, radii, col)
+		return
+	}
+	if m, at, ok := PathCoverageMask(p, c.num, c.denom); ok {
+		c.blendCoverage(m, at, col)
+		return
+	}
+	sc := takePathScratch()
+	defer pathScratches.Put(sc)
+	mask, box := sc.PathMask(p, c.clip, c.num, c.denom)
 	for y := range box.H {
 		c.blendMask(box.X, box.Y+y, mask.Pix[y*mask.Stride:y*mask.Stride+box.W], col)
+	}
+}
+
+func (c *Canvas) blendCoverage(m CoverageMask, at Rect, col Color) {
+	box := c.clip.Intersect(at)
+	if box.Empty() {
+		return
+	}
+	cov := m.Pix()
+	for y := box.Y; y < box.Y+box.H; y++ {
+		row := cov[(y-at.Y)*at.W:]
+		c.blendMask(box.X, y, row[box.X-at.X:box.X-at.X+box.W], col)
 	}
 }
 

@@ -1,6 +1,7 @@
 package gpu
 
 import (
+	"errors"
 	"image"
 	"image/color"
 	"testing"
@@ -49,7 +50,21 @@ func BenchmarkFrameGPU(b *testing.B) {
 	for b.Loop() {
 		rec.ResetRecorder(benchW, benchH, 1, 1)
 		paint(rec)
-		if err := d.Render(rec.Recording(), tg); err != nil {
+		renderBench(b, d, rec, tg)
+	}
+}
+
+func renderBench(b *testing.B, d *Device, rec *render.Canvas, tg *Target) {
+	b.Helper()
+	for {
+		err := d.Render(rec.Recording(), tg)
+		if err == nil {
+			return
+		}
+		if !errors.Is(err, ErrBusy) {
+			b.Fatal(err)
+		}
+		if err := d.Finish(); err != nil {
 			b.Fatal(err)
 		}
 	}
@@ -80,9 +95,7 @@ func BenchmarkResizeGPU(b *testing.B) {
 		}
 		rec.ResetRecorder(w, h, 1, 1)
 		paint(rec)
-		if err := d.Render(rec.Recording(), tg); err != nil {
-			b.Fatal(err)
-		}
+		renderBench(b, d, rec, tg)
 		tg.Close()
 	}
 }

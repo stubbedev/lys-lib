@@ -31,6 +31,7 @@ const uint kindImageTiles = 24u;
 const uint kindGradientTiles = 25u;
 const uint kindBlend = 26u;
 const uint kindRefract = 27u;
+const uint kindRRectMask = 28u;
 
 // The info.w flags, gpu/prim.go's.
 const uint flagRaw = 1u;
@@ -772,6 +773,9 @@ void main() {
         c = masked(texel(at), cov);
         break;
     }
+    case kindRRectMask:
+        c = masked(texel(ivec2(floor(px))), cov255(coverage(sdBox(px, p.box, p.radii))));
+        break;
     case kindBoxH:
     case kindBoxV: {
         // render's boxPassH and boxPassV: the 2r+1 taps inside the

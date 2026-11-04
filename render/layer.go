@@ -123,6 +123,10 @@ type Layer struct {
 	scratch bool
 	// backing is what a player keeps for a recorded layer (SetBacking).
 	backing any
+	// need is what the rest of a recorded scratch layer's life reads of
+	// it, while needing, as List.cull walks the List backwards.
+	need    Rect
+	needing bool
 }
 
 // Layer returns a layer the size and scale of c whose region (device

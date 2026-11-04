@@ -31,6 +31,9 @@ type List struct {
 	// waits for; ended marks a List End ended.
 	pending *recording
 	ended   bool
+	// scratchLayers is whether a recording made a scratch layer, whose
+	// calls cull trims to what is read of it, once: culled.
+	scratchLayers, culled bool
 }
 
 // State is the canvas state a recorded call ran under. Layer is the
@@ -158,6 +161,7 @@ type op struct {
 	layer *Layer
 	other *Layer
 	flag  bool
+	skip  bool
 	face  *Typeface
 	gid   font.GID
 }
@@ -192,7 +196,7 @@ func (c *Canvas) ResetRecorder(width, height, num, denom int) *Canvas {
 
 // resetRecording empties c's List and gives c the size and scale.
 func (c *Canvas) resetRecording(width, height, num, denom int) {
-	c.rec.ended = false
+	c.rec.ended, c.rec.scratchLayers, c.rec.culled = false, false, false
 	c.rec.ops, c.rec.stops = c.rec.ops[:0], c.rec.stops[:0]
 	c.rec.num, c.rec.denom = num, denom
 	c.resetFrame(width, height, num, denom)
@@ -256,6 +260,7 @@ func (c *Canvas) recordLayer(old *Layer, region Rect, scratch bool) *Layer {
 		l.cv.owner = l
 	}
 	l.scratch = scratch
+	c.rec.scratchLayers = c.rec.scratchLayers || scratch
 	l.cv.rec = c.rec
 	l.cv.resetFrame(c.w, c.h, c.num, c.denom)
 	l.cv.clip = l.cv.Rect().Intersect(region)
@@ -279,8 +284,12 @@ func (l *List) Play(p Player) {
 	if l.ended {
 		panic("render: Play of an ended List")
 	}
+	l.cull()
 	for i := range l.ops {
 		o := &l.ops[i]
+		if o.skip {
+			continue
+		}
 		s := o.state
 		switch o.kind {
 		case opClear:

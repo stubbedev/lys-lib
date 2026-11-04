@@ -38,7 +38,7 @@ type Pass struct {
 // passWork counts the commands the last recorded pass issued for its
 // draws.
 type passWork struct {
-	binds, pushes, scissors, draws int
+	binds, pushes, scissors, draws, barriers int
 }
 
 type opKind uint8
@@ -530,20 +530,28 @@ func (p *Pass) submit() error {
 func (p *Pass) record(cb vk.CommandBuffer) {
 	d, s, ct := p.d, &p.t.s, p.ct
 	p.t.acquire(cb)
-	var foreign []*Texture
-	for _, op := range p.ops {
-		if op.tex != nil && op.tex.foreign && !slices.Contains(foreign, op.tex) {
+	foreign := d.passForeign[:0]
+	var bounds image.Rectangle
+	for _, r := range p.damage {
+		bounds = bounds.Union(r)
+	}
+	d.passWork = passWork{}
+	for i := range p.ops {
+		op := &p.ops[i]
+		if op.tex == nil || !p.touchesDamage(op.dst) {
+			continue
+		}
+		if op.tex.foreign && !slices.Contains(foreign, op.tex) {
 			foreign = append(foreign, op.tex)
 			op.tex.acquireForeign(cb)
+			d.passWork.barriers++
 		}
-	}
-	for _, op := range p.ops {
-		if op.tex != nil && op.tex.surf != nil {
+		if op.tex.surf != nil {
 			op.tex.surf.to(cb, vk.ImageLayoutShaderReadOnlyOptimal)
 		}
 	}
 	s.to(cb, vk.ImageLayoutColorAttachmentOptimal)
-	area := vk.Rect2D{Extent: extent2D(s.w, s.h)}
+	area := rect2D(bounds)
 	d.args.passBegin = vk.RenderPassBeginInfo{SType: vk.StructureTypeRenderPassBeginInfo, RenderPass: ct.pass, Framebuffer: s.fb, RenderArea: area}
 	d.cmds.CmdBeginRenderPass(cb, &d.args.passBegin, vk.SubpassContentsInline)
 	d.args.viewport = vk.Viewport{Width: float32(s.w), Height: float32(s.h), MaxDepth: 1}
@@ -552,7 +560,6 @@ func (p *Pass) record(cb vk.CommandBuffer) {
 	var bound vk.Pipeline
 	var set, colorBound vk.DescriptorSet
 	var scissor image.Rectangle
-	d.passWork = passWork{}
 	for i := range p.ops {
 		op := &p.ops[i]
 		if op.kind == opClear {
@@ -597,6 +604,8 @@ func (p *Pass) record(cb vk.CommandBuffer) {
 	for _, t := range foreign {
 		t.releaseForeign(cb)
 	}
+	clear(foreign)
+	d.passForeign = foreign[:0]
 	p.t.release(cb)
 }
 
