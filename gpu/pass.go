@@ -78,9 +78,7 @@ func (d *Device) Begin(t *Target, damage []image.Rectangle) (*Pass, error) {
 	if err := t.s.ready(); err != nil {
 		return nil, err
 	}
-	if err := d.settleColors(); err != nil {
-		return nil, err
-	}
+	d.settleColors()
 	p := &d.reused
 	*p = Pass{d: d, t: t, ct: ct, damage: d.passRects.disjoint(damage, image.Rectangle{Max: t.Size()}), ops: d.passOps[:0]}
 	d.active = p

@@ -82,11 +82,7 @@ func (f *frame) imageTexture(img *image.RGBA, id render.ImageID, version uint64)
 		ims.limit = maxImages
 	}
 	if len(ims.byImage) >= ims.limit {
-		if err := f.d.idle(); err != nil {
-			f.fail(err)
-			return nil, false
-		}
-		ims.evictLRU()
+		f.d.evictLRU()
 	}
 	s, err := f.d.newSurface(b.Dx(), b.Dy())
 	if err == nil {
@@ -124,8 +120,9 @@ func (f *frame) stageImage(s *surface, img *image.RGBA) {
 }
 
 // evictLRU frees the least recently drawn quarter of the textures no
-// draw of this frame refers to. Nothing pending may still use them.
-func (ims *images) evictLRU() {
+// draw of this frame refers to.
+func (d *Device) evictLRU() {
+	ims := &d.images
 	keys := make([]imageKey, 0, len(ims.byImage))
 	for key, t := range ims.byImage {
 		if t.used != ims.frames {
@@ -134,7 +131,7 @@ func (ims *images) evictLRU() {
 	}
 	slices.SortFunc(keys, func(a, b imageKey) int { return cmp.Compare(ims.byImage[a].used, ims.byImage[b].used) })
 	for _, key := range keys[:min(len(keys), max(1, ims.limit/4))] {
-		ims.byImage[key].s.close()
+		d.retire(ims.byImage[key].s)
 		delete(ims.byImage, key)
 	}
 }
@@ -199,9 +196,8 @@ func (d *Device) dropImages(drop func(imageKey, *imageTexture) bool) {
 	if len(picked) == 0 {
 		return
 	}
-	d.cmds.DeviceWaitIdle(d.device)
 	for _, key := range picked {
-		ims.byImage[key].s.close()
+		d.retire(ims.byImage[key].s)
 		delete(ims.byImage, key)
 	}
 }

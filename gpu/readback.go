@@ -121,13 +121,8 @@ func (r *Readback) Close() {
 	}
 	r.closed = true
 	d := r.d
-	_ = d.idle()
-	if r.copied {
-		d.cmds.WaitForFences(d.device, 1, &r.fence, vk.True, ^uint64(0))
-	}
 	delete(d.readbacks, r)
-	d.cmds.DestroyFence(d.device, r.fence, nil)
-	r.buf.close()
+	d.retire(r)
 }
 
 // hostReadBarrier records making the transfers before it available to

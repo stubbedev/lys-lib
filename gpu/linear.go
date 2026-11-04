@@ -104,9 +104,8 @@ func (l *Linear) Close() {
 		return
 	}
 	l.closed = true
-	_ = l.d.idle()
 	delete(l.d.linears, l)
-	l.release()
+	l.d.retire(l)
 }
 
 func (l *Linear) release() {

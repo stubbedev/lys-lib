@@ -70,18 +70,28 @@ func (s *FragmentShader) pipeline(format vk.Format) (vk.Pipeline, error) {
 	return p, nil
 }
 
-// Close waits for the device, as a frame in flight may still draw with it.
+// Close frees the shader once the frames in flight that may draw with it
+// finish.
 func (s *FragmentShader) Close() error {
 	if s.module == 0 {
 		return nil
 	}
-	err := s.d.idle()
+	s.d.retire(&retiredShader{d: s.d, module: s.module, pipelines: s.pipelines})
+	s.module, s.pipelines = 0, nil
+	return nil
+}
+
+type retiredShader struct {
+	d         *Device
+	module    vk.ShaderModule
+	pipelines map[vk.Format]vk.Pipeline
+}
+
+func (s *retiredShader) destroy() {
 	for _, p := range s.pipelines {
 		s.d.cmds.DestroyPipeline(s.d.device, p, nil)
 	}
 	s.d.cmds.DestroyShaderModule(s.d.device, s.module, nil)
-	s.module, s.pipelines = 0, nil
-	return err
 }
 
 // DrawFragmentShader writes all of t through s into dst's damaged part,

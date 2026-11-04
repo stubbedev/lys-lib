@@ -6,6 +6,7 @@ import (
 	"image"
 	"runtime"
 	"slices"
+	"syscall"
 	"unsafe"
 
 	"github.com/stubbedev/lys-lib/dmabuf"
@@ -143,20 +144,15 @@ func (t *Target) Close() {
 	}
 	t.closed = true
 	d := t.s.d
-	_ = d.idle()
 	delete(d.targets, t)
 	if t.tex != nil {
 		t.tex.closed = true
-		t.tex.release()
 	}
-	t.s.close()
-	if t.offscreen {
-		return
+	for _, p := range t.buf.Planes {
+		_ = syscall.Close(p.FD)
 	}
-	e := exported{image: t.s.image, buf: t.buf}
-	e.close(d)
-	d.freeMemory(t.memory)
-	t.s.image, t.memory, t.buf.Planes = 0, nil, nil
+	t.buf.Planes = nil
+	d.retire(t)
 }
 
 // acquire records taking t back from its consumer for drawing; its
@@ -185,14 +181,14 @@ func (t *Target) release(cb vk.CommandBuffer) {
 // clear fills t with the premultiplied color rgba and hands it to its
 // consumer.
 func (t *Target) clear(rgba [4]float32) error {
-	return t.s.d.submit(func(cb vk.CommandBuffer) {
+	return t.s.d.submitAsync(func(cb vk.CommandBuffer) {
 		t.acquire(cb)
 		t.s.to(cb, vk.ImageLayoutTransferDstOptimal)
 		var col vk.ClearColorValue
 		copy(col[:], unsafe.Slice((*byte)(unsafe.Pointer(&rgba[0])), len(col)))
 		t.s.d.cmds.CmdClearColorImage(cb, t.s.image, vk.ImageLayoutTransferDstOptimal, &col, 1, &colorRange)
 		t.release(cb)
-	})
+	}, submission{})
 }
 
 // CopyRects copies rects of src into the same rects of dst, two

@@ -117,10 +117,7 @@ func (d *Device) ensureScratch(w, h int) error {
 	}
 	d.scratchW, d.scratchH = max(w, d.scratchW), max(h, d.scratchH)
 	if d.page != nil {
-		if err := d.idle(); err != nil {
-			return err
-		}
-		d.page.close()
+		d.retire(d.page)
 	}
 	var err error
 	if d.page, err = d.newSurface(d.scratchW, d.scratchH); err != nil {
@@ -173,21 +170,16 @@ func (d *Device) Trim() error {
 	return nil
 }
 
-// fitFilters grows the filter surfaces to hold w x h, once nothing
-// pending uses them.
+// fitFilters grows the filter surfaces to hold w x h; the old ones go
+// once nothing pending uses them.
 func (d *Device) fitFilters(w, h int) error {
 	if w <= d.filterW && h <= d.filterH {
 		return nil
 	}
 	d.filterW, d.filterH = max(w, d.filterW), max(h, d.filterH)
-	if d.filterTemp != nil {
-		if err := d.idle(); err != nil {
-			return err
-		}
-	}
 	for _, t := range []**surface{&d.filterTemp, &d.filterTemp2} {
 		if *t != nil {
-			(*t).close()
+			d.retire(*t)
 		}
 		var err error
 		if *t, err = d.newSurface(d.filterW, d.filterH); err != nil {
@@ -277,9 +269,8 @@ func (d *Device) poolLayer(ls *layerSurface) {
 // dropLayer frees a surface its layer outgrew.
 func (d *Device) dropLayer(ls *layerSurface) {
 	ls.cleanup.Stop()
-	d.cmds.DeviceWaitIdle(d.device)
 	delete(d.layers, ls)
-	ls.s.close()
+	d.retire(ls.s)
 }
 
 // buryLayer queues a collected layer's surface for freeing on the
@@ -296,13 +287,9 @@ func (d *Device) freeDeadLayers() {
 	dead := d.dead
 	d.dead = nil
 	d.deadMu.Unlock()
-	if len(dead) == 0 {
-		return
-	}
-	d.cmds.DeviceWaitIdle(d.device)
 	for _, ls := range dead {
 		delete(d.layers, ls)
-		ls.s.close()
+		d.retire(ls.s)
 	}
 }
 

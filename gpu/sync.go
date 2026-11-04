@@ -37,6 +37,10 @@ type timing struct {
 	queries        vk.QueryPool
 	nextQuery      uint32
 	inflight       []inflight
+	submitted      uint64
+	completed      uint64
+	graves         []grave
+	blockingWaits  uint64
 	waits          []vk.Semaphore
 	passes         uint64
 	done           uint64
@@ -60,6 +64,7 @@ type timing struct {
 	// small uploads and its pass reach the kernel together; flushBatchBytes
 	// of them go at once, for the GPU to finish before the frame needs them.
 	batch      vk.CommandBuffer
+	batchOps   int
 	batched    int
 	batchEnd   int
 	batchBytes int
@@ -106,6 +111,7 @@ type callArgs struct {
 }
 
 type inflight struct {
+	seq   uint64
 	fence vk.Fence
 	cb    vk.CommandBuffer
 	// sems counts this submission's share of heldSemaphores.
@@ -428,7 +434,9 @@ func (d *Device) queue1(cb vk.CommandBuffer, signal vk.Semaphore, query int, sub
 		}
 		return fmt.Errorf("gpu: vkQueueSubmit: %w", resultError(r))
 	}
-	f := inflight{fence: fence, cb: cb, sems: len(d.waits), query: query}
+	d.submitted++
+	f := inflight{seq: d.submitted, fence: fence, cb: cb, sems: len(d.waits), query: query}
+	d.batchOps = 0
 	if d.batched > 0 {
 		f.staged, f.stagingEnd, d.batched, d.batchBytes = true, d.batchEnd, 0, 0
 	}
@@ -537,6 +545,7 @@ func (d *Device) flushBatch() error {
 // carried: their staging bytes are free again.
 func (d *Device) dropBatch(cb vk.CommandBuffer) {
 	d.spareBuffers = append(d.spareBuffers, cb)
+	d.batchOps = 0
 	if d.batched > 0 {
 		d.batched, d.batchBytes = 0, 0
 		d.uploads.pending--
@@ -575,6 +584,7 @@ func (d *Device) ensureQueries() error {
 }
 
 func (d *Device) waitFence(f vk.Fence) error {
+	d.blockingWaits++
 	d.args.fence = f
 	if r := d.cmds.WaitForFences(d.device, 1, &d.args.fence, vk.True, ^uint64(0)); r != vk.Success {
 		return fmt.Errorf("gpu: vkWaitForFences: %w", resultError(r))
@@ -635,6 +645,7 @@ func (d *Device) reap(all bool) {
 		return
 	}
 	fences, sems := len(d.spareFences), 0
+	d.completed = d.inflight[n-1].seq
 	for i := range d.inflight[:n] {
 		f := &d.inflight[i]
 		if f.pass > d.done {
@@ -662,6 +673,7 @@ func (d *Device) reap(all bool) {
 		}
 		d.spareFences = d.spareFences[:fences]
 	}
+	d.buryFinished(d.completed)
 }
 
 func (d *Device) idle() error {
@@ -669,6 +681,7 @@ func (d *Device) idle() error {
 		return err
 	}
 	if len(d.inflight) == 0 {
+		d.buryAll()
 		return d.checkLost()
 	}
 	if err := d.waitFence(d.inflight[len(d.inflight)-1].fence); err != nil {
@@ -678,6 +691,7 @@ func (d *Device) idle() error {
 		return fmt.Errorf("gpu: vkQueueWaitIdle: %w", resultError(r))
 	}
 	d.reap(true)
+	d.buryAll()
 	return nil
 }
 
@@ -747,6 +761,8 @@ func (d *Device) FrameDone() (time.Duration, bool, error) {
 
 func (d *Device) closeTiming() {
 	d.reap(true)
+	d.batch = 0
+	d.buryAll()
 	for _, f := range d.spareFences {
 		d.cmds.DestroyFence(d.device, f, nil)
 	}

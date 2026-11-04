@@ -85,12 +85,15 @@ func (t *Texture) create() error {
 	if err := t.createView(); err != nil {
 		return err
 	}
-	return d.submit(func(cb vk.CommandBuffer) {
-		fullBarrier(d, cb, t.image, vk.ImageLayoutUndefined, vk.ImageLayoutTransferDstOptimal, vk.QueueFamilyIgnored, vk.QueueFamilyIgnored)
-		var clear vk.ClearColorValue
-		d.cmds.CmdClearColorImage(cb, t.image, vk.ImageLayoutTransferDstOptimal, &clear, 1, &colorRange)
-		fullBarrier(d, cb, t.image, vk.ImageLayoutTransferDstOptimal, vk.ImageLayoutShaderReadOnlyOptimal, vk.QueueFamilyIgnored, vk.QueueFamilyIgnored)
-	})
+	cb, err := d.batchCommands()
+	if err != nil {
+		return err
+	}
+	fullBarrier(d, cb, t.image, vk.ImageLayoutUndefined, vk.ImageLayoutTransferDstOptimal, vk.QueueFamilyIgnored, vk.QueueFamilyIgnored)
+	var clear vk.ClearColorValue
+	d.cmds.CmdClearColorImage(cb, t.image, vk.ImageLayoutTransferDstOptimal, &clear, 1, &colorRange)
+	fullBarrier(d, cb, t.image, vk.ImageLayoutTransferDstOptimal, vk.ImageLayoutShaderReadOnlyOptimal, vk.QueueFamilyIgnored, vk.QueueFamilyIgnored)
+	return d.endBatchOp()
 }
 
 func (t *Texture) createView() error {
@@ -154,13 +157,13 @@ func (t *Texture) Update(r image.Rectangle, stride int, pix []byte) error {
 			copy(dst[y*row:], pix[y*stride:y*stride+row])
 		}
 	}
-	if d.batch == 0 {
-		if d.batch, err = d.recording(); err != nil {
-			return err
-		}
+	cb, err := d.batchCommands()
+	if err != nil {
+		return err
+	}
+	if d.batched == 0 {
 		d.uploads.pending++
 	}
-	cb := d.batch
 	fullBarrier(d, cb, t.image, vk.ImageLayoutShaderReadOnlyOptimal, vk.ImageLayoutTransferDstOptimal, vk.QueueFamilyIgnored, vk.QueueFamilyIgnored)
 	region := &d.args.region
 	*region = vk.BufferImageCopy{
@@ -175,26 +178,42 @@ func (t *Texture) Update(r image.Rectangle, stride int, pix []byte) error {
 	d.batched++
 	d.batchEnd = d.uploads.head
 	d.batchBytes += row * r.Dy()
-	if d.batched >= maxBatchedUploads || d.batchBytes >= flushBatchBytes {
+	if d.batchBytes >= flushBatchBytes {
+		return d.flushBatch()
+	}
+	return d.endBatchOp()
+}
+
+func (d *Device) batchCommands() (vk.CommandBuffer, error) {
+	if d.batch != 0 {
+		return d.batch, nil
+	}
+	cb, err := d.recording()
+	if err != nil {
+		return 0, err
+	}
+	d.batch = cb
+	return cb, nil
+}
+
+func (d *Device) endBatchOp() error {
+	d.batchOps++
+	if d.batchOps >= maxBatchedUploads {
 		return d.flushBatch()
 	}
 	return nil
 }
 
-// maxBatchedUploads bounds the command memory an update loop with no
-// pass can pile up.
+// maxBatchedUploads bounds the command memory a loop of updates and new
+// textures with no pass can pile up.
 const maxBatchedUploads = 64
 
 const flushBatchBytes = 1 << 20
 
 // reserveUpload is the offset of n free bytes in the staging ring,
-// waiting for earlier uploads only when the ring is full and for the
-// device to idle only when n outgrows it.
+// waiting for earlier uploads only when the ring is full.
 func (d *Device) reserveUpload(n int) (int, error) {
 	if d.upload == nil || len(d.upload.mapped) < n {
-		if err := d.idle(); err != nil {
-			return 0, err
-		}
 		if err := d.growUpload(n); err != nil {
 			return 0, err
 		}
@@ -217,16 +236,23 @@ func (d *Device) reserveUpload(n int) (int, error) {
 }
 
 func (d *Device) growUpload(n int) error {
-	var err error
-	if d.upload != nil {
-		d.upload, err = d.upload.fit(n)
-	} else {
-		d.upload, err = d.newBuffer(max(2*n, stagingMin), vk.BufferUsageTransferSrcBit)
+	if d.batched > 0 {
+		if err := d.flushBatch(); err != nil {
+			return err
+		}
 	}
+	grown, err := d.newBuffer(max(2*n, stagingMin), vk.BufferUsageTransferSrcBit)
 	if err != nil {
 		return err
 	}
-	d.uploads = stagingRing{size: len(d.upload.mapped)}
+	if d.upload != nil {
+		d.retire(d.upload)
+	}
+	for i := range d.inflight {
+		d.inflight[i].staged = false
+	}
+	d.upload = grown
+	d.uploads = stagingRing{size: len(grown.mapped)}
 	return nil
 }
 
@@ -237,9 +263,8 @@ func (t *Texture) Close() {
 		return
 	}
 	t.closed = true
-	_ = t.d.idle()
 	delete(t.d.textures, t)
-	t.release()
+	t.d.retire(t)
 }
 
 func (t *Texture) release() {

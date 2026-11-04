@@ -3,6 +3,8 @@ package gpu
 import (
 	"errors"
 	"fmt"
+	"maps"
+	"slices"
 	"unsafe"
 
 	"github.com/stubbedev/lys-lib/third_party/vk"
@@ -37,6 +39,7 @@ type colorState struct {
 	buf       *buffer
 	sets      []vk.DescriptorSet
 	slots     map[ColorTransform]int
+	free      []int
 	frags     [colorFrags]vk.ShaderModule
 	layout    vk.PipelineLayout
 }
@@ -83,6 +86,10 @@ func (d *Device) createColor(cs *colorState) error {
 		d.cmds.UpdateDescriptorSets(d.device, 1, &w, 0, nil)
 	}
 	cs.slots = make(map[ColorTransform]int, colorSlots)
+	cs.free = make([]int, colorSlots)
+	for i := range cs.free {
+		cs.free[i] = colorSlots - 1 - i
+	}
 	for i, spv := range [colorFrags][]byte{compColorFrag, gradColorFrag, ycbcr444ColorFrag, ycbcrPlanesColorFrag, glassColorFrag} {
 		if cs.frags[i], err = d.shaderModule(spv); err != nil {
 			return err
@@ -127,8 +134,8 @@ func (cs *colorState) destroy(d *Device) {
 }
 
 // colorSet is the set holding t's uniforms, written the first time t comes
-// along. The slot stays t's until settleColors empties them with no pass
-// open and nothing in flight, so a recorded pass reads what it was given.
+// along. The slot stays t's until settleColors retires it and the submissions
+// that may read it finish, so a recorded pass reads what it was given.
 func (d *Device) colorSet(t *ColorTransform) (vk.DescriptorSet, error) {
 	cs, err := d.colorInit()
 	if err != nil {
@@ -137,10 +144,17 @@ func (d *Device) colorSet(t *ColorTransform) (vk.DescriptorSet, error) {
 	if i, ok := cs.slots[*t]; ok {
 		return cs.sets[i], nil
 	}
-	i := len(cs.slots)
-	if i == colorSlots {
+	if len(cs.free) == 0 {
+		if err := d.idle(); err != nil {
+			return 0, err
+		}
+	}
+	n := len(cs.free)
+	if n == 0 {
 		return 0, fmt.Errorf("gpu: more than %d colour transforms in one pass", colorSlots)
 	}
+	i := cs.free[n-1]
+	cs.free = cs.free[:n-1]
 	u := t.Uniforms()
 	copy(cs.buf.mapped[i*colorSlotBytes:], unsafe.Slice((*byte)(unsafe.Pointer(&u[0])), unsafe.Sizeof(u)))
 	cs.slots[*t] = i
@@ -149,17 +163,21 @@ func (d *Device) colorSet(t *ColorTransform) (vk.DescriptorSet, error) {
 
 // settleColors frees the slots when they run low, between passes: a transform
 // still in use takes a new one in its next pass.
-func (d *Device) settleColors() error {
+func (d *Device) settleColors() {
 	cs := &d.comp.color
 	if len(cs.slots) < colorSlots/2 {
-		return nil
+		return
 	}
-	if err := d.idle(); err != nil {
-		return err
-	}
+	d.retire(&retiredColors{cs: cs, slots: slices.Collect(maps.Values(cs.slots))})
 	clear(cs.slots)
-	return nil
 }
+
+type retiredColors struct {
+	cs    *colorState
+	slots []int
+}
+
+func (r *retiredColors) destroy() { r.cs.free = append(r.cs.free, r.slots...) }
 
 // coloredPipes are one YUV kind's pipelines through a colour transform.
 type coloredPipes struct {
