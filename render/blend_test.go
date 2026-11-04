@@ -546,7 +546,8 @@ func blendRows(t *testing.T) []blendRow {
 			tol:  1,
 			why:  "runs share ShapedText.Draw's blend path across faces; +/-1",
 			paint: func(t *testing.T, cv *Canvas, col Color) {
-				c := NewChain(blendTypeface(t)).WithResolver(func(rune) *Typeface { return blendMono(t) })
+				c := NewChain(blendTypeface(t)).WithResolver(func(rune) *Typeface { return blendMono(t) }, nil)
+				c.Prewarm('你')
 				s := c.Shape("a你", 20)
 				if s.Runs() != 2 {
 					t.Errorf("chain shaped %d runs, want 2 (latin + fallback)", s.Runs())
@@ -556,7 +557,8 @@ func blendRows(t *testing.T) []blendRow {
 			aa: &aaSpec{
 				region: Rect{X: 0, Y: 0, W: blendW, H: blendH},
 				draw: func(cv *Canvas, col Color) {
-					c := NewChain(blendTypeface(t)).WithResolver(func(rune) *Typeface { return blendMono(t) })
+					c := NewChain(blendTypeface(t)).WithResolver(func(rune) *Typeface { return blendMono(t) }, nil)
+					c.Prewarm('你')
 					c.Draw(cv, c.Shape("a你", 20), 4, 30, col)
 				},
 				minFull: 4,

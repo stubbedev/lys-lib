@@ -30,6 +30,7 @@ import (
 // resolves and reorders differently.
 type shapeKey struct {
 	font Font
+	gen  uint64
 	px   float64
 	text string
 	dir  text.Direction
@@ -72,7 +73,7 @@ var shapes = newLRU[shapeKey, *ShapedText](shapeCacheBudget)
 // shared: ShapedText is immutable once built, so every caller may keep
 // and read it freely.
 func cachedShape(font Font, px float64, s string, d text.Direction, fill func() *ShapedText) *ShapedText {
-	key := shapeKey{font: font, px: px, text: s, dir: d}
+	key := shapeKey{font: font, gen: generationOf(font), px: px, text: s, dir: d}
 	if sh, ok := shapes.get(key); ok {
 		return sh
 	}
@@ -86,6 +87,7 @@ func cachedShape(font Font, px float64, s string, d text.Direction, fill func() 
 // one-rune string each lookup built, so the key stores the rune.
 type runeKey struct {
 	font Font
+	gen  uint64
 	px   float64
 	r    rune
 }
@@ -98,7 +100,7 @@ var runeShapes = newLRU[runeKey, *ShapedText](runeShapeCacheBudget)
 // filling the cache on a miss; the fill must produce what Shape of the
 // one-rune string would, so both caches agree entry for entry.
 func cachedShapeRune(font Font, px float64, r rune, fill func() *ShapedText) *ShapedText {
-	key := runeKey{font: font, px: px, r: r}
+	key := runeKey{font: font, gen: generationOf(font), px: px, r: r}
 	if sh, ok := runeShapes.get(key); ok {
 		return sh
 	}
@@ -121,6 +123,7 @@ const (
 
 type runeLineEntry struct {
 	font  Font
+	gen   uint64
 	px    float64
 	dir   text.Direction
 	rs    []rune
@@ -141,12 +144,13 @@ var (
 // entry.
 func cachedShapeRunes(font Font, px float64, rs []rune, d text.Direction, fill func() *ShapedText) *ShapedText {
 	key := runeLineHash(font, px, rs, d)
+	gen := generationOf(font)
 	runeLineMu.Lock()
 	set := &runeLines[key%runeLineSets]
 	runeLineClock++
 	for i := range set {
 		e := &set[i]
-		if e.stamp != 0 && e.font == font && e.px == px && e.dir == d && slices.Equal(e.rs, rs) {
+		if e.stamp != 0 && e.font == font && e.gen == gen && e.px == px && e.dir == d && slices.Equal(e.rs, rs) {
 			e.stamp = runeLineClock
 			sh := e.val
 			runeLineMu.Unlock()

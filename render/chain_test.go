@@ -1,7 +1,9 @@
 package render
 
 import (
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"golang.org/x/image/font/gofont/gomono"
 	"golang.org/x/image/font/gofont/goregular"
@@ -50,6 +52,7 @@ func TestChain(t *testing.T) {
 
 	t.Run("covered runes stay on the primary in one run", func(t *testing.T) {
 		c := NewChain(primary)
+		c.Prewarm([]rune("hello")...)
 		s := c.Shape("hello", 14)
 		if s.Runs() != 1 {
 			t.Errorf("Runs = %d, want 1", s.Runs())
@@ -61,6 +64,7 @@ func TestChain(t *testing.T) {
 
 	t.Run("uncovered runes stay on the primary when nothing covers", func(t *testing.T) {
 		c := NewChain(primary)
+		c.Prewarm([]rune("a你")...)
 		s := c.Shape("a你", 14)
 		if s.Runs() != 1 {
 			t.Errorf("Runs = %d, want 1 (no fallback installed)", s.Runs())
@@ -72,7 +76,8 @@ func TestChain(t *testing.T) {
 
 	t.Run("mixed text splits into runs per face", func(t *testing.T) {
 		var calls int
-		c := NewChain(primary).WithResolver(hanPicker(mono, &calls))
+		c := NewChain(primary).WithResolver(hanPicker(mono, &calls), nil)
+		c.Prewarm([]rune("a你b😀c")...)
 		s := c.Shape("a你b😀c", 14)
 		if s.Runs() != 5 {
 			t.Errorf("Runs = %d, want 5 (latin/Han/latin/emoji/latin)", s.Runs())
@@ -90,8 +95,9 @@ func TestChain(t *testing.T) {
 
 	t.Run("picks cache per rune", func(t *testing.T) {
 		var calls int
-		c := NewChain(primary).WithResolver(hanPicker(mono, &calls))
-		c.faceFor('你')
+		c := NewChain(primary).WithResolver(hanPicker(mono, &calls), nil)
+		c.Prewarm('你')
+		c.Prewarm('你')
 		c.faceFor('你')
 		if calls != 1 {
 			t.Errorf("resolver called %d times for one rune, want 1", calls)
@@ -100,7 +106,8 @@ func TestChain(t *testing.T) {
 
 	t.Run("advance sums the runs", func(t *testing.T) {
 		var calls int
-		c := NewChain(primary).WithResolver(hanPicker(mono, &calls))
+		c := NewChain(primary).WithResolver(hanPicker(mono, &calls), nil)
+		c.Prewarm([]rune("a你b")...)
 		s := c.Shape("a你b", 14)
 		want := primary.Shape("a", 14).Advance() +
 			mono.Shape("你", 14).Advance() +
@@ -112,7 +119,8 @@ func TestChain(t *testing.T) {
 
 	t.Run("line metrics take the tallest run", func(t *testing.T) {
 		var calls int
-		c := NewChain(primary).WithResolver(hanPicker(mono, &calls))
+		c := NewChain(primary).WithResolver(hanPicker(mono, &calls), nil)
+		c.Prewarm([]rune("a你")...)
 		s := c.Shape("a你", 14)
 		wantAsc := max(primary.Shape("a", 14).Ascent(), mono.Shape("你", 14).Ascent())
 		if diff := s.Ascent() - wantAsc; diff < -0.01 || diff > 0.01 {
@@ -122,6 +130,7 @@ func TestChain(t *testing.T) {
 
 	t.Run("empty text still reserves the primary's line height", func(t *testing.T) {
 		c := NewChain(primary)
+		c.Prewarm([]rune("")...)
 		s := c.Shape("", 14)
 		if got := s.LineHeight(); got != primary.Shape("", 14).LineHeight() {
 			t.Errorf("empty chain line height %d, want the primary's %d", got, primary.Shape("", 14).LineHeight())
@@ -130,7 +139,8 @@ func TestChain(t *testing.T) {
 
 	t.Run("carets stay monotone across run boundaries", func(t *testing.T) {
 		var calls int
-		c := NewChain(primary).WithResolver(hanPicker(mono, &calls))
+		c := NewChain(primary).WithResolver(hanPicker(mono, &calls), nil)
+		c.Prewarm([]rune("a你b")...)
 		s := c.Shape("a你b", 14)
 		prev := 0.0
 		for i, x := range s.CaretPositions() {
@@ -143,7 +153,7 @@ func TestChain(t *testing.T) {
 
 	t.Run("draw leaves ink from every run", func(t *testing.T) {
 		var calls int
-		c := NewChain(primary).WithResolver(hanPicker(mono, &calls))
+		c := NewChain(primary).WithResolver(hanPicker(mono, &calls), nil)
 		s := c.Shape("a你b", 16)
 		cv, data := newTestCanvas(120, 32)
 		c.Draw(cv, s, 4, 24, RGB(255, 255, 255))
@@ -166,7 +176,7 @@ func TestChain(t *testing.T) {
 
 	t.Run("drawaligned and wrap work through the chain", func(t *testing.T) {
 		var calls int
-		c := NewChain(primary).WithResolver(hanPicker(mono, &calls))
+		c := NewChain(primary).WithResolver(hanPicker(mono, &calls), nil)
 		cv, data := newTestCanvas(120, 32)
 		if s := c.DrawAligned(cv, "a你", Rect{X: 0, Y: 0, W: 120, H: 32}, 14, RGB(255, 255, 255), AlignStart); s == nil {
 			t.Fatal("chain DrawAligned returned nil in a fitting box")
@@ -185,7 +195,7 @@ func TestChain(t *testing.T) {
 
 	t.Run("chain text rasterizes at the device scale", func(t *testing.T) {
 		var calls int
-		c := NewChain(primary).WithResolver(hanPicker(mono, &calls))
+		c := NewChain(primary).WithResolver(hanPicker(mono, &calls), nil)
 		shape := c.Shape("H", 20) // shaped once, at the logical size
 		col := RGB(255, 255, 255)
 		inkHeight := func(cv *Canvas) int {
@@ -212,4 +222,35 @@ func TestChain(t *testing.T) {
 			t.Errorf("chain glyph ink height at 2x = %d px vs %d px at 1x, want roughly double", h2, h1)
 		}
 	})
+}
+
+func TestAFallbackResolvesOffThePaintGoroutine(t *testing.T) {
+	primary, mono := chainTestTypefaces(t)
+	release := make(chan struct{})
+	resolved := make(chan struct{}, 1)
+	var calls atomic.Int32
+	c := NewChain(primary).WithResolver(func(rune) *Typeface {
+		calls.Add(1)
+		<-release
+		return mono
+	}, func() { resolved <- struct{}{} })
+	first := c.Shape("a你", 14)
+	if first.Runs() != 1 || first.NotDefCount() != 1 {
+		t.Errorf("before the answer: %d runs, %d .notdef, want the primary alone", first.Runs(), first.NotDefCount())
+	}
+	if again := c.Shape("a你", 14); again != first {
+		t.Error("shaping again before the answer missed the cache")
+	}
+	close(release)
+	select {
+	case <-resolved:
+	case <-time.After(time.Minute):
+		t.Fatal("the owner never heard of the answer")
+	}
+	if s := c.Shape("a你", 14); s == first || s.Runs() != 2 {
+		t.Errorf("after the answer: %d runs from the same shape: %v, want 2 anew", s.Runs(), s == first)
+	}
+	if n := calls.Load(); n != 1 {
+		t.Errorf("the resolver ran %d times", n)
+	}
 }

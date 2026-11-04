@@ -9,6 +9,7 @@ import (
 	"image/png"
 	"iter"
 	"math"
+	"slices"
 	"strings"
 	"sync"
 	"unicode/utf8"
@@ -1200,8 +1201,10 @@ type Chain struct {
 	// resolve, when set, is consulted for runes neither primary nor
 	// the fallback list covers; returning nil keeps the rune on the
 	// primary face, rendering .notdef as before.
-	resolve func(rune) *Typeface
-	picks   map[rune]*Typeface
+	resolve    func(rune) *Typeface
+	onResolved func()
+	fallback   *fallbackFaces
+	picks      map[rune]*Typeface
 	// tabular shapes every run through its face's tnum twin.
 	tabular bool
 	// letter is the letter spacing (px) every run shapes with, word
@@ -1234,18 +1237,40 @@ func NewChain(primary *Typeface, fallback ...*Typeface) *Chain {
 	return &Chain{primary: primary, extra: fallback, picks: map[rune]*Typeface{}}
 }
 
-// WithResolver installs a store-backed face picker consulted for runes
-// neither the primary nor the fallback list covers, and returns the
-// chain. internal/sysfont.Fallback wires one to the system font store.
-func (c *Chain) WithResolver(resolve func(rune) *Typeface) *Chain {
-	c.resolve = resolve
+// WithResolver installs a store-backed face picker for runes neither the
+// primary nor the fallback list covers, and returns the chain. It runs on a
+// goroutine of its own, as it may read and parse font files: until it answers,
+// such a rune shapes with the primary. When an answer changes the shaping,
+// lines shape anew under it and onResolved, nil for none, runs on that
+// goroutine: the owner lays out and paints again. internal/sysfont.Fallback
+// wires one to the system font store.
+func (c *Chain) WithResolver(resolve func(rune) *Typeface, onResolved func()) *Chain {
+	c.resolve, c.onResolved = resolve, onResolved
+	c.fallback = newFallbackFaces(resolve, onResolved)
 	return c
+}
+
+// Prewarm resolves rs now, on the calling goroutine: a font store warming up off
+// the paint path, so the first frame has its faces.
+func (c *Chain) Prewarm(rs ...rune) {
+	if c.fallback == nil {
+		return
+	}
+	for _, r := range rs {
+		if c.primary.Covers(r) || slices.ContainsFunc(c.extra, func(e *Typeface) bool { return e.Covers(r) }) {
+			continue
+		}
+		c.fallback.settle(r)
+	}
 }
 
 // Face returns the face rune r shapes with: the diagnostic view of
 // the fallback decision, and a way for tests to pin which family a
 // rune lands on.
-func (c *Chain) Face(r rune) *Typeface { return c.faceFor(r) }
+func (c *Chain) Face(r rune) *Typeface {
+	c.Prewarm(r)
+	return c.faceFor(r)
+}
 
 // Tabular returns the chain shaping with each face's tnum twin: digits
 // on a uniform advance grid, what a clock or a numeric column wants.
@@ -1265,6 +1290,9 @@ func (c *Chain) variant(key string, derive func(n *Chain)) *Chain {
 	n.picks = map[rune]*Typeface{}
 	n.variants = nil
 	derive(&n)
+	if c.fallback != nil {
+		n.fallback = newFallbackFaces(c.resolve, c.onResolved)
+	}
 	if c.variants == nil {
 		c.variants = map[string]*Chain{}
 	}
@@ -1294,19 +1322,28 @@ func (c *Chain) faceFor(r rune) *Typeface {
 				break
 			}
 		}
-		if f == c.primary && c.resolve != nil {
-			if rf := c.resolve(r); rf != nil {
+		if f == c.primary && c.fallback != nil {
+			rf, resolved := c.fallback.lookup(r)
+			if !resolved {
+				return c.styled(c.primary)
+			}
+			if rf != nil {
 				f = rf
 			}
 		}
 	}
+	f = c.styled(f)
+	c.picks[r] = f
+	return f
+}
+
+func (c *Chain) styled(f *Typeface) *Typeface {
 	if c.tabular {
 		f = f.Tabular()
 	}
 	if c.features != "" {
 		f = f.WithFeatureSpec(c.features)
 	}
-	c.picks[r] = f
 	return f
 }
 
