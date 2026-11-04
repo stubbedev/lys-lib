@@ -519,8 +519,14 @@ func (c *Canvas) BoxShadow(r Rect, radii Corners, s BoxShadow) {
 		return
 	}
 	dev, ras, kw, kh, full := c.boxShadowRaster(r, radii, s)
-	// The raster is the core box's; a longer box repeats the core's
-	// middle row and column, where every edge is straight.
+	c.blendStretched(dev, ras, kw, kh, full, s.Color)
+}
+
+// blendStretched blends col through ras, the mask of a kw x kh core box,
+// over the part of full the clip shows, for the device box dev: a longer
+// box repeats the core's middle row and column, where every edge is
+// straight.
+func (c *Canvas) blendStretched(dev Rect, ras *ShadowMask, kw, kh int, full Rect, col Color) {
 	midX, midY := kw/2, kh/2
 	area := c.clip.Intersect(full)
 	if area.Empty() {
@@ -542,12 +548,12 @@ func (c *Canvas) BoxShadow(r Rect, radii Corners, s BoxShadow) {
 		sy := stretch(y-dev.Y, dev.H, kh, midY) - ras.y0
 		row := ras.cov[sy*ras.w : (sy+1)*ras.w]
 		at := func(x int) int { return stretch(x-dev.X, dev.W, kw, midX) - ras.x0 }
-		c.blendMask(area.X, y, row[at(area.X):at(area.X)+m0-area.X], s.Color)
+		c.blendMask(area.X, y, row[at(area.X):at(area.X)+m0-area.X], col)
 		if q := uint32(row[midX-ras.x0]); q != 0 && m1 > m0 {
-			c.blendRun(m0, m1, y, coverageScale(s.Color, q))
+			c.blendRun(m0, m1, y, coverageScale(col, q))
 		}
 		if end := area.X + area.W; end > m1 {
-			c.blendMask(m1, y, row[at(m1):at(m1)+end-m1], s.Color)
+			c.blendMask(m1, y, row[at(m1):at(m1)+end-m1], col)
 		}
 	}
 }

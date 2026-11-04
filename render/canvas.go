@@ -627,8 +627,8 @@ func (g LineGeometry) Coverage(x, y int) float32 {
 // logical pixels. The shadow paints OUTSIDE r - full strength at the
 // edges, tail gone past blur - so callers keep layout and hit-testing
 // on r itself and owe the ring only damage. The coverage raster is
-// cached per (rect size, radius, blur, device scale) in
-// shadowRasterFor, so a hover twitch that repaints the same shadow
+// cached per core size, radius and blur in device pixels in
+// RectShadow, so a hover twitch that repaints the same shadow
 // re-blends the pixels but never re-Gaussians. Per-pixel coverage
 // scales all four premultiplied channels exactly as RoundedRect's AA,
 // and the draw blends through the PushAlpha stack like every
@@ -641,19 +641,11 @@ func (c *Canvas) Shadow(r Rect, cornerRadius, blur int, col Color) {
 	if col.A() == 0 || c.clip.Empty() {
 		return
 	}
-	m, at, ok := RectShadow(r, cornerRadius, blur, c.num, c.denom)
+	m, box, kw, kh, ok := RectShadow(r, cornerRadius, blur, c.num, c.denom)
 	if !ok {
 		return
 	}
-	box := c.clip.Intersect(at)
-	if box.Empty() {
-		return
-	}
-	cov := m.Pix()
-	for y := box.Y; y < box.Y+box.H; y++ {
-		row := cov[(y-at.Y)*at.W:]
-		c.blendMask(box.X, y, row[box.X-at.X:box.X-at.X+box.W], col)
-	}
+	c.blendStretched(box, m, kw, kh, rectShadowArea(box, m, kw, kh), col)
 }
 
 func abs[T ~int | ~float32 | ~float64](v T) T {

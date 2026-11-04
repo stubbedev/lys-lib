@@ -525,18 +525,28 @@ func (f *frame) Shadow(s render.State, r render.Rect, cornerRadius, blur int, co
 	if f.err != nil || col.A() == 0 {
 		return
 	}
-	m, at, ok := render.RectShadow(r, cornerRadius, blur, f.num, f.denom)
+	m, box, kw, kh, ok := render.RectShadow(r, cornerRadius, blur, f.num, f.denom)
 	if !ok {
 		return
 	}
+	if !f.stretched(s, m, box, kw, kh, col) {
+		f.sprite(s, "Shadow", func(cv *render.Canvas) { cv.Shadow(r, cornerRadius, blur, col) })
+	}
+}
+
+// stretched draws col through m, the mask of a kw x kh core box, over
+// the device box; false when no atlas page holds m.
+func (f *frame) stretched(s render.State, m *render.ShadowMask, box render.Rect, kw, kh int, col render.Color) bool {
 	pos, ok := f.maskSlot(m)
 	if !ok {
-		f.sprite(s, "Shadow", func(cv *render.Canvas) { cv.Shadow(r, cornerRadius, blur, col) })
-		return
+		return false
 	}
-	p := shaded(kindMask, s, 0)
-	p.quad, p.inner, p.cols[0] = quadOf(s.Bounds), [4]float32{float32(at.X - pos.X), float32(at.Y - pos.Y)}, uint32(col)
+	x0, y0 := m.Origin()
+	p := shaded(kindStretch, s, 0)
+	p.quad, p.box, p.cols[0] = quadOf(s.Bounds), [4]float32{float32(box.X), float32(box.Y), float32(box.W), float32(box.H)}, uint32(col)
+	p.radii, p.inner = [4]float32{float32(kw), float32(kh)}, [4]float32{float32(pos.X - x0), float32(pos.Y - y0)}
 	f.draw(f.on(s), f.d.masks.page, pipeOver, p)
+	return true
 }
 
 func (f *frame) DrawImage(s render.State, img image.Image, x, y int) {
@@ -644,16 +654,9 @@ func (f *frame) BoxShadow(s render.State, r render.Rect, radii render.Corners, s
 		return
 	}
 	m, box, kw, kh := render.BoxShadowMask(r, radii, sh, f.num, f.denom)
-	pos, ok := f.maskSlot(m)
-	if !ok {
+	if !f.stretched(s, m, box, kw, kh, sh.Color) {
 		f.sprite(s, "BoxShadow", func(cv *render.Canvas) { cv.BoxShadow(r, radii, sh) })
-		return
 	}
-	x0, y0 := m.Origin()
-	p := shaded(kindStretch, s, 0)
-	p.quad, p.box, p.cols[0] = quadOf(s.Bounds), [4]float32{float32(box.X), float32(box.Y), float32(box.W), float32(box.H)}, uint32(sh.Color)
-	p.radii, p.inner = [4]float32{float32(kw), float32(kh)}, [4]float32{float32(pos.X - x0), float32(pos.Y - y0)}
-	f.draw(f.on(s), f.d.masks.page, pipeOver, p)
 }
 
 func (f *frame) PaintGrain(s render.State, r render.Rect, radii render.Corners, opacity float64, ox, oy int) {

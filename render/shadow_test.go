@@ -215,3 +215,57 @@ func TestBoxShadowCacheReuse(t *testing.T) {
 		t.Error("the cached raster painted different pixels")
 	}
 }
+
+func TestAStretchedRectShadowPaintsLikeTheWholeBoxsField(t *testing.T) {
+	const w, h = 420, 300
+	for _, tc := range []struct {
+		box          Rect
+		radius, blur int
+	}{
+		{Rect{X: 60, Y: 50, W: 300, H: 180}, 0, 12},
+		{Rect{X: 60, Y: 50, W: 300, H: 180}, 12, 12},
+		{Rect{X: 60, Y: 50, W: 40, H: 180}, 200, 8},
+		{Rect{X: 60, Y: 50, W: 301, H: 11}, 3, 5},
+		{Rect{X: 60, Y: 50, W: 7, H: 7}, 2, 3},
+		{Rect{X: 60, Y: 50, W: 300, H: 200}, 64, 90},
+	} {
+		got := New(make([]byte, Stride(w)*h), Stride(w), w, h)
+		got.Shadow(tc.box, tc.radius, tc.blur, RGBA(10, 20, 30, 200))
+		want := New(make([]byte, Stride(w)*h), Stride(w), w, h)
+		devRadius := max(0, min(tc.radius, min(tc.box.W, tc.box.H)/2))
+		ras := buildRectShadow(shadowKey{w: tc.box.W, h: tc.box.H, radius: devRadius, blur: shadowInset(tc.blur, 1, 1) - 1})
+		for y := range ras.h {
+			for x := range ras.w {
+				px, py := tc.box.X+ras.x0+x, tc.box.Y+ras.y0+y
+				if q := uint32(ras.cov[y*ras.w+x]); q != 0 && want.clip.Contains(px, py) {
+					want.blend(px, py, coverageScale(RGBA(10, 20, 30, 200), q))
+				}
+			}
+		}
+		if !bytes.Equal(got.data, want.data) {
+			t.Errorf("%+v differs from the whole box's field", tc)
+		}
+	}
+}
+
+func TestARectShadowsMaskDoesNotGrowWithItsBox(t *testing.T) {
+	base, _, _, _, ok := RectShadow(Rect{W: 100, H: 100}, 8, 24, 1, 1)
+	if !ok {
+		t.Fatal("no shadow")
+	}
+	bw, bh := base.Size()
+	shadows.counts()
+	for i := 1; i <= 100; i++ {
+		m, _, _, _, _ := RectShadow(Rect{W: 100 + i*7, H: 100 + i*3}, 8, 24, 1, 1)
+		if m != base {
+			w, h := m.Size()
+			t.Fatalf("a %dx%d box has its own %dx%d mask, want the %dx%d one", 100+i*7, 100+i*3, w, h, bw, bh)
+		}
+	}
+	if _, misses := shadows.counts(); misses != 0 {
+		t.Errorf("a resize rebuilt the mask %d times", misses)
+	}
+	if bw*bh > 100*100 {
+		t.Errorf("the mask is %dx%d for a radius of 8 and a blur of 24", bw, bh)
+	}
+}

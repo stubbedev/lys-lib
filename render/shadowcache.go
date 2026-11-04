@@ -49,7 +49,7 @@ func (r *covRaster) Size() (w, h int) { return r.w, r.h }
 
 // CoverageMask is an immutable 8bpp coverage mask render caches and
 // blends a color through: a glyph's (GlyphMask), a box-shadow core's
-// (ShadowMask), a rect shadow's (RectShadow). A GPU renderer keys its
+// or a rect shadow's (ShadowMask). A GPU renderer keys its
 // mask atlas by its ID, which no other mask shares, whatever memory
 // either lives in.
 type CoverageMask interface {
@@ -59,19 +59,31 @@ type CoverageMask interface {
 }
 
 // RectShadow is how Shadow paints a shadow of blur around the logical
-// rect r with cornerRadius at device scale num/denom: the cached mask,
-// immutable once made, blended in the shadow's color over the device
-// rect at; false when there is none to paint.
-func RectShadow(r Rect, cornerRadius, blur, num, denom int) (CoverageMask, Rect, bool) {
+// rect r with cornerRadius at device scale num/denom, as BoxShadowMask
+// describes: the cached mask of a core box coreW x coreH and the box's
+// device rect; false when there is none to paint. The mask depends on the
+// box only through the rounded corners it clamps, so a resize rebuilds
+// nothing.
+func RectShadow(r Rect, cornerRadius, blur, num, denom int) (m *ShadowMask, box Rect, coreW, coreH int, ok bool) {
 	if blur < 1 {
-		return nil, Rect{}, false
+		return nil, Rect{}, 0, 0, false
 	}
-	dev := MapRect(r, num, denom)
-	if dev.Empty() {
-		return nil, Rect{}, false
+	box = MapRect(r, num, denom)
+	if box.Empty() {
+		return nil, Rect{}, 0, 0, false
 	}
-	ras := shadowRasterFor(dev.W, dev.H, cornerRadius, blur, num, denom)
-	return ras, Rect{X: dev.X - ras.inset, Y: dev.Y - ras.inset, W: ras.w, H: ras.h}, true
+	devBlur := shadowInset(blur, num, denom) - 1
+	devRadius := max(0, min(divCeil(cornerRadius*num, denom), min(box.W, box.H)/2))
+	coreW, coreH = rectShadowCore(box.W, devRadius), rectShadowCore(box.H, devRadius)
+	key := shadowKey{w: coreW, h: coreH, radius: devRadius, blur: devBlur}
+	m = shadows.get(key, func() *ShadowMask { return buildRectShadow(key) })
+	return m, box, coreW, coreH, true
+}
+
+func rectShadowCore(side, devRadius int) int { return min(side, 2*devRadius+3) }
+
+func rectShadowArea(box Rect, m *ShadowMask, coreW, coreH int) Rect {
+	return Rect{X: box.X + m.x0, Y: box.Y + m.y0, W: m.w + box.W - coreW, H: m.h + box.H - coreH}
 }
 
 // rasterCache memoizes coverage rasters by geometry. Canvases paint on
@@ -84,16 +96,23 @@ type rasterCache[K comparable, V interface{ size() int }] struct {
 	hits, misses int
 }
 
-// get returns k's raster, building it on first use.
+// get returns k's raster, building it on first use, outside the lock so
+// another canvas's hit never waits for this one's miss.
 func (c *rasterCache[K, V]) get(k K, build func() V) V {
 	c.mu.Lock()
-	defer c.mu.Unlock()
 	if v, ok := c.m[k]; ok {
 		c.hits++
+		c.mu.Unlock()
 		return v
 	}
 	c.misses++
+	c.mu.Unlock()
 	v := build()
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if have, ok := c.m[k]; ok {
+		return have
+	}
 	total := v.size()
 	for _, cached := range c.m {
 		total += cached.size()
@@ -114,36 +133,14 @@ func (c *rasterCache[K, V]) counts() (hits, misses int) {
 	return hits, misses
 }
 
-// shadowKey identifies one theme shadow raster: the mapped
-// device-pixel rect size, the logical corner radius and blur, and the
-// device scale they were rasterized at.
+// shadowKey identifies one theme shadow raster, all in device pixels:
+// the core box's size, the corner radius clamped to the whole box, and
+// the blur.
 type shadowKey struct {
-	w, h       int
-	radius     int
-	blur       int
-	num, denom int
+	w, h, radius, blur int
 }
 
-// shadowRaster is a theme shadow's coverage field over the rect grown
-// by inset device pixels on every side, from the box's top-left minus
-// inset, so callers index with (x - (rect.X - inset), y - (rect.Y -
-// inset)).
-type shadowRaster struct {
-	covRaster
-	inset int
-}
-
-func (r *shadowRaster) size() int { return len(r.cov) }
-
-var shadows rasterCache[shadowKey, *shadowRaster]
-
-// shadowRasterFor returns the cached coverage raster for a shadow
-// around a devW x devH device-pixel rect at the given device scale.
-func shadowRasterFor(w, h, radius, blur, num, denom int) *shadowRaster {
-	return shadows.get(shadowKey{w: w, h: h, radius: radius, blur: blur, num: num, denom: denom}, func() *shadowRaster {
-		return buildShadowRaster(w, h, radius, blur, num, denom)
-	})
-}
+var shadows rasterCache[shadowKey, *ShadowMask]
 
 // shadowInset is how far a Shadow's raster reaches past its device
 // box: the device blur, clamped, and a pixel.
@@ -151,23 +148,21 @@ func shadowInset(blur, num, denom int) int {
 	return max(1, min(divCeil(blur*num, denom), maxShadowBlur)) + 1
 }
 
-// buildShadowRaster computes the coverage field once: the signed
-// distance to the (radius-rounded, device-space) rect, mapped through
-// the cumulative Gaussian kernel. Pixels inside the silhouette are
-// full; coverage then falls off monotonically and reaches zero at the
-// kernel extent, which is also the box inset.
-func buildShadowRaster(w, h, radius, blur, num, denom int) *shadowRaster {
-	inset := shadowInset(blur, num, denom)
-	devBlur := inset - 1
-	devRadius := max(0, min(divCeil(radius*num, denom), min(w, h)/2))
-	rect := Rect{X: inset, Y: inset, W: w, H: h}
-	ras := &shadowRaster{inset: inset}
-	ras.w, ras.h = w+2*inset, h+2*inset
+// buildRectShadow computes the coverage field once: the signed distance
+// to the (radius-rounded, device-space) core rect, mapped through the
+// cumulative Gaussian kernel. Pixels inside the silhouette are full;
+// coverage then falls off monotonically and reaches zero at the kernel
+// extent, which is also the box inset.
+func buildRectShadow(k shadowKey) *ShadowMask {
+	inset := k.blur + 1
+	rect := Rect{X: inset, Y: inset, W: k.w, H: k.h}
+	ras := &ShadowMask{x0: -inset, y0: -inset}
+	ras.w, ras.h = k.w+2*inset, k.h+2*inset
 	ras.cov = make([]uint8, ras.w*ras.h)
-	tail, half := shadowTail(devBlur)
+	tail, half := shadowTail(k.blur)
 	for y := range ras.h {
 		for x := range ras.w {
-			d := sdRoundRect(float32(x)+0.5, float32(y)+0.5, rect, float32(devRadius))
+			d := sdRoundRect(float32(x)+0.5, float32(y)+0.5, rect, float32(k.radius))
 			ras.cov[y*ras.w+x] = tailCoverage(tail, half, d)
 		}
 	}

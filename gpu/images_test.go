@@ -219,3 +219,32 @@ func TestTrimFreesTheImagesNotDrawnSinceTheLastTrim(t *testing.T) {
 		t.Errorf("%d textures after a Trim with no draw since the last", n)
 	}
 }
+
+func TestAResizingShadowNeverEmptiesTheAtlas(t *testing.T) {
+	d := openDevice(t)
+	rec := render.NewRecorder(1, 1, 1, 1)
+	uploads := 0
+	for i := range 100 {
+		w, h := 200+i*8, 150+i*6
+		tg, err := d.NewOffscreen(w, h)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rec.ResetRecorder(w, h, 1, 1)
+		rec.Shadow(render.Rect{X: 32, Y: 32, W: w - 64, H: h - 64}, 8, 24, render.RGBA(0, 0, 0, 128))
+		if err := d.Render(rec.Recording(), tg); err != nil {
+			t.Fatal(err)
+		}
+		uploads += d.frame.stats.textureUploads
+		tg.Close()
+		if err := d.Finish(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if d.masks.resets != 0 {
+		t.Errorf("the atlas reset %d times", d.masks.resets)
+	}
+	if uploads != 1 {
+		t.Errorf("%d mask uploads over the resize, want 1", uploads)
+	}
+}

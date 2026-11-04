@@ -19,6 +19,7 @@ type maskAtlas struct {
 	page          *surface
 	slots         map[render.ImageID]image.Point
 	px, py, shelf int
+	resets        int
 }
 
 // place packs a w x h mask, false when the page is full.
@@ -37,6 +38,7 @@ func (a *maskAtlas) place(w, h int) (image.Point, bool) {
 
 // reset empties the page; nothing drawn from it may still be pending.
 func (a *maskAtlas) reset() {
+	a.resets++
 	clear(a.slots)
 	a.px, a.py, a.shelf = 0, 0, 0
 }
