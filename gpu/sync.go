@@ -52,6 +52,7 @@ type timing struct {
 	blockingWaits  uint64
 	framing        bool
 	reaps          uint64
+	incomplete     bool
 	waitLimit      time.Duration
 	waits          []vk.Semaphore
 	passes         uint64

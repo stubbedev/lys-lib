@@ -327,6 +327,11 @@ func Still(img image.Image) StillImage {
 // with the raster; without one the raster is identified by its pixels'
 // address, as a StillImage without one is.
 type VersionedImage struct {
+	// Dirty, when not empty, is all that changed since version DirtySince,
+	// in the raster's coordinates: a device holding that version uploads
+	// only it.
+	Dirty      image.Rectangle
+	DirtySince uint64
 	*image.RGBA
 	ID      ImageID
 	Version uint64

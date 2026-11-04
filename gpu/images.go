@@ -18,6 +18,9 @@ type imageTexture struct {
 	s       *surface
 	version uint64
 	used    uint64
+	// readyAfter is the submission that uploads the pixels of a large still,
+	// which draws once it has finished.
+	readyAfter uint64
 }
 
 // images are the device's uploaded still and versioned images
@@ -26,6 +29,7 @@ type imageTexture struct {
 // texture.
 type images struct {
 	byImage map[imageKey]*imageTexture
+	stills  stillUploads
 	frames  uint64
 	swept   uint64
 	// limit is the most textures kept, maxImages unless a test lowers
@@ -57,7 +61,7 @@ func imageKeyOf(img *image.RGBA, id render.ImageID) imageKey {
 // identity, zero for one identified by its pixels' address. A texture
 // this frame already drew at another version cannot change under that
 // draw, so the image then has none.
-func (f *frame) imageTexture(img *image.RGBA, id render.ImageID, version uint64) (*surface, bool) {
+func (f *frame) imageTexture(img *image.RGBA, id render.ImageID, version, dirtySince uint64, dirty image.Rectangle) (*surface, bool) {
 	b := img.Rect
 	if b.Empty() || len(img.Pix) == 0 {
 		return nil, false
@@ -65,15 +69,28 @@ func (f *frame) imageTexture(img *image.RGBA, id render.ImageID, version uint64)
 	ims := &f.d.images
 	key := imageKeyOf(img, id)
 	if t, ok := ims.byImage[key]; ok {
+		if t.readyAfter > f.d.completed {
+			f.d.incomplete = true
+			return nil, true
+		}
 		if t.version != version {
 			if t.used == ims.frames {
 				return nil, false
 			}
+			area := b
+			if t.version == dirtySince && dirty.In(b) && !dirty.Empty() {
+				area = dirty
+			}
 			t.version = version
-			f.stageImage(t.s, img)
+			f.stageImage(t.s, img, area)
 		}
 		t.used = ims.frames
 		return t.s, true
+	}
+	if version == 0 && id != 0 && b.Dx()*b.Dy()*4 >= stillWorkerBytes {
+		f.d.incomplete = true
+		f.d.startStillUpload(key, img)
+		return nil, true
 	}
 	if ims.limit == 0 {
 		ims.limit = maxImages
@@ -81,7 +98,7 @@ func (f *frame) imageTexture(img *image.RGBA, id render.ImageID, version uint64)
 	if len(ims.byImage) >= ims.limit {
 		f.d.evictLRU()
 	}
-	s, err := f.d.newSurface(b.Dx(), b.Dy())
+	s, err := f.d.newImageSurface(b.Dx(), b.Dy())
 	if err == nil {
 		err = s.ready()
 	}
@@ -93,26 +110,28 @@ func (f *frame) imageTexture(img *image.RGBA, id render.ImageID, version uint64)
 		ims.byImage = map[imageKey]*imageTexture{}
 	}
 	ims.byImage[key] = &imageTexture{s: s, version: version, used: ims.frames}
-	f.stageImage(s, img)
+	f.stageImage(s, img, b)
 	return s, true
 }
 
-// stageImage uploads img's pixels into its texture s.
-func (f *frame) stageImage(s *surface, img *image.RGBA) {
-	b := img.Rect
+// stageImage uploads the pixels of area, within img's rect, into its texture s.
+func (f *frame) stageImage(s *surface, img *image.RGBA, area image.Rectangle) {
 	f.stats.textureUploads++
-	out, off := f.stage(b.Dx() * b.Dy() * 4)
+	n := area.Dx() * area.Dy() * 4
+	f.stats.imageBytes += n
+	out, off := f.stage(n)
 	if out == nil {
 		return
 	}
-	f.uploads = append(f.uploads, upload{dst: s, region: image.Rect(0, 0, b.Dx(), b.Dy()), offset: off, rowLength: b.Dx()})
-	o := 0
-	for y := b.Min.Y; y < b.Max.Y; y++ {
-		row := img.Pix[img.PixOffset(b.Min.X, y):img.PixOffset(b.Max.X, y)]
-		for x := 0; x < len(row); x += 4 {
-			out[o], out[o+1], out[o+2], out[o+3] = row[x+2], row[x+1], row[x], row[x+3]
-			o += 4
-		}
+	f.uploads = append(f.uploads, upload{dst: s, region: area.Sub(img.Rect.Min), offset: off, rowLength: area.Dx()})
+	copyRows(out, img, area)
+}
+
+func copyRows(out []byte, img *image.RGBA, area image.Rectangle) {
+	row := area.Dx() * 4
+	for y := area.Min.Y; y < area.Max.Y; y++ {
+		at := img.PixOffset(area.Min.X, y)
+		copy(out[(y-area.Min.Y)*row:], img.Pix[at:at+row])
 	}
 }
 
@@ -167,6 +186,7 @@ func (d *Device) forgetImages() {
 		gone[id] = struct{}{}
 		delete(d.masks.slots, id)
 	}
+	d.images.stills.forget(gone)
 	d.dropImages(func(key imageKey, _ *imageTexture) bool {
 		_, ok := gone[key.id]
 		return ok

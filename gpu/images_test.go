@@ -248,3 +248,101 @@ func TestAResizingShadowNeverEmptiesTheAtlas(t *testing.T) {
 		t.Errorf("%d mask uploads over the resize, want 1", uploads)
 	}
 }
+
+func TestAnImageUploadIsACopyOfWhatChanged(t *testing.T) {
+	d := openDevice(t)
+	tg := newTarget(t, d, 64, 64)
+	rec := render.NewRecorder(64, 64, 1, 1)
+	img := image.NewRGBA(image.Rect(0, 0, 64, 64))
+	id := render.NewImageID()
+	draw := func(v render.VersionedImage) int {
+		t.Helper()
+		rec.ResetRecorder(64, 64, 1, 1)
+		rec.DrawImageDevice(v, 0, 0)
+		if err := d.Render(rec.Recording(), tg); err != nil {
+			t.Fatal(err)
+		}
+		return d.frame.stats.imageBytes
+	}
+	if n := draw(render.VersionedImage{RGBA: img, ID: id, Version: 1}); n != 64*64*4 {
+		t.Errorf("the first upload staged %d bytes", n)
+	}
+	img.SetRGBA(10, 10, color.RGBA{R: 200, G: 100, B: 50, A: 255})
+	dirty := image.Rect(8, 8, 16, 12)
+	if n := draw(render.VersionedImage{RGBA: img, ID: id, Version: 2, DirtySince: 1, Dirty: dirty}); n != 8*4*4 {
+		t.Errorf("an 8x4 dirty rect staged %d bytes", n)
+	}
+	got, err := tg.ReadPixels()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c := got.RGBAAt(10, 10); c != (color.RGBA{R: 200, G: 100, B: 50, A: 255}) {
+		t.Errorf("the dirty pixel drew %v", c)
+	}
+	if n := draw(render.VersionedImage{RGBA: img, ID: id, Version: 4, DirtySince: 3, Dirty: dirty}); n != 64*64*4 {
+		t.Errorf("a dirty rect from a version the device does not hold staged %d bytes, want the whole image", n)
+	}
+}
+
+func TestALargeStillUploadsOffTheFrameAndDrawsWhenItIsThere(t *testing.T) {
+	d := openDevice(t)
+	tg := newTarget(t, d, 16, 16)
+	rec := render.NewRecorder(16, 16, 1, 1)
+	big := image.NewRGBA(image.Rect(0, 0, 1600, 1400))
+	for i := 0; i < len(big.Pix); i += 4 {
+		big.Pix[i], big.Pix[i+3] = 255, 255
+	}
+	still := render.NewStillImage(big)
+	if n := len(big.Pix); n < stillWorkerBytes {
+		t.Fatalf("%d bytes do not leave the frame path", n)
+	}
+	drawImage(rec, still)
+	if err := d.Render(rec.Recording(), tg); err != nil {
+		t.Fatal(err)
+	}
+	if !d.FrameIncomplete() {
+		t.Fatal("the first frame reports nothing left out")
+	}
+	if d.frame.stats.imageBytes != 0 {
+		t.Errorf("the frame staged %d bytes of the still", d.frame.stats.imageBytes)
+	}
+	deadline := time.Now().Add(time.Minute)
+	for d.FrameIncomplete() {
+		if time.Now().After(deadline) {
+			t.Fatal("the still never arrived")
+		}
+		time.Sleep(time.Millisecond)
+		if err := d.Finish(); err != nil {
+			t.Fatal(err)
+		}
+		if err := d.Render(rec.Recording(), tg); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if px, n := renderImage(t, d, tg, rec); px != red || n != 0 {
+		t.Errorf("drew %v with %d uploads, want %v from the worker's", px, n, red)
+	}
+}
+
+func TestAForgottenStillOnItsWayIsDropped(t *testing.T) {
+	d := openDevice(t)
+	tg := newTarget(t, d, 16, 16)
+	rec := render.NewRecorder(16, 16, 1, 1)
+	still := render.NewStillImage(image.NewRGBA(image.Rect(0, 0, 1600, 1400)))
+	drawImage(rec, still)
+	if err := d.Render(rec.Recording(), tg); err != nil {
+		t.Fatal(err)
+	}
+	d.Forget(still.ID)
+	rec.ResetRecorder(16, 16, 1, 1)
+	if err := d.Render(rec.Recording(), tg); err != nil {
+		t.Fatal(err)
+	}
+	d.images.stills.wait()
+	if err := d.Render(rec.Recording(), tg); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(d.images.byImage); n != 0 {
+		t.Errorf("%d textures for a forgotten raster", n)
+	}
+}

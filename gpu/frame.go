@@ -101,6 +101,10 @@ func (d *Device) Render(l *render.List, t *Target, carry ...Carry) error {
 		return ErrBusy
 	}
 	d.freeDeadLayers()
+	d.incomplete = false
+	if err := d.adoptStills(); err != nil {
+		return err
+	}
 	d.images.frames++
 	defer d.forgetImages()
 	if err := d.ensureScratch(t.s.w, t.s.h); err != nil {
@@ -137,8 +141,8 @@ func (d *Device) Render(l *render.List, t *Target, carry ...Carry) error {
 // submitted in, its readbacks, the image textures and atlas masks it
 // uploaded, and the pixels of CPU sprites per call.
 type frameStats struct {
-	prims, segments, readbacks, textureUploads int
-	sprites                                    map[string]int
+	prims, segments, readbacks, textureUploads, imageBytes int
+	sprites                                                map[string]int
 }
 
 // reset empties the stats for a new frame, keeping the map.
@@ -626,9 +630,9 @@ func (f *frame) texture(img image.Image) (*surface, bool) {
 	}
 	switch v := img.(type) {
 	case render.StillImage:
-		return f.imageTexture(v.RGBA, v.ID, 0)
+		return f.imageTexture(v.RGBA, v.ID, 0, 0, image.Rectangle{})
 	case render.VersionedImage:
-		return f.imageTexture(v.RGBA, v.ID, v.Version)
+		return f.imageTexture(v.RGBA, v.ID, v.Version, v.DirtySince, v.Dirty)
 	}
 	return nil, false
 }
@@ -642,6 +646,9 @@ func (f *frame) scaledImage(s render.State, img image.Image, full render.Rect, r
 	tex, ok := f.texture(img)
 	if !ok {
 		f.sprite(s, "scaled image", raster)
+		return
+	}
+	if tex == nil {
 		return
 	}
 	p := shaded(kindImage, s, 0)
@@ -659,6 +666,9 @@ func (f *frame) DrawImageCover(s render.State, img image.Image, r render.Rect, r
 		f.sprite(s, "DrawImageCover", func(cv *render.Canvas) { cv.DrawImageCover(img, r, radii) })
 		return
 	}
+	if tex == nil {
+		return
+	}
 	g := render.CoverOf(img.Bounds(), r, radii, f.num, f.denom)
 	p := shaded(kindCover, s, 0)
 	p.quad, p.box = quadOf(s.Bounds), quadOf(g.Full)
@@ -670,6 +680,9 @@ func (f *frame) DrawImageDevice(s render.State, img image.Image, x, y int) {
 	tex, ok := f.texture(img)
 	if !ok {
 		f.sprite(s, "DrawImageDevice", func(cv *render.Canvas) { cv.DrawImageDevice(img, x, y) })
+		return
+	}
+	if tex == nil {
 		return
 	}
 	p := shaded(kindTexture, s, flagOpaqueStores)
@@ -686,10 +699,13 @@ func (f *frame) DrawIcon(s render.State, ic *render.Icon, x, y int, m render.Aff
 	img := ic.Still()
 	tex, ok := (*surface)(nil), invertible && f.err == nil
 	if ok {
-		tex, ok = f.imageTexture(img.RGBA, img.ID, 0)
+		tex, ok = f.imageTexture(img.RGBA, img.ID, 0, 0, image.Rectangle{})
 	}
 	if !ok {
 		f.sprite(s, "DrawIcon", func(cv *render.Canvas) { ic.DrawXformed(cv, x, y, m) })
+		return
+	}
+	if tex == nil {
 		return
 	}
 	p := shaded(kindComposite, s, 0)
@@ -839,6 +855,9 @@ func (f *frame) PaintImageTiles(s render.State, img image.Image, t render.Tile, 
 	tex, ok := f.texture(img)
 	if !ok {
 		f.sprite(s, "PaintImageTiles", func(cv *render.Canvas) { cv.PaintImageTiles(img, t, clip, radii) })
+		return
+	}
+	if tex == nil {
 		return
 	}
 	p := tiled(kindImageTiles, s, tg)

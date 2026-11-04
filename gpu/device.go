@@ -19,6 +19,7 @@ import (
 	"runtime"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"unsafe"
 
 	memory "github.com/stubbedev/memory-go"
@@ -104,7 +105,7 @@ type Device struct {
 	cacheUUID    [16]uint8
 	passRects    rectScratch
 	passWork     passWork
-	surfacesMade uint64
+	surfacesMade atomic.Uint64
 }
 
 // Open picks the first Vulkan device with a graphics queue that
@@ -428,6 +429,7 @@ func (d *Device) Close() {
 // closeDevice releases the logical device and what was made on it.
 func (d *Device) closeDevice() {
 	d.stopPipelines()
+	d.images.stills.wait()
 	d.cmds.DeviceWaitIdle(d.device)
 	d.closeTiming()
 	d.closeScratch()

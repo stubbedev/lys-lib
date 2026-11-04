@@ -28,9 +28,11 @@ type surface struct {
 	// layout is the image's current layout, which a recording picks up
 	// and leaves the image in.
 	layout vk.ImageLayout
-	view   vk.ImageView
-	fb     vk.Framebuffer
-	set    vk.DescriptorSet
+	// sampled marks a surface nothing draws into: it has no framebuffer.
+	sampled bool
+	view    vk.ImageView
+	fb      vk.Framebuffer
+	set     vk.DescriptorSet
 }
 
 // newSurface allocates a w x h device-local surface in surfaceFormat.
@@ -40,16 +42,31 @@ func (d *Device) newSurface(w, h int) (*surface, error) {
 
 // newSurfaceIn allocates a w x h device-local surface in vf.
 func (d *Device) newSurfaceIn(w, h int, vf vk.Format) (*surface, error) {
+	return d.allocSurface(w, h, vf, vk.ImageUsageTransferDstBit|vk.ImageUsageTransferSrcBit|vk.ImageUsageColorAttachmentBit|vk.ImageUsageSampledBit)
+}
+
+// newImageSurface allocates a surface for an image's pixels, R, G, B, A in
+// memory as *image.RGBA holds them, so an upload is a copy.
+func (d *Device) newImageSurface(w, h int) (*surface, error) {
+	s, err := d.allocSurface(w, h, vk.FormatR8g8b8a8Unorm, vk.ImageUsageTransferDstBit|vk.ImageUsageSampledBit)
+	if err != nil {
+		return nil, err
+	}
+	s.sampled = true
+	return s, nil
+}
+
+func (d *Device) allocSurface(w, h int, vf vk.Format, usage vk.ImageUsageFlagBits) (*surface, error) {
 	if err := d.checkSize(w, h); err != nil {
 		return nil, err
 	}
-	d.surfacesMade++
+	d.surfacesMade.Add(1)
 	s := &surface{d: d, w: w, h: h, vf: vf, layout: vk.ImageLayoutUndefined}
 	ici := vk.ImageCreateInfo{
 		SType: vk.StructureTypeImageCreateInfo, ImageType: vk.ImageType2d, Format: vf,
 		Extent: extent3D(w, h), MipLevels: 1, ArrayLayers: 1,
 		Samples: vk.SampleCount1Bit, Tiling: vk.ImageTilingOptimal,
-		Usage:       vk.ImageUsageFlags(vk.ImageUsageTransferDstBit | vk.ImageUsageTransferSrcBit | vk.ImageUsageColorAttachmentBit | vk.ImageUsageSampledBit),
+		Usage:       flags[vk.ImageUsageFlags](usage),
 		SharingMode: vk.SharingModeExclusive, InitialLayout: vk.ImageLayoutUndefined,
 	}
 	if r := d.cmds.CreateImage(d.device, &ici, nil, &s.image); r != vk.Success {
@@ -78,7 +95,7 @@ func (s *surface) ready() error {
 	}
 	d := s.d
 	pass := d.pass
-	if s.vf != surfaceFormat {
+	if s.vf != surfaceFormat && !s.sampled {
 		ct, err := d.compTargetOf(s.vf)
 		if err != nil {
 			return err
@@ -92,12 +109,14 @@ func (s *surface) ready() error {
 	if r := d.cmds.CreateImageView(d.device, &vci, nil, &s.view); r != vk.Success {
 		return fmt.Errorf("gpu: vkCreateImageView: %w", resultError(r))
 	}
-	fci := vk.FramebufferCreateInfo{
-		SType: vk.StructureTypeFramebufferCreateInfo, RenderPass: pass, AttachmentCount: 1, PAttachments: &s.view,
-		Width: intconv.Must[uint32](s.w), Height: intconv.Must[uint32](s.h), Layers: 1,
-	}
-	if r := d.cmds.CreateFramebuffer(d.device, &fci, nil, &s.fb); r != vk.Success {
-		return fmt.Errorf("gpu: vkCreateFramebuffer %dx%d: %w", s.w, s.h, resultError(r))
+	if !s.sampled {
+		fci := vk.FramebufferCreateInfo{
+			SType: vk.StructureTypeFramebufferCreateInfo, RenderPass: pass, AttachmentCount: 1, PAttachments: &s.view,
+			Width: intconv.Must[uint32](s.w), Height: intconv.Must[uint32](s.h), Layers: 1,
+		}
+		if r := d.cmds.CreateFramebuffer(d.device, &fci, nil, &s.fb); r != vk.Success {
+			return fmt.Errorf("gpu: vkCreateFramebuffer %dx%d: %w", s.w, s.h, resultError(r))
+		}
 	}
 	set, err := d.textureSet(s.view)
 	if err != nil {

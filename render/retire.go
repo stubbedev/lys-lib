@@ -151,6 +151,15 @@ func runAll(frees []func()) {
 // safe from any goroutine.
 func Retire(free func()) { recordings.retire(free) }
 
+// Hold keeps every Retire from now on from freeing its rasters until the
+// function it returns is called: a renderer reading a raster's pixels past the
+// List that drew it holds them for as long as it reads.
+func Hold() (release func()) {
+	r := &recording{f: &recordings}
+	r.restart()
+	return r.end
+}
+
 // End ends l's recording after its last Play, releasing the frees
 // retired while it was open; neither recording into l nor playing it
 // is allowed afterwards, short of ResetRecorder. A renderer whose

@@ -99,12 +99,12 @@ func TestAResizeMakesALogarithmicNumberOfSurfaces(t *testing.T) {
 		}
 	}
 	step(100, 100)
-	before := d.surfacesMade
+	before := d.surfacesMade.Load()
 	const steps = 100
 	for i := 1; i <= steps; i++ {
 		step(100+i*2, 100+i)
 	}
-	working := d.surfacesMade - before - steps
+	working := d.surfacesMade.Load() - before - steps
 	const page, filters, layer = 1, 2, 1
 	const widthGrowths, heightGrowths = 3, 2
 	if want := uint64((page + filters + layer) * (widthGrowths + heightGrowths)); working > want {

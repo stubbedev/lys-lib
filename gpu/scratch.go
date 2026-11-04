@@ -348,6 +348,7 @@ func (d *Device) freeDeadLayers() {
 func (d *Device) closeScratch() {
 	d.freeDeadLayers()
 	d.closeImages()
+	d.closeStills()
 	for ls := range d.layers {
 		ls.cleanup.Stop()
 		ls.s.close()
