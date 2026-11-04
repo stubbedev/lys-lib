@@ -174,7 +174,8 @@ func (t *Texture) Update(r image.Rectangle, stride int, pix []byte) error {
 	fullBarrier(d, cb, t.image, vk.ImageLayoutTransferDstOptimal, vk.ImageLayoutShaderReadOnlyOptimal, vk.QueueFamilyIgnored, vk.QueueFamilyIgnored)
 	d.batched++
 	d.batchEnd = d.uploads.head
-	if d.batched >= maxBatchedUploads {
+	d.batchBytes += row * r.Dy()
+	if d.batched >= maxBatchedUploads || d.batchBytes >= flushBatchBytes {
 		return d.flushBatch()
 	}
 	return nil
@@ -183,6 +184,8 @@ func (t *Texture) Update(r image.Rectangle, stride int, pix []byte) error {
 // maxBatchedUploads bounds the command memory an update loop with no
 // pass can pile up.
 const maxBatchedUploads = 64
+
+const flushBatchBytes = 1 << 20
 
 // reserveUpload is the offset of n free bytes in the staging ring,
 // waiting for earlier uploads only when the ring is full and for the

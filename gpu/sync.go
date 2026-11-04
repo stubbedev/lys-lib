@@ -57,10 +57,12 @@ type timing struct {
 	// batch is the open command buffer holding the uploads no submission
 	// carries yet, batched of them in all, ending at batchEnd in the
 	// staging ring. The next submission takes them along, so a frame's
-	// uploads and its pass reach the kernel together.
-	batch    vk.CommandBuffer
-	batched  int
-	batchEnd int
+	// small uploads and its pass reach the kernel together; flushBatchBytes
+	// of them go at once, for the GPU to finish before the frame needs them.
+	batch      vk.CommandBuffer
+	batched    int
+	batchEnd   int
+	batchBytes int
 	// frameSignal is the semaphore the newest pass signals that no export
 	// has consumed, held out of the spares; passes signal one once
 	// passesExport says SyncFile is in use. lastSyncFile is the sync_file
@@ -428,7 +430,7 @@ func (d *Device) queue1(cb vk.CommandBuffer, signal vk.Semaphore, query int, sub
 	}
 	f := inflight{fence: fence, cb: cb, sems: len(d.waits), query: query}
 	if d.batched > 0 {
-		f.staged, f.stagingEnd, d.batched = true, d.batchEnd, 0
+		f.staged, f.stagingEnd, d.batched, d.batchBytes = true, d.batchEnd, 0, 0
 	}
 	d.heldSemaphores = append(d.heldSemaphores, d.waits...)
 	d.waits = d.waits[:0]
@@ -536,7 +538,7 @@ func (d *Device) flushBatch() error {
 func (d *Device) dropBatch(cb vk.CommandBuffer) {
 	d.spareBuffers = append(d.spareBuffers, cb)
 	if d.batched > 0 {
-		d.batched = 0
+		d.batched, d.batchBytes = 0, 0
 		d.uploads.pending--
 	}
 }

@@ -402,3 +402,29 @@ func TestAWideStrideUploadsOnlyItsRows(t *testing.T) {
 		}
 	}
 }
+
+func TestALargeUploadGoesToTheGPUBeforeItsFrame(t *testing.T) {
+	d := openDevice(t)
+	const side = 1024
+	tx, err := d.NewTexture(fourcc.ARGB8888, side, side)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := tx.Update(image.Rect(0, 0, 4, 4), 16, fill(4, 4, 16, [4]byte{1, 2, 3, 4})); err != nil {
+		t.Fatal(err)
+	}
+	if d.batched != 1 || len(d.inflight) != 0 {
+		t.Fatalf("after a small update: %d batched, %d in flight, want it held for the frame", d.batched, len(d.inflight))
+	}
+	want := [4]byte{9, 8, 7, 6}
+	if err := tx.Update(image.Rect(0, 0, side, side), side*4, fill(side, side, side*4, want)); err != nil {
+		t.Fatal(err)
+	}
+	if d.batch != 0 || d.batched != 0 || d.batchBytes != 0 || len(d.inflight) != 1 {
+		t.Fatalf("after a large update: batch %d of %d uploads and %d bytes, %d in flight, want it submitted with what was held", d.batch, d.batched, d.batchBytes, len(d.inflight))
+	}
+	got := textureBytes(t, tx)
+	if px := [4]byte(got[(side*side-1)*4:]); px != want {
+		t.Fatalf("last pixel is %v, want %v", px, want)
+	}
+}
