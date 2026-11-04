@@ -84,13 +84,16 @@ func (kind *yuv444Kind) pipeline(d *Device, target vk.Format) (vk.Pipeline, erro
 	if p, ok := kind.pipes[target]; ok {
 		return p, nil
 	}
-	p, err := d.constantsPipeline(target, fragYCbCr444, d.comp.layout, unsafe.Pointer(&kind.constants), unsafe.Sizeof(kind.constants))
-	runtime.KeepAlive(kind)
+	ct, err := d.compTargetOf(target)
 	if err != nil {
 		return 0, err
 	}
-	kind.pipes[target] = p
-	return p, nil
+	build := func() (vk.Pipeline, error) {
+		p, err := d.constantsPipelineOf(ct, d.comp.frags[fragYCbCr444], d.comp.layout, unsafe.Pointer(&kind.constants), unsafe.Sizeof(kind.constants))
+		runtime.KeepAlive(kind)
+		return p, err
+	}
+	return d.lazyPipeline(pipelineKey{owner: kind, target: target}, 0, build, func(p vk.Pipeline) { kind.pipes[target] = p })
 }
 
 func (kind *yuv444Kind) destroy(d *Device) {

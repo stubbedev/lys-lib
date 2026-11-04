@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"testing"
 )
 
@@ -20,7 +21,7 @@ import (
 // a missing device fails the test rather than skipping it.
 func Setup(setenv func(key, value string) error) (required bool, err error) {
 	mode := os.Getenv("LYS_TEST_GPU")
-	var env [][2]string
+	env := [][2]string{{"XDG_CACHE_HOME", filepath.Join(os.TempDir(), "lys-gputest-cache")}}
 	if mode == "lavapipe" {
 		icd := os.Getenv("LYS_TEST_LAVAPIPE")
 		if icd == "" {

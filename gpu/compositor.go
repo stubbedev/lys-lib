@@ -121,20 +121,17 @@ func (d *Device) compTargetOf(format vk.Format) (*compTarget, error) {
 	}
 	ct := &compTarget{}
 	var err error
-	if ct.pass, err = d.renderPass(format); err == nil {
-		if ct.tex, err = d.graphicsPipeline([2]vk.ShaderModule{c.vert, c.frags[0]}, c.layout, ct.pass, blendOver); err == nil {
-			if ct.fill, err = d.graphicsPipeline([2]vk.ShaderModule{c.vert, c.frags[1]}, c.layout, ct.pass, blendOver); err == nil {
-				if ct.grad, err = d.graphicsPipeline([2]vk.ShaderModule{c.vert, c.frags[2]}, c.layout, ct.pass, blendOver); err == nil {
-					if ct.kawase, err = d.graphicsPipeline([2]vk.ShaderModule{c.vert, c.frags[3]}, c.layout, ct.pass, blendOver); err == nil {
-						ct.goo, err = d.graphicsPipeline([2]vk.ShaderModule{c.vert, c.frags[4]}, c.layout, ct.pass, blendOver)
-					}
-				}
-			}
-		}
-	}
-	if err != nil {
+	if ct.pass, err = d.renderPass(format); err != nil {
 		ct.destroy(d)
 		return nil, err
+	}
+	for i, slot := range [5]*vk.Pipeline{&ct.tex, &ct.fill, &ct.grad, &ct.kawase, &ct.goo} {
+		modules := [2]vk.ShaderModule{c.vert, c.frags[i]}
+		build := func() (vk.Pipeline, error) { return d.graphicsPipeline(modules, c.layout, ct.pass, blendOver) }
+		if _, err := d.lazyPipeline(pipelineKey{owner: ct, target: format, which: i}, 0, build, func(p vk.Pipeline) { *slot = p }); err != nil {
+			ct.destroy(d)
+			return nil, err
+		}
 	}
 	c.targets[format] = ct
 	return ct, nil
@@ -154,12 +151,10 @@ func (d *Device) glassPipeline(ct *compTarget) (vk.Pipeline, error) {
 		}
 		c.glass = m
 	}
-	p, err := d.graphicsPipeline([2]vk.ShaderModule{c.vert, c.glass}, c.layout, ct.pass, blendOver)
-	if err != nil {
-		return 0, err
+	build := func() (vk.Pipeline, error) {
+		return d.graphicsPipeline([2]vk.ShaderModule{c.vert, c.glass}, c.layout, ct.pass, blendOver)
 	}
-	ct.glass = p
-	return p, nil
+	return d.lazyPipeline(pipelineKey{owner: ct, which: 5}, 0, build, func(p vk.Pipeline) { ct.glass = p })
 }
 
 func (ct *compTarget) destroy(d *Device) {

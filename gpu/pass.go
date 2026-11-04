@@ -33,6 +33,21 @@ type Pass struct {
 	// color is what SetColor last set; colorSet holds it for the shaders.
 	color    *ColorTransform
 	colorSet vk.DescriptorSet
+	// incomplete is whether a draw was skipped, its pipeline still on the
+	// worker Prepare started.
+	incomplete bool
+}
+
+// Incomplete reports a draw skipped because its pipeline is still being built
+// (Prepare): the caller keeps this pass's damage for its next frame.
+func (p *Pass) Incomplete() bool { return p.incomplete }
+
+func (p *Pass) add(op passOp) {
+	if op.pipe == 0 && op.kind != opClear {
+		p.incomplete = true
+		return
+	}
+	p.ops = append(p.ops, op)
 }
 
 // passWork counts the commands the last recorded pass issued for its
@@ -72,6 +87,9 @@ func (d *Device) Begin(t *Target, damage []image.Rectangle) (*Pass, error) {
 		return nil, errors.New("gpu: Begin while a pass is open")
 	}
 	d.reap(false)
+	if err := d.publishPipelines(); err != nil {
+		return nil, err
+	}
 	ct, err := d.compTargetOf(t.s.format())
 	if err != nil {
 		return nil, err
@@ -162,7 +180,7 @@ func (p *Pass) Clear(c color.RGBA) {
 		p.fail(err)
 		return
 	}
-	p.ops = append(p.ops, passOp{kind: opClear, dc: drawConstants{extra: [2][4]float32{p.coloredFill(col)}}})
+	p.add(passOp{kind: opClear, dc: drawConstants{extra: [2][4]float32{p.coloredFill(col)}}})
 }
 
 func (dc *drawConstants) setMask(m Mask) {
@@ -189,7 +207,7 @@ func (p *Pass) FillRect(r image.Rectangle, c color.RGBA, m Mask) {
 	}
 	dc := drawConstants{extra: [2][4]float32{p.coloredFill(col)}}
 	dc.setMask(m)
-	p.ops = append(p.ops, passOp{kind: opFill, dst: r, pipe: p.ct.fill, layout: p.d.comp.layout, dc: dc})
+	p.add(passOp{kind: opFill, dst: r, pipe: p.ct.fill, layout: p.d.comp.layout, dc: dc})
 }
 
 // Gradient is a linear gradient from From to To, in target pixels:
@@ -248,7 +266,7 @@ func (p *Pass) FillGradient(r image.Rectangle, g Gradient, m Mask) {
 		}
 		op.layout, op.color = p.d.comp.color.layout, p.colorSet
 	}
-	p.ops = append(p.ops, op)
+	p.add(op)
 }
 
 // Goo is two rounded rectangles merged into one blob: their distance
@@ -291,7 +309,7 @@ func (p *Pass) FillGoo(r image.Rectangle, c color.RGBA, g Goo) {
 		return [4]float32{float32(r.Min.X), float32(r.Min.Y), float32(r.Max.X), float32(r.Max.Y)}
 	}
 	dc := drawConstants{extra: [2][4]float32{p.coloredFill(col)}, keep: rect(g.A.Rect), merge: rect(g.B.Rect), radii: [4]float32{g.A.Radius, g.B.Radius, g.Smooth}}
-	p.ops = append(p.ops, passOp{kind: opFill, dst: r, pipe: p.ct.goo, layout: p.d.comp.layout, dc: dc})
+	p.add(passOp{kind: opFill, dst: r, pipe: p.ct.goo, layout: p.d.comp.layout, dc: dc})
 }
 
 // Kawase draws all of t scaled to dst through one pass of a dual
@@ -331,7 +349,7 @@ func (p *Pass) Kawase(t *Texture, dst image.Rectangle, offset float32, up bool) 
 	}
 	dc := drawConstants{target: [4]float32{2: 1}, extra: [2][4]float32{{0, 0, 1, 0}, {0, 1, 1, 1}}}
 	dc.keep = [4]float32{0.5 / float32(t.w) * offset, 0.5 / float32(t.h) * offset, mode}
-	p.ops = append(p.ops, passOp{kind: opTexture, dst: dst, tex: t, set: set, pipe: p.ct.kawase, layout: p.d.comp.layout, dc: dc})
+	p.add(passOp{kind: opTexture, dst: dst, tex: t, set: set, pipe: p.ct.kawase, layout: p.d.comp.layout, dc: dc})
 }
 
 // DrawTexture blends src of t, scaled to dst and turned by tr, at
@@ -395,7 +413,7 @@ func (p *Pass) DrawTexture(t *Texture, src FRect, dst image.Rectangle, tr Transf
 		if op.pipe, op.layout, err = p.d.colorTexturePipeline(t, p.ct, p.t.s.vf); err != nil {
 			p.fail(err)
 		}
-		p.ops = append(p.ops, op)
+		p.add(op)
 		return
 	}
 	if t.ycbcr != nil {
@@ -418,7 +436,7 @@ func (p *Pass) DrawTexture(t *Texture, src FRect, dst image.Rectangle, tr Transf
 		}
 		op.layout = t.planes.layout
 	}
-	p.ops = append(p.ops, op)
+	p.add(op)
 }
 
 func whole(r FRect) bool {

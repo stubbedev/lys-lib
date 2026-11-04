@@ -212,12 +212,10 @@ func (kind *ycbcrKind) pipeline(d *Device, target vk.Format) (vk.Pipeline, error
 	if err != nil {
 		return 0, err
 	}
-	p, err := d.graphicsPipeline([2]vk.ShaderModule{d.comp.vert, d.comp.frags[0]}, kind.layout, ct.pass, blendOver)
-	if err != nil {
-		return 0, err
+	build := func() (vk.Pipeline, error) {
+		return d.graphicsPipeline([2]vk.ShaderModule{d.comp.vert, d.comp.frags[0]}, kind.layout, ct.pass, blendOver)
 	}
-	kind.pipes[target] = p
-	return p, nil
+	return d.lazyPipeline(pipelineKey{owner: kind, target: target}, 0, build, func(p vk.Pipeline) { kind.pipes[target] = p })
 }
 
 func (kind *ycbcrKind) destroy(d *Device) {

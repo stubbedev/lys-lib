@@ -62,12 +62,29 @@ func (s *FragmentShader) pipeline(format vk.Format) (vk.Pipeline, error) {
 	if err != nil {
 		return 0, err
 	}
-	p, err := s.d.graphicsPipeline([2]vk.ShaderModule{s.d.comp.vert, s.module}, s.d.comp.layout, ct.pass, vk.PipelineColorBlendAttachmentState{ColorWriteMask: rgbMask})
+	p, err := s.build(ct, s.module)
 	if err != nil {
 		return 0, fmt.Errorf("gpu: a pipeline of a fragment shader: %w", err)
 	}
 	s.pipelines[format] = p
 	return p, nil
+}
+
+func (s *FragmentShader) pipelineOnce(format vk.Format) (vk.Pipeline, error) {
+	if p, ok := s.pipelines[format]; ok {
+		return p, nil
+	}
+	ct, err := s.d.compTargetOf(format)
+	if err != nil {
+		return 0, err
+	}
+	module, pipelines := s.module, s.pipelines
+	build := func() (vk.Pipeline, error) { return s.build(ct, module) }
+	return s.d.lazyPipeline(pipelineKey{owner: s, target: format}, 0, build, func(p vk.Pipeline) { pipelines[format] = p })
+}
+
+func (s *FragmentShader) build(ct *compTarget, module vk.ShaderModule) (vk.Pipeline, error) {
+	return s.d.graphicsPipeline([2]vk.ShaderModule{s.d.comp.vert, module}, s.d.comp.layout, ct.pass, vk.PipelineColorBlendAttachmentState{ColorWriteMask: rgbMask})
 }
 
 // Close frees the shader once the frames in flight that may draw with it
@@ -120,7 +137,7 @@ func (p *Pass) DrawFragmentShader(s *FragmentShader, t *Texture, dst image.Recta
 		p.fail(errors.New("gpu: DrawFragmentShader of a YCbCr texture"))
 		return
 	}
-	pipe, err := s.pipeline(p.t.s.format())
+	pipe, err := s.pipelineOnce(p.t.s.format())
 	if err != nil {
 		p.fail(err)
 		return
@@ -131,5 +148,5 @@ func (p *Pass) DrawFragmentShader(s *FragmentShader, t *Texture, dst image.Recta
 		return
 	}
 	dc := drawConstants{target: [4]float32{2: 1}, extra: [2][4]float32{{0, 0, 1, 0}, {0, 1, 1, 1}}, keep: constants}
-	p.ops = append(p.ops, passOp{kind: opTexture, dst: dst, tex: t, set: set, pipe: pipe, layout: p.d.comp.layout, dc: dc})
+	p.add(passOp{kind: opTexture, dst: dst, tex: t, set: set, pipe: pipe, layout: p.d.comp.layout, dc: dc})
 }

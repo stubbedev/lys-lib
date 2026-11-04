@@ -225,7 +225,8 @@ func (d *Device) specializedPipeline(modules [2]vk.ShaderModule, layout vk.Pipel
 		PMultisampleState: &ms, PColorBlendState: &cb, PDynamicState: &ds, Layout: layout, RenderPass: pass,
 	}
 	var p vk.Pipeline
-	if r := d.cmds.CreateGraphicsPipelines(d.device, 0, 1, &gci, nil, &p); r != vk.Success {
+	d.prep.builds.Add(1)
+	if r := d.cmds.CreateGraphicsPipelines(d.device, d.prep.cache, 1, &gci, nil, &p); r != vk.Success {
 		return 0, fmt.Errorf("gpu: vkCreateGraphicsPipelines: %w", resultError(r))
 	}
 	return p, nil

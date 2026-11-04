@@ -1,0 +1,143 @@
+package gpu
+
+import (
+	"image"
+	"image/color"
+	"os"
+	"path/filepath"
+	"testing"
+	"time"
+
+	"github.com/stubbedev/lys-lib/fourcc"
+)
+
+func awaitPrepared(t *testing.T, d *Device) {
+	t.Helper()
+	deadline := time.Now().Add(time.Minute)
+	for {
+		ok, err := d.Prepared()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if ok {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the pipelines were not built within a minute")
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
+func TestAfterPrepareNoPassBuildsAPipeline(t *testing.T) {
+	d := openDevice(t)
+	if err := d.Prepare(fourcc.ARGB8888, fourcc.XRGB8888); err != nil {
+		t.Fatal(err)
+	}
+	awaitPrepared(t, d)
+	tg := newTarget(t, d, 32, 32)
+	src := newTarget(t, d, 8, 8)
+	runPass(t, d, src, []image.Rectangle{{Max: src.Size()}}, func(p *Pass) { p.Clear(color.RGBA{A: 0xff}) })
+	tex, err := src.Texture()
+	if err != nil {
+		t.Fatal(err)
+	}
+	stops, err := d.NewTexture(fourcc.ARGB8888, 2, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer stops.Close()
+	before := d.prep.builds.Load()
+	ct := ColorTransform{Matrix: [9]float32{1, 0, 0, 0, 1, 0, 0, 0, 1}, Scale: 1}
+	for _, colored := range []bool{false, true} {
+		runPass(t, d, tg, []image.Rectangle{{Max: tg.Size()}}, func(p *Pass) {
+			if colored {
+				p.SetColor(&ct)
+			}
+			r := image.Rect(0, 0, 16, 16)
+			p.FillRect(r, color.RGBA{A: 0xff}, Mask{})
+			p.DrawTexture(tex, FRect{W: 8, H: 8}, r, TransformNormal, 1, Mask{})
+			p.FillGradient(r, Gradient{Stops: stops, To: [2]float32{16, 0}, Alpha: 1}, Mask{})
+			p.DrawGlass(tex, FRect{W: 8, H: 8}, r, 1, Mask{}, Glass{Saturation: 1, Brightness: 1, Contrast: 1})
+			if !colored {
+				p.Kawase(tex, r, 1, false)
+				p.FillGoo(r, color.RGBA{A: 0xff}, Goo{A: RoundRect{Rect: r}, B: RoundRect{Rect: r}})
+			}
+			if p.Incomplete() {
+				t.Error("a prepared pass skipped a draw")
+			}
+		})
+	}
+	if n := d.prep.builds.Load() - before; n != 0 {
+		t.Errorf("%d pipelines built while passes recorded after Prepare", n)
+	}
+}
+
+func TestAPassBeforeItsPipelineExistsSkipsTheDrawAndSaysSo(t *testing.T) {
+	d := openDevice(t)
+	if err := d.Prepare(); err != nil {
+		t.Fatal(err)
+	}
+	tg := newTarget(t, d, 8, 8)
+	red := color.RGBA{R: 0xff, A: 0xff}
+	draw := func() bool {
+		p, err := d.Begin(tg, []image.Rectangle{{Max: tg.Size()}})
+		if err != nil {
+			t.Fatal(err)
+		}
+		p.Clear(color.RGBA{A: 0xff})
+		p.FillRect(image.Rect(0, 0, 8, 8), red, Mask{})
+		incomplete := p.Incomplete()
+		if err := p.End(); err != nil {
+			t.Fatal(err)
+		}
+		return incomplete
+	}
+	builds := d.prep.builds.Load()
+	if !draw() && d.prep.builds.Load() == builds {
+		t.Log("the worker beat the first draw")
+	}
+	awaitPrepared(t, d)
+	if draw() {
+		t.Fatal("a pass after the worker finished skipped a draw")
+	}
+	px, err := tg.ReadPixels()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := px.RGBAAt(4, 4); got != red {
+		t.Errorf("drew %v, want %v", got, red)
+	}
+}
+
+func TestThePipelineCachePersistsAcrossDevices(t *testing.T) {
+	d := openDevice(t)
+	dir := t.TempDir()
+	t.Setenv("XDG_CACHE_HOME", dir)
+	path, ok := pipelineCachePath(d.cacheUUID)
+	if !ok {
+		t.Fatal("no cache path with XDG_CACHE_HOME set")
+	}
+	d.prep.path = path
+	if err := d.Prepare(fourcc.ARGB8888); err != nil {
+		t.Fatal(err)
+	}
+	awaitPrepared(t, d)
+	if err := d.savePipelineCache(); err != nil {
+		t.Fatal(err)
+	}
+	first, err := os.Stat(path)
+	if err != nil || first.Size() == 0 {
+		t.Fatalf("the cache file: %v, %v", first, err)
+	}
+	if rel, err := filepath.Rel(dir, path); err != nil || filepath.Dir(rel) != "lys-lib" {
+		t.Errorf("the cache lands at %s", path)
+	}
+	leftovers, err := os.ReadDir(filepath.Dir(path))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(leftovers) != 1 {
+		t.Errorf("%d files beside the cache: a temporary was left behind", len(leftovers)-1)
+	}
+}

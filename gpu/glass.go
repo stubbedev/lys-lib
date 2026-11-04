@@ -151,5 +151,5 @@ func (p *Pass) DrawGlass(t *Texture, src FRect, dst image.Rectangle, alpha float
 		dc.radii[2], dc.merge[3] = render.Reciprocal(g.Bezel), g.Amount
 	}
 	op.dc = dc
-	p.ops = append(p.ops, op)
+	p.add(op)
 }

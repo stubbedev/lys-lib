@@ -100,6 +100,8 @@ type Device struct {
 	reused       Pass
 	passOps      []passOp
 	passForeign  []*Texture
+	prep         preparer
+	cacheUUID    [16]uint8
 	passRects    rectScratch
 	passWork     passWork
 	surfacesMade uint64
@@ -297,6 +299,7 @@ func (d *Device) pick(p vk.PhysicalDevice, exporting bool, node *drmNode) error 
 	for i, f := range fams {
 		if f.QueueFlags&vk.QueueFlags(vk.QueueGraphicsBit|vk.QueueComputeBit) == vk.QueueFlags(vk.QueueGraphicsBit|vk.QueueComputeBit) {
 			d.phys, d.family, d.name, d.exports, d.maxDim = p, uint32(i), name, exporting, int(props.Limits.MaxImageDimension2D)
+			d.cacheUUID = props.PipelineCacheUUID
 			d.renderNode = ""
 			if drm.HasRender != 0 {
 				d.renderNode = fmt.Sprintf("/dev/dri/renderD%d", drm.RenderMinor)
@@ -366,7 +369,7 @@ func (d *Device) open() error {
 		return fmt.Errorf("%s: %w", d.name, err)
 	}
 	d.pool = pool
-	return nil
+	return d.openPipelineCache(d.cacheUUID)
 }
 
 // proveExport exports one small image: a driver can offer the export
@@ -424,6 +427,7 @@ func (d *Device) Close() {
 
 // closeDevice releases the logical device and what was made on it.
 func (d *Device) closeDevice() {
+	d.stopPipelines()
 	d.cmds.DeviceWaitIdle(d.device)
 	d.closeTiming()
 	d.closeScratch()
@@ -434,6 +438,13 @@ func (d *Device) closeDevice() {
 	d.destroyComp()
 	d.destroyPipelines()
 	d.pipelines = pipelines{}
+	if err := d.savePipelineCache(); err != nil {
+		debug.Log("gpu", "pipeline cache not saved: %v", err)
+	}
+	if d.prep.cache != 0 {
+		d.cmds.DestroyPipelineCache(d.device, d.prep.cache, nil)
+		d.prep.cache = 0
+	}
 	d.cmds.DestroyCommandPool(d.device, d.pool, nil)
 	d.cmds.DestroyDevice(d.device, nil)
 }

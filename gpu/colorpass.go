@@ -196,12 +196,9 @@ func (c *coloredPipes) get(d *Device, target vk.Format, base vk.DescriptorSetLay
 		}
 		c.layout, c.pipes = layout, map[vk.Format]vk.Pipeline{}
 	}
-	p, err := make(c.layout)
-	if err != nil {
-		return 0, 0, err
-	}
-	c.pipes[target] = p
-	return p, c.layout, nil
+	layout := c.layout
+	p, err := d.lazyPipeline(pipelineKey{owner: c, target: target}, 0, func() (vk.Pipeline, error) { return make(layout) }, func(p vk.Pipeline) { c.pipes[target] = p })
+	return p, c.layout, err
 }
 
 func (c *coloredPipes) destroy(d *Device) {
@@ -219,9 +216,10 @@ func (d *Device) colorGradPipeline(ct *compTarget) (vk.Pipeline, error) {
 		return ct.colorGrad, nil
 	}
 	cs := &d.comp.color
-	var err error
-	ct.colorGrad, err = d.graphicsPipeline([2]vk.ShaderModule{d.comp.vert, cs.frags[colorFragGradient]}, cs.layout, ct.pass, blendOver)
-	return ct.colorGrad, err
+	build := func() (vk.Pipeline, error) {
+		return d.graphicsPipeline([2]vk.ShaderModule{d.comp.vert, cs.frags[colorFragGradient]}, cs.layout, ct.pass, blendOver)
+	}
+	return d.lazyPipeline(pipelineKey{owner: ct, which: 6}, 0, build, func(p vk.Pipeline) { ct.colorGrad = p })
 }
 
 func (d *Device) colorGlassPipeline(ct *compTarget) (vk.Pipeline, error) {
@@ -229,9 +227,10 @@ func (d *Device) colorGlassPipeline(ct *compTarget) (vk.Pipeline, error) {
 		return ct.colorGlass, nil
 	}
 	cs := &d.comp.color
-	var err error
-	ct.colorGlass, err = d.graphicsPipeline([2]vk.ShaderModule{d.comp.vert, cs.frags[colorFragGlass]}, cs.layout, ct.pass, blendOver)
-	return ct.colorGlass, err
+	build := func() (vk.Pipeline, error) {
+		return d.graphicsPipeline([2]vk.ShaderModule{d.comp.vert, cs.frags[colorFragGlass]}, cs.layout, ct.pass, blendOver)
+	}
+	return d.lazyPipeline(pipelineKey{owner: ct, which: 7}, 0, build, func(p vk.Pipeline) { ct.colorGlass = p })
 }
 
 // colorTexturePipeline is how t, of any kind, draws through a colour transform
@@ -247,22 +246,23 @@ func (d *Device) colorTexturePipeline(t *Texture, ct *compTarget, target vk.Form
 	case t.yuv444 != nil:
 		kind := t.yuv444
 		return kind.colored.get(d, target, d.comp.sets.layout, func(layout vk.PipelineLayout) (vk.Pipeline, error) {
-			return d.constantsPipelineOf(target, cs.frags[colorFragYCbCr444], layout, unsafe.Pointer(&kind.constants), unsafe.Sizeof(kind.constants))
+			return d.constantsPipelineOf(ct, cs.frags[colorFragYCbCr444], layout, unsafe.Pointer(&kind.constants), unsafe.Sizeof(kind.constants))
 		})
 	case t.planes != nil:
 		kind := t.planes
 		return kind.colored.get(d, target, kind.sets.layout, func(layout vk.PipelineLayout) (vk.Pipeline, error) {
-			return d.constantsPipelineOf(target, cs.frags[colorFragYCbCrPlanes], layout, unsafe.Pointer(&kind.constants), unsafe.Sizeof(kind.constants))
+			return d.constantsPipelineOf(ct, cs.frags[colorFragYCbCrPlanes], layout, unsafe.Pointer(&kind.constants), unsafe.Sizeof(kind.constants))
 		})
 	}
-	if ct.colorTex == 0 {
-		p, err := d.graphicsPipeline([2]vk.ShaderModule{d.comp.vert, cs.frags[colorFragTexture]}, cs.layout, ct.pass, blendOver)
-		if err != nil {
-			return 0, 0, err
-		}
-		ct.colorTex = p
+	return d.colorPlainPipeline(cs, ct)
+}
+
+func (d *Device) colorPlainPipeline(cs *colorState, ct *compTarget) (vk.Pipeline, vk.PipelineLayout, error) {
+	build := func() (vk.Pipeline, error) {
+		return d.graphicsPipeline([2]vk.ShaderModule{d.comp.vert, cs.frags[colorFragTexture]}, cs.layout, ct.pass, blendOver)
 	}
-	return ct.colorTex, cs.layout, nil
+	p, err := d.lazyPipeline(pipelineKey{owner: ct, which: 8}, ct.colorTex, build, func(p vk.Pipeline) { ct.colorTex = p })
+	return p, cs.layout, err
 }
 
 // SetColor sends every later draw of the pass through t before it blends: a

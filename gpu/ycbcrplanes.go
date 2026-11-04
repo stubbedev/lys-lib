@@ -218,13 +218,16 @@ func (kind *planesKind) pipeline(d *Device, target vk.Format) (vk.Pipeline, erro
 	if p, ok := kind.pipes[target]; ok {
 		return p, nil
 	}
-	p, err := d.constantsPipeline(target, fragYCbCrPlanes, kind.layout, unsafe.Pointer(&kind.constants), unsafe.Sizeof(kind.constants))
-	runtime.KeepAlive(kind)
+	ct, err := d.compTargetOf(target)
 	if err != nil {
 		return 0, err
 	}
-	kind.pipes[target] = p
-	return p, nil
+	build := func() (vk.Pipeline, error) {
+		p, err := d.constantsPipelineOf(ct, d.comp.frags[fragYCbCrPlanes], kind.layout, unsafe.Pointer(&kind.constants), unsafe.Sizeof(kind.constants))
+		runtime.KeepAlive(kind)
+		return p, err
+	}
+	return d.lazyPipeline(pipelineKey{owner: kind, target: target}, 0, build, func(p vk.Pipeline) { kind.pipes[target] = p })
 }
 
 func (kind *planesKind) destroy(d *Device) {
@@ -240,15 +243,7 @@ func (kind *planesKind) destroy(d *Device) {
 
 // constantsPipeline is a compositing pipeline into target whose fragment
 // shader takes its float constants, in order, from size bytes at data.
-func (d *Device) constantsPipeline(target vk.Format, frag int, layout vk.PipelineLayout, data unsafe.Pointer, size uintptr) (vk.Pipeline, error) {
-	return d.constantsPipelineOf(target, d.comp.frags[frag], layout, data, size)
-}
-
-func (d *Device) constantsPipelineOf(target vk.Format, frag vk.ShaderModule, layout vk.PipelineLayout, data unsafe.Pointer, size uintptr) (vk.Pipeline, error) {
-	ct, err := d.compTargetOf(target)
-	if err != nil {
-		return 0, err
-	}
+func (d *Device) constantsPipelineOf(ct *compTarget, frag vk.ShaderModule, layout vk.PipelineLayout, data unsafe.Pointer, size uintptr) (vk.Pipeline, error) {
 	const float = unsafe.Sizeof(float32(0))
 	entries := make([]vk.SpecializationMapEntry, size/float)
 	for i := range entries {
