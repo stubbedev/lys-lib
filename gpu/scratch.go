@@ -152,8 +152,9 @@ func (d *Device) dropScratches() error {
 }
 
 // Trim hands back what the device keeps only for speed: the CPU
-// scratch canvases, freed off the Go heap and unmapped, and the buffers
-// of finished segments. A device that draws again allocates them
+// scratch canvases, freed off the Go heap and unmapped, the buffers of
+// finished segments, and the image textures not drawn since the last
+// Trim. A device that draws again allocates them
 // anew. Call it when the device has been idle a while, between frames,
 // on the device's goroutine.
 func (d *Device) Trim() error {
@@ -167,6 +168,7 @@ func (d *Device) Trim() error {
 		return err
 	}
 	d.closeFrameBuffers()
+	d.sweepImages()
 	return nil
 }
 

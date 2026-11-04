@@ -15,8 +15,8 @@ import (
 //     from its cache, so no recording that starts later is handed it.
 //  2. It may call Forget on each GPU device that drew it, which drops
 //     the texture or atlas slot kept under its ImageID once that
-//     device's current or next frame is done, instead of after the
-//     device's idle timeout.
+//     device's current or next frame is done, instead of staying until
+//     the device's image bound or its Trim.
 //  3. It calls Retire with the function that frees the memory. Retire
 //     runs it once every List whose recording started before the call
 //     has ended, at once when none is open.

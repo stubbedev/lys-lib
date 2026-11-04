@@ -8,10 +8,6 @@ import (
 	"github.com/stubbedev/lys-lib/render"
 )
 
-// imageIdleFrames is how many frames an image texture outlives its
-// last draw.
-const imageIdleFrames = 120
-
 // maxImages bounds the image textures kept, well inside the descriptor
 // sets (maxSurfaces) the device's layers and targets share.
 const maxImages = maxSurfaces / 2
@@ -31,6 +27,7 @@ type imageTexture struct {
 type images struct {
 	byImage map[imageKey]*imageTexture
 	frames  uint64
+	swept   uint64
 	// limit is the most textures kept, maxImages unless a test lowers
 	// it.
 	limit int
@@ -139,11 +136,11 @@ func (d *Device) evictLRU() {
 // Forget drops what the device keeps for the raster of identity id,
 // its textures and its mask atlas slot, once the frame the device is
 // drawing, or else its next one, is done: an owner that frees the
-// raster (render.Retire) frees the GPU copy with it rather than after
-// imageIdleFrames, and a List recorded before the eviction still draws
+// raster (render.Retire) frees the GPU copy with it rather than leaving
+// it to the maxImages bound or Trim, and a List recorded before the eviction still draws
 // from the texture in that frame. A List still open after that frame
 // that draws the raster uploads it again, from pixels Retire keeps
-// until that List ends, and the texture then idles out. It is safe from
+// until that List ends. It is safe from
 // any goroutine. Zero, no identity, panics: a raster without one is
 // kept by its pixels' address and is the garbage collector's to free.
 func (d *Device) Forget(id render.ImageID) {
@@ -176,12 +173,13 @@ func (d *Device) forgetImages() {
 	})
 }
 
-// retireImages frees the textures no frame drew for imageIdleFrames,
-// at a frame's start, once the work pending has finished.
-func (d *Device) retireImages() {
+// sweepImages frees the textures no frame drew since the last sweep. A
+// frame draws only what its damage touches, so frames alone say nothing
+// about whether a raster is still on screen: this runs only from Trim.
+func (d *Device) sweepImages() {
 	ims := &d.images
-	ims.frames++
-	d.dropImages(func(_ imageKey, t *imageTexture) bool { return ims.frames-t.used > imageIdleFrames })
+	d.dropImages(func(_ imageKey, t *imageTexture) bool { return t.used <= ims.swept })
+	ims.swept = ims.frames
 }
 
 // dropImages frees the textures drop picks.

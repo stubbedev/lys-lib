@@ -81,7 +81,7 @@ func (d *Device) Render(l *render.List, t *Target) error {
 		return fmt.Errorf("gpu: Render draws into ARGB8888 and XRGB8888 targets, not %s", t.buf.Format)
 	}
 	d.freeDeadLayers()
-	d.retireImages()
+	d.images.frames++
 	defer d.forgetImages()
 	if err := d.ensureScratch(t.s.w, t.s.h); err != nil {
 		return err

@@ -164,3 +164,58 @@ func TestForgetWithoutAnIdentityPanics(t *testing.T) {
 	}()
 	d.Forget(0)
 }
+
+func TestAVisibleImageOutsideTheDamageKeepsItsTexture(t *testing.T) {
+	d := openDevice(t)
+	const w, h = 200, 100
+	tg := newTarget(t, d, w, h)
+	rec := render.NewRecorder(w, h, 1, 1)
+	img := render.NewStillImage(image.NewRGBA(image.Rect(0, 0, 64, 64)))
+	draw := func(clip render.Rect) int {
+		t.Helper()
+		rec.ResetRecorder(w, h, 1, 1)
+		prev := rec.PushClipDevice(clip)
+		rec.DrawImage(img, 0, 0)
+		rec.FillRectDevice(clip, render.RGBA(16, 32, 48, 255))
+		rec.PopClip(prev)
+		if err := d.Render(rec.Recording(), tg); err != nil {
+			t.Fatal(err)
+		}
+		if err := d.Finish(); err != nil {
+			t.Fatal(err)
+		}
+		return d.frame.stats.textureUploads
+	}
+	draw(render.Rect{W: w, H: h})
+	for range 400 {
+		if n := draw(render.Rect{X: 150, Y: 50, W: 10, H: 10}); n != 0 {
+			t.Fatalf("a frame damaged elsewhere uploaded %d textures", n)
+		}
+	}
+	if n := len(d.images.byImage); n != 1 {
+		t.Errorf("%d textures after the damaged-elsewhere frames, want 1", n)
+	}
+	if n := draw(render.Rect{W: w, H: h}); n != 0 {
+		t.Errorf("damage over the image again uploaded %d textures, want 0", n)
+	}
+}
+
+func TestTrimFreesTheImagesNotDrawnSinceTheLastTrim(t *testing.T) {
+	d := openDevice(t)
+	tg := newTarget(t, d, 16, 16)
+	rec := render.NewRecorder(16, 16, 1, 1)
+	drawImage(rec, render.NewStillImage(rasterIn(make([]byte, 8*8*4), red)))
+	renderImage(t, d, tg, rec)
+	if err := d.Trim(); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(d.images.byImage); n != 1 {
+		t.Fatalf("Trim freed an image drawn since the last one: %d left", n)
+	}
+	if err := d.Trim(); err != nil {
+		t.Fatal(err)
+	}
+	if n := len(d.images.byImage); n != 0 {
+		t.Errorf("%d textures after a Trim with no draw since the last", n)
+	}
+}
