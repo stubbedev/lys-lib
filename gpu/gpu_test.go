@@ -371,3 +371,22 @@ func TestDevicesShareTheProcessInstance(t *testing.T) {
 		d.Close()
 	}
 }
+
+func TestRenderNodeIsTheDevicesOwnNode(t *testing.T) {
+	d := openDevice(t)
+	path, ok := d.RenderNode()
+	if !ok {
+		if path != "" {
+			t.Errorf("an absent render node came with the path %q", path)
+		}
+		t.Logf("%s names no render node", d.Name())
+		return
+	}
+	var st unix.Stat_t
+	if err := unix.Stat(path, &st); err != nil {
+		t.Fatalf("the render node %s: %v", path, err)
+	}
+	if st.Mode&unix.S_IFMT != unix.S_IFCHR || st.Rdev != d.renderDev {
+		t.Errorf("%s is device %d:%d, the driver names %d:%d", path, unix.Major(st.Rdev), unix.Minor(st.Rdev), unix.Major(d.renderDev), unix.Minor(d.renderDev))
+	}
+}

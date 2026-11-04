@@ -27,6 +27,7 @@ import (
 
 	"github.com/stubbedev/lys-lib/debug"
 	"github.com/stubbedev/lys-lib/fourcc"
+	"github.com/stubbedev/lys-lib/intconv"
 	"github.com/stubbedev/lys-lib/third_party/vk"
 )
 
@@ -65,6 +66,7 @@ type Device struct {
 	// renderNode is the device's DRM render node, "" when the driver
 	// does not name it (VK_EXT_physical_device_drm).
 	renderNode string
+	renderDev  uint64
 	// sync2 is whether the device has Vulkan 1.3's synchronization2,
 	// enabled for the encoders.
 	sync2           bool
@@ -302,9 +304,10 @@ func (d *Device) pick(p vk.PhysicalDevice, exporting bool, node *drmNode) error 
 		if f.QueueFlags&vk.QueueFlags(vk.QueueGraphicsBit|vk.QueueComputeBit) == vk.QueueFlags(vk.QueueGraphicsBit|vk.QueueComputeBit) {
 			d.phys, d.family, d.name, d.exports, d.maxDim = p, uint32(i), name, exporting, int(props.Limits.MaxImageDimension2D)
 			d.cacheUUID = props.PipelineCacheUUID
-			d.renderNode = ""
+			d.renderNode, d.renderDev = "", 0
 			if drm.HasRender != 0 {
 				d.renderNode = fmt.Sprintf("/dev/dri/renderD%d", drm.RenderMinor)
+				d.renderDev = unix.Mkdev(intconv.Must[uint32](drm.RenderMajor), intconv.Must[uint32](drm.RenderMinor))
 			}
 			d.sync2 = d.probeSync2(p, props.ApiVersion)
 			d.vulkan13 = props.ApiVersion >= vkVersion(1, 3)
@@ -392,6 +395,12 @@ func (d *Device) proveExport() error {
 	e.close(d)
 	return nil
 }
+
+// RenderNode is the path of the device's DRM render node, as the driver names
+// its major and minor (VK_EXT_physical_device_drm): what a caller opens to
+// reach the same GPU, for timeline syncobjs. False for a device the driver
+// names none for, lavapipe's.
+func (d *Device) RenderNode() (string, bool) { return d.renderNode, d.renderNode != "" }
 
 // Exports reports whether the device renders into dmabufs, for
 // NewTarget.
