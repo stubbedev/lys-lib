@@ -1,6 +1,7 @@
 package gpu
 
 import (
+	"errors"
 	"image"
 	"image/color"
 	"slices"
@@ -153,7 +154,14 @@ func TestFramesInFlightKeepTheirOwnMemory(t *testing.T) {
 		rec.DrawImage(sprite, 32, 32)
 		stop := render.RGBA(0, 0, v, 255)
 		rec.PaintGradient(render.Rect{X: 8, Y: 8, W: 8, H: 8}, render.Corners{}, render.Gradient{Stops: []render.GradientStop{{Pos: 0, Color: stop}, {Pos: 1, Color: stop}}})
-		if err := d.Render(rec.Recording(), tg); err != nil {
+		err = d.Render(rec.Recording(), tg)
+		for errors.Is(err, ErrBusy) {
+			if err := d.waitOldest(); err != nil {
+				t.Fatal(err)
+			}
+			err = d.Render(rec.Recording(), tg)
+		}
+		if err != nil {
 			t.Fatal(err)
 		}
 	}

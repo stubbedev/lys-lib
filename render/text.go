@@ -877,7 +877,7 @@ func bitmapPlacement(t *Typeface, gid font.GID, scale, penX, penY float64) (bitm
 	if w <= 0 || h <= 0 {
 		return bitmapGlyph{}, Rect{}, false
 	}
-	return bg, Rect{X: int(math.Floor(penX + bg.left*scale)), Y: int(math.Round(penY - bg.top*scale)), W: w, H: h}, true
+	return bg, Rect{X: int(math.Floor(penX + float64(bg.left*scale))), Y: int(math.Round(penY - float64(bg.top*scale))), W: w, H: h}, true
 }
 
 // bitmapStrikeOf is gid's embedded bitmap scaled to the device em and
