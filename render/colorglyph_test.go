@@ -1,6 +1,7 @@
 package render
 
 import (
+	"bytes"
 	"os"
 	"testing"
 )
@@ -89,5 +90,70 @@ func TestSVGGlyphElement(t *testing.T) {
 	}
 	if string(svgGlyphElement([]byte(doc), 9)) != doc {
 		t.Error("an absent glyph id cut the document")
+	}
+}
+
+func inkBox(t *testing.T, f *Typeface, s string, px float64, penX, penY int) Rect {
+	t.Helper()
+	const w, h = 256, 256
+	buf := make([]byte, Stride(w)*h)
+	cv := New(buf, Stride(w), w, h)
+	f.Draw(cv, f.Shape(s, px), penX, penY, RGB(255, 255, 255))
+	x0, y0, x1, y1 := w, h, 0, 0
+	for y := range h {
+		for x := range w {
+			if buf[(y*w+x)*4+3] != 0 {
+				x0, y0, x1, y1 = min(x0, x), min(y0, y), max(x1, x+1), max(y1, y+1)
+			}
+		}
+	}
+	if x1 == 0 {
+		t.Fatalf("%q paints nothing", s)
+	}
+	return Rect{X: x0, Y: y0, W: x1 - x0, H: y1 - y0}
+}
+
+func TestABitmapGlyphSitsWhereItsOutlineTwinDoes(t *testing.T) {
+	const smiley, px, penX, penY = "\U0001F601", 96, 32, 160
+	bitmap := inkBox(t, loadColor(t, "twemoji_smiley-sbix.ttf"), smiley, px, penX, penY)
+	outline := inkBox(t, loadColor(t, "twemoji_smiley-glyf_colr_1.ttf"), smiley, px, penX, penY)
+	const tolerance = 2
+	if d := (bitmap.Y + bitmap.H/2) - (outline.Y + outline.H/2); d < -tolerance || d > tolerance {
+		t.Errorf("the bitmap smiley %v sits %dpx from its COLR twin %v", bitmap, d, outline)
+	}
+	if d := (bitmap.X + bitmap.W/2) - (outline.X + outline.W/2); d < -tolerance || d > tolerance {
+		t.Errorf("the bitmap smiley %v sits %dpx across from its COLR twin %v", bitmap, d, outline)
+	}
+}
+
+func TestABitmapGlyphWithoutBearingsKeepsItsBottomOnTheBaseline(t *testing.T) {
+	data, err := os.ReadFile("testdata/color/twemoji_smiley-sbix.ttf")
+	if err != nil {
+		t.Fatal(err)
+	}
+	marker := []byte("png ")
+	for at := 0; ; {
+		i := bytes.Index(data[at:], marker)
+		if i < 0 {
+			break
+		}
+		clear(data[at+i-4 : at+i])
+		at += i + len(marker)
+	}
+	f, err := LoadFont(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gid, ok := f.face.NominalGlyph('\U0001F601')
+	if !ok {
+		t.Fatal("the sbix fixture has no smiley")
+	}
+	const penX, penY = 32, 160
+	_, at, ok := bitmapPlacement(f, gid, 96/f.upem, penX, penY)
+	if !ok {
+		t.Fatal("no placement for the smiley")
+	}
+	if at.X != penX || at.Y+at.H != penY {
+		t.Errorf("placement %v, want its bottom-left corner on the pen (%d, %d)", at, penX, penY)
 	}
 }

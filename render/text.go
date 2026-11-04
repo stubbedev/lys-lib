@@ -851,14 +851,15 @@ func blitMask(cv *Canvas, clip Rect, g *GlyphMask, ox, oy int, col Color) {
 // strike: a mask that tints with the text color. Color bitmaps (emoji)
 // paint their own pixels.
 type bitmapGlyph struct {
-	w, h int
-	mono bool
+	w, h      int
+	mono      bool
+	left, top float64
 }
 
 // bitmapPlacement is the device rect gid's embedded bitmap covers,
-// scaled to the device em, with its origin box at the baseline pen and
-// its left edge at the pen; false when the glyph has no bitmap the
-// face can draw. It needs the glyph's size alone, never its pixels.
+// scaled to the device em and set off the pen by the strike's bearings;
+// false when the glyph has no bitmap the face can draw. It needs the
+// glyph's size and bearings alone, never its pixels.
 func bitmapPlacement(t *Typeface, gid font.GID, scale, penX, penY float64) (bitmapGlyph, Rect, bool) {
 	bg, ok := t.bitmap(gid)
 	if !ok {
@@ -876,7 +877,7 @@ func bitmapPlacement(t *Typeface, gid font.GID, scale, penX, penY float64) (bitm
 	if w <= 0 || h <= 0 {
 		return bitmapGlyph{}, Rect{}, false
 	}
-	return bg, Rect{X: int(math.Floor(penX)), Y: int(math.Ceil(penY)) - h, W: w, H: h}, true
+	return bg, Rect{X: int(math.Floor(penX + bg.left*scale)), Y: int(math.Round(penY - bg.top*scale)), W: w, H: h}, true
 }
 
 // bitmapStrikeOf is gid's embedded bitmap scaled to the device em and
@@ -946,21 +947,26 @@ func (t *Typeface) bitmap(gid font.GID) (bitmapGlyph, bool) {
 	return bg, bg.w > 0 && bg.h > 0
 }
 
-// bitmapInfo reads gid's embedded bitmap's size and kind.
+// bitmapInfo reads gid's embedded bitmap's size, kind and bearings.
 func bitmapInfo(f *font.Face, gid font.GID) bitmapGlyph {
 	bm, ok := f.GlyphDataBitmap(gid)
 	if !ok {
 		return bitmapGlyph{}
 	}
+	ext, ok := f.GlyphExtents(gid)
+	if !ok {
+		return bitmapGlyph{}
+	}
+	left, top := float64(ext.XBearing), float64(ext.YBearing)
 	switch bm.Format {
 	case font.PNG:
 		cfg, err := png.DecodeConfig(bytes.NewReader(bm.Data))
 		if err != nil {
 			return bitmapGlyph{}
 		}
-		return bitmapGlyph{w: cfg.Width, h: cfg.Height}
+		return bitmapGlyph{w: cfg.Width, h: cfg.Height, left: left, top: top}
 	case font.BlackAndWhite, font.BlackAndWhiteByteAligned:
-		return bitmapGlyph{w: bm.Width, h: bm.Height, mono: true}
+		return bitmapGlyph{w: bm.Width, h: bm.Height, mono: true, left: left, top: top}
 	}
 	return bitmapGlyph{}
 }
