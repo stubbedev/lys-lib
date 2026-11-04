@@ -6,6 +6,8 @@ import (
 	"image/color"
 	"os"
 	"path/filepath"
+	"runtime"
+	"sync"
 	"testing"
 	"time"
 
@@ -228,5 +230,53 @@ func TestTargetsPreparedOnAWorkerReachFramesWithoutStoppingThem(t *testing.T) {
 	last.Close()
 	if _, ok := d.targets[last]; ok {
 		t.Error("a closed prepared target stayed registered")
+	}
+}
+
+func TestCloseWaitsForThePreparesRunningAndRefusesLaterOnes(t *testing.T) {
+	d := openDevice(t)
+	const workers = 8
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	results := make(chan error, workers*64)
+	for range workers {
+		wg.Go(func() {
+			<-start
+			for range 64 {
+				_, err := d.PrepareOffscreen(64, 64)
+				results <- err
+				if err != nil {
+					return
+				}
+			}
+		})
+	}
+	close(start)
+	for len(results) < workers {
+		runtime.Gosched()
+	}
+	d.Close()
+	if n := len(d.targets); n != 0 {
+		t.Errorf("%d targets outlived Close", n)
+	}
+	wg.Wait()
+	close(results)
+	refused := 0
+	for err := range results {
+		switch {
+		case errors.Is(err, ErrDeviceClosed):
+			refused++
+		case err != nil:
+			t.Errorf("a prepare during Close: %v", err)
+		}
+	}
+	if refused == 0 {
+		t.Log("every prepare finished before Close")
+	}
+	if _, err := d.PrepareOffscreen(8, 8); !errors.Is(err, ErrDeviceClosed) {
+		t.Errorf("a prepare after Close: %v, want ErrDeviceClosed", err)
+	}
+	if d.prepared.Load() != nil {
+		t.Error("prepared targets were left on the stack")
 	}
 }

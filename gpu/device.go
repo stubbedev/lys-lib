@@ -409,7 +409,7 @@ func (d *Device) Close() {
 		return
 	}
 	d.closed = true
-	d.adoptTargets()
+	d.stopPrepares()
 	for t := range d.targets {
 		t.Close()
 	}
