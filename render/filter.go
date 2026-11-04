@@ -324,9 +324,8 @@ func stepOf(m colorMatrix) MatrixStep {
 // Steps is f's functions as filter steps over shape, in order, at
 // device scale num/denom; a function that changes nothing (a refract
 // with no bezel) has none.
-func (f *Filters) Steps(shape FilterShape, num, denom int) []FilterStep {
+func (f *Filters) Steps(steps []FilterStep, shape FilterShape, num, denom int) []FilterStep {
 	scale := float64(num) / float64(denom)
-	steps := make([]FilterStep, 0, f.N)
 	for i := range f.N {
 		op := &f.Ops[i]
 		switch op.Kind {

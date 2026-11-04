@@ -110,6 +110,7 @@ type callArgs struct {
 	allocCB     vk.CommandBufferAllocateInfo
 	createFence vk.FenceCreateInfo
 	region      vk.BufferImageCopy
+	copy        vk.ImageCopy
 	passBegin   vk.RenderPassBeginInfo
 	viewport    vk.Viewport
 	scissor     vk.Rect2D

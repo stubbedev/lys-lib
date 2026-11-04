@@ -148,26 +148,28 @@ func fullBarrier(d *Device, cb vk.CommandBuffer, img vk.Image, from, to vk.Image
 // download records copying s's region r into b at offset, rows tight.
 func (s *surface) download(cb vk.CommandBuffer, r image.Rectangle, b *buffer, offset int) {
 	s.to(cb, vk.ImageLayoutTransferSrcOptimal)
-	region := vk.BufferImageCopy{
+	region := &s.d.args.region
+	*region = vk.BufferImageCopy{
 		BufferOffset:     intconv.Must[vk.DeviceSize](offset),
 		ImageSubresource: vk.ImageSubresourceLayers{AspectMask: vk.ImageAspectFlags(vk.ImageAspectColorBit), LayerCount: 1},
 		ImageOffset:      offset3D(r.Min),
 		ImageExtent:      extent3D(r.Dx(), r.Dy()),
 	}
-	s.d.cmds.CmdCopyImageToBuffer(cb, s.image, vk.ImageLayoutTransferSrcOptimal, b.buf, 1, &region)
+	s.d.cmds.CmdCopyImageToBuffer(cb, s.image, vk.ImageLayoutTransferSrcOptimal, b.buf, 1, region)
 }
 
 // upload records copying b's rows from offset, rowLength pixels apart,
 // into s's region r.
 func (s *surface) upload(cb vk.CommandBuffer, r image.Rectangle, b *buffer, offset, rowLength int) {
 	s.to(cb, vk.ImageLayoutTransferDstOptimal)
-	region := vk.BufferImageCopy{
+	region := &s.d.args.region
+	*region = vk.BufferImageCopy{
 		BufferOffset: intconv.Must[vk.DeviceSize](offset), BufferRowLength: intconv.Must[uint32](rowLength),
 		ImageSubresource: vk.ImageSubresourceLayers{AspectMask: vk.ImageAspectFlags(vk.ImageAspectColorBit), LayerCount: 1},
 		ImageOffset:      offset3D(r.Min),
 		ImageExtent:      extent3D(r.Dx(), r.Dy()),
 	}
-	s.d.cmds.CmdCopyBufferToImage(cb, b.buf, s.image, vk.ImageLayoutTransferDstOptimal, 1, &region)
+	s.d.cmds.CmdCopyBufferToImage(cb, b.buf, s.image, vk.ImageLayoutTransferDstOptimal, 1, region)
 }
 
 // close releases what s made; an image it does not own (a target's)

@@ -14,7 +14,7 @@ func TestGlassAdjustIsTheFilterFunctions(t *testing.T) {
 	f.Append(render.FilterOp{Kind: render.FilterSaturate, Amount: float64(g.Saturation)})
 	f.Append(render.FilterOp{Kind: render.FilterBrightness, Amount: float64(g.Brightness)})
 	f.Append(render.FilterOp{Kind: render.FilterContrast, Amount: float64(g.Contrast)})
-	steps := f.Steps(render.FilterShape{}, 1, 1)
+	steps := f.Steps(nil, render.FilterShape{}, 1, 1)
 	apply := func(c [3]float64) [3]float64 {
 		for _, s := range steps {
 			var out [3]float64

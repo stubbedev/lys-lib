@@ -62,6 +62,8 @@ type frame struct {
 	steps       []step
 	uploads     []upload
 	carries     []Carry
+	filterSteps []render.FilterStep
+	cpuCanvases []*render.Canvas
 	pathScratch render.PathScratch
 	copies      []vk.ImageCopy
 	// staged is how many bytes of the segment's staging buffer its
@@ -114,6 +116,7 @@ func (d *Device) Render(l *render.List, t *Target, carry ...Carry) error {
 	f := &d.frame
 	f.d, f.target, f.num, f.denom, f.err = d, t, num, denom, nil
 	f.clear()
+	f.mapSegment()
 	f.carries = append(f.carries[:0], carry...)
 	f.stats.reset()
 	d.framing = true
@@ -141,10 +144,12 @@ type frameStats struct {
 // reset empties the stats for a new frame, keeping the map.
 func (s *frameStats) reset() {
 	sprites := s.sprites
-	if sprites == nil {
-		sprites = map[string]int{}
+	if debug.Enabled {
+		if sprites == nil {
+			sprites = map[string]int{}
+		}
+		clear(sprites)
 	}
-	clear(sprites)
 	*s = frameStats{sprites: sprites}
 }
 
@@ -221,6 +226,9 @@ func (f *frame) draw2(dst, tex, tex2 *surface, pp pipe, p prim) {
 			return
 		}
 	}
+	if !f.roomFor(1, 0) {
+		return
+	}
 	f.prims = append(f.prims, p)
 	area := image.Rect(int(p.quad[0]), int(p.quad[1]), int(p.quad[2]), int(p.quad[3]))
 	if n := len(f.steps); n > 0 {
@@ -248,7 +256,9 @@ func (f *frame) sprite(s render.State, call string, paint func(cv *render.Canvas
 	if f.err != nil || b.Empty() {
 		return
 	}
-	f.stats.sprites[call] += b.W * b.H
+	if debug.Enabled {
+		f.stats.sprites[call] += b.W * b.H
+	}
 	at, ok := f.pageSlot(b.W, b.H)
 	if !ok {
 		return
@@ -310,7 +320,7 @@ func (f *frame) cpu(region render.Rect, surfaces []*surface, fn func(cvs []*rend
 		return
 	}
 	r := rectOf(region)
-	offsets := make([]int, len(surfaces))
+	var offsets [2]int
 	for i, s := range surfaces {
 		offsets[i] = f.downloads
 		f.steps = append(f.steps, step{kind: stepDownload, dst: s, region: r, offset: f.downloads})
@@ -327,7 +337,7 @@ func (f *frame) cpu(region render.Rect, surfaces []*surface, fn func(cvs []*rend
 	if f.err = f.d.readback.invalidate(); f.err != nil {
 		return
 	}
-	cvs := make([]*render.Canvas, len(surfaces))
+	f.cpuCanvases = f.cpuCanvases[:0]
 	for i := range surfaces {
 		sc, err := f.d.scratchCanvas(i, f.target.s.w, f.target.s.h, f.num, f.denom)
 		if err != nil {
@@ -335,9 +345,9 @@ func (f *frame) cpu(region render.Rect, surfaces []*surface, fn func(cvs []*rend
 			return
 		}
 		sc.put(region, f.d.readback.mapped[offsets[i]:])
-		cvs[i] = sc.cv
+		f.cpuCanvases = append(f.cpuCanvases, sc.cv)
 	}
-	fn(cvs)
+	fn(f.cpuCanvases)
 	out, off := f.stage(r.Dx() * r.Dy() * 4)
 	if out == nil {
 		return
@@ -354,19 +364,7 @@ func (f *frame) cpu(region render.Rect, surfaces []*surface, fn func(cvs []*rend
 // to its consumer.
 func (f *frame) flush(final bool) error {
 	d, fb := f.d, f.d.current
-	prims, words := fb.prims, fb.words
 	var err error
-	if fb.prims, err = fb.prims.fit(len(f.prims) * primSize); err != nil {
-		return err
-	}
-	copy(fb.prims.mapped, unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(f.prims))), len(f.prims)*primSize))
-	if fb.words, err = fb.words.fit(len(f.words) * 4); err != nil {
-		return err
-	}
-	copy(fb.words.mapped, unsafe.Slice((*byte)(unsafe.Pointer(unsafe.SliceData(f.words))), len(f.words)*4))
-	if fb.prims != prims || fb.words != words {
-		d.bindPrims(fb)
-	}
 	if d.readback, err = d.readback.fit(f.downloads); err != nil {
 		return err
 	}
@@ -383,12 +381,59 @@ func (f *frame) flush(final bool) error {
 	if final {
 		return d.publish(f.target, publishes)
 	}
-	return d.takeFrameBuffers()
+	if err := d.takeFrameBuffers(); err != nil {
+		return err
+	}
+	f.mapSegment()
+	return nil
+}
+
+// mapSegment points the segment's primitives and words at the buffers the
+// GPU reads, so a draw writes them in place.
+func (f *frame) mapSegment() {
+	fb := f.d.current
+	f.prims = unsafe.Slice((*prim)(unsafe.Pointer(unsafe.SliceData(fb.prims.mapped))), len(fb.prims.mapped)/primSize)[:0]
+	f.words = unsafe.Slice((*uint32)(unsafe.Pointer(unsafe.SliceData(fb.words.mapped))), len(fb.words.mapped)/4)[:0]
+}
+
+// roomFor makes room for n more primitives and words in the segment's
+// buffers, moving what it holds when they grow; false after an error.
+func (f *frame) roomFor(prims, words int) bool {
+	np, nw := len(f.prims), len(f.words)
+	if np+prims <= cap(f.prims) && nw+words <= cap(f.words) {
+		return true
+	}
+	d, fb := f.d, f.d.current
+	if np+prims > cap(f.prims) {
+		grown, err := d.newBuffer(2*(np+prims)*primSize, vk.BufferUsageStorageBufferBit)
+		if err != nil {
+			f.fail(fmt.Errorf("gpu: a segment's %d primitives: %w", np+prims, err))
+			return false
+		}
+		copy(grown.mapped, fb.prims.mapped[:np*primSize])
+		fb.prims.close()
+		fb.prims = grown
+	}
+	if nw+words > cap(f.words) {
+		grown, err := d.newBuffer(2*(nw+words)*4, vk.BufferUsageStorageBufferBit)
+		if err != nil {
+			f.fail(fmt.Errorf("gpu: a segment's %d words: %w", nw+words, err))
+			return false
+		}
+		copy(grown.mapped, fb.words.mapped[:nw*4])
+		fb.words.close()
+		fb.words = grown
+	}
+	d.bindPrims(fb)
+	f.mapSegment()
+	f.prims, f.words = f.prims[:np], f.words[:nw]
+	return true
 }
 
 // clear empties the recorded segment, keeping its slices' capacity.
 func (f *frame) clear() {
-	f.prims, f.words, f.steps, f.uploads, f.staged = f.prims[:0], f.words[:0], f.steps[:0], f.uploads[:0], 0
+	f.prims, f.words = nil, nil
+	f.steps, f.uploads, f.staged = f.steps[:0], f.uploads[:0], 0
 	f.px, f.py, f.shelf, f.downloads = 0, 0, 0, 0
 }
 
@@ -423,11 +468,11 @@ func (f *frame) record(cb vk.CommandBuffer, final bool) {
 			st.dst.to(cb, vk.ImageLayoutTransferDstOptimal)
 			layers := vk.ImageSubresourceLayers{AspectMask: vk.ImageAspectFlags(vk.ImageAspectColorBit), LayerCount: 1}
 			at := offset3D(st.region.Min)
-			ic := vk.ImageCopy{
+			d.args.copy = vk.ImageCopy{
 				SrcSubresource: layers, SrcOffset: at, DstSubresource: layers, DstOffset: at,
 				Extent: extent3D(st.region.Dx(), st.region.Dy()),
 			}
-			d.cmds.CmdCopyImage(cb, st.src.image, vk.ImageLayoutTransferSrcOptimal, st.dst.image, vk.ImageLayoutTransferDstOptimal, 1, &ic)
+			d.cmds.CmdCopyImage(cb, st.src.image, vk.ImageLayoutTransferSrcOptimal, st.dst.image, vk.ImageLayoutTransferDstOptimal, 1, &d.args.copy)
 		case stepDownload:
 			end()
 			st.dst.download(cb, st.region, d.readback, st.offset)
@@ -732,6 +777,9 @@ func (f *frame) gradientStops(p *prim, m render.GradientMap, g render.Gradient) 
 	p.m0 = [4]float32{float32(m.CX), float32(m.CY), float32(m.DX), float32(m.DY)}
 	p.m1 = [4]float32{m.InvLength, m.InvRX, m.InvRY, float32(m.From)}
 	p.m2 = [4]float32{float32(m.Kind), float32(g.Extend), float32(len(f.words)), float32(len(g.Stops))}
+	if !f.roomFor(0, 1+3*len(g.Stops)) {
+		return
+	}
 	// The stops as the shader reads them: the stop range's reciprocal,
 	// then each stop's position, color, and its segment's reciprocal.
 	lo, hi := float32(g.Stops[0].Pos), float32(g.Stops[len(g.Stops)-1].Pos)
@@ -990,6 +1038,9 @@ func (f *frame) blendLayer(s render.State, l *render.Layer, src render.Rect, mod
 	var p prim
 	p.cols[0], p.cols[2] = uint32(mode), a
 	if mode == render.BlendSoftLight {
+		if !f.roomFor(0, len(render.SoftLightTable)) {
+			return
+		}
 		p.cols[1] = count(f.words)
 		for _, v := range render.SoftLightTable {
 			f.words = append(f.words, intconv.Uint32Bits(v))
@@ -1048,8 +1099,10 @@ func (f *frame) ApplyPathMask(l *render.Layer, path *render.Path, region render.
 func (f *frame) ApplyFilters(l *render.Layer, region render.Rect, fl *render.Filters, shape render.FilterShape) {
 	s := f.layer(l)
 	region = region.Intersect(f.bounds())
-	if steps := fl.Steps(shape, f.num, f.denom); f.gpuSteps(steps, region) {
-		for _, st := range steps {
+	f.filterSteps = fl.Steps(f.filterSteps[:0], shape, f.num, f.denom)
+	if f.gpuSteps(f.filterSteps, region) {
+		for i := range f.filterSteps {
+			st := &f.filterSteps[i]
 			switch st.Kind {
 			case render.StepMatrix:
 				f.matrixStep(s, region, st.Matrix)
