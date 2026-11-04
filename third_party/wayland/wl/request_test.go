@@ -17,7 +17,7 @@ func requestContext(t testing.TB) (*Context, *os.File) {
 		t.Fatal(err)
 	}
 	ctx, sock := socketContext(t, fds)
-	return ctx, os.NewFile(uintptr(sock), "compositor")
+	return ctx, os.NewFile(uintptr(dupForTest(t, sock)), "compositor")
 }
 
 // BenchmarkSurfaceFrame sends a window's frame: attach, damage, a frame

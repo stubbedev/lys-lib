@@ -240,7 +240,7 @@ func fcntlGetFD(fd int) (uintptr, error) {
 	return r, nil
 }
 
-func dupForTest(t *testing.T, fd int) int {
+func dupForTest(t testing.TB, fd int) int {
 	t.Helper()
 	dup, err := syscall.Dup(fd)
 	if err != nil {
