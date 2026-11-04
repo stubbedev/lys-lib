@@ -4,6 +4,7 @@ import (
 	"image"
 
 	"github.com/stubbedev/lys-lib/render"
+	"github.com/stubbedev/lys-lib/third_party/vk"
 )
 
 // atlasSize is a mask atlas page's width and height.
@@ -11,7 +12,8 @@ const atlasSize = 2048
 
 // maskAtlas is the page of coverage masks the device keeps across
 // frames: each mask is uploaded once and drawn from where it was
-// placed, keyed by its ID. A full page empties and refills.
+// placed, keyed by its ID. A full page empties and refills. It holds one
+// byte a pixel, which the shaders read as red.
 type maskAtlas struct {
 	// size is the page's width and height, atlasSize unless a test
 	// shrinks it before the first glyph.
@@ -51,7 +53,7 @@ func (f *frame) maskSlot(m render.CoverageMask) (image.Point, bool) {
 		if a.size == 0 {
 			a.size = atlasSize
 		}
-		s, err := f.d.newSurface(a.size, a.size)
+		s, err := f.d.newSampledSurface(a.size, a.size, vk.FormatR8Unorm)
 		if err == nil {
 			err = s.ready()
 		}
@@ -79,13 +81,12 @@ func (f *frame) maskSlot(m render.CoverageMask) (image.Point, bool) {
 	}
 	a.slots[id] = at
 	f.stats.textureUploads++
-	out, off := f.stage(w * h * 4)
+	out, off := f.stage(w * h)
 	if out == nil {
 		return image.Point{}, false
 	}
+	f.stats.maskBytes += w * h
 	f.uploads = append(f.uploads, upload{dst: a.page, region: image.Rect(at.X, at.Y, at.X+w, at.Y+h), offset: off, rowLength: w})
-	for i, c := range m.Pix() {
-		out[4*i], out[4*i+1], out[4*i+2], out[4*i+3] = c, c, c, c
-	}
+	copy(out, m.Pix())
 	return at, true
 }

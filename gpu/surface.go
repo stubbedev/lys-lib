@@ -48,7 +48,13 @@ func (d *Device) newSurfaceIn(w, h int, vf vk.Format) (*surface, error) {
 // newImageSurface allocates a surface for an image's pixels, R, G, B, A in
 // memory as *image.RGBA holds them, so an upload is a copy.
 func (d *Device) newImageSurface(w, h int) (*surface, error) {
-	s, err := d.allocSurface(w, h, vk.FormatR8g8b8a8Unorm, vk.ImageUsageTransferDstBit|vk.ImageUsageSampledBit)
+	return d.newSampledSurface(w, h, vk.FormatR8g8b8a8Unorm)
+}
+
+// newSampledSurface allocates a surface in vf that uploads fill and draws
+// sample, never drawn into.
+func (d *Device) newSampledSurface(w, h int, vf vk.Format) (*surface, error) {
+	s, err := d.allocSurface(w, h, vf, vk.ImageUsageTransferDstBit|vk.ImageUsageSampledBit)
 	if err != nil {
 		return nil, err
 	}

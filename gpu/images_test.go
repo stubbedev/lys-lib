@@ -346,3 +346,31 @@ func TestAForgottenStillOnItsWayIsDropped(t *testing.T) {
 		t.Errorf("%d textures for a forgotten raster", n)
 	}
 }
+
+func TestAMaskStagesOneByteAPixel(t *testing.T) {
+	d := openDevice(t)
+	tg := newTarget(t, d, 64, 64)
+	rec := render.NewRecorder(64, 64, 1, 1)
+	t.Cleanup(rec.Recording().End)
+	rec.Shadow(render.Rect{X: 20, Y: 20, W: 20, H: 20}, 4, 6, render.RGBA(0, 0, 0, 200))
+	rec.Shadow(render.Rect{X: 21, Y: 20, W: 3, H: 20}, 1, 2, render.RGBA(0, 0, 0, 200))
+	if err := d.Render(rec.Recording(), tg); err != nil {
+		t.Fatal(err)
+	}
+	want := 0
+	for _, r := range []render.Rect{{X: 20, Y: 20, W: 20, H: 20}, {X: 21, Y: 20, W: 3, H: 20}} {
+		m, _, _, _, _ := render.RectShadow(r, map[int]int{20: 4, 3: 1}[r.W], map[int]int{20: 6, 3: 2}[r.W], 1, 1)
+		w, h := m.Size()
+		want += w * h
+	}
+	if got := d.frame.stats.maskBytes; got != want {
+		t.Errorf("masks staged %d bytes, want their %d bytes of coverage", got, want)
+	}
+	got, err := tg.ReadPixels()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c := got.RGBAAt(30, 30); c.A < 200 {
+		t.Errorf("the shadow's inside drew %v", c)
+	}
+}

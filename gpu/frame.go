@@ -166,8 +166,8 @@ func (d *Device) render(l *render.List, t *Target, explicit bool, carry []Carry)
 // submitted in, its readbacks, the image textures and atlas masks it
 // uploaded, and the pixels of CPU sprites per call.
 type frameStats struct {
-	prims, segments, readbacks, textureUploads, imageBytes int
-	sprites                                                map[string]int
+	prims, segments, readbacks, textureUploads, imageBytes, maskBytes int
+	sprites                                                           map[string]int
 }
 
 // reset empties the stats for a new frame, keeping the map.
@@ -196,7 +196,8 @@ func (f *frame) fail(err error) {
 // what this segment staged.
 func (f *frame) stage(n int) ([]byte, int) {
 	d, fb := f.d, f.d.current
-	at, need := f.staged, f.staged+n
+	at := (f.staged + stagingAlign - 1) &^ (stagingAlign - 1)
+	need := at + n
 	if len(fb.staging.mapped) < need {
 		grown, err := d.newBuffer(max(2*need, stagingMin), vk.BufferUsageTransferSrcBit)
 		if err != nil {
