@@ -399,6 +399,7 @@ func (f *frame) flush(final bool) error {
 		return err
 	}
 	f.stats.segments++
+	d.masks.segment++
 	fb.staged = f.staged
 	publishes := final && (f.explicit || d.publishes(f.target))
 	err = d.submitAsync(func(cb vk.CommandBuffer) { f.record(cb, final) }, submission{signals: publishes})

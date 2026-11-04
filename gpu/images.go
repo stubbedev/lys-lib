@@ -184,7 +184,7 @@ func (d *Device) forgetImages() {
 	gone := make(map[render.ImageID]struct{}, len(forgotten))
 	for _, id := range forgotten {
 		gone[id] = struct{}{}
-		delete(d.masks.slots, id)
+		d.masks.forget(id)
 	}
 	d.images.stills.forget(gone)
 	d.dropImages(func(key imageKey, _ *imageTexture) bool {

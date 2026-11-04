@@ -374,3 +374,97 @@ func TestAMaskStagesOneByteAPixel(t *testing.T) {
 		t.Errorf("the shadow's inside drew %v", c)
 	}
 }
+
+type testMask struct {
+	id   render.ImageID
+	w, h int
+}
+
+func (m testMask) ID() render.ImageID { return m.id }
+func (m testMask) Pix() []uint8       { return make([]uint8, m.w*m.h) }
+func (m testMask) Size() (int, int)   { return m.w, m.h }
+
+func TestAFullAtlasGivesUpItsLeastRecentlyDrawnShelf(t *testing.T) {
+	d := openDevice(t)
+	d.masks.size = 64
+	tg := newTarget(t, d, 64, 64)
+	if err := d.ensureScratch(64, 64); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.takeFrameBuffers(); err != nil {
+		t.Fatal(err)
+	}
+	f := &d.frame
+	f.d, f.target, f.num, f.denom, f.err = d, tg, 1, 1, nil
+	f.clear()
+	f.mapSegment()
+	f.stats.reset()
+	masks := make([]testMask, 17)
+	for i := range masks {
+		masks[i] = testMask{id: render.NewImageID(), w: 16, h: 16}
+	}
+	for _, m := range masks[:16] {
+		if _, ok := f.maskSlot(m); !ok {
+			t.Fatal(f.err)
+		}
+	}
+	for _, m := range masks[4:16] {
+		f.maskSlot(m)
+	}
+	if err := f.flush(false); err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range masks[4:16] {
+		f.maskSlot(m)
+	}
+	uploads := f.stats.textureUploads
+	if _, ok := f.maskSlot(masks[16]); !ok {
+		t.Fatal(f.err)
+	}
+	for _, m := range masks[4:16] {
+		f.maskSlot(m)
+	}
+	if n := f.stats.textureUploads - uploads; n != 1 {
+		t.Errorf("%d uploads for one new mask, want 1 and the drawn shelves kept", n)
+	}
+	for _, m := range masks[:4] {
+		if _, kept := d.masks.slots[m.id]; kept {
+			t.Errorf("a mask of the evicted shelf stayed")
+		}
+	}
+	if d.masks.resets != 0 || d.masks.evictions != 1 {
+		t.Errorf("%d resets and %d evictions, want 0 and 1", d.masks.resets, d.masks.evictions)
+	}
+	if err := f.flush(true); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestSteadyTextNeverResetsTheAtlas(t *testing.T) {
+	d := openDevice(t)
+	tg := newTarget(t, d, 320, 200)
+	face, err := render.NewFixtureTypeface()
+	if err != nil {
+		t.Fatal(err)
+	}
+	rec := render.NewRecorder(320, 200, 1, 1)
+	t.Cleanup(rec.Recording().End)
+	for frame := range 30 {
+		rec.ResetRecorder(320, 200, 1, 1)
+		for i := range 8 {
+			face.Shape("steady text, frame after frame", float64(10+i)).Draw(rec, 4, 20+22*i, render.RGB(0, 0, 0))
+		}
+		if err := d.Render(rec.Recording(), tg); err != nil {
+			t.Fatal(err)
+		}
+		if err := d.Finish(); err != nil {
+			t.Fatal(err)
+		}
+		if frame > 0 && d.frame.stats.textureUploads != 0 {
+			t.Errorf("frame %d uploaded %d masks", frame, d.frame.stats.textureUploads)
+		}
+	}
+	if d.masks.resets != 0 || d.masks.evictions != 0 {
+		t.Errorf("%d resets and %d evictions", d.masks.resets, d.masks.evictions)
+	}
+}

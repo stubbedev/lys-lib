@@ -208,7 +208,7 @@ func TestRenderGlyphAtlasRefills(t *testing.T) {
 			face.DrawAligned(cv, line, render.Rect{X: 4, Y: 4 + 34*i, W: 190, H: 30}, float64(18+4*i), render.RGBA(240, 240, 240, 255), render.AlignStart)
 		}
 	})
-	if d.masks.py == 0 && d.masks.px == 0 {
+	if len(d.masks.slots) == 0 {
 		t.Error("the atlas holds nothing after drawing text")
 	}
 }
