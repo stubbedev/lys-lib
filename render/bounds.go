@@ -34,6 +34,9 @@ func (c *Canvas) bounds(o *op) Rect {
 	case opPath:
 		return o.path.bounds(devScale(c.num, c.denom))
 	case opGlyph:
+		if o.glyph != nil {
+			return o.glyph.bounds(o.f[1], o.f[2])
+		}
 		return glyphBounds(o.face, o.gid, o.f[0], o.f[1], o.f[2], o.col)
 	case opComposite:
 		return o.aff.MapBounds(o.r)

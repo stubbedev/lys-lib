@@ -76,6 +76,9 @@ func GlyphCoverage(face *Typeface, gid font.GID, scale, penX, penY float64, col 
 	return g, g.bounds(penX, penY), true
 }
 
+// Bounds is the device rect the mask covers with its pen at (penX, penY).
+func (g *GlyphMask) Bounds(penX, penY float64) Rect { return g.bounds(penX, penY) }
+
 // bounds is the device rect the raster covers with its pen at
 // (penX, penY): the integer pen plus the raster's origin offset.
 func (g *GlyphMask) bounds(penX, penY float64) Rect {

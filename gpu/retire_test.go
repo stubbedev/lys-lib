@@ -149,6 +149,9 @@ func TestFreeingResourcesNeverWaitsForTheGPU(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
+			if err := d.Finish(); err != nil {
+				t.Fatal(err)
+			}
 			before := d.BlockingWaits()
 			c.run(t)
 			if n := d.BlockingWaits() - before; n != 0 {

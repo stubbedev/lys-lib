@@ -209,6 +209,7 @@ func dropRuneLines() {
 // retain more than the caller intends; V's cost is computed by callers
 // and passed to put.
 type lru[K comparable, V any] struct {
+	gets    uint64
 	mu      sync.Mutex
 	entries map[K]*list.Element
 	order   *list.List // front = most recently used
@@ -234,6 +235,7 @@ func newLRU[K comparable, V any](budget int) *lru[K, V] {
 func (c *lru[K, V]) get(key K) (V, bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	c.gets++
 	if el, ok := c.entries[key]; ok {
 		c.order.MoveToFront(el)
 		if e, ok := el.Value.(*lruEntry[K, V]); ok {

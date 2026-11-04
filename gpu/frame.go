@@ -898,12 +898,12 @@ func (f *frame) maskUpload(mask *image.Alpha, box render.Rect) (image.Point, boo
 	return at, true
 }
 
-func (f *frame) Glyph(s render.State, face *render.Typeface, gid font.GID, scale, penX, penY float64, col render.Color) {
+func (f *frame) Glyph(s render.State, face *render.Typeface, gid font.GID, scale, penX, penY float64, col render.Color, m *render.GlyphMask) {
 	if f.err != nil {
 		return
 	}
-	m, at, ok := render.GlyphCoverage(face, gid, scale, penX, penY, col)
 	var pos image.Point
+	ok := m != nil
 	if ok {
 		pos, ok = f.maskSlot(m)
 	}
@@ -911,6 +911,7 @@ func (f *frame) Glyph(s render.State, face *render.Typeface, gid font.GID, scale
 		f.sprite(s, "Glyph", func(cv *render.Canvas) { cv.DrawGlyph(face, gid, scale, penX, penY, col) })
 		return
 	}
+	at := m.Bounds(penX, penY)
 	p := shaded(kindMask, s, 0)
 	p.quad, p.inner, p.cols[0] = quadOf(s.Bounds), [4]float32{float32(at.X - pos.X), float32(at.Y - pos.Y)}, uint32(col)
 	f.draw(f.on(s), f.d.masks.page, pipeOver, p)

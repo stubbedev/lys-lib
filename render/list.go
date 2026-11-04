@@ -73,7 +73,9 @@ type Player interface {
 	PaintGradientTiles(s State, g Gradient, t Tile, clip Rect, radii Corners)
 	PaintImageTiles(s State, img image.Image, t Tile, clip Rect, radii Corners)
 	FillPath(s State, p *Path, col Color)
-	Glyph(s State, face *Typeface, gid font.GID, scale, penX, penY float64, col Color)
+	// Glyph's mask is its coverage for the pen, resolved at recording; nil
+	// for a glyph drawn in color or from a bitmap.
+	Glyph(s State, face *Typeface, gid font.GID, scale, penX, penY float64, col Color, mask *GlyphMask)
 	// Layer readies l, the size and scale of the canvas s names, with
 	// region transparent; ScratchLayer is Layer for a layer Release
 	// ends.
@@ -164,6 +166,7 @@ type op struct {
 	skip  bool
 	face  *Typeface
 	gid   font.GID
+	glyph *GlyphMask
 }
 
 // NewRecorder returns a canvas that records into a fresh List instead
@@ -335,7 +338,7 @@ func (l *List) Play(p Player) {
 		case opPath:
 			p.FillPath(s, o.path, o.col)
 		case opGlyph:
-			p.Glyph(s, o.face, o.gid, o.f[0], o.f[1], o.f[2], o.col)
+			p.Glyph(s, o.face, o.gid, o.f[0], o.f[1], o.f[2], o.col, o.glyph)
 		case opLayer:
 			p.Layer(s, o.layer, o.r)
 		case opScratch:
@@ -472,8 +475,14 @@ func (p rasterPlayer) PaintImageTiles(s State, img image.Image, t Tile, clip Rec
 
 func (p rasterPlayer) FillPath(s State, path *Path, col Color) { p.on(s).FillPath(path, col) }
 
-func (p rasterPlayer) Glyph(s State, face *Typeface, gid font.GID, scale, penX, penY float64, col Color) {
-	p.on(s).DrawGlyph(face, gid, scale, penX, penY, col)
+func (p rasterPlayer) Glyph(s State, face *Typeface, gid font.GID, scale, penX, penY float64, col Color, mask *GlyphMask) {
+	cv := p.on(s)
+	if mask == nil {
+		cv.DrawGlyph(face, gid, scale, penX, penY, col)
+		return
+	}
+	at := mask.bounds(penX, penY)
+	blitMask(cv, cv.clip, mask, at.X, at.Y, col)
 }
 
 func (p rasterPlayer) Layer(s State, l *Layer, region Rect) {

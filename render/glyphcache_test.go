@@ -236,3 +236,23 @@ func TestBitmapGlyphsKeepNoPixels(t *testing.T) {
 		t.Errorf("drawing a bitmap glyph cached %d scaled strikes, want 1", n)
 	}
 }
+
+func TestPlayingARecordedGlyphLooksNothingUp(t *testing.T) {
+	face, err := NewFixtureTypeface()
+	if err != nil {
+		t.Fatal(err)
+	}
+	shaped := face.Shape("resolved once", 14)
+	rec := NewRecorder(200, 40, 1, 1)
+	defer rec.Recording().End()
+	shaped.Draw(rec, 4, 20, RGB(0, 0, 0))
+	glyphs.mu.Lock()
+	before := glyphs.gets
+	glyphs.mu.Unlock()
+	rec.Recording().Paint(New(make([]byte, Stride(200)*40), Stride(200), 200, 40))
+	glyphs.mu.Lock()
+	defer glyphs.mu.Unlock()
+	if n := glyphs.gets - before; n != 0 {
+		t.Errorf("playing a recording made %d glyph cache lookups, want 0", n)
+	}
+}
