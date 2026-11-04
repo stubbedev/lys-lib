@@ -3,6 +3,7 @@ package wl
 import (
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"syscall"
@@ -325,11 +326,85 @@ func TestRequestsToAPeerThatNeverReadsAllReturn(t *testing.T) {
 	case <-time.After(time.Minute):
 		t.Fatal("a request blocked on a peer that does not read")
 	}
-	if n := ctx.Backlog(); n == 0 || n > maxBacklog {
-		t.Errorf("backlog of %d bytes", n)
+	if _, err := ctx.Flush(); !errors.Is(err, ErrContextBacklogFull) {
+		t.Errorf("Flush after the refusal: %v", err)
 	}
-	if pending, err := ctx.Flush(); !pending || err != nil {
-		t.Errorf("Flush against a full socket: pending %v, %v", pending, err)
+	if n := ctx.Backlog(); n != 0 {
+		t.Errorf("a connection that writes no more holds %d bytes", n)
+	}
+}
+
+// A compositor's protocol error followed by its close is what a client must
+// report, however many of its own writes meet the closed socket first.
+func TestAProtocolErrorIsReadAfterAWriteHitTheClosedSocket(t *testing.T) {
+	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, rawPeer := socketContext(t, fds)
+	peer := os.NewFile(uintptr(dupForTest(t, rawPeer)), "compositor")
+	display := ctx.newDisplay()
+	var got DisplayErrorEvent
+	display.AddErrorHandler(&errorHandler{func(ev DisplayErrorEvent) { got = ev }})
+	s := NewSurface(ctx)
+	ctx.forgetUnsent(s.Id())
+	message := "bad"
+	body := binary.NativeEndian.AppendUint32(nil, uint32(s.Id()))
+	body = binary.NativeEndian.AppendUint32(body, 3)
+	body = binary.NativeEndian.AppendUint32(body, uint32(len(message)+1))
+	body = append(body, message...)
+	body = append(body, 0, 0, 0, 0)[:12+(len(message)+4)&^3]
+	event := binary.NativeEndian.AppendUint32(nil, uint32(display.Id()))
+	event = binary.NativeEndian.AppendUint32(event, uint32(8+len(body))<<16)
+	if _, err := peer.Write(append(event, body...)); err != nil {
+		t.Fatal(err)
+	}
+	peer.Close()
+	syscall.Close(rawPeer)
+	if err := s.Commit(); err == nil {
+		t.Fatal("a commit to a closed socket reported nothing")
+	}
+	if err := ctx.Run(); err != nil && !errors.Is(err, ErrContextRunProtocolError) {
+		t.Fatalf("Run after the failed write: %v", err)
+	}
+	if got.Code != 3 || got.Message != message {
+		t.Errorf("the error event read back as %+v", got)
+	}
+}
+
+type errorHandler struct{ handle func(DisplayErrorEvent) }
+
+func (h *errorHandler) HandleDisplayError(ev DisplayErrorEvent) { h.handle(ev) }
+
+// A new-id request refused for the backlog leaves its id on no one's way: the
+// next new-id request returns too.
+func TestARefusedNewIdRequestBlocksNoLaterOne(t *testing.T) {
+	ctx, peer := requestContext(t)
+	defer peer.Close()
+	surface, display := NewSurface(ctx), ctx.newDisplay()
+	ctx.forgetUnsent(surface.Id())
+	filler := make([]byte, 60000)
+	for ctx.Backlog() < maxBacklog {
+		if err := ctx.SendRequest(surface, 2, string(filler)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	returned := make(chan error, 1)
+	go func() {
+		if _, err := surface.Frame(); !errors.Is(err, ErrContextBacklogFull) {
+			returned <- fmt.Errorf("the refused frame request: %w", err)
+			return
+		}
+		_, err := display.Sync()
+		returned <- err
+	}()
+	select {
+	case err := <-returned:
+		if !errors.Is(err, ErrContextBacklogFull) {
+			t.Errorf("the next new-id request: %v", err)
+		}
+	case <-time.After(time.Minute):
+		t.Fatal("a new-id request after a refusal blocked")
 	}
 }
 

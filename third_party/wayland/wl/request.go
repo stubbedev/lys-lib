@@ -35,8 +35,10 @@ const (
 // up in the client. Past it SendRequest fails with ErrContextBacklogFull.
 const maxBacklog = 1 << 20
 
-// ErrContextBacklogFull reports a request refused, nothing buffered, because
-// maxBacklog bytes already wait for a compositor that is not reading.
+// ErrContextBacklogFull reports a request refused because maxBacklog bytes
+// already wait for a compositor that is not reading. A protocol stream with a
+// request missing means nothing, so the connection writes no more: this request
+// and every later one fail with it, while reads go on to what the compositor sent.
 var ErrContextBacklogFull = errors.New("wl: the compositor is not reading: request backlog full")
 
 // CommitDeferred is implemented by a proxy with requests whose only
@@ -62,15 +64,31 @@ func (p *Surface) DeferredRequest(opcode uint32) bool {
 func (ctx *Context) SendRequest(proxy Proxy, opcode uint32, args ...interface{}) error {
 	ctx.sendMu.Lock()
 	defer ctx.sendMu.Unlock()
+	err := ctx.sendLocked(proxy, opcode, args)
+	if err != nil {
+		for _, arg := range args {
+			if p, ok := arg.(Proxy); ok && !isNil(p) {
+				ctx.forgetUnsentLocked(p.Id())
+			}
+		}
+	}
+	return err
+}
+
+func (ctx *Context) sendLocked(proxy Proxy, opcode uint32, args []interface{}) error {
 	if ctx.conn == nil {
 		return ErrContextSendRequestNotPossible
+	}
+	if ctx.sendErr != nil {
+		return ctx.sendErr
 	}
 	if len(ctx.out) >= maxBacklog {
 		if _, err := ctx.flushLocked(); err != nil {
 			return err
 		}
 		if len(ctx.out) >= maxBacklog {
-			return fmt.Errorf("%w: %d bytes to object %d's opcode %d", ErrContextBacklogFull, len(ctx.out), proxy.Id(), opcode)
+			ctx.failSendLocked(fmt.Errorf("%w: %d bytes to object %d's opcode %d", ErrContextBacklogFull, len(ctx.out), proxy.Id(), opcode))
+			return ctx.sendErr
 		}
 	}
 	// A new id may only go out once every smaller id is on the wire; see
@@ -83,8 +101,11 @@ func (ctx *Context) SendRequest(proxy Proxy, opcode uint32, args ...interface{})
 			}
 			id := p.Id()
 			if _, pending := ctx.unsent[id]; pending {
-				for ctx.smallerUnsentLocked(id) {
+				for ctx.sendErr == nil && ctx.smallerUnsentLocked(id) {
 					ctx.sendCond.Wait()
+				}
+				if ctx.sendErr != nil {
+					return ctx.sendErr
 				}
 			}
 		}
@@ -191,14 +212,38 @@ func (ctx *Context) Flush() (pending bool, err error) {
 	return ctx.flushLocked()
 }
 
+// flushBeforeRead flushes what a read may be waiting on the answer to. A write
+// that fails is kept for the next request to report: what the compositor sent
+// before it went away, a protocol error above all, is still there to read.
+func (ctx *Context) flushBeforeRead() {
+	ctx.sendMu.Lock()
+	defer ctx.sendMu.Unlock()
+	_, _ = ctx.flushLocked()
+}
+
+// failSendLocked ends writing for good: the first error stays, nothing queued
+// will ever go, and a writer waiting on id order is let go.
+func (ctx *Context) failSendLocked(err error) {
+	ctx.sendErr = err
+	ctx.closeSentFDs()
+	ctx.out = ctx.out[:0]
+	if ctx.sendCond != nil {
+		ctx.sendCond.Broadcast()
+	}
+}
+
 func (ctx *Context) flushLocked() (bool, error) {
+	if ctx.sendErr != nil {
+		return false, ctx.sendErr
+	}
 	if len(ctx.out) == 0 {
 		return false, nil
 	}
 	n, err := ctx.socketSend()
 	ctx.sends++
 	if err != nil {
-		return true, combinedError{ErrContextSendRequestConn, err}
+		ctx.failSendLocked(combinedError{ErrContextSendRequestConn, err})
+		return false, ctx.sendErr
 	}
 	if n == 0 {
 		return true, nil

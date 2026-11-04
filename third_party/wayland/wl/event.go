@@ -88,9 +88,7 @@ func (ctx *Context) fill(n int) ([]byte, error) {
 }
 
 func (ctx *Context) readOnce(n int) error {
-	if _, err := ctx.Flush(); err != nil {
-		return err
-	}
+	ctx.flushBeforeRead()
 	if ctx.inStart > 0 {
 		ctx.in = ctx.in[:copy(ctx.in, ctx.in[ctx.inStart:])]
 		ctx.inStart = 0
@@ -121,9 +119,7 @@ func (ctx *Context) ReadReady() (bool, error) {
 	if ctx.conn == nil {
 		return false, ErrContextConnNil
 	}
-	if _, err := ctx.Flush(); err != nil {
-		return false, err
-	}
+	ctx.flushBeforeRead()
 	raw, err := ctx.rawConn()
 	if err != nil {
 		return false, err
@@ -152,9 +148,7 @@ func (ctx *Context) ReadReady() (bool, error) {
 // without holding the lock that serializes them, and needs ReadReady to
 // have been called once.
 func (ctx *Context) WaitReadable() error {
-	if _, err := ctx.Flush(); err != nil {
-		return err
-	}
+	ctx.flushBeforeRead()
 	raw, err := ctx.rawConn()
 	if err != nil {
 		return err

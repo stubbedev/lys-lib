@@ -54,6 +54,8 @@ type Context struct {
 	// the sendmsg calls.
 	buffered bool
 	sends    int
+	// sendErr is what ended writing on this connection, for good.
+	sendErr error
 	// freeCallbacks are the frame and sync callbacks delete_id retired.
 	freeCallbacks []*Callback
 }
