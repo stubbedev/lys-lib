@@ -84,3 +84,7 @@ func (d *Device) BlockingWaits() uint64 { return d.blockingWaits }
 // off: opaque fills, opaque textures at full alpha, unmasked, and Kawase
 // levels.
 func (d *Device) OpaqueRuns() uint64 { return d.opaqueRuns }
+
+// Submissions counts the queue submissions this device made: a frame of
+// passes followed by SyncFile is one.
+func (d *Device) Submissions() uint64 { return d.submitted }

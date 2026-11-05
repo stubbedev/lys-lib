@@ -40,7 +40,10 @@ func TestALostDeviceIsAnErrorCallersRecognise(t *testing.T) {
 				return err
 			}
 			p.Clear(color.RGBA{A: 0xff})
-			return p.End()
+			if err := p.End(); err != nil {
+				return err
+			}
+			return d.Flush()
 		}},
 		{"Finish", func(d *Device, _ *Target) error { return d.Finish() }},
 		{"SyncFile", func(d *Device, _ *Target) error {
@@ -59,6 +62,9 @@ func TestALostDeviceIsAnErrorCallersRecognise(t *testing.T) {
 				t.Fatal(err)
 			}
 			runPass(t, d, tg, []image.Rectangle{{Max: tg.Size()}}, func(p *Pass) { p.Clear(color.RGBA{A: 0xff}) })
+			if err := d.Flush(); err != nil {
+				t.Fatal(err)
+			}
 			loseDevice(t, d, "queueSubmit", "queueSubmit2", "queueWaitIdle", "waitForFences", "getFenceStatus", "getSemaphoreFdKHR")
 			if err := tc.call(d, tg); !errors.Is(err, ErrDeviceLost) {
 				t.Fatalf("%v, want ErrDeviceLost", err)
@@ -74,6 +80,9 @@ func TestAFencePollFindingALostDeviceFailsTheNextSubmission(t *testing.T) {
 		t.Fatal(err)
 	}
 	runPass(t, d, tg, []image.Rectangle{{Max: tg.Size()}}, func(p *Pass) { p.Clear(color.RGBA{A: 0xff}) })
+	if err := d.Flush(); err != nil {
+		t.Fatal(err)
+	}
 	loseDevice(t, d, "getFenceStatus")
 	d.reap(false)
 	p, err := d.Begin(tg, []image.Rectangle{{Max: tg.Size()}})

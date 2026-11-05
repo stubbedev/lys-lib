@@ -338,6 +338,14 @@ func clearPass(t *testing.T, d *Device, tg *Target) {
 	runPass(t, d, tg, []image.Rectangle{{Max: tg.Size()}}, func(p *Pass) { p.Clear(color.RGBA{A: 255}) })
 }
 
+func flushedPass(t *testing.T, d *Device, tg *Target) {
+	t.Helper()
+	clearPass(t, d, tg)
+	if err := d.Flush(); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func syncFile(t *testing.T, d *Device) int {
 	t.Helper()
 	fd, err := d.SyncFile()
@@ -354,9 +362,9 @@ func syncFile(t *testing.T, d *Device) int {
 	return fd
 }
 
-// Once SyncFile is in use, a frame's fences come from its pass: no
-// submission of their own, however many surfaces ask, and each caller's
-// fd stands alone.
+// Once SyncFile is in use, a frame's fences come from the submission
+// that carries its pass: none of their own, however many surfaces ask,
+// and each caller's fd stands alone.
 func TestSyncFilesComeFromThePassTheyFollow(t *testing.T) {
 	d := lavapipeSyncDevice(t)
 	tg, err := d.NewOffscreen(8, 8)
@@ -370,8 +378,8 @@ func TestSyncFilesComeFromThePassTheyFollow(t *testing.T) {
 		t.Fatal(err)
 	}
 	clearPass(t, d, tg)
-	if len(d.inflight) != 1 {
-		t.Fatalf("%d submissions after a pass", len(d.inflight))
+	if len(d.inflight) != 0 || !d.batchPass {
+		t.Fatalf("%d submissions after a pass, pass batched %v", len(d.inflight), d.batchPass)
 	}
 	first := syncFile(t, d)
 	second := syncFile(t, d)
@@ -418,8 +426,8 @@ func TestASyncFileAfterTheFrameFinished(t *testing.T) {
 	}
 }
 
-// A pass nobody asks about stops the next ones signalling, consuming
-// what it signalled, and asking again starts over.
+// A flushed pass nobody asks about stops the next ones signalling,
+// consuming what it signalled, and asking again starts over.
 func TestPassesWithNoSyncFileStopSignalling(t *testing.T) {
 	d := lavapipeSyncDevice(t)
 	tg, err := d.NewOffscreen(8, 8)
@@ -429,11 +437,11 @@ func TestPassesWithNoSyncFileStopSignalling(t *testing.T) {
 	defer tg.Close()
 	clearPass(t, d, tg)
 	syncFile(t, d)
-	clearPass(t, d, tg)
+	flushedPass(t, d, tg)
 	if d.frameSignal == 0 {
 		t.Fatal("a pass after SyncFile signals nothing")
 	}
-	clearPass(t, d, tg)
+	flushedPass(t, d, tg)
 	if d.frameSignal != 0 {
 		t.Error("a pass after an unasked one still signals")
 	}
@@ -464,7 +472,7 @@ func TestASyncFileCoversWhatCameBeforeIt(t *testing.T) {
 		t.Fatal("the sync_file is not kept for the next caller")
 	}
 	clearPass(t, d, tg)
-	if d.lastSyncFileSet {
+	if d.batch == 0 && d.lastSyncFileSet {
 		t.Error("a new pass left the older sync_file answering")
 	}
 	syncFile(t, d)
@@ -525,7 +533,7 @@ func TestDeviceCloseWithAFrameSignal(t *testing.T) {
 	clearPass(t, d, tg)
 	syncFile(t, d)
 	kept := d.lastSyncFile
-	clearPass(t, d, tg)
+	flushedPass(t, d, tg)
 	if d.frameSignal == 0 {
 		t.Fatal("no frame signal to close with")
 	}
@@ -594,5 +602,80 @@ func TestRenderExplicitNeverWaitsWhereImplicitFencesDoNotExist(t *testing.T) {
 	}
 	if got := readTarget(t, tg).RGBAAt(1, 1); got != (color.RGBA{0, 255, 0, 255}) {
 		t.Errorf("the frame drew %v", got)
+	}
+}
+
+func TestAFrameOfPassesIsOneSubmission(t *testing.T) {
+	d := openDevice(t)
+	chain := make([]*Target, 6)
+	for i := range chain {
+		tg, err := d.NewOffscreen(8>>(i/3), 8>>(i/3))
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer tg.Close()
+		chain[i] = tg
+	}
+	if err := d.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	want := color.RGBA{0, 0, 0xff, 0xff}
+	before := d.Submissions()
+	runPass(t, d, chain[0], []image.Rectangle{{Max: chain[0].Size()}}, func(p *Pass) { p.Clear(want) })
+	for i, tg := range chain[1:] {
+		tx, err := chain[i].Texture()
+		if err != nil {
+			t.Fatal(err)
+		}
+		runPass(t, d, tg, []image.Rectangle{{Max: tg.Size()}}, func(p *Pass) {
+			p.Kawase(tx, image.Rectangle{Max: tg.Size()}, 1, tg.Size().X > chain[i].Size().X)
+		})
+	}
+	if n := d.Submissions() - before; n != 0 {
+		t.Fatalf("%d submissions for six ended passes, want them held for the frame", n)
+	}
+	if d.SyncFiles() {
+		waitReadable(t, syncFile(t, d))
+	} else if err := d.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if n := d.Submissions() - before; n != 1 {
+		t.Errorf("%d submissions for a frame of six passes, want one", n)
+	}
+	if err := d.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	if d.calibrated {
+		if _, ok, err := d.FrameDone(); err != nil || !ok {
+			t.Errorf("FrameDone after the frame finished: %v, %v", ok, err)
+		}
+	}
+	if got := readTarget(t, chain[len(chain)-1]).RGBAAt(1, 1); !within(got, want, 1) {
+		t.Errorf("the last pass of the chain drew %v, want %v", got, want)
+	}
+}
+
+func TestFrameDoneSubmitsThePassItAsksAbout(t *testing.T) {
+	d := openDevice(t)
+	if !d.calibrated {
+		t.Skip("no calibrated timestamps")
+	}
+	tg, err := d.NewOffscreen(8, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tg.Close()
+	clearPass(t, d, tg)
+	if _, _, err := d.FrameDone(); err != nil {
+		t.Fatal(err)
+	}
+	if d.batchPass || d.batch != 0 {
+		t.Fatal("FrameDone left the pass it reports on unsubmitted")
+	}
+	if err := d.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := d.FrameDone(); err != nil || !ok {
+		t.Errorf("FrameDone after Finish: %v, %v", ok, err)
 	}
 }

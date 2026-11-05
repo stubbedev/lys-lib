@@ -277,6 +277,9 @@ func TestUploadsTravelWithTheirPass(t *testing.T) {
 			p.DrawTexture(tx, FRect{W: 2, H: 2}, image.Rect(i*2, 0, i*2+2, 8), TransformNormal, 1, Mask{})
 		}
 	})
+	if err := d.Flush(); err != nil {
+		t.Fatal(err)
+	}
 	if len(d.inflight) != 1 || d.batch != 0 {
 		t.Errorf("%d submissions for three uploads and a pass, batch %d still open", len(d.inflight), d.batch)
 	}

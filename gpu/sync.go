@@ -77,11 +77,16 @@ type timing struct {
 	// staging ring. The next submission takes them along, so a frame's
 	// small uploads and its pass reach the kernel together; flushBatchBytes
 	// of them go at once, for the GPU to finish before the frame needs them.
+	// batchPass marks a batch holding ended passes, the newest timed by
+	// batchQuery (-1 for none): they reach the queue in the one submission
+	// that takes the batch along.
 	batch      vk.CommandBuffer
 	batchOps   int
 	batched    int
 	batchEnd   int
 	batchBytes int
+	batchPass  bool
+	batchQuery int
 	// frameSignal is the semaphore the newest pass signals that no export
 	// has consumed, held out of the spares; passes signal one once
 	// passesExport says SyncFile is in use. lastSyncFile is the sync_file
@@ -205,12 +210,12 @@ func (d *Device) spareSemaphore() (vk.Semaphore, error) {
 	return s, nil
 }
 
-// WaitSyncFile makes the device's next submission (a Pass's End, an
-// upload, a copy) wait for the fence in the sync_file fd before it
-// runs: a client's acquire fence, or a DRM syncobj point exported as
-// one. The device takes fd, closing it even on error; -1 is a fence
-// already signalled, and one that has signalled costs the submission
-// nothing.
+// WaitSyncFile makes the device's next submission (the one carrying the
+// passes ended since the last, an upload, a copy) wait for the fence in
+// the sync_file fd before it runs: a client's acquire fence, or a DRM
+// syncobj point exported as one. The device takes fd, closing it even on
+// error; -1 is a fence already signalled, and one that has signalled
+// costs the submission nothing.
 func (d *Device) WaitSyncFile(fd int) error {
 	if !d.syncFiles {
 		if fd >= 0 {
@@ -281,7 +286,7 @@ func (d *Device) SyncFile() (int, error) {
 		d.spareSemaphores = append(d.spareSemaphores, s)
 		return -1, err
 	}
-	if err := d.queue1(cb, s, -1, submission{}); err != nil {
+	if err := d.queue1(cb, s, submission{}); err != nil {
 		if cb != 0 {
 			d.dropBatch(cb)
 		}
@@ -400,8 +405,9 @@ func (d *Device) forgetSignal() {
 }
 
 // queue1 submits cb (0 for none) after the pending waits, signalling
-// signal (0 for none).
-func (d *Device) queue1(cb vk.CommandBuffer, signal vk.Semaphore, query int, sub submission) error {
+// signal (0 for none). cb carries the open batch, and with it the passes
+// it holds.
+func (d *Device) queue1(cb vk.CommandBuffer, signal vk.Semaphore, sub submission) error {
 	if err := d.retireSyncFile(); err != nil {
 		return err
 	}
@@ -420,7 +426,8 @@ func (d *Device) queue1(cb vk.CommandBuffer, signal vk.Semaphore, query int, sub
 	if err != nil {
 		return err
 	}
-	frame := signal == 0 && (sub.signals || sub.pass && d.passesExport)
+	pass := d.batchPass
+	frame := signal == 0 && (sub.signals || pass && d.passesExport)
 	if frame {
 		if signal, err = d.spareSemaphore(); err != nil {
 			d.spareFences = append(d.spareFences, fence)
@@ -452,8 +459,12 @@ func (d *Device) queue1(cb vk.CommandBuffer, signal vk.Semaphore, query int, sub
 		return fmt.Errorf("gpu: vkQueueSubmit: %w", resultError(r))
 	}
 	d.submitted++
-	f := inflight{seq: d.submitted, fence: fence, cb: cb, sems: len(d.waits), query: query}
-	d.batchOps = 0
+	f := inflight{seq: d.submitted, fence: fence, cb: cb, sems: len(d.waits), query: -1}
+	if pass {
+		d.passes++
+		f.pass, f.query = d.passes, d.batchQuery
+	}
+	d.batchOps, d.batchPass = 0, false
 	if d.batched > 0 {
 		f.staged, f.stagingEnd, d.batched, d.batchBytes = true, d.batchEnd, 0, 0
 	}
@@ -466,19 +477,14 @@ func (d *Device) queue1(cb vk.CommandBuffer, signal vk.Semaphore, query int, sub
 		d.heldSemaphores = append(d.heldSemaphores, signal)
 		f.sems++
 	}
-	if sub.pass {
-		d.passes++
-		f.pass = d.passes
-	}
 	d.inflight = append(d.inflight, f)
 	return nil
 }
 
-// submission is what a submission is besides its commands: a Pass, which
-// FrameDone times, and whether it must signal the frame semaphore for an
-// export right after it.
+// submission is what a submission is besides its commands: whether it
+// must signal the frame semaphore for an export right after it.
 type submission struct {
-	pass, signals bool
+	signals bool
 }
 
 func (d *Device) submitAsync(record func(cb vk.CommandBuffer), sub submission) error {
@@ -486,29 +492,47 @@ func (d *Device) submitAsync(record func(cb vk.CommandBuffer), sub submission) e
 	if err != nil {
 		return err
 	}
-	query := -1
-	if sub.pass && d.calibrated {
-		if err := d.ensureQueries(); err != nil {
-			d.dropBatch(cb)
-			return err
-		}
-		query = int(d.nextQuery)
-		d.cmds.CmdResetQueryPool(cb, d.queries, d.nextQuery, 1)
-		d.nextQuery = (d.nextQuery + 1) % queryRing
-	}
 	record(cb)
-	if query >= 0 {
-		d.cmds.CmdWriteTimestamp(cb, vk.PipelineStageBottomOfPipeBit, d.queries, intconv.Must[uint32](query))
-	}
 	if r := d.cmds.EndCommandBuffer(cb); r != vk.Success {
 		d.dropBatch(cb)
 		return fmt.Errorf("gpu: vkEndCommandBuffer: %w", resultError(r))
 	}
-	if err := d.queue1(cb, 0, query, sub); err != nil {
+	if err := d.queue1(cb, 0, sub); err != nil {
 		d.dropBatch(cb)
 		return err
 	}
 	return nil
+}
+
+// batchPassCommands records a pass into the open batch, timing it on
+// the batch's query, which the newest pass in the batch overwrites.
+func (d *Device) batchPassCommands(record func(cb vk.CommandBuffer)) error {
+	if err := d.checkLost(); err != nil {
+		return err
+	}
+	cb, err := d.batchCommands()
+	if err != nil {
+		return err
+	}
+	if !d.batchPass {
+		d.batchQuery = -1
+	}
+	if d.calibrated {
+		if err := d.ensureQueries(); err != nil {
+			return err
+		}
+		if d.batchQuery < 0 {
+			d.batchQuery = int(d.nextQuery)
+			d.nextQuery = (d.nextQuery + 1) % queryRing
+		}
+		d.cmds.CmdResetQueryPool(cb, d.queries, intconv.Must[uint32](d.batchQuery), 1)
+	}
+	record(cb)
+	if d.batchQuery >= 0 {
+		d.cmds.CmdWriteTimestamp(cb, vk.PipelineStageBottomOfPipeBit, d.queries, intconv.Must[uint32](d.batchQuery))
+	}
+	d.batchPass = true
+	return d.endBatchOp()
 }
 
 // recording is a command buffer to record into, the open batch's if
@@ -551,18 +575,24 @@ func (d *Device) flushBatch() error {
 	if err != nil || cb == 0 {
 		return err
 	}
-	if err := d.queue1(cb, 0, -1, submission{}); err != nil {
+	if err := d.queue1(cb, 0, submission{}); err != nil {
 		d.dropBatch(cb)
 		return err
 	}
 	return nil
 }
 
+// Flush submits the passes ended and the uploads made since the last
+// submission, without waiting for them: what a consumer that waits on
+// no SyncFile calls before handing a target over. SyncFile, Finish and
+// a CPU read submit them too.
+func (d *Device) Flush() error { return d.flushBatch() }
+
 // dropBatch takes back cb, whose submission failed, with the uploads it
 // carried: their staging bytes are free again.
 func (d *Device) dropBatch(cb vk.CommandBuffer) {
 	d.spareBuffers = append(d.spareBuffers, cb)
-	d.batchOps = 0
+	d.batchOps, d.batchPass = 0, false
 	if d.batched > 0 {
 		d.batched, d.batchBytes = 0, 0
 		d.uploads.pending--
@@ -758,10 +788,16 @@ func (d *Device) calibrate(force bool) error {
 
 // FrameDone reports when the last ended Pass finished on the GPU, on
 // CLOCK_MONOTONIC: what a compositor's latch budget samples. It reports
-// false while that pass is still running, or before any pass.
+// false while that pass is still running, or before any pass. A pass
+// not yet submitted is submitted, as Flush does.
 func (d *Device) FrameDone() (time.Duration, bool, error) {
 	if !d.calibrated {
 		return 0, false, ErrNoFrameTime
+	}
+	if d.batchPass {
+		if err := d.flushBatch(); err != nil {
+			return 0, false, err
+		}
 	}
 	d.reap(false)
 	if err := d.checkLost(); err != nil {

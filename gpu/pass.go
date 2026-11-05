@@ -528,10 +528,14 @@ func (t *Texture) set(f filter) (vk.DescriptorSet, error) {
 	return t.sets[f].set, nil
 }
 
-// End submits what the pass recorded, to draw into its target and hand
-// the target back to its consumer, and returns without waiting for the
-// GPU: SyncFile signals when it is done, and FrameDone says when. A
-// pass whose call failed submits nothing and reports the first error.
+// End records what the pass drew, to draw into its target and hand the
+// target back to its consumer, and returns without waiting for the GPU.
+// The passes of a frame reach the queue together, in one submission
+// with one fence: when SyncFile exports, a CPU read or Finish needs
+// them, FrameDone asks about them, or Flush is called, so a consumer
+// that waits on no SyncFile calls Flush before taking the target.
+// SyncFile signals when it is done, and FrameDone says when. A pass
+// whose call failed records nothing and reports the first error.
 func (p *Pass) End() error {
 	if p.ended {
 		return errors.New("gpu: End of an ended pass")
@@ -560,7 +564,7 @@ func (p *Pass) submit() error {
 	if len(p.ops) == 0 || len(p.damage) == 0 {
 		return nil
 	}
-	return d.submitAsync(p.record, submission{pass: true})
+	return d.batchPassCommands(p.record)
 }
 
 func (p *Pass) record(cb vk.CommandBuffer) {

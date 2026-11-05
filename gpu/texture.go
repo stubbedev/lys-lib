@@ -204,8 +204,8 @@ func (d *Device) endBatchOp() error {
 	return nil
 }
 
-// maxBatchedUploads bounds the command memory a loop of updates and new
-// textures with no pass can pile up.
+// maxBatchedUploads bounds the command memory a loop of updates, new
+// textures and passes with no submission can pile up.
 const maxBatchedUploads = 64
 
 const flushBatchBytes = 1 << 20

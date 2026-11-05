@@ -167,7 +167,10 @@ The kinds of image are distinct types:
 There are two ways to draw. `Render` draws a recorded `List`. `Begin` opens a
 `Pass` for a compositor's frame, clipped to its damage, with `Clear`,
 `FillRect`, `FillGradient`, `DrawTexture`, `DrawGlass`, `FillGoo` and `Kawase`. The first
-bad call fails the pass: `End` reports it and draws nothing.
+bad call fails the pass: `End` reports it and draws nothing. `End` records the
+pass without submitting it: a frame's passes reach the queue as one submission
+when `SyncFile` exports, a CPU read or `Finish` needs them, `FrameDone` asks, or
+`Flush` is called. `Submissions` counts them.
 
 Vulkan comes from the patched [vk](/third-party/vk) bindings. The shaders are
 compiled to SPIR-V and embedded, and `just generate` rebuilds them.
