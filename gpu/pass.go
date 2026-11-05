@@ -656,7 +656,7 @@ func (p *Pass) record(cb vk.CommandBuffer) {
 	}
 	clear(foreign)
 	d.passForeign = foreign[:0]
-	p.t.release(cb)
+	d.holdTarget(p.t)
 }
 
 func (p *Pass) overwritten() int {

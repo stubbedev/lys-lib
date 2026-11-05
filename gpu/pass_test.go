@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/stubbedev/lys-lib/fourcc"
+	"github.com/stubbedev/lys-lib/third_party/vk"
 )
 
 func newTexture(t *testing.T, d *Device, f fourcc.Format, w, h int, px [][4]byte) *Texture {
@@ -190,6 +191,33 @@ func TestPassIntoADmabufTarget(t *testing.T) {
 	}
 	if got := img.RGBAAt(0, 0); got != (color.RGBA{0, 0, 255, 255}) {
 		t.Errorf("cleared pixel %v", got)
+	}
+}
+
+func TestABatchHoldsItsTargetUntilItEnds(t *testing.T) {
+	d := exportingDevice(t)
+	mods, err := d.Modifiers(fourcc.XRGB8888)
+	if err != nil {
+		t.Fatal(err)
+	}
+	tg, err := d.NewTarget(16, 16, fourcc.XRGB8888, mods)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tg.Close()
+	for range 2 {
+		runPass(t, d, tg, []image.Rectangle{{Max: tg.Size()}}, func(p *Pass) {
+			p.Clear(color.RGBA{0, 0, 255, 255})
+		})
+		if !tg.held {
+			t.Fatal("a pass handed its target back before the batch ended")
+		}
+	}
+	if err := d.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	if tg.held || tg.s.layout != vk.ImageLayoutGeneral {
+		t.Fatalf("after Flush the target is held %v in layout %d", tg.held, tg.s.layout)
 	}
 }
 

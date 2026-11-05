@@ -87,6 +87,11 @@ type timing struct {
 	batchBytes int
 	batchPass  bool
 	batchQuery int
+	// batchTargets are the targets the batch's passes drew into, held
+	// until the batch ends and handed to their consumers then: a release
+	// and reacquire within one command buffer leaves the image's layout
+	// where the release found it.
+	batchTargets []*Target
 	// frameSignal is the semaphore the newest pass signals that no export
 	// has consumed, held out of the spares; passes signal one once
 	// passesExport says SyncFile is in use. lastSyncFile is the sync_file
@@ -493,6 +498,7 @@ func (d *Device) submitAsync(record func(cb vk.CommandBuffer), sub submission) e
 		return err
 	}
 	record(cb)
+	d.releaseTargets(cb)
 	if r := d.cmds.EndCommandBuffer(cb); r != vk.Success {
 		d.dropBatch(cb)
 		return fmt.Errorf("gpu: vkEndCommandBuffer: %w", resultError(r))
@@ -535,6 +541,26 @@ func (d *Device) batchPassCommands(record func(cb vk.CommandBuffer)) error {
 	return d.endBatchOp()
 }
 
+// holdTarget keeps t, which a pass in the open batch drew into, from
+// its consumer until the batch ends.
+func (d *Device) holdTarget(t *Target) {
+	if !slices.Contains(d.batchTargets, t) {
+		d.batchTargets = append(d.batchTargets, t)
+	}
+}
+
+// releaseTargets records handing the targets the open batch held back
+// to their consumers, at the end of cb.
+func (d *Device) releaseTargets(cb vk.CommandBuffer) {
+	for _, t := range d.batchTargets {
+		if t.held {
+			t.release(cb)
+		}
+	}
+	clear(d.batchTargets)
+	d.batchTargets = d.batchTargets[:0]
+}
+
 // recording is a command buffer to record into, the open batch's if
 // there is one, which the caller now owns.
 func (d *Device) recording() (vk.CommandBuffer, error) {
@@ -562,6 +588,7 @@ func (d *Device) endBatch() (vk.CommandBuffer, error) {
 	}
 	cb := d.batch
 	d.batch = 0
+	d.releaseTargets(cb)
 	if r := d.cmds.EndCommandBuffer(cb); r != vk.Success {
 		d.dropBatch(cb)
 		return 0, fmt.Errorf("gpu: vkEndCommandBuffer: %w", resultError(r))
