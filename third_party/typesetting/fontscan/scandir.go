@@ -1,6 +1,7 @@
 package fontscan
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -13,9 +14,12 @@ import (
 // recursively walk through the given directory, scanning font files and calling dst.consume
 // for each valid file found. A symbolic link to a directory is followed once per target, as
 // fontconfig does, since a font tree assembled from links (a Nix profile) holds its fonts behind them.
-func (dst *footprintScanner) scanDirectory(logger Logger, dir string, visited map[string]bool) error {
+func (dst *footprintScanner) scanDirectory(ctx context.Context, logger Logger, dir string, visited map[string]bool) error {
 	var walk func(root string) error
 	walkFn := func(path string, d fs.DirEntry, err error) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err != nil {
 			logger.Printf("error walking font directory %q: %v", path, err)
 			return filepath.SkipDir

@@ -2,6 +2,7 @@ package fontscan
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"fmt"
 	"hash/crc32"
@@ -339,7 +340,7 @@ func (ft *fontTree) writeConf(dirs ...string) {
 func (ft *fontTree) refresh() (systemFontsIndex, *recordingLogger) {
 	ft.t.Helper()
 	logger := &recordingLogger{}
-	index, err := refreshSystemFontsIndex(logger, ft.index, ft.now)
+	index, err := refreshSystemFontsIndex(context.Background(), logger, ft.index, ft.now)
 	if err != nil {
 		ft.t.Fatal(err)
 	}
@@ -607,7 +608,7 @@ func TestAnUnwritableCacheStillGivesFonts(t *testing.T) {
 
 func TestNoCacheDirectoryStillGivesFonts(t *testing.T) {
 	ft := newFontTree(t)
-	index, err := refreshSystemFontsIndex(discardLogger{}, "", ft.now)
+	index, err := refreshSystemFontsIndex(context.Background(), discardLogger{}, "", ft.now)
 	if err != nil || !slices.Equal(ft.paths(index), []string{"a.ttf"}) {
 		t.Errorf("index %v, %v", index, err)
 	}

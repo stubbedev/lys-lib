@@ -1,6 +1,7 @@
 package render
 
 import (
+	"context"
 	"fmt"
 	"image"
 	"math"
@@ -823,7 +824,7 @@ func blendEmoji(t *testing.T) *Typeface {
 	t.Helper()
 	blendEmojiOnce.Do(func() {
 		fm := fontscan.NewFontMap(quietScanLogger{})
-		if err := fm.UseSystemFonts(""); err != nil {
+		if err := fm.UseSystemFonts(context.Background(), ""); err != nil {
 			t.Skipf("no system font store: %v", err)
 		}
 		loc, ok := fm.FindSystemFont("Noto Color Emoji")

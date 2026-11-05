@@ -1,6 +1,7 @@
 package fontscan
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -342,14 +343,14 @@ func (fa *footprintScanner) consume(path string, stamp fileStamp) error {
 // `currentIndex` may be passed to avoid scanning font files that are
 // already present in `currentIndex` and up to date, and directly duplicating
 // the footprint in `currentIndex`
-func scanFontFootprints(logger Logger, currentIndex systemFontsIndex, now time.Time, dirs ...string) (scan scanResult, err error) {
+func scanFontFootprints(ctx context.Context, logger Logger, currentIndex systemFontsIndex, now time.Time, dirs ...string) (scan scanResult, err error) {
 	// keep track of visited dirs to avoid double inclusions,
 	// for instance with symbolic links
 	visited := make(map[string]bool)
 
 	accu := newFootprintAccumulator(currentIndex, now)
 	for _, dir := range dirs {
-		err := accu.scanDirectory(logger, dir, visited)
+		err := accu.scanDirectory(ctx, logger, dir, visited)
 		if err != nil {
 			return scanResult{}, err
 		}

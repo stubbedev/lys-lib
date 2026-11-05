@@ -1,6 +1,7 @@
 package fontscan
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"log"
@@ -36,13 +37,13 @@ type Logger interface {
 // and must not be modified.
 //
 // If [logger] is nil, log.Default() is used.
-func SystemFonts(logger Logger, cacheDir string) ([]Footprint, error) {
+func SystemFonts(ctx context.Context, logger Logger, cacheDir string) ([]Footprint, error) {
 	if logger == nil {
 		logger = log.New(log.Writer(), "fontscan", log.Flags())
 	}
 
 	// safe for concurrent use; subsequent calls are no-ops
-	err := initSystemFonts(logger, cacheDir)
+	err := initSystemFonts(ctx, logger, cacheDir)
 	if err != nil {
 		return nil, err
 	}
@@ -138,9 +139,9 @@ func (fm *FontMap) SetRuneCacheSize(size int) {
 //
 // Multiple font maps may call this method concurrently, without duplicating
 // the work of finding the system fonts.
-func (fm *FontMap) UseSystemFonts(cacheDir string) error {
+func (fm *FontMap) UseSystemFonts(ctx context.Context, cacheDir string) error {
 	// safe for concurrent use; subsequent calls are no-ops
-	err := initSystemFonts(fm.logger, cacheDir)
+	err := initSystemFonts(ctx, fm.logger, cacheDir)
 	if err != nil {
 		return err
 	}
@@ -172,12 +173,13 @@ func (fm *FontMap) appendFootprints(footprints ...Footprint) {
 	}
 }
 
-// systemFonts is a global index of the system fonts.
-// initSystemFontsOnce protects the initial assignment,
-// and `systemFonts` use is then read-only
+// systemFonts is a global index of the system fonts, set once by a scan
+// that completes and read-only after that. systemFontsErr sticks a scan's
+// failure; a cancelled scan sets neither, so the next caller scans again.
 var (
-	systemFonts         fontSet
-	initSystemFontsOnce sync.Once
+	systemFontsMu  sync.Mutex
+	systemFonts    fontSet
+	systemFontsErr error
 )
 
 func cacheDir(userProvided string) (string, error) {
@@ -188,22 +190,25 @@ func cacheDir(userProvided string) (string, error) {
 	return platformCacheDir()
 }
 
-// initSystemFonts scan the system fonts and update `SystemFonts`.
-// If the returned error is nil, `SystemFonts` is guaranteed to contain
-// at least one valid font.Face.
-// It is protected by sync.Once, and is then safe to use by multiple goroutines.
-func initSystemFonts(logger Logger, userCacheDir string) error {
-	var err error
-
-	initSystemFontsOnce.Do(func() {
-		var index systemFontsIndex
-		index, err = refreshSystemFontsIndex(logger, indexPath(logger, userCacheDir), time.Now())
-		if err == nil {
-			systemFonts = index.flatten()
+// initSystemFonts scans the system fonts into systemFonts, once per process.
+// If the returned error is nil, systemFonts is guaranteed to contain at least
+// one valid font.Face. A scan stops between directory entries once ctx is
+// done and returns ctx's error.
+func initSystemFonts(ctx context.Context, logger Logger, userCacheDir string) error {
+	systemFontsMu.Lock()
+	defer systemFontsMu.Unlock()
+	if systemFonts != nil || systemFontsErr != nil {
+		return systemFontsErr
+	}
+	index, err := refreshSystemFontsIndex(ctx, logger, indexPath(logger, userCacheDir), time.Now())
+	if err != nil {
+		if ctx.Err() == nil {
+			systemFontsErr = err
 		}
-	})
-
-	return err
+		return err
+	}
+	systemFonts = index.flatten()
+	return nil
 }
 
 const cacheFilePattern = "font_index_v%d.cache"
@@ -226,7 +231,7 @@ func removePreviousIndex(logger Logger, cachePath string) {
 	}
 }
 
-func refreshSystemFontsIndex(logger Logger, cachePath string, now time.Time) (systemFontsIndex, error) {
+func refreshSystemFontsIndex(ctx context.Context, logger Logger, cachePath string, now time.Time) (systemFontsIndex, error) {
 	var previous indexSnapshot
 	if cachePath != "" {
 		var err error
@@ -261,9 +266,9 @@ func refreshSystemFontsIndex(logger Logger, cachePath string, now time.Time) (sy
 	}
 	logger.Printf("using system font dirs %q", roots)
 
-	scan, err := scanFontFootprints(logger, previous.fonts, now, roots...)
+	scan, err := scanFontFootprints(ctx, logger, previous.fonts, now, roots...)
 	if err != nil {
-		return nil, fmt.Errorf("scanning system fonts: %s", err)
+		return nil, fmt.Errorf("scanning system fonts: %w", err)
 	}
 
 	// since ResolveFace must always return a valid face, we make sure

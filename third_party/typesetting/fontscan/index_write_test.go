@@ -1,6 +1,7 @@
 package fontscan
 
 import (
+	"context"
 	"encoding/binary"
 	"os"
 	"path/filepath"
@@ -20,7 +21,7 @@ func TestScanReportsWhetherTheIndexChanged(t *testing.T) {
 	}
 	scan := func(prev systemFontsIndex) (systemFontsIndex, bool) {
 		t.Helper()
-		scan, err := scanFontFootprints(discardLogger{}, prev, time.Now(), dir)
+		scan, err := scanFontFootprints(context.Background(), discardLogger{}, prev, time.Now(), dir)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -54,7 +55,7 @@ func TestAnEmptyFontFileDoesNotStopAScan(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "empty.ttf"), nil, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	scan, err := scanFontFootprints(discardLogger{}, nil, time.Now(), dir)
+	scan, err := scanFontFootprints(context.Background(), discardLogger{}, nil, time.Now(), dir)
 	index := scan.index
 	if err != nil || len(index) != 1 || len(index[0].footprints) != 0 {
 		t.Errorf("index %v, %v; want the file listed with no footprints", index, err)
@@ -76,7 +77,7 @@ func TestAMappedFontScansAndLoadsAsItsBytes(t *testing.T) {
 	if err := os.WriteFile(font, data, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	scan, err := scanFontFootprints(discardLogger{}, nil, time.Now(), dir)
+	scan, err := scanFontFootprints(context.Background(), discardLogger{}, nil, time.Now(), dir)
 	index := scan.index
 	if err != nil || len(index) != 1 || len(index[0].footprints) != 1 {
 		t.Fatalf("index %v, %v", index, err)
@@ -120,7 +121,7 @@ func TestASymlinkedFontDirectoryIsScannedOnce(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	scan, err := scanFontFootprints(discardLogger{}, nil, time.Now(), fonts)
+	scan, err := scanFontFootprints(context.Background(), discardLogger{}, nil, time.Now(), fonts)
 	index := scan.index
 	if err != nil {
 		t.Fatal(err)
@@ -146,7 +147,7 @@ func TestASymlinkedFontRootIsScanned(t *testing.T) {
 	if err := os.Symlink(real, link); err != nil {
 		t.Fatal(err)
 	}
-	scan, err := scanFontFootprints(discardLogger{}, nil, time.Now(), link)
+	scan, err := scanFontFootprints(context.Background(), discardLogger{}, nil, time.Now(), link)
 	index := scan.index
 	if err != nil {
 		t.Fatal(err)
@@ -167,7 +168,7 @@ func TestAnUnreadableFontFileDoesNotStopAScan(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "open.ttf"), []byte("not a font"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	scan, err := scanFontFootprints(discardLogger{}, nil, time.Now(), dir)
+	scan, err := scanFontFootprints(context.Background(), discardLogger{}, nil, time.Now(), dir)
 	index := scan.index
 	if err != nil {
 		t.Fatal(err)
@@ -191,7 +192,7 @@ func TestALinkedDirectoryIsWalked(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	scan, err := scanFontFootprints(discardLogger{}, nil, time.Now(), dir)
+	scan, err := scanFontFootprints(context.Background(), discardLogger{}, nil, time.Now(), dir)
 	index := scan.index
 	if err != nil {
 		t.Fatal(err)
@@ -207,7 +208,7 @@ func scanOne(t *testing.T, data []byte) Footprint {
 	if err := os.WriteFile(filepath.Join(dir, "font.ttf"), data, 0o600); err != nil {
 		t.Fatal(err)
 	}
-	scan, err := scanFontFootprints(discardLogger{}, nil, time.Now(), dir)
+	scan, err := scanFontFootprints(context.Background(), discardLogger{}, nil, time.Now(), dir)
 	if err != nil {
 		t.Fatal(err)
 	}
