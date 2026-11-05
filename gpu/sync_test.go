@@ -583,7 +583,9 @@ func TestRenderExplicitNeverWaitsWhereImplicitFencesDoNotExist(t *testing.T) {
 		t.Logf("%s exported no fd for a pending signal: it had to wait", d.Name())
 	} else {
 		defer unix.Close(fd)
-		if n := d.BlockingWaits() - waits; n != 0 {
+		n := d.BlockingWaits() - waits
+		t.Logf("%s exported sync_file fd %d with %d blocking waits", d.Name(), fd, n)
+		if n != 0 {
 			t.Errorf("%d blocking waits rendering with an explicit consumer", n)
 		}
 		if _, err := drm.SyncFileSignalled(fd); err != nil {
