@@ -115,7 +115,7 @@ func (f *DmabufFeedback) serve(conn *net.UnixConn) {
 				break
 			}
 			f.mu.Lock()
-			f.request(binary.LittleEndian.Uint32(buf), uint16(binary.LittleEndian.Uint32(buf[4:])), buf[8:size])
+			f.request(binary.LittleEndian.Uint32(buf), binary.LittleEndian.Uint16(buf[4:]), buf[8:size])
 			f.mu.Unlock()
 			buf = buf[size:]
 		}

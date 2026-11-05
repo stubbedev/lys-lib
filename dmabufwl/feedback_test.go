@@ -13,7 +13,7 @@ import (
 
 const (
 	mainDevice    = uint64(226<<8 | 128)
-	scanoutDevice = uint64(226<<8 | 0)
+	scanoutDevice = uint64(226 << 8)
 	tiled         = fourcc.Modifier(0x0100000000000001)
 )
 
