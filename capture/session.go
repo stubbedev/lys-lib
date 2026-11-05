@@ -241,6 +241,9 @@ func (f *frameState) HandleImageCopyCaptureFrameV1Failed(ev wlr.ImageCopyCapture
 
 func (f *frameState) finished() bool { return f.ready || f.failed }
 
+// reset empties f for the next frame, keeping its damage's storage.
+func (f *frameState) reset() { *f = frameState{info: FrameInfo{Damage: f.info.Damage[:0]}} }
+
 func (f *frameState) listen(frame *wlr.ImageCopyCaptureFrameV1) {
 	frame.AddTransformHandler(f)
 	frame.AddDamageHandler(f)
@@ -265,6 +268,7 @@ type copySession struct {
 	release func()
 	session *wlr.ImageCopyCaptureSessionV1
 	state   *sessionState
+	damage  bufferDamage
 }
 
 // openSession opens a session on src and dispatches until its first
@@ -316,35 +320,60 @@ func (cs *copySession) destroy() error {
 	return nil
 }
 
-// captureFrame runs one full-buffer frame into buf: create, attach,
-// damage the whole buffer (the client tracks no damage of its own),
+// captureFrame runs one frame into buf, recording its events in fs:
+// create, attach, damage what changed since buf was last filled (all of
+// it for a buffer new to the session or filled under other constraints),
 // capture, and dispatch until the verdict, the session's stop, or done
 // says to give up. A frame failed because the session stopped marks it
 // stopped, ahead of its stopped event.
-func (cs *copySession) captureFrame(dispatch func(func() bool) error, buf *wl.Buffer, width, height int32) (*frameState, error) {
+func (cs *copySession) captureFrame(dispatch func(func() bool) error, buf *wl.Buffer, width, height int32, fs *frameState) error {
 	frame, err := cs.session.CreateFrame()
 	if err != nil {
-		return nil, fmt.Errorf("capture: create a capture frame: %w", err)
+		return fmt.Errorf("capture: create a capture frame: %w", err)
 	}
 	defer func() { _ = frame.Destroy() }()
-	fs := &frameState{}
+	fs.reset()
 	fs.listen(frame)
+	gen := cs.state.generation
 	if err := frame.AttachBuffer(buf); err != nil {
-		return nil, fmt.Errorf("capture: attach the %dx%d buffer: %w", width, height, err)
+		return fmt.Errorf("capture: attach the %dx%d buffer: %w", width, height, err)
 	}
-	if err := frame.DamageBuffer(0, 0, width, height); err != nil {
-		return nil, fmt.Errorf("capture: damage the %dx%d buffer: %w", width, height, err)
+	if err := cs.damageBuffer(frame, buf, gen, width, height); err != nil {
+		return fmt.Errorf("capture: damage the %dx%d buffer: %w", width, height, err)
 	}
 	if err := frame.Capture(); err != nil {
-		return nil, fmt.Errorf("capture: capture a frame: %w", err)
+		cs.damage.filled(buf, gen, nil, false)
+		return fmt.Errorf("capture: capture a frame: %w", err)
 	}
-	if err := dispatch(func() bool { return fs.finished() || cs.state.stopped }); err != nil {
-		return nil, err
+	err = dispatch(func() bool { return fs.finished() || cs.state.stopped })
+	cs.damage.filled(buf, gen, fs.info.Damage, err == nil && fs.ready)
+	if err != nil {
+		return err
 	}
 	if fs.reason == failureStopped {
 		cs.state.stopped = true
 	}
-	return fs, nil
+	return nil
+}
+
+// damageBuffer sends frame the damage buf is stale by, clipped to its
+// width x height.
+func (cs *copySession) damageBuffer(frame *wlr.ImageCopyCaptureFrameV1, buf *wl.Buffer, gen uint64, width, height int32) error {
+	rects, whole := cs.damage.stale(buf, gen)
+	if whole {
+		return frame.DamageBuffer(0, 0, width, height)
+	}
+	for _, r := range rects {
+		x0, y0 := max(r.X, 0), max(r.Y, 0)
+		x1, y1 := min(r.X+r.Width, int(width)), min(r.Y+r.Height, int(height))
+		if x1 <= x0 || y1 <= y0 {
+			continue
+		}
+		if err := frame.DamageBuffer(int32(x0), int32(y0), int32(x1-x0), int32(y1-y0)); err != nil { //nolint:gosec // clipped to the int32 buffer size
+			return err
+		}
+	}
+	return nil
 }
 
 // verdict is a finished frame's outcome: nil when it is ready.

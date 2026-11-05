@@ -5,6 +5,7 @@ import (
 	"errors"
 	"image"
 	"net"
+	"slices"
 	"sync"
 	"testing"
 	"time"
@@ -29,8 +30,16 @@ type fakeCompositor struct {
 
 	mu sync.Mutex
 	// frames counts the session frames captured; only the first lands, as
-	// a still window copies only a session's first frame.
+	// a still window copies only a session's first frame, unless live.
 	frames int
+	// live is how many of a session's first frames land, each with
+	// fakeDamage, when not zero.
+	live int
+	// buffers names each frame's attached buffer, and captured are the
+	// frames captured, each with the buffer and the damage_buffer it
+	// carried.
+	buffers  map[uint32]*fakeCapture
+	captured []fakeCapture
 	// regions are the regions the screencopy frames asked for.
 	regions []image.Rectangle
 	copies  int
@@ -46,7 +55,26 @@ const (
 	fakeGlobalShm
 	fakeGlobalScreencopy
 	fakeGlobalOutput
+	fakeGlobalOutputSource
 )
+
+// fakeCapture is one session frame as the client asked for it.
+type fakeCapture struct {
+	buffer uint32
+	damage []image.Rectangle
+}
+
+// fakeSessionSize is the buffer size a fake capture session takes.
+var fakeSessionSize = image.Pt(320, 200)
+
+// fakeDamage is what the fake reports changed in live frame n: all of it
+// for a session's first frame, as the protocol has it.
+func fakeDamage(n int) image.Rectangle {
+	if n == 0 {
+		return image.Rectangle{Max: fakeSessionSize}
+	}
+	return image.Rect(n*10, n*5, n*10+10, n*5+5)
+}
 
 const fakeDevice = uint64(226<<8 | 128)
 
@@ -60,7 +88,7 @@ var (
 func startFakeCompositor(t *testing.T) *fakeCompositor {
 	t.Helper()
 	ln, _ := wltest.LoopbackDisplay(t, "wayland-capture-fake")
-	f := &fakeCompositor{t: t, ifaces: map[uint32]string{1: "wl_display"}, next: 0xff000000}
+	f := &fakeCompositor{t: t, ifaces: map[uint32]string{1: "wl_display"}, next: 0xff000000, buffers: map[uint32]*fakeCapture{}}
 	done := make(chan struct{})
 	t.Cleanup(func() {
 		_ = ln.Close()
@@ -187,6 +215,7 @@ func (f *fakeCompositor) request(id uint32, opcode uint16, body []byte) {
 				{fakeGlobalShm, ifaceShm, 1},
 				{fakeGlobalScreencopy, ifaceScreencopy, 3},
 				{fakeGlobalOutput, ifaceOutput, 4},
+				{fakeGlobalOutputSource, ifaceOutputSource, 1},
 			} {
 				f.send(reg, 0, wireU32(g.name), wireString(g.iface), wireU32(g.version))
 			}
@@ -204,9 +233,20 @@ func (f *fakeCompositor) request(id uint32, opcode uint16, body []byte) {
 			f.send(newID, 4, wireString("FAKE-1"))
 			f.send(newID, 2)
 		}
-	case ifaceToplevelSrc:
+	case ifaceToplevelSrc, ifaceOutputSource:
 		if opcode == 0 {
 			f.ifaces[u32At(body, 0)] = "source"
+		}
+	case ifaceShm:
+		if opcode == 0 {
+			f.ifaces[u32At(body, 0)] = "pool"
+		}
+	case "pool":
+		switch opcode {
+		case 0:
+			f.ifaces[u32At(body, 0)] = "wl_buffer"
+		case 1:
+			f.gone(id)
 		}
 	case ifaceCopyCapture:
 		if opcode == 0 {
@@ -215,7 +255,8 @@ func (f *fakeCompositor) request(id uint32, opcode uint16, body []byte) {
 			f.mu.Lock()
 			f.session = session
 			f.mu.Unlock()
-			f.send(session, 0, wireU32(320), wireU32(200))
+			f.send(session, 0, wireU32(uint32(fakeSessionSize.X)), wireU32(uint32(fakeSessionSize.Y)))
+			f.send(session, 1, wireU32(uint32(FormatXRGB8888)))
 			f.send(session, 2, wireArray(binary.LittleEndian.AppendUint64(nil, fakeDevice)))
 			f.send(session, 3, wireU32(uint32(fakeFormat)), wireArray(binary.LittleEndian.AppendUint64(nil, uint64(fakeModifier))))
 			f.send(session, 4)
@@ -230,13 +271,35 @@ func (f *fakeCompositor) request(id uint32, opcode uint16, body []byte) {
 	case "frame":
 		switch opcode {
 		case 0:
+			f.mu.Lock()
+			delete(f.buffers, id)
+			f.mu.Unlock()
 			f.gone(id)
+		case 1:
+			f.mu.Lock()
+			f.buffers[id] = &fakeCapture{buffer: u32At(body, 0)}
+			f.mu.Unlock()
+		case 2:
+			x, y, w, h := int(int32(u32At(body, 0))), int(int32(u32At(body, 1))), int(int32(u32At(body, 2))), int(int32(u32At(body, 3)))
+			f.mu.Lock()
+			if c := f.buffers[id]; c != nil {
+				c.damage = append(c.damage, image.Rect(x, y, x+w, y+h))
+			}
+			f.mu.Unlock()
 		case 3: // capture
 			f.mu.Lock()
+			n := f.frames
 			f.frames++
-			first := f.frames == 1
+			if c := f.buffers[id]; c != nil {
+				f.captured = append(f.captured, *c)
+			}
+			live := f.live
 			f.mu.Unlock()
-			if first {
+			if n < live {
+				d := fakeDamage(n)
+				f.send(id, 1, wireU32(uint32(d.Min.X)), wireU32(uint32(d.Min.Y)), wireU32(uint32(d.Dx())), wireU32(uint32(d.Dy())))
+			}
+			if n == 0 || n < live {
 				f.send(id, 3) // ready
 			}
 		}
@@ -531,5 +594,49 @@ func TestARegionsDmabufFramesAreItsOwn(t *testing.T) {
 	}
 	if err := c.CopyOutputRegionDmabuf(o, image.Rectangle{}, false, buf); err == nil {
 		t.Error("an empty region copied")
+	}
+}
+
+// A stream's reused buffer asks the compositor only for what changed since
+// it was last filled; a buffer's first frame asks for all of it.
+func TestAStreamAsksOnlyForWhatChangedSinceABufferWasFilled(t *testing.T) {
+	f := startFakeCompositor(t)
+	const live = 7
+	f.mu.Lock()
+	f.live = live
+	f.mu.Unlock()
+	s, err := OpenOutputStream("FAKE-1", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() {
+		if err := s.Close(); err != nil {
+			t.Error(err)
+		}
+	}()
+	var captured []fakeCapture
+	for deadline := time.Now().Add(5 * time.Second); len(captured) <= live; time.Sleep(time.Millisecond) {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d frames captured, want %d", len(captured), live+1)
+		}
+		f.mu.Lock()
+		captured = slices.Clone(f.captured)
+		f.mu.Unlock()
+	}
+	if got := s.Latest(); got == nil || got.Seq != live-1 || !slices.Equal(got.Damage, []Rect{{X: 60, Y: 30, Width: 10, Height: 5}}) {
+		t.Errorf("the latest frame is %+v", got)
+	}
+	whole := []image.Rectangle{{Max: fakeSessionSize}}
+	for n, c := range captured {
+		want := whole
+		if n >= streamRing {
+			want = []image.Rectangle{fakeDamage(n - 2), fakeDamage(n - 1)}
+			if c.buffer != captured[n-streamRing].buffer {
+				t.Errorf("frame %d went into buffer %d, not the ring's %d", n, c.buffer, captured[n-streamRing].buffer)
+			}
+		}
+		if !slices.Equal(c.damage, want) {
+			t.Errorf("frame %d damaged %v, want %v", n, c.damage, want)
+		}
 	}
 }

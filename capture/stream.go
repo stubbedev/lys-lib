@@ -3,6 +3,7 @@ package capture
 import (
 	"errors"
 	"fmt"
+	"slices"
 	"sync"
 	"sync/atomic"
 )
@@ -27,9 +28,9 @@ type StreamInfo struct {
 	Transform Transform
 }
 
-// StreamFrame is one captured frame a Stream published. Its pixels
-// live in a ring buffer the capture goroutine reuses a couple of
-// frames later, so copy them out (ReadInto, Frame) promptly.
+// StreamFrame is one captured frame a Stream published. It, its Damage
+// and its pixels belong to a ring buffer the capture goroutine reuses a
+// couple of frames later, so copy them out (ReadInto, Frame) promptly.
 type StreamFrame struct {
 	// Seq increments per published frame; an unchanged Seq means
 	// nothing new was captured (the screen is static).
@@ -60,7 +61,7 @@ func (f *StreamFrame) Frame() (*Frame, error) {
 	}
 	out := f.buf.frame(nil)
 	out.Transform = f.Transform
-	out.Damage = f.Damage
+	out.Damage = slices.Clone(f.Damage)
 	return out, nil
 }
 
@@ -74,6 +75,9 @@ type Stream struct {
 	info   StreamInfo
 	client *Client
 	ring   []*shmBuffer
+	// slots are each ring buffer's frame events and published frame,
+	// reused frame after frame.
+	slots []streamSlot
 
 	latest atomic.Pointer[StreamFrame]
 
@@ -87,6 +91,11 @@ type Stream struct {
 	// under a consumer's copy.
 	memMu    sync.RWMutex
 	unmapped bool
+}
+
+type streamSlot struct {
+	events frameState
+	frame  StreamFrame
 }
 
 // OpenOutputStream starts continuous capture of the output with the
@@ -140,6 +149,7 @@ func openStream(client *Client, outputName string, cursor bool) (*Stream, error)
 		}
 		s.ring = append(s.ring, buf)
 	}
+	s.slots = make([]streamSlot, streamRing)
 	go s.run(cs)
 	return s, nil
 }
@@ -202,8 +212,8 @@ func (s *Stream) run(cs *copySession) {
 		return s.client.dispatchUntil(func() bool { return s.stopping.Load() || done() })
 	}
 	for !s.stopping.Load() {
-		buf := s.ring[slot]
-		fs, err := cs.captureFrame(dispatch, buf.wl, buf.wlWidth, buf.wlHeight)
+		buf, fs := s.ring[slot], &s.slots[slot].events
+		err := cs.captureFrame(dispatch, buf.wl, buf.wlWidth, buf.wlHeight, fs)
 		if err != nil {
 			if !s.stopping.Load() {
 				s.err = err
@@ -236,8 +246,16 @@ func (s *Stream) run(cs *copySession) {
 			continue
 		}
 		failures = 0
-		s.latest.Store(&StreamFrame{Seq: seq, FrameInfo: fs.info, stream: s, buf: buf})
+		s.publish(slot, seq)
 		seq++
 		slot = (slot + 1) % len(s.ring)
 	}
+}
+
+// publish makes the frame just captured into slot the latest, numbered
+// seq.
+func (s *Stream) publish(slot int, seq uint64) {
+	sl := &s.slots[slot]
+	sl.frame = StreamFrame{Seq: seq, FrameInfo: sl.events.info, stream: s, buf: s.ring[slot]}
+	s.latest.Store(&sl.frame)
 }

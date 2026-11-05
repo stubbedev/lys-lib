@@ -78,7 +78,9 @@ open, `CaptureToplevel` and another `OpenDmabufSession` on that window fail with
 
 `Frame.Image` converts to `image.RGBA` for the 8-bit and 10-bit packed formats
 compositors hand out. `Options.Dst` reuses a buffer between frames, and
-`Options.AwaitDamage` waits for the source to change.
+`Options.AwaitDamage` waits for the source to change. A stream and a dmabuf
+session keep, per buffer, what changed since that buffer was last filled, and
+ask the compositor to copy only that into it when it comes round again.
 
 ## vinput, keymapfd
 

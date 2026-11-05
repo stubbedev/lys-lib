@@ -147,8 +147,8 @@ func (c *Client) captureSourceOnce(src Source, opts Options) (_ *Frame, err erro
 		return nil, err
 	}
 	defer buf.release()
-	fs, err := cs.captureFrame(c.dispatchUntil, buf.wl, buf.wlWidth, buf.wlHeight)
-	if err != nil {
+	fs := &frameState{}
+	if err := cs.captureFrame(c.dispatchUntil, buf.wl, buf.wlWidth, buf.wlHeight, fs); err != nil {
 		return nil, err
 	}
 	if err := cs.verdict(fs); err != nil {

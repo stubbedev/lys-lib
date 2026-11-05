@@ -140,8 +140,8 @@ func (s *DmabufSession) Capture(buf *DmabufBuffer) (FrameInfo, error) {
 	dispatch := func(done func() bool) error {
 		return s.client.dispatchYielding(func() bool { return s.closing.Load() || done() })
 	}
-	fs, err := s.cs.captureFrame(dispatch, buf.wl, size[0], size[1])
-	if err != nil {
+	fs := &frameState{}
+	if err := s.cs.captureFrame(dispatch, buf.wl, size[0], size[1], fs); err != nil {
 		return FrameInfo{}, err
 	}
 	if !fs.finished() && !s.cs.state.stopped {
