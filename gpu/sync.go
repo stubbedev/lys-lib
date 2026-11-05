@@ -50,6 +50,7 @@ type timing struct {
 	completed      uint64
 	graves         []grave
 	blockingWaits  uint64
+	opaqueRuns     uint64
 	framing        bool
 	reaps          uint64
 	incomplete     bool

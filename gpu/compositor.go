@@ -39,6 +39,9 @@ type compTarget struct {
 	pass                                vk.RenderPass
 	tex, fill, grad, kawase, goo, glass vk.Pipeline
 	colorTex, colorGrad, colorGlass     vk.Pipeline
+	// opaqueTex and opaqueFill draw tex's and fill's shaders with
+	// blending off, for what covers the target whole.
+	opaqueTex, opaqueFill vk.Pipeline
 }
 
 type drawConstants struct {
@@ -157,8 +160,38 @@ func (d *Device) glassPipeline(ct *compTarget) (vk.Pipeline, error) {
 	return d.lazyPipeline(pipelineKey{owner: ct, which: 5}, 0, build, func(p vk.Pipeline) { ct.glass = p })
 }
 
+// opaqueKind names an op that may draw with blending off.
+type opaqueKind uint8
+
+const (
+	opaqueTexture opaqueKind = iota
+	opaqueFill
+)
+
+// opaquePipeline is kind's pipeline with blending off, built at its first
+// use on a target format. Until a background build finishes it is the
+// blending pipeline, which draws an opaque op the same.
+func (d *Device) opaquePipeline(ct *compTarget, kind opaqueKind) (pipe vk.Pipeline, opaque bool, err error) {
+	c := &d.comp
+	slot, blending, frag := &ct.opaqueTex, ct.tex, c.frags[0]
+	if kind == opaqueFill {
+		slot, blending, frag = &ct.opaqueFill, ct.fill, c.frags[1]
+	}
+	if *slot != 0 {
+		return *slot, true, nil
+	}
+	build := func() (vk.Pipeline, error) {
+		return d.graphicsPipeline([2]vk.ShaderModule{c.vert, frag}, c.layout, ct.pass, blendNone)
+	}
+	p, err := d.lazyPipeline(pipelineKey{owner: ct, which: 9 + int(kind)}, 0, build, func(p vk.Pipeline) { *slot = p })
+	if err != nil || p == 0 {
+		return blending, false, err
+	}
+	return p, true, nil
+}
+
 func (ct *compTarget) destroy(d *Device) {
-	for _, p := range []vk.Pipeline{ct.tex, ct.fill, ct.grad, ct.kawase, ct.goo, ct.glass, ct.colorTex, ct.colorGrad, ct.colorGlass} {
+	for _, p := range []vk.Pipeline{ct.tex, ct.fill, ct.grad, ct.kawase, ct.goo, ct.glass, ct.colorTex, ct.colorGrad, ct.colorGlass, ct.opaqueTex, ct.opaqueFill} {
 		if p != 0 {
 			d.cmds.DestroyPipeline(d.device, p, nil)
 		}

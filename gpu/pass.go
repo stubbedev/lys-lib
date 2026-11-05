@@ -73,6 +73,8 @@ type passOp struct {
 	layout vk.PipelineLayout
 	color  vk.DescriptorSet
 	dc     drawConstants
+	// opaque marks a pipeline with blending off.
+	opaque bool
 }
 
 // Begin starts a pass drawing into t, where only damage, clipped to t,
@@ -208,7 +210,14 @@ func (p *Pass) FillRect(r image.Rectangle, c color.RGBA, m Mask) {
 	}
 	dc := drawConstants{extra: [2][4]float32{p.coloredFill(col)}}
 	dc.setMask(m)
-	p.add(passOp{kind: opFill, dst: r, pipe: p.ct.fill, layout: p.d.comp.layout, dc: dc})
+	op := passOp{kind: opFill, dst: r, pipe: p.ct.fill, layout: p.d.comp.layout, dc: dc}
+	if c.A == 0xff && m == (Mask{}) {
+		if op.pipe, op.opaque, err = p.d.opaquePipeline(p.ct, opaqueFill); err != nil {
+			p.fail(err)
+			return
+		}
+	}
+	p.add(op)
 }
 
 // Gradient is a linear gradient from From to To, in target pixels:
@@ -437,6 +446,12 @@ func (p *Pass) DrawTexture(t *Texture, src FRect, dst image.Rectangle, tr Transf
 		}
 		op.layout = t.planes.layout
 	}
+	if t.ycbcr == nil && t.yuv444 == nil && t.planes == nil && t.surf == nil && t.pf.opaque && alpha == 1 && m == (Mask{}) {
+		if op.pipe, op.opaque, err = p.d.opaquePipeline(p.ct, opaqueTexture); err != nil {
+			p.fail(err)
+			return
+		}
+	}
 	p.add(op)
 }
 
@@ -577,6 +592,7 @@ func (p *Pass) record(cb vk.CommandBuffer) {
 	d.cmds.CmdSetViewport(cb, 0, 1, &d.args.viewport)
 	stages := vk.ShaderStageFlags(vk.ShaderStageVertexBit | vk.ShaderStageFragmentBit)
 	var bound vk.Pipeline
+	boundOpaque := false
 	var set, colorBound vk.DescriptorSet
 	var scissor image.Rectangle
 	for i := range p.ops {
@@ -590,7 +606,10 @@ func (p *Pass) record(cb vk.CommandBuffer) {
 		}
 		if op.pipe != bound {
 			d.cmds.CmdBindPipeline(cb, vk.PipelineBindPointGraphics, op.pipe)
-			bound = op.pipe
+			if op.opaque && !boundOpaque {
+				d.opaqueRuns++
+			}
+			bound, boundOpaque = op.pipe, op.opaque
 			d.passWork.binds++
 		}
 		if op.kind == opTexture && op.set != set {

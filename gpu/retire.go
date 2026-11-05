@@ -79,3 +79,7 @@ func (r *Readback) destroy() {
 // the GPU to finish: a frame that adds to it could have missed its
 // deadline for the work ahead of it.
 func (d *Device) BlockingWaits() uint64 { return d.blockingWaits }
+
+// OpaqueRuns counts the runs of draws this device recorded with blending
+// off: opaque fills and opaque textures at full alpha, unmasked.
+func (d *Device) OpaqueRuns() uint64 { return d.opaqueRuns }

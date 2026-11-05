@@ -375,3 +375,51 @@ func TestAScissorOnTheDamageStillClipsToTheDraw(t *testing.T) {
 		}
 	}
 }
+
+func TestOpaqueDrawsRunWithBlendingOffAndTranslucentOnesBlend(t *testing.T) {
+	d := openDevice(t)
+	tg, err := d.NewOffscreen(4, 1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tg.Close()
+	rgbx := newTexture(t, d, fourcc.XRGB8888, 1, 1, [][4]byte{{0, 255, 0, 0}})
+	argb := newTexture(t, d, fourcc.ARGB8888, 1, 1, [][4]byte{{0, 0, 128, 128}})
+	before := d.OpaqueRuns()
+	runPass(t, d, tg, []image.Rectangle{{Max: tg.Size()}}, func(p *Pass) {
+		p.Clear(color.RGBA{0, 0, 255, 255})
+		p.FillRect(image.Rect(0, 0, 1, 1), color.RGBA{255, 0, 0, 255}, Mask{})
+		p.DrawTexture(rgbx, FRect{W: 1, H: 1}, image.Rect(1, 0, 2, 1), TransformNormal, 1, Mask{})
+		p.DrawTexture(argb, FRect{W: 1, H: 1}, image.Rect(2, 0, 3, 1), TransformNormal, 1, Mask{})
+		p.DrawTexture(rgbx, FRect{W: 1, H: 1}, image.Rect(3, 0, 4, 1), TransformNormal, 0.5, Mask{})
+	})
+	if got := d.OpaqueRuns() - before; got != 1 {
+		t.Errorf("%d runs with blending off, want one: the opaque fill and the RGBX texture at full alpha", got)
+	}
+	img := readTarget(t, tg)
+	for x, want := range []color.RGBA{{255, 0, 0, 255}, {0, 255, 0, 255}, {128, 0, 127, 255}, {0, 128, 127, 255}} {
+		if got := img.RGBAAt(x, 0); !within(got, want, 1) {
+			t.Errorf("pixel %d is %v, want %v", x, got, want)
+		}
+	}
+}
+
+func TestAMaskedOpaqueFillStillBlends(t *testing.T) {
+	d := openDevice(t)
+	tg, err := d.NewOffscreen(8, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tg.Close()
+	before := d.OpaqueRuns()
+	runPass(t, d, tg, []image.Rectangle{{Max: tg.Size()}}, func(p *Pass) {
+		p.Clear(color.RGBA{0, 0, 255, 255})
+		p.FillRect(image.Rect(0, 0, 8, 8), color.RGBA{255, 0, 0, 255}, Mask{Keep: RoundRect{Rect: image.Rect(0, 0, 8, 8), Radius: 4}})
+	})
+	if got := d.OpaqueRuns() - before; got != 0 {
+		t.Errorf("a rounded fill ran with blending off %d times", got)
+	}
+	if got := readTarget(t, tg).RGBAAt(0, 0); got.B == 0 {
+		t.Errorf("the rounded corner replaced the background: %v", got)
+	}
+}

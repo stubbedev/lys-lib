@@ -161,6 +161,11 @@ func (d *Device) Prepare(formats ...fourcc.Format) error {
 		if _, err := d.glassPipeline(ct); err != nil {
 			return err
 		}
+		for _, kind := range []opaqueKind{opaqueTexture, opaqueFill} {
+			if _, _, err := d.opaquePipeline(ct, kind); err != nil {
+				return err
+			}
+		}
 		if _, err := d.colorGradPipeline(ct); err != nil {
 			return err
 		}

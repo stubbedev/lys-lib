@@ -182,11 +182,13 @@ func (d *Device) createPrimPipelines() error {
 	if d.over, err = d.graphicsPipeline(d.primModules, d.layout, d.pass, blendOver); err != nil {
 		return err
 	}
-	d.replace, err = d.graphicsPipeline(d.primModules, d.layout, d.pass, vk.PipelineColorBlendAttachmentState{ColorWriteMask: rgbaMask})
+	d.replace, err = d.graphicsPipeline(d.primModules, d.layout, d.pass, blendNone)
 	return err
 }
 
 const rgbaMask = vk.ColorComponentFlags(vk.ColorComponentRBit | vk.ColorComponentGBit | vk.ColorComponentBBit | vk.ColorComponentABit)
+
+var blendNone = vk.PipelineColorBlendAttachmentState{ColorWriteMask: rgbaMask}
 
 var blendOver = vk.PipelineColorBlendAttachmentState{
 	BlendEnable: vk.True, ColorWriteMask: rgbaMask,
