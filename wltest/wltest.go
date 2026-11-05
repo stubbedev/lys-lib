@@ -1,7 +1,8 @@
 // Package wltest helps tests run Wayland clients: a private runtime
-// dir and a loopback display for wire-level tests with no compositor,
-// and, against the headless compositor the test recipes boot, a client
-// that puts solid-colored surfaces on screen for capture tests to find.
+// dir, a loopback display for wire-level tests with no compositor, a
+// fake compositor serving linux-dmabuf feedback over one, and, against
+// the headless compositor the test recipes boot, a client that puts
+// solid-colored surfaces on screen for capture tests to find.
 package wltest
 
 import (

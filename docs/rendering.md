@@ -196,7 +196,10 @@ caller allocates it and keeps the plane fds open for as long as the
 compositor-side buffer lives, since importing dups nothing.
 
 `dmabufwl` builds `zwp_linux_buffer_params_v1` objects from those descriptions
-and reads `zwp_linux_dmabuf_feedback_v1`'s default feedback.
+and reads `zwp_linux_dmabuf_feedback_v1`: the default feedback once
+(`DefaultFeedback`), or a surface's for as long as it lives (`WatchSurfaceFeedback`),
+each update parsed into its tranches, their target devices and scanout flags.
+`Feedback.Preferred` picks the tranche to allocate a format from, scanout first.
 
 `udmabuf` allocates linear, CPU-visible dmabufs through `/dev/udmabuf`, a sealed
 memfd wrapped as a dmabuf. Tests and demos use it to hand the compositor dmabufs

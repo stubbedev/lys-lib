@@ -1,5 +1,6 @@
 // Package dmabufwl builds zwp_linux_buffer_params_v1 objects from
-// dmabuf descriptions, the step every linux-dmabuf import shares.
+// dmabuf descriptions, the step every linux-dmabuf import shares, and
+// reads the compositor's linux-dmabuf feedback, default and per surface.
 package dmabufwl
 
 import (
