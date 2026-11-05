@@ -1,7 +1,7 @@
 // Package drm issues DRM ioctls on a device node, in pure Go: KMS
 // resources, connectors, planes, properties and blobs, dumb buffers,
-// framebuffers and atomic commits, capabilities, and timeline syncobjs
-// and sync files for explicit synchronization.
+// framebuffers and atomic commits, capabilities, CRTC vblank sequences,
+// and timeline syncobjs and sync files for explicit synchronization.
 package drm
 
 import (

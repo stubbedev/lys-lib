@@ -179,8 +179,8 @@ compiled to SPIR-V and embedded, and `just generate` rebuilds them.
 
 `drm` issues DRM ioctls on a device node in pure Go: KMS resources, connectors,
 planes, properties and blobs, dumb buffers, framebuffers, atomic commits
-(`Request`, `Commit`), capabilities, and timeline syncobjs and sync files for
-explicit synchronization.
+(`Request`, `Commit`), capabilities, CRTC vblank sequences (`CRTCSequence`), and
+timeline syncobjs and sync files for explicit synchronization.
 
 `fourcc` names DRM pixel formats and format modifiers, as shared by the kernel,
 GBM, EGL and linux-dmabuf.

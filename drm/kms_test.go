@@ -7,6 +7,7 @@ import (
 	"maps"
 	"slices"
 	"testing"
+	"time"
 
 	"golang.org/x/sys/unix"
 
@@ -259,4 +260,46 @@ func TestParseModeReadsWhatBytesWrites(t *testing.T) {
 	if _, err := drm.ParseMode(want.Bytes()[:67]); err == nil {
 		t.Fatal("a short mode blob parsed")
 	}
+}
+
+func TestCRTCSequenceAdvancesARefreshLater(t *testing.T) {
+	d := card(t)
+	res, err := d.Resources()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range res.CRTCs {
+		props, err := d.Properties(id, drm.ObjectCRTC)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if props["ACTIVE"].Value != 1 || props["MODE_ID"].Value == 0 {
+			continue
+		}
+		blob, err := d.Blob(uint32(props["MODE_ID"].Value))
+		if err != nil {
+			t.Fatal(err)
+		}
+		mode, err := drm.ParseMode(blob)
+		if err != nil {
+			t.Fatal(err)
+		}
+		first, err := d.CRTCSequence(id)
+		if errors.Is(err, drm.ErrNoVblankSequence) {
+			t.Skipf("CRTC %d: %v", id, err)
+		}
+		if err != nil {
+			t.Fatal(err)
+		}
+		time.Sleep(2 * time.Second * 1000 / time.Duration(mode.RefreshMHz()))
+		second, err := d.CRTCSequence(id)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !first.Active || second.Sequence <= first.Sequence || second.Time <= first.Time {
+			t.Errorf("CRTC %d at %d mHz: %+v, then %+v two refreshes later", id, mode.RefreshMHz(), first, second)
+		}
+		return
+	}
+	t.Skip("no active CRTC")
 }
