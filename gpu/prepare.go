@@ -94,14 +94,20 @@ func (d *Device) buildPipelines() {
 	for {
 		pr.mu.Lock()
 		if len(pr.jobs) == 0 || pr.stop {
+			pr.mu.Unlock()
+			if err := d.savePipelineCache(); err != nil {
+				debug.Log("gpu", "pipeline cache not saved: %v", err)
+			}
+			pr.mu.Lock()
+			if len(pr.jobs) > 0 && !pr.stop {
+				pr.mu.Unlock()
+				continue
+			}
 			pr.running = false
 			if pr.idle.L != nil {
 				pr.idle.Broadcast()
 			}
 			pr.mu.Unlock()
-			if err := d.savePipelineCache(); err != nil {
-				debug.Log("gpu", "pipeline cache not saved: %v", err)
-			}
 			return
 		}
 		job := pr.jobs[0]
