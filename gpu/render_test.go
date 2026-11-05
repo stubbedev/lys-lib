@@ -852,3 +852,68 @@ func TestCarriesApplyInOrderAndDisjointOnesCostNoBarrier(t *testing.T) {
 		t.Errorf("the first carry's own part holds %v", got)
 	}
 }
+
+func TestALayerReusedInTheNextListCompositesOnTheGPU(t *testing.T) {
+	d := openDevice(t)
+	red, blue := render.RGBA(220, 40, 50, 255), render.RGBA(30, 90, 220, 180)
+	for _, sc := range [][2]int{{1, 1}, {3, 2}} {
+		w, h := 96*sc[0]/sc[1], 72*sc[0]/sc[1]
+		var kept [2]*render.Layer
+		var reused [2][]bool
+		parity(t, d, w, h, sc[0], sc[1], 3, func(cv *render.Canvas, frame int) {
+			i := 0
+			if cv.Recording() != nil {
+				i = 1
+			}
+			cv.Clear(cv.Rect(), render.RGBA(16, 18, 24, 255))
+			region := cv.MapRect(render.Rect{X: 4, Y: 4, W: 50, H: 36})
+			ok := cv.ReuseLayer(kept[i], region)
+			reused[i] = append(reused[i], ok)
+			if !ok {
+				kept[i] = cv.Layer(kept[i], region)
+				kc := kept[i].Canvas()
+				kc.RoundedRectCorners(render.Rect{X: 6, Y: 6, W: 40, H: 26}, render.UniformCorners(8), red)
+				kc.FillRect(render.Rect{X: 26, Y: 16, W: 26, H: 22}, blue)
+			}
+			cv.Composite(kept[i], region, render.Rotate(float64(4*frame)).About(30, 22), 0.85)
+			area := cv.MapRect(render.Rect{X: 2, Y: 40, W: 90, H: 30})
+			s := cv.ScratchLayer(area)
+			s.Canvas().Composite(kept[i], region, render.Translate(float64(40*sc[0]/sc[1]), float64(36*sc[0]/sc[1])), 1)
+			cv.DrawLayer(s, cv.MapRect(render.Rect{X: 2, Y: 50, W: 90, H: 12}), render.BlendNormal)
+			s.Release()
+		})
+		for i, got := range reused {
+			if want := []bool{false, true, true}; fmt.Sprint(got) != fmt.Sprint(want) {
+				t.Errorf("scale %d/%d canvas %d: ReuseLayer %v, want %v", sc[0], sc[1], i, got, want)
+			}
+		}
+	}
+}
+
+func TestALayerOfAClosedDeviceIsNotReused(t *testing.T) {
+	const w, h = 32, 24
+	region := render.Rect{X: 2, Y: 2, W: 20, H: 16}
+	d := openDevice(t)
+	tg := newTarget(t, d, w, h)
+	rec := render.NewRecorder(w, h, 1, 1)
+	kept := rec.Layer(nil, region)
+	kept.Canvas().FillRect(region, render.RGBA(220, 40, 50, 255))
+	rec.Composite(kept, region, render.Identity, 1)
+	if err := d.Render(rec.Recording(), tg); err != nil {
+		t.Fatal(err)
+	}
+	rec.ResetRecorder(w, h, 1, 1)
+	if !rec.ReuseLayer(kept, region) {
+		t.Fatal("a layer the device holds was not reused")
+	}
+	rec.ResetRecorder(w*2, h, 1, 1)
+	if rec.ReuseLayer(kept, region) {
+		t.Error("a layer held for another target size was reused")
+	}
+	tg.Close()
+	d.Close()
+	rec.ResetRecorder(w, h, 1, 1)
+	if rec.ReuseLayer(kept, region) {
+		t.Error("a layer of a closed device was reused")
+	}
+}

@@ -127,6 +127,13 @@ type Layer struct {
 	// it, while needing, as List.cull walks the List backwards.
 	need    Rect
 	needing bool
+	ready   layerGeom
+}
+
+type layerGeom struct{ w, h, num, denom int }
+
+type heldBacking interface {
+	Holds(w, h int) bool
 }
 
 // Layer returns a layer the size and scale of c whose region (device
@@ -156,6 +163,51 @@ func (c *Canvas) Layer(old *Layer, region Rect) *Layer {
 	l.cv.ClearDevice(region, 0)
 	l.cv.clip = l.cv.Rect().Intersect(region)
 	return l
+}
+
+// ReuseLayer readies l to be composited again as it was last painted,
+// without clearing or repainting it, and reports whether it could: a
+// false return leaves l to Layer and a repaint. On a raster canvas l
+// must be live, not a scratch layer, and of c's stride, size and scale.
+// On a recording canvas the player that last readied l must still hold
+// its backing at c's size and scale; no call is recorded, so the List
+// composites l from that backing, and it is that player that is to
+// play the List.
+func (c *Canvas) ReuseLayer(l *Layer, region Rect) bool {
+	if l == nil || l.cv == nil || l.scratch {
+		return false
+	}
+	if c.rec != nil {
+		if l.cv.rec == nil || !l.holds(c.geom()) {
+			return false
+		}
+		l.cv.rec = c.rec
+		l.cv.resetFrame(c.w, c.h, c.num, c.denom)
+		l.cv.clip = l.cv.Rect().Intersect(region)
+		return true
+	}
+	if l.buf == nil || l.cv.rec != nil || len(l.buf) != c.stride*c.h || l.cv.stride != c.stride || l.cv.geom() != c.geom() {
+		return false
+	}
+	l.cv.alpha, l.cv.bright = 1, 0
+	l.cv.rescaleAlpha()
+	l.cv.clip = l.cv.Rect().Intersect(region)
+	return true
+}
+
+func (c *Canvas) geom() layerGeom { return layerGeom{c.w, c.h, c.num, c.denom} }
+
+func (l *Layer) holds(g layerGeom) bool {
+	if l.ready != g {
+		return false
+	}
+	switch b := l.backing.(type) {
+	case *Layer:
+		return b.buf != nil && b.cv.geom() == g
+	case heldBacking:
+		return b.Holds(g.w, g.h)
+	}
+	return false
 }
 
 // layerPixels holds the CPU layers' buffers off the Go heap: a layer is
@@ -193,9 +245,14 @@ func freeLayerPixels(s memory.Slice[byte]) {
 // Free hands l's buffer back now, for a layer its owner is done with
 // (a transition that landed): l must not be used after. Off the Go heap
 // a dropped layer's buffer otherwise waits for a collection, which its
-// own size no longer brings on. A layer over a canvas's pixels or a
-// recording has none to free.
+// own size no longer brings on. A layer over a canvas's pixels has none
+// to free; a recorded layer drops its backing, a raster one freed with
+// it.
 func (l *Layer) Free() {
+	if b, ok := l.backing.(*Layer); ok {
+		b.Free()
+	}
+	l.backing, l.ready = nil, layerGeom{}
 	if l.mem.s.Len() == 0 {
 		return
 	}

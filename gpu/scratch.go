@@ -252,6 +252,13 @@ func (ls *layerSurface) fits(w, h int) bool {
 	return ls.s.w >= w && ls.s.h >= h && ls.s.w*ls.s.h <= maxWaste*w*h
 }
 
+// Holds reports whether the surface still holds what its layer last
+// drew for a w x h target, for render.Canvas.ReuseLayer: not freed with
+// its device, nor readied since for another size.
+func (ls *layerSurface) Holds(w, h int) bool {
+	return ls.s.memory != 0 && ls.w == w && ls.h == h
+}
+
 // takeLayer backs l with a surface of at least w x h: the smallest that
 // fits in the pool for a scratch layer, else a new one freed with l, 1.5
 // times what have or the pool it replaces held along a side that grows,

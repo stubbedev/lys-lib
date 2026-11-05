@@ -321,6 +321,7 @@ func (c *Canvas) recordLayer(old *Layer, region Rect, scratch bool) *Layer {
 		l.cv.owner = l
 	}
 	l.scratch = scratch
+	l.ready = layerGeom{}
 	c.rec.scratchLayers = c.rec.scratchLayers || scratch
 	l.cv.rec = c.rec
 	l.cv.resetFrame(c.w, c.h, c.num, c.denom)
@@ -403,6 +404,7 @@ func (l *List) Play(p Player) {
 			p.FillPath(s, a.path, a.col)
 		case opLayer:
 			p.Layer(s, a.layer, a.r)
+			a.layer.ready = a.layer.cv.geom()
 		case opScratch:
 			p.ScratchLayer(s, a.layer, a.r)
 		case opSnapshot:
