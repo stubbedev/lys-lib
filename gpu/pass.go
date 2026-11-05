@@ -53,7 +53,7 @@ func (p *Pass) add(op passOp) {
 // passWork counts the commands the last recorded pass issued for its
 // draws.
 type passWork struct {
-	binds, pushes, scissors, draws, barriers int
+	binds, pushes, scissors, draws, barriers, clears, discards int
 }
 
 type opKind uint8
@@ -326,7 +326,9 @@ func (p *Pass) FillGoo(r image.Rectangle, c color.RGBA, g Goo) {
 // Kawase blur, sampling t linearly at offset source half-pixels from
 // each pixel: four diagonal taps around a centre weighted four (down,
 // for a target smaller than t) or eight taps around it (up, for a
-// larger one). KawaseAt mirrors it in Go.
+// larger one). KawaseAt mirrors it in Go. It replaces dst's pixels
+// rather than blending over them, so a level covering its whole target
+// needs no Clear and never reads what the target held.
 func (p *Pass) Kawase(t *Texture, dst image.Rectangle, offset float32, up bool) {
 	if !p.open("Kawase") || dst.Empty() {
 		return
@@ -359,7 +361,7 @@ func (p *Pass) Kawase(t *Texture, dst image.Rectangle, offset float32, up bool) 
 	}
 	dc := drawConstants{target: [4]float32{2: 1}, extra: [2][4]float32{{0, 0, 1, 0}, {0, 1, 1, 1}}}
 	dc.keep = [4]float32{0.5 / float32(t.w) * offset, 0.5 / float32(t.h) * offset, mode}
-	p.add(passOp{kind: opTexture, dst: dst, tex: t, set: set, pipe: p.ct.kawase, layout: p.d.comp.layout, dc: dc})
+	p.add(passOp{kind: opTexture, dst: dst, tex: t, set: set, pipe: p.ct.kawase, layout: p.d.comp.layout, dc: dc, opaque: true})
 }
 
 // DrawTexture blends src of t, scaled to dst and turned by tr, at
@@ -570,8 +572,14 @@ func (p *Pass) record(cb vk.CommandBuffer) {
 		bounds = bounds.Union(r)
 	}
 	d.passWork = passWork{}
-	for i := range p.ops {
-		op := &p.ops[i]
+	start, pass := p.overwritten(), ct.pass
+	if start >= 0 {
+		pass = ct.discard
+		d.passWork.discards++
+	}
+	ops := p.ops[max(start, 0):]
+	for i := range ops {
+		op := &ops[i]
 		if op.tex == nil || !p.touchesDamage(op.dst) {
 			continue
 		}
@@ -586,7 +594,7 @@ func (p *Pass) record(cb vk.CommandBuffer) {
 	}
 	s.to(cb, vk.ImageLayoutColorAttachmentOptimal)
 	area := rect2D(bounds)
-	d.args.passBegin = vk.RenderPassBeginInfo{SType: vk.StructureTypeRenderPassBeginInfo, RenderPass: ct.pass, Framebuffer: s.fb, RenderArea: area}
+	d.args.passBegin = vk.RenderPassBeginInfo{SType: vk.StructureTypeRenderPassBeginInfo, RenderPass: pass, Framebuffer: s.fb, RenderArea: area}
 	d.cmds.CmdBeginRenderPass(cb, &d.args.passBegin, vk.SubpassContentsInline)
 	d.args.viewport = vk.Viewport{Width: float32(s.w), Height: float32(s.h), MaxDepth: 1}
 	d.cmds.CmdSetViewport(cb, 0, 1, &d.args.viewport)
@@ -595,8 +603,8 @@ func (p *Pass) record(cb vk.CommandBuffer) {
 	boundOpaque := false
 	var set, colorBound vk.DescriptorSet
 	var scissor image.Rectangle
-	for i := range p.ops {
-		op := &p.ops[i]
+	for i := range ops {
+		op := &ops[i]
 		if op.kind == opClear {
 			p.clear(cb, op.dc.extra[0])
 			continue
@@ -647,6 +655,22 @@ func (p *Pass) record(cb vk.CommandBuffer) {
 	p.t.release(cb)
 }
 
+func (p *Pass) overwritten() int {
+	bounds, area := image.Rectangle{Max: p.t.Size()}, 0
+	for _, r := range p.damage {
+		area += r.Dx() * r.Dy()
+	}
+	if area != bounds.Dx()*bounds.Dy() {
+		return -1
+	}
+	for i, op := range slices.Backward(p.ops) {
+		if op.kind == opClear || op.opaque && bounds.In(op.dst) {
+			return i
+		}
+	}
+	return -1
+}
+
 func (p *Pass) touchesDamage(dst image.Rectangle) bool {
 	return slices.ContainsFunc(p.damage, dst.Overlaps)
 }
@@ -660,4 +684,5 @@ func (p *Pass) clear(cb vk.CommandBuffer, col [4]float32) {
 		a.clearRects = append(a.clearRects, vk.ClearRect{Rect: rect2D(r), LayerCount: 1})
 	}
 	p.d.cmds.CmdClearAttachments(cb, 1, &a.clear, count(a.clearRects), &a.clearRects[0])
+	p.d.passWork.clears++
 }

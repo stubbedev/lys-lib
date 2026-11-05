@@ -41,14 +41,14 @@ func (d *Device) createPipelines() error {
 // pass, so a frame's draws land over what the surface holds.
 func (d *Device) createPass() error {
 	var err error
-	d.pass, err = d.renderPass(surfaceFormat)
+	d.pass, err = d.renderPass(surfaceFormat, vk.AttachmentLoadOpLoad)
 	return err
 }
 
-func (d *Device) renderPass(format vk.Format) (vk.RenderPass, error) {
+func (d *Device) renderPass(format vk.Format, load vk.AttachmentLoadOp) (vk.RenderPass, error) {
 	att := vk.AttachmentDescription{
 		Format: format, Samples: vk.SampleCount1Bit,
-		LoadOp: vk.AttachmentLoadOpLoad, StoreOp: vk.AttachmentStoreOpStore,
+		LoadOp: load, StoreOp: vk.AttachmentStoreOpStore,
 		StencilLoadOp: vk.AttachmentLoadOpDontCare, StencilStoreOp: vk.AttachmentStoreOpDontCare,
 		InitialLayout: vk.ImageLayoutColorAttachmentOptimal, FinalLayout: vk.ImageLayoutColorAttachmentOptimal,
 	}

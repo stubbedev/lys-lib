@@ -423,3 +423,84 @@ func TestAMaskedOpaqueFillStillBlends(t *testing.T) {
 		t.Errorf("the rounded corner replaced the background: %v", got)
 	}
 }
+
+func TestAKawaseLevelOverwritesItsTargetWithoutClearOrLoad(t *testing.T) {
+	d := openDevice(t)
+	src, err := d.NewOffscreen(8, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer src.Close()
+	blue := color.RGBA{0, 0, 0x40, 0x80}
+	runPass(t, d, src, []image.Rectangle{{Max: src.Size()}}, func(p *Pass) { p.Clear(blue) })
+	tx, err := src.Texture()
+	if err != nil {
+		t.Fatal(err)
+	}
+	level, err := d.NewOffscreen(4, 4)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer level.Close()
+	all := []image.Rectangle{{Max: level.Size()}}
+	for _, c := range []struct {
+		name  string
+		clear bool
+	}{{"after a clear", true}, {"alone", false}} {
+		runPass(t, d, level, all, func(p *Pass) { p.Clear(color.RGBA{255, 0, 0, 255}) })
+		runPass(t, d, level, all, func(p *Pass) {
+			if c.clear {
+				p.Clear(color.RGBA{})
+			}
+			p.Kawase(tx, image.Rectangle{Max: level.Size()}, 1, false)
+		})
+		if err := d.Finish(); err != nil {
+			t.Fatal(err)
+		}
+		if d.passWork.clears != 0 || d.passWork.discards != 1 {
+			t.Errorf("a Kawase level %s recorded %+v, want no clear and a discarding render pass", c.name, d.passWork)
+		}
+		img := readTarget(t, level)
+		for y := range 4 {
+			for x := range 4 {
+				if got := img.RGBAAt(x, y); !within(got, blue, 1) {
+					t.Fatalf("a Kawase level %s: pixel %d,%d is %v, want %v", c.name, x, y, got, blue)
+				}
+			}
+		}
+	}
+}
+
+func TestAPassThatLeavesPixelsUndrawnLoadsTheTarget(t *testing.T) {
+	d := openDevice(t)
+	tg, err := d.NewOffscreen(8, 8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tg.Close()
+	red, white := color.RGBA{255, 0, 0, 255}, color.RGBA{255, 255, 255, 255}
+	runPass(t, d, tg, []image.Rectangle{{Max: tg.Size()}}, func(p *Pass) { p.Clear(red) })
+	for _, c := range []struct {
+		name   string
+		damage image.Rectangle
+		draw   func(p *Pass)
+	}{
+		{"a whole-target pass of a small fill", image.Rect(0, 0, 8, 8), func(p *Pass) { p.FillRect(image.Rect(0, 0, 4, 4), white, Mask{}) }},
+		{"a partial clear", image.Rect(0, 0, 4, 4), func(p *Pass) { p.Clear(white) }},
+	} {
+		runPass(t, d, tg, []image.Rectangle{c.damage}, c.draw)
+		if err := d.Finish(); err != nil {
+			t.Fatal(err)
+		}
+		if d.passWork.discards != 0 {
+			t.Errorf("%s discarded the target", c.name)
+		}
+		img := readTarget(t, tg)
+		if got := img.RGBAAt(6, 6); got != red {
+			t.Errorf("%s lost an undrawn pixel: %v", c.name, got)
+		}
+		if got := img.RGBAAt(1, 1); got != white {
+			t.Errorf("%s did not draw: %v", c.name, got)
+		}
+	}
+}

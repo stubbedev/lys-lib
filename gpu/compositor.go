@@ -36,7 +36,7 @@ const (
 )
 
 type compTarget struct {
-	pass                                vk.RenderPass
+	pass, discard                       vk.RenderPass
 	tex, fill, grad, kawase, goo, glass vk.Pipeline
 	colorTex, colorGrad, colorGlass     vk.Pipeline
 	// opaqueTex and opaqueFill draw tex's and fill's shaders with
@@ -124,13 +124,20 @@ func (d *Device) compTargetOf(format vk.Format) (*compTarget, error) {
 	}
 	ct := &compTarget{}
 	var err error
-	if ct.pass, err = d.renderPass(format); err != nil {
+	if ct.pass, err = d.renderPass(format, vk.AttachmentLoadOpLoad); err != nil {
+		ct.destroy(d)
+		return nil, err
+	}
+	if ct.discard, err = d.renderPass(format, vk.AttachmentLoadOpDontCare); err != nil {
 		ct.destroy(d)
 		return nil, err
 	}
 	for i, slot := range [5]*vk.Pipeline{&ct.tex, &ct.fill, &ct.grad, &ct.kawase, &ct.goo} {
-		modules := [2]vk.ShaderModule{c.vert, c.frags[i]}
-		build := func() (vk.Pipeline, error) { return d.graphicsPipeline(modules, c.layout, ct.pass, blendOver) }
+		modules, blend := [2]vk.ShaderModule{c.vert, c.frags[i]}, blendOver
+		if slot == &ct.kawase {
+			blend = blendNone
+		}
+		build := func() (vk.Pipeline, error) { return d.graphicsPipeline(modules, c.layout, ct.pass, blend) }
 		if _, err := d.lazyPipeline(pipelineKey{owner: ct, target: format, which: i}, 0, build, func(p vk.Pipeline) { *slot = p }); err != nil {
 			ct.destroy(d)
 			return nil, err
@@ -196,8 +203,10 @@ func (ct *compTarget) destroy(d *Device) {
 			d.cmds.DestroyPipeline(d.device, p, nil)
 		}
 	}
-	if ct.pass != 0 {
-		d.cmds.DestroyRenderPass(d.device, ct.pass, nil)
+	for _, rp := range [2]vk.RenderPass{ct.pass, ct.discard} {
+		if rp != 0 {
+			d.cmds.DestroyRenderPass(d.device, rp, nil)
+		}
 	}
 }
 

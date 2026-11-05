@@ -81,5 +81,6 @@ func (r *Readback) destroy() {
 func (d *Device) BlockingWaits() uint64 { return d.blockingWaits }
 
 // OpaqueRuns counts the runs of draws this device recorded with blending
-// off: opaque fills and opaque textures at full alpha, unmasked.
+// off: opaque fills, opaque textures at full alpha, unmasked, and Kawase
+// levels.
 func (d *Device) OpaqueRuns() uint64 { return d.opaqueRuns }
