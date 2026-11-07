@@ -917,3 +917,21 @@ func TestALayerOfAClosedDeviceIsNotReused(t *testing.T) {
 		t.Error("a layer of a closed device was reused")
 	}
 }
+
+// A draw that covers no pixel of its target (a layer composited off
+// the target, as a fully hidden Revealer composites its child)
+// records nothing: a render pass over no area is invalid.
+func TestADrawCoveringNothingIsDropped(t *testing.T) {
+	d := openDevice(t)
+	red := render.RGBA(220, 40, 50, 255)
+	kept := map[bool]*render.Layer{}
+	parity(t, d, 64, 48, 1, 1, 1, func(cv *render.Canvas, _ int) {
+		cv.Clear(cv.Rect(), render.RGBA(16, 18, 24, 255))
+		cv.FillRect(render.Rect{X: 40, Y: 20, W: 8, H: 8}, red)
+		region := render.Rect{X: 4, Y: 4, W: 20, H: 10}
+		l := cv.Layer(kept[cv.Recording() != nil], region)
+		kept[cv.Recording() != nil] = l
+		l.Canvas().FillRect(region, red)
+		cv.Composite(l, region, render.Translate(-200, 0), 1)
+	})
+}

@@ -258,11 +258,14 @@ func (f *frame) draw2(dst, tex, tex2 *surface, pp pipe, p prim) {
 			return
 		}
 	}
+	area := image.Rect(int(p.quad[0]), int(p.quad[1]), int(p.quad[2]), int(p.quad[3]))
+	if area.Intersect(image.Rect(0, 0, dst.w, dst.h)).Empty() {
+		return
+	}
 	if !f.roomFor(1, 0) {
 		return
 	}
 	f.prims = append(f.prims, p)
-	area := image.Rect(int(p.quad[0]), int(p.quad[1]), int(p.quad[2]), int(p.quad[3]))
 	if n := len(f.steps); n > 0 {
 		last := &f.steps[n-1]
 		if last.kind == stepDraw && last.dst == dst && last.pipe == pp && samplesJoin(last.tex, tex) && samplesJoin(last.tex2, tex2) {
