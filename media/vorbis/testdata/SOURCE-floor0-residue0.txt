@@ -1,0 +1,10 @@
+floor0-residue0.ogg is the start of beta3-test.ogg from the Xiph.Org Vorbis
+test vectors (an encoder of the libvorbis beta 3 era, the last to write
+floor type 0 and residue type 0), as mirrored in FFmpeg's FATE suite at
+rsync://fate-suite.ffmpeg.org/fate-suite/vorbis/beta3-test_small.ogg,
+cut at a page boundary with the last page flagged end of stream.
+
+Every *.pcm reference is libvorbis 1.3.7's decode of its .ogg (oggdec -R -b 16
+-e 0 -s 1, from vorbis-tools 1.4.3); surround-silent-channels.pcm keeps frames
+4400 to 5799 of it. The other .ogg files were encoded with oggenc 1.4.3
+(libvorbis 1.3.7) from ffmpeg lavfi signals.

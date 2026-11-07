@@ -146,6 +146,42 @@ func main() {
 }
 ```
 
+## media/vorbis
+
+`vorbis` is a pure-Go Ogg Vorbis decoder (Vorbis I) for the sounds freedesktop
+sound themes ship. `Decode` reads the first logical Vorbis stream of an Ogg file
+in one call and returns its sample rate, channel count and interleaved signed
+16-bit samples, the layout a PulseAudio sample cache upload or a playback stream
+takes. It covers the whole specification (floor types 0 and 1, residue types 0,
+1 and 2, coupling, any channel count), checks every page's CRC, and matches
+libvorbis to within one least significant bit. Invalid input fails with
+`ErrNotVorbis`, `ErrCorrupt` or `ErrTruncated`; the setup header's codebooks are
+bounded, so a hostile file cannot make it allocate without limit.
+
+```go
+package main
+
+import (
+	"fmt"
+	"log"
+	"os"
+
+	"github.com/stubbedev/lys-lib/media/vorbis"
+)
+
+func main() {
+	data, err := os.ReadFile("/run/current-system/sw/share/sounds/freedesktop/stereo/message-new-instant.oga")
+	if err != nil {
+		log.Fatal(err)
+	}
+	sound, err := vorbis.Decode(data)
+	if err != nil {
+		log.Fatal(err)
+	}
+	fmt.Println(sound.SampleRate, sound.Channels, sound.Frames())
+}
+```
+
 ## audiomix
 
 `audiomix.Mixer` sums sources of interleaved 16-bit PCM into frames, sample by

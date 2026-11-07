@@ -70,6 +70,7 @@ neither.
 | [`gpu.Encoder`](/media#video-encoding) | H.264 and H.265 hardware encoding |
 | [`media/mux`](/media#media-mux) | MP4 and Matroska muxing |
 | [`media/opus`](/media#media-opus) | The Opus encoder |
+| [`media/vorbis`](/media#media-vorbis) | The Ogg Vorbis decoder |
 | [`audiomix`](/media#audiomix) | Sums 16-bit PCM sources into one stream |
 | [`v4l2`](/media#v4l2) | Webcam capture |
 
