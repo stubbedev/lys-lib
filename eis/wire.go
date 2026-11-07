@@ -70,6 +70,7 @@ func (r *reader) str() string {
 // writer builds one message.
 type writer struct {
 	b   []byte
+	fds []int
 	err error
 }
 
@@ -82,7 +83,9 @@ func newMessage(object uint64, opcode uint32) *writer {
 
 func (w *writer) u32(v uint32) *writer  { w.b = order.AppendUint32(w.b, v); return w }
 func (w *writer) u64(v uint64) *writer  { w.b = order.AppendUint64(w.b, v); return w }
+func (w *writer) i32(v int32) *writer   { return w.u32(uint32(v)) } //nolint:gosec // the wire carries the two's complement bits
 func (w *writer) f32(v float32) *writer { return w.u32(math.Float32bits(v)) }
+func (w *writer) fd(fd int) *writer     { w.fds = append(w.fds, fd); return w }
 
 func (w *writer) str(s string) *writer {
 	n := len(s) + 1

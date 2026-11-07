@@ -82,10 +82,7 @@ func bind() (*Lib, error) {
 		return nil, err
 	}
 	l := &Lib{}
-	for _, f := range []struct {
-		fn   any
-		name string
-	}{
+	if err := bindSymbols(h, []symbol{
 		{&l.newSender, "ei_new_sender"},
 		{&l.configureName, "ei_configure_name"},
 		{&l.setupFd, "ei_setup_backend_fd"},
@@ -123,12 +120,8 @@ func bind() (*Lib, error) {
 		{&l.regionWidth, "ei_region_get_width"},
 		{&l.regionHeight, "ei_region_get_height"},
 		{&l.regionMapping, "ei_region_get_mapping_id"},
-	} {
-		sym, err := purego.Dlsym(h, f.name)
-		if err != nil {
-			return nil, fmt.Errorf("%s: %w", f.name, err)
-		}
-		purego.RegisterFunc(f.fn, sym)
+	}); err != nil {
+		return nil, err
 	}
 	if l.bindCaps, err = purego.Dlsym(h, "ei_seat_bind_capabilities"); err != nil {
 		return nil, err
@@ -291,4 +284,20 @@ func (l *Lib) Drive(t testing.TB, fd int, name string, caps []uintptr, want int,
 		time.Sleep(20 * time.Millisecond)
 	}
 	return got
+}
+
+type symbol struct {
+	fn   any
+	name string
+}
+
+func bindSymbols(h uintptr, symbols []symbol) error {
+	for _, s := range symbols {
+		sym, err := purego.Dlsym(h, s.name)
+		if err != nil {
+			return fmt.Errorf("%s: %w", s.name, err)
+		}
+		purego.RegisterFunc(s.fn, sym)
+	}
+	return nil
 }

@@ -130,28 +130,15 @@ func Pair(h Handler, seat string, regions []Region) (*os.File, error) {
 	if err := checkRegions(regions); err != nil {
 		return nil, err
 	}
-	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM|syscall.SOCK_CLOEXEC, 0)
+	conn, client, err := socketPair()
 	if err != nil {
-		return nil, fmt.Errorf("eis: socketpair: %w", err)
-	}
-	server := os.NewFile(uintptr(fds[0]), "eis-server")
-	conn, err := net.FileConn(server)
-	_ = server.Close()
-	if err != nil {
-		_ = syscall.Close(fds[1])
-		return nil, fmt.Errorf("eis: %w", err)
-	}
-	unix, ok := conn.(*net.UnixConn)
-	if !ok {
-		_ = conn.Close()
-		_ = syscall.Close(fds[1])
-		return nil, errors.New("eis: the socket pair is not a unix connection")
+		return nil, err
 	}
 	go func() {
-		defer func() { _ = unix.Close() }()
-		_ = Serve(unix, h, seat, regions)
+		defer func() { _ = conn.Close() }()
+		_ = Serve(conn, h, seat, regions)
 	}()
-	return os.NewFile(uintptr(fds[1]), "eis-client"), nil
+	return client, nil
 }
 
 // server is one connection's state.
@@ -159,15 +146,18 @@ type server struct {
 	conn *net.UnixConn
 	h    Handler
 	// seatName names the seat, and its devices after it.
-	seatName   string
-	regions    []Region
-	objects    map[uint64]string
-	negotiated map[string]uint32
-	nextID     uint64
-	serial     uint32
-	connection uint64
-	seat       uint64
-	bound      bool
+	seatName     string
+	regions      []Region
+	objects      map[uint64]string
+	negotiated   map[string]uint32
+	nextID       uint64
+	serial       uint32
+	connection   uint64
+	seat         uint64
+	bound        bool
+	want, client contextType
+	keymap       *keymap
+	devices      []device
 	// touches are the touch points down inside a region.
 	touches map[uint32]struct{}
 }
@@ -186,8 +176,12 @@ func Serve(conn *net.UnixConn, h Handler, seat string, regions []Region) error {
 	}
 	s := &server{
 		conn: conn, h: h, seatName: seat, regions: regions, objects: map[uint64]string{0: ifHandshake},
-		negotiated: map[string]uint32{}, nextID: serverIDBase, touches: map[uint32]struct{}{},
+		negotiated: map[string]uint32{}, nextID: serverIDBase, touches: map[uint32]struct{}{}, want: contextSender, client: contextReceiver,
 	}
+	return s.run(s.dispatch)
+}
+
+func (s *server) run(dispatch func(message) (bool, error)) error {
 	// The server opens with its handshake version.
 	if err := s.send(newMessage(0, 0).u32(1)); err != nil {
 		return err
@@ -196,7 +190,7 @@ func Serve(conn *net.UnixConn, h Handler, seat string, regions []Region) error {
 	chunk := make([]byte, 4096)
 	oob := make([]byte, syscall.CmsgSpace(4*16))
 	for {
-		n, oobn, _, _, err := conn.ReadMsgUnix(chunk, oob)
+		n, oobn, _, _, err := s.conn.ReadMsgUnix(chunk, oob)
 		closeFds(oob[:oobn]) // nothing this server receives carries one
 		if err != nil {
 			if errors.Is(err, io.EOF) {
@@ -213,7 +207,7 @@ func Serve(conn *net.UnixConn, h Handler, seat string, regions []Region) error {
 			return err
 		}
 		for _, m := range msgs {
-			done, err := s.dispatch(m)
+			done, err := dispatch(m)
 			if err != nil || done {
 				return err
 			}
@@ -249,6 +243,10 @@ func (s *server) send(w *writer) error {
 	b := w.bytes()
 	if w.err != nil {
 		return w.err
+	}
+	if len(w.fds) > 0 {
+		_, _, err := s.conn.WriteMsgUnix(b, syscall.UnixRights(w.fds...), nil)
+		return err
 	}
 	_, err := s.conn.Write(b)
 	return err
@@ -402,7 +400,12 @@ func (s *server) handshake(opcode uint32, r *reader) error {
 		if ours, ok := supported[name]; ok && r.err == nil {
 			s.negotiated[name] = min(version, ours)
 		}
+	case 2:
+		s.client = contextType(r.u32())
 	case 1: // finish
+		if s.client != s.want {
+			return fmt.Errorf("eis: a %s client connected where a %s was served", s.client, s.want)
+		}
 		for _, name := range []string{ifConnection, ifCallback, ifPingpong} {
 			if _, ok := s.negotiated[name]; !ok {
 				return fmt.Errorf("eis: the client did not negotiate %s", name)
@@ -420,7 +423,7 @@ func (s *server) handshake(opcode uint32, r *reader) error {
 		delete(s.objects, 0)
 		return s.addSeat()
 	}
-	// handshake_version, context_type and name need no answer.
+	// handshake_version and name need no answer.
 	return nil
 }
 
@@ -499,27 +502,33 @@ func (s *server) addDevice(name string, ifaces []string, absolute bool) error {
 	if !ok {
 		return nil
 	}
-	dev := s.newObject(ifDevice)
+	dev := device{id: s.newObject(ifDevice), name: name, ifaces: map[string]uint64{}}
 	msgs := []*writer{
-		newMessage(s.seat, 4).u64(dev).u32(v),
-		newMessage(dev, 1).str(name),
-		newMessage(dev, 2).u32(deviceTypeVirtual),
+		newMessage(s.seat, 4).u64(dev.id).u32(v),
+		newMessage(dev.id, 1).str(name),
+		newMessage(dev.id, 2).u32(deviceTypeVirtual),
 	}
 	for _, r := range s.regions {
 		if !absolute {
 			break
 		}
 		if r.MappingID != "" && v >= 2 {
-			msgs = append(msgs, newMessage(dev, 12).str(r.MappingID))
+			msgs = append(msgs, newMessage(dev.id, 12).str(r.MappingID))
 		}
-		msgs = append(msgs, newMessage(dev, 4).u32(r.X).u32(r.Y).u32(r.Width).u32(r.Height).f32(r.Scale))
+		msgs = append(msgs, newMessage(dev.id, 4).u32(r.X).u32(r.Y).u32(r.Width).u32(r.Height).f32(r.Scale))
 	}
 	for _, iface := range ifaces {
 		if iv, ok := s.negotiated[iface]; ok {
-			msgs = append(msgs, newMessage(dev, 5).u64(s.newObject(iface)).str(iface).u32(iv))
+			id := s.newObject(iface)
+			dev.ifaces[iface] = id
+			msgs = append(msgs, newMessage(dev.id, 5).u64(id).str(iface).u32(iv))
+			if iface == ifKeyboard && s.keymap != nil {
+				msgs = append(msgs, s.keymap.message(id))
+			}
 		}
 	}
-	msgs = append(msgs, newMessage(dev, 6), newMessage(dev, 7).u32(s.nextSerial()))
+	msgs = append(msgs, newMessage(dev.id, 6), newMessage(dev.id, 7).u32(s.nextSerial()))
+	s.devices = append(s.devices, dev)
 	for _, m := range msgs {
 		if err := s.send(m); err != nil {
 			return err
