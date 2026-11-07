@@ -78,7 +78,7 @@ func TestTheConsumerReadsTheCursorMeta(t *testing.T) {
 		if b.Cursor == nil || b.Cursor.X != 9 {
 			continue
 		}
-		if b.Size != 0 || !b.Corrupted || b.Cursor.Y != 10 || b.Cursor.Bitmap != nil {
+		if b.Size != 0 || !b.Corrupted || b.Cursor.Y != 10 || b.Cursor.Bitmap != nil || b.Seq <= first.Seq {
 			t.Fatalf("the move came as %+v cursor %+v", b, b.Cursor)
 		}
 		return

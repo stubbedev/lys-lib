@@ -14,8 +14,8 @@ import (
 )
 
 // Consumer is a reference consumer: a libpipewire input stream, linked
-// to a node's first output port, asking for the cursor meta as screen
-// recorders do, and reporting every buffer it dequeues.
+// to a node's first output port, asking for the header and cursor metas
+// as screen recorders do, and reporting every buffer it dequeues.
 type Consumer struct {
 	buffers chan Buffer
 }
@@ -26,6 +26,9 @@ type Buffer struct {
 	Size uint32
 	// Corrupted is the chunk's SPA_CHUNK_FLAG_CORRUPTED.
 	Corrupted bool
+	// Seq is the header meta's sequence number: a buffer dequeued again
+	// without the producer queueing it anew carries the same one.
+	Seq uint64
 	// Cursor is the cursor meta, nil when the buffers have none.
 	Cursor *Cursor
 }
@@ -100,6 +103,14 @@ type spaChunk struct {
 	flags   int32
 }
 
+// spaMetaHeader mirrors struct spa_meta_header.
+type spaMetaHeader struct {
+	_, _ uint32
+	_    int64
+	_    int64
+	seq  uint64
+}
+
 // spaMetaCursor and spaMetaBitmap mirror struct spa_meta_cursor and
 // struct spa_meta_bitmap.
 type spaMetaCursor struct {
@@ -116,6 +127,7 @@ type spaMetaBitmap struct {
 }
 
 const (
+	metaHeader         = 1
 	metaCursor         = 5
 	chunkFlagCorrupted = 1
 	paramFormat        = 4
@@ -188,13 +200,13 @@ func state(handle uintptr) *consumerState {
 }
 
 // paramChanged is the consumers' pw_stream_events.param_changed: once a
-// format is set, it asks for the cursor meta.
+// format is set, it asks for the header and cursor metas.
 func paramChanged(handle uintptr, id uint32, param unsafe.Pointer) {
 	st := state(handle)
 	if st == nil || param == nil || id != paramFormat {
 		return
 	}
-	WithPods([][]byte{cursorMeta()}, func(params unsafe.Pointer, n uint32) int32 {
+	WithPods([][]byte{headerMeta(), cursorMeta()}, func(params unsafe.Pointer, n uint32) int32 {
 		return st.lib.StreamUpdate(st.stream, params, n)
 	})
 }
@@ -214,7 +226,10 @@ func process(handle uintptr) {
 	chunk := buf.datas.chunk
 	got := Buffer{Size: chunk.size, Corrupted: chunk.flags&chunkFlagCorrupted != 0}
 	for _, m := range unsafe.Slice(buf.metas, buf.nMetas) { //nolint:gosec // the metas libpipewire laid out
-		if m.typ == metaCursor {
+		switch m.typ {
+		case metaHeader:
+			got.Seq = (*spaMetaHeader)(m.data).seq
+		case metaCursor:
 			got.Cursor = readCursor(m)
 		}
 	}
@@ -334,6 +349,15 @@ func anyBGRx() []byte {
 	w.prop(keySize, typeChoice, rangeOf(typeRectangle, 8, 640, 480, 1, 1, 8192, 8192))
 	w.prop(keyRate, typeChoice, rangeOf(typeFraction, 8, 30, 1, 0, 1, 1000, 1))
 	return w.object(objectFormat, paramEnumFormat)
+}
+
+// headerMeta is a Meta param pod asking for the header meta.
+func headerMeta() []byte {
+	const objectParamMeta, paramMeta, keyType, keySize, size = 0x40005, 6, 1, 2, 32
+	var w podWriter
+	w.prop(keyType, typeID, words(metaHeader))
+	w.prop(keySize, typeInt, words(size))
+	return w.object(objectParamMeta, paramMeta)
 }
 
 // cursorMeta is a Meta param pod asking for the cursor meta with room for
