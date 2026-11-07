@@ -225,6 +225,11 @@ func (c Config) validate() error {
 // NodeID is the node the consumer connects to.
 func (p *Producer) NodeID() uint32 { return p.n.global }
 
+// Serial is the node's object.serial, which a consumer targets
+// (PW_KEY_TARGET_OBJECT) instead of NodeID: ids are reused once a
+// node goes, serials never are.
+func (p *Producer) Serial() uint64 { return p.n.objectSerial }
+
 // Done is closed once the stream has ended: closed, or cut off by the
 // server (Err says why).
 func (p *Producer) Done() <-chan struct{} { return p.done }

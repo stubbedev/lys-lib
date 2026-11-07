@@ -382,13 +382,13 @@ func (k *core) coreEvent(m *message) error {
 	case coreEventBoundID:
 		id, global := f.uint(), f.uint()
 		if f.err == nil {
-			err = k.bound(id, global)
+			err = k.bound(id, global, nil)
 		}
 	case coreEventBoundProps:
 		id, global := f.uint(), f.uint()
-		f.dict()
+		props := f.dict()
 		if f.err == nil {
-			err = k.bound(id, global)
+			err = k.bound(id, global, props)
 		}
 	case coreEventAddMem:
 		id, _, index, flags := f.uint(), f.id(), f.fd(), f.uint()
@@ -433,12 +433,13 @@ func (k *core) info(f *podIter) error {
 	return nil
 }
 
-// boundHandler is an object that learns its global id.
+// boundHandler is an object that learns its global id and the
+// global's properties, which bound_id does not carry.
 type boundHandler interface {
-	bound(global uint32)
+	bound(global uint32, props []dictItem) error
 }
 
-func (k *core) bound(id, global uint32) error {
+func (k *core) bound(id, global uint32, props []dictItem) error {
 	if id == clientID {
 		return nil
 	}
@@ -446,8 +447,7 @@ func (k *core) bound(id, global uint32) error {
 	if !ok {
 		return fmt.Errorf("pipewire: global %d bound to object %d, which takes none", global, id)
 	}
-	b.bound(global)
-	return nil
+	return b.bound(global, props)
 }
 
 // close stops the loop and releases the connection and the shared

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"slices"
+	"strconv"
 	"sync"
 	"time"
 
@@ -156,11 +157,12 @@ type node struct {
 	props     []dictItem
 	portFlags uint64
 
-	id       uint32
-	global   uint32
-	exported chan struct{}
-	isBound  bool
-	hasXport bool
+	id           uint32
+	global       uint32
+	objectSerial uint64
+	exported     chan struct{}
+	isBound      bool
+	hasXport     bool
 
 	portMu sync.Mutex
 	infos  []portParam
@@ -323,10 +325,29 @@ func podsEqual(a, b [][]byte) bool {
 // markPortChanged has the port's params sent again after the cycle.
 func (n *node) markPortChanged() { n.portDirty = true }
 
-func (n *node) bound(global uint32) {
-	n.global = global
+func (n *node) bound(global uint32, props []dictItem) error {
+	serial, err := objectSerial(props)
+	if err != nil {
+		return fmt.Errorf("pipewire: node %d bound to global %d: %w", n.id, global, err)
+	}
+	n.global, n.objectSerial = global, serial
 	n.isBound = true
 	n.checkExported()
+	return nil
+}
+
+// objectSerial is the global's object.serial, which unlike its id is
+// never reused by a later global.
+func objectSerial(props []dictItem) (uint64, error) {
+	i := slices.IndexFunc(props, func(d dictItem) bool { return d.key == "object.serial" })
+	if i < 0 {
+		return 0, errors.New("the bound properties carry no object.serial")
+	}
+	serial, err := strconv.ParseUint(props[i].value, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("object.serial %q: %w", props[i].value, err)
+	}
+	return serial, nil
 }
 
 func (n *node) checkExported() {

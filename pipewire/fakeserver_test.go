@@ -4,6 +4,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -124,6 +125,9 @@ func (s *fakeServer) done(seq int32) {
 // fakeNodeID is the global id the fake server gives the node.
 const fakeNodeID = 42
 
+// fakeNodeSerial is the object.serial the fake server gives the node.
+const fakeNodeSerial = 4242
+
 // createNode takes the node's creation and its first updates.
 func (s *fakeServer) createNode() {
 	s.t.Helper()
@@ -171,7 +175,7 @@ func (s *fakeServer) transport(version uint32) {
 		s.t.Fatal(err)
 	}
 	s.event(coreID, coreEventAddMem, podStruct(podInt(0), podID(dataMemFd), podFd(0), podInt(memFlagReadable|memFlagWritable)), fd)
-	s.event(coreID, coreEventBoundProps, podStruct(podInt(firstObjectID), podInt(fakeNodeID), podDict(nil)))
+	s.event(coreID, coreEventBoundProps, podStruct(podInt(firstObjectID), podInt(fakeNodeID), podDict([]dictItem{{"object.serial", strconv.Itoa(fakeNodeSerial)}})))
 	s.event(firstObjectID, nodeEventTransport, podStruct(podFd(0), podFd(1), podInt(0), podInt(0), podInt(2312)), rd, wr)
 	for _, f := range []int{fd, rd, wr} {
 		_ = unix.Close(f)
@@ -212,7 +216,7 @@ func TestStartReportsTheServerRefusingTheNode(t *testing.T) {
 		s.createNode()
 		s.exportNode()
 	})
-	if ok.err != nil || ok.p.NodeID() != fakeNodeID {
+	if ok.err != nil || ok.p.NodeID() != fakeNodeID || ok.p.Serial() != fakeNodeSerial {
 		t.Fatalf("an accepting server: %v", ok.err)
 	}
 
@@ -385,5 +389,18 @@ func TestStartNamesTheClientAndNodeFromItsConfig(t *testing.T) {
 		if v, ok := dictValue(s.nodeProps, key); v != testNode {
 			t.Errorf("%s %q (present %v), want %q", key, v, ok, testNode)
 		}
+	}
+}
+
+// A node bound without an object.serial fails Start: its consumers
+// would have only the reusable id to target.
+func TestStartRefusesANodeBoundWithoutASerial(t *testing.T) {
+	_, r := startAgainst(t, func(s *fakeServer) {
+		s.handshake("1.6.9")
+		s.createNode()
+		s.event(coreID, coreEventBoundProps, podStruct(podInt(firstObjectID), podInt(fakeNodeID), podDict([]dictItem{{"object.id", "42"}})))
+	})
+	if want := "pipewire: export the stream node: pipewire: node 2 bound to global 42: the bound properties carry no object.serial"; r.p != nil || r.err == nil || r.err.Error() != want {
+		t.Fatalf("Start = %v, want %q", r.err, want)
 	}
 }
