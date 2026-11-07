@@ -2,6 +2,7 @@ package dbusx_test
 
 import (
 	"context"
+	"slices"
 	"testing"
 	"time"
 
@@ -19,7 +20,8 @@ func TestWatchOwnerSeesALateService(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	appeared := make(chan struct{}, 8)
-	if err := dbusx.WatchOwner(ctx, client, "dev.stubbe.lys.Late", func() { appeared <- struct{}{} }); err != nil {
+	stop, err := dbusx.WatchOwner(ctx, client, "dev.stubbe.lys.Late", func() { appeared <- struct{}{} })
+	if err != nil {
 		t.Fatal(err)
 	}
 	expect := func(want bool, what string) {
@@ -57,9 +59,50 @@ func TestWatchOwnerSeesALateService(t *testing.T) {
 	expect(false, "the service stopping again")
 
 	cancel()
-	time.Sleep(50 * time.Millisecond)
+	if err := stop(); err != nil {
+		t.Fatalf("stop after ctx ended: %v", err)
+	}
+	if rules := dbustest.MatchRules(t, client); len(rules) != 0 {
+		t.Fatalf("the ended watch left the match rules %q", rules)
+	}
 	own("dev.stubbe.lys.Late")
 	expect(false, "the service starting after the watch ended")
+}
+
+// stop removes the watch's match rule from a connection others share
+// before it returns, leaving their rules as they were; a second stop
+// does nothing more.
+func TestStoppingAWatchLeavesTheConnectionAsItWas(t *testing.T) {
+	bus := dbustest.Start(t)
+	client := bus.Conn(t)
+	other := []dbus.MatchOption{dbus.WithMatchInterface("dev.stubbe.lys.Other")}
+	if err := client.AddMatchSignal(other...); err != nil {
+		t.Fatal(err)
+	}
+	before := dbustest.MatchRules(t, client)
+	stop, err := dbusx.WatchOwner(context.Background(), client, "dev.stubbe.lys.Late", func() { t.Error("appeared ran") })
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := dbustest.MatchRules(t, client); len(got) != len(before)+1 {
+		t.Fatalf("the watch holds %q, want one rule more than %q", got, before)
+	}
+	for range 2 {
+		if err := stop(); err != nil {
+			t.Fatal(err)
+		}
+		if got := dbustest.MatchRules(t, client); !slices.Equal(got, before) {
+			t.Fatalf("after stop the connection holds %q, want %q", got, before)
+		}
+	}
+	stopped, err := dbusx.WatchOwner(context.Background(), client, "dev.stubbe.lys.Late", func() {})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = client.Close()
+	if err := stopped(); err == nil {
+		t.Error("stop on a closed connection reported no error")
+	}
 }
 
 func TestNameOwnerIsTheUniqueName(t *testing.T) {

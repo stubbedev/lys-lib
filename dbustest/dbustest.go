@@ -187,3 +187,15 @@ func SessionConn(t testing.TB) *dbus.Conn {
 	t.Cleanup(func() { _ = conn.Close() })
 	return conn
 }
+
+// MatchRules are the match rules the bus holds for conn, as the bus
+// prints them (org.freedesktop.DBus.Debug.Stats): what a test reads to
+// see that a watch left a shared connection as it found it.
+func MatchRules(t testing.TB, conn *dbus.Conn) []string {
+	t.Helper()
+	var all map[string][]string
+	if err := conn.BusObject().Call("org.freedesktop.DBus.Debug.Stats.GetAllMatchRules", 0).Store(&all); err != nil {
+		t.Fatalf("dbustest: match rules of %v: %v", conn.Names(), err)
+	}
+	return all[conn.Names()[0]]
+}

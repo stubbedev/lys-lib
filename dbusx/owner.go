@@ -3,6 +3,7 @@ package dbusx
 import (
 	"context"
 	"fmt"
+	"time"
 
 	dbus "github.com/stubbedev/lys-lib/third_party/godbus"
 )
@@ -43,21 +44,41 @@ func NameOwnerChange(sig *dbus.Signal, name string) (oldOwner, newOwner string, 
 	return oldOwner, newOwner, true
 }
 
-// WatchOwner runs appeared, on a goroutine of its own, each time name
-// gains an owner on conn, until ctx ends: a service that starts (or
-// restarts) after its client did.
-func WatchOwner(ctx context.Context, conn *dbus.Conn, name string, appeared func()) error {
+// unwatchTimeout bounds removing a watch's match rule, which runs once
+// the watch's context has ended.
+const unwatchTimeout = 5 * time.Second
+
+// WatchOwner runs appeared, on the watch's goroutine, each time name
+// gains an owner on conn: a service that starts (or restarts) after its
+// client did. The watch holds a match rule and a signal channel on conn
+// until ctx ends or stop is called, whichever comes first, and then
+// removes both, so a connection shared with others is left as it was.
+// stop returns once they are gone, with the error removing the rule
+// met; calling it again, or after ctx ended, waits for the same removal
+// and reports the same error. stop must not be called from appeared.
+func WatchOwner(ctx context.Context, conn *dbus.Conn, name string, appeared func()) (stop func() error, err error) {
+	match := OwnerMatch(name)
+	if err := conn.AddMatchSignalContext(ctx, match...); err != nil {
+		return nil, fmt.Errorf("watch %s: %w", name, err)
+	}
 	signals := make(chan *dbus.Signal, 16)
 	conn.Signal(signals)
-	if err := conn.AddMatchSignalContext(ctx, OwnerMatch(name)...); err != nil {
-		conn.RemoveSignal(signals)
-		return fmt.Errorf("watch %s: %w", name, err)
-	}
+	watch, cancel := context.WithCancel(ctx)
+	done := make(chan struct{})
+	var unwatchErr error
 	go func() {
-		defer conn.RemoveSignal(signals)
+		defer close(done)
+		defer func() {
+			conn.RemoveSignal(signals)
+			unwatch, cancelUnwatch := context.WithTimeout(context.WithoutCancel(ctx), unwatchTimeout)
+			defer cancelUnwatch()
+			if err := conn.RemoveMatchSignalContext(unwatch, match...); err != nil {
+				unwatchErr = fmt.Errorf("stop watching %s: %w", name, err)
+			}
+		}()
 		for {
 			select {
-			case <-ctx.Done():
+			case <-watch.Done():
 				return
 			case sig, ok := <-signals:
 				if !ok {
@@ -69,5 +90,9 @@ func WatchOwner(ctx context.Context, conn *dbus.Conn, name string, appeared func
 			}
 		}
 	}()
-	return nil
+	return func() error {
+		cancel()
+		<-done
+		return unwatchErr
+	}, nil
 }
