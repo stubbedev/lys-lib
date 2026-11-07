@@ -53,7 +53,7 @@ func wordCluster(rs []rune, start int) bool { return IsWordRune(rs[start]) }
 func WordBoundaries(rs []rune) []bool {
 	b := make([]bool, len(rs)+1)
 	b[0] = true
-	starts := clusterStarts(rs)
+	starts := ClusterStarts(rs)
 	for k := 1; k+1 < len(starts); k++ {
 		if wordCluster(rs, starts[k-1]) != wordCluster(rs, starts[k]) {
 			b[starts[k]] = true
@@ -70,7 +70,7 @@ func WordBoundaries(rs []rune) []bool {
 // [0, len(rs)]; the slice start is returned unchanged, so a caret at 0
 // stays put.
 func WordStart(rs []rune, at int) int {
-	starts := clusterStarts(rs)
+	starts := ClusterStarts(rs)
 	k := clusterIndex(starts, min(max(at, 0), len(rs)))
 	for k > 0 && !wordCluster(rs, starts[k-1]) {
 		k--
@@ -87,7 +87,7 @@ func WordStart(rs []rune, at int) int {
 // cluster-wise. at is clamped into [0, len(rs)]; the slice end is
 // returned unchanged, so a caret at the end stays put.
 func WordEnd(rs []rune, at int) int {
-	starts := clusterStarts(rs)
+	starts := ClusterStarts(rs)
 	k := clusterIndex(starts, min(max(at, 0), len(rs)))
 	for k < len(starts)-1 && !wordCluster(rs, starts[k]) {
 		k++
@@ -108,7 +108,7 @@ func WordRun(rs []rune, at int) (start, end int) {
 	if len(rs) == 0 {
 		return 0, 0
 	}
-	starts := clusterStarts(rs)
+	starts := ClusterStarts(rs)
 	last := len(starts) - 2
 	k := clusterIndex(starts, min(max(at, 0), len(rs)-1))
 	class := wordCluster(rs, starts[k])

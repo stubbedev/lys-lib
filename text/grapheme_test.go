@@ -31,9 +31,9 @@ func TestClusterStarts(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			got := clusterStarts([]rune(tt.in))
+			got := ClusterStarts([]rune(tt.in))
 			if !reflect.DeepEqual(got, tt.want) {
-				t.Errorf("clusterStarts(%q) = %v, want %v", tt.in, got, tt.want)
+				t.Errorf("ClusterStarts(%q) = %v, want %v", tt.in, got, tt.want)
 			}
 			if n := uniseg.GraphemeClusterCount(tt.in); n != len(tt.want)-1 {
 				t.Errorf("sanity: uniseg sees %d clusters in %q, want %d", n, tt.in, len(tt.want)-1)
@@ -92,7 +92,7 @@ func TestClusterStepping(t *testing.T) {
 }
 
 func isClusterStart(rs []rune, at int) bool {
-	return slices.Contains(clusterStarts(rs), at)
+	return slices.Contains(ClusterStarts(rs), at)
 }
 
 func TestContinuesCluster(t *testing.T) {

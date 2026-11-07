@@ -24,11 +24,13 @@ import (
 	"github.com/rivo/uniseg"
 )
 
-// clusterStarts returns the rune indexes where the grapheme clusters of
+// ClusterStarts returns the rune indexes where the grapheme clusters of
 // rs begin: element 0 is 0, the last element is len(rs), so c clusters
 // come back as c+1 boundaries. Segmenter state chains across the whole
-// slice, which regional-indicator pairs and ZWJ joins need.
-func clusterStarts(rs []rune) []int {
+// slice, which regional-indicator pairs and ZWJ joins need. It is one
+// pass: a caller stepping over every cluster (wrapping a long word)
+// takes these boundaries once, where NextCluster segments rs per call.
+func ClusterStarts(rs []rune) []int {
 	starts := make([]int, 1, len(rs)+1)
 	s := string(rs)
 	state := -1
@@ -41,7 +43,7 @@ func clusterStarts(rs []rune) []int {
 	return starts
 }
 
-// clusterIndex returns the index into a clusterStarts table of the
+// clusterIndex returns the index into a ClusterStarts table of the
 // cluster containing at: its start boundary is starts[k] <= at.
 func clusterIndex(starts []int, at int) int {
 	i, found := slices.BinarySearch(starts, at)
@@ -58,7 +60,7 @@ func ClusterRun(rs []rune, at int) (start, end int) {
 	if len(rs) == 0 {
 		return 0, 0
 	}
-	starts := clusterStarts(rs)
+	starts := ClusterStarts(rs)
 	k := clusterIndex(starts, min(max(at, 0), len(rs)-1))
 	return starts[k], starts[k+1]
 }

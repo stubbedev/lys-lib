@@ -264,7 +264,7 @@ func (c *bidiLRU) put(key bidiKey, val resolution, cost int) {
 // stays logical: callers move within this sequence and keep the rune
 // indexes it hands back.
 func VisualOrder(rs []rune, runs []Run) []int {
-	starts := clusterStarts(rs)
+	starts := ClusterStarts(rs)
 	order := make([]int, 0, len(starts))
 	emitted := make([]bool, len(starts))
 	emit := func(k int) {
@@ -327,7 +327,7 @@ func VisualWordStep(rs []rune, order []int, at, delta int) int {
 	if i < 0 {
 		return at
 	}
-	starts := clusterStarts(rs)
+	starts := ClusterStarts(rs)
 	word := func(b int) bool { return IsWordRune(rs[starts[clusterIndex(starts, b)]]) }
 	// A word ends at b when the cluster before it is a word and the
 	// one at it is not (or b is the slice end); starts mirrors it.
