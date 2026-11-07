@@ -1,6 +1,6 @@
-// Package vinput injects pointer and keyboard input into the
-// compositor through zwlr_virtual_pointer_v1 and
-// zwp_virtual_keyboard_v1, on a private Wayland connection: the input
+// Package vinput injects pointer, keyboard and touch input into the
+// compositor through zwlr_virtual_pointer_v1, zwp_virtual_keyboard_v1
+// and lys_virtual_touch_v1, on a private Wayland connection: the input
 // half of a remote-desktop bridge, and of lys-ui's own headless test
 // harness. The seat's keymap is relayed to the virtual keyboard, so
 // key codes mean what they mean on the real keyboard.
@@ -27,6 +27,9 @@ type Options struct {
 	// Keyboard arms the virtual keyboard too; a pointer-only device
 	// is the shape of a seat whose input devices are pointers only.
 	Keyboard bool
+	// Touch arms a virtual touchscreen spanning the output layout, which
+	// only a compositor serving lys_virtual_touch_manager_v1 offers.
+	Touch bool
 	// FallbackKeymap is xkb_v1 text uploaded when the seat announces
 	// none (a virtual-only seat, a headless compositor): the protocol
 	// refuses key events before any keymap is set.
@@ -48,6 +51,7 @@ type Device struct {
 	vpMgr *wlr.ZwlrVirtualPointerManagerV1
 	vp    *wlr.ZwlrVirtualPointerV1
 	vk    *wlr.ZwpKeyboardV1
+	vt    *wlr.LysVirtualTouchV1
 
 	start        time.Time
 	outW, outH   int32
@@ -87,6 +91,9 @@ func Dial(display string, opts Options) (*Device, error) {
 	if g.seat == 0 || g.vp == 0 || (opts.Keyboard && g.vkm == 0) {
 		return fail(errors.New("vinput: compositor lacks wl_seat, zwlr_virtual_pointer_manager_v1 or zwp_virtual_keyboard_manager_v1"))
 	}
+	if opts.Touch && g.vt == 0 {
+		return fail(ErrNoTouch)
+	}
 	v.seat = wlclient.RegistryBindSeatInterface(reg, g.seat, 5)
 	wlclient.SeatAddListener(v.seat, g)
 	if g.out != 0 {
@@ -99,6 +106,18 @@ func Dial(display string, opts Options) (*Device, error) {
 	}
 	if v.vp, err = v.vpMgr.CreateVirtualPointer(v.seat); err != nil {
 		return fail(err)
+	}
+	if opts.Touch {
+		vtMgr := wlr.NewLysVirtualTouchManagerV1(v.ctx)
+		if err := reg.Bind(g.vt, "lys_virtual_touch_manager_v1", 1, vtMgr); err != nil {
+			return fail(err)
+		}
+		if v.vt, err = vtMgr.CreateVirtualTouch(v.seat); err != nil {
+			return fail(err)
+		}
+		if err := vtMgr.Destroy(); err != nil {
+			return fail(err)
+		}
 	}
 	if !opts.Keyboard {
 		if err := v.roundtrip(); err != nil {
@@ -314,6 +333,47 @@ func (v *Device) Modifiers(depressed, latched, locked, group uint32) error {
 	return v.vk.Modifiers(depressed, latched, locked, group)
 }
 
+// ErrNoTouch is Dial's refusal of Options.Touch on a compositor that
+// serves no lys_virtual_touch_manager_v1.
+var ErrNoTouch = errors.New("vinput: compositor lacks lys_virtual_touch_manager_v1, so no virtual touchscreen")
+
+// touch runs one touch request and ends its frame.
+func (v *Device) touch(req func() error) error {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	if v.vp == nil {
+		return errClosed
+	}
+	if v.vt == nil {
+		return errors.New("vinput: no virtual touchscreen")
+	}
+	if err := req(); err != nil {
+		return err
+	}
+	return v.vt.Frame()
+}
+
+// TouchDown puts touch point id (below 65536) down at (x, y) within an
+// extent of width x height spanning the output layout.
+func (v *Device) TouchDown(id, x, y, width, height uint32) error {
+	return v.touch(func() error { return v.vt.Down(v.now(), id, x, y, max(width, 1), max(height, 1)) })
+}
+
+// TouchMotion moves touch point id to (x, y) as TouchDown places it.
+func (v *Device) TouchMotion(id, x, y, width, height uint32) error {
+	return v.touch(func() error { return v.vt.Motion(v.now(), id, x, y, max(width, 1), max(height, 1)) })
+}
+
+// TouchUp lifts touch point id.
+func (v *Device) TouchUp(id uint32) error {
+	return v.touch(func() error { return v.vt.Up(v.now(), id) })
+}
+
+// TouchCancel cancels every touch point of the device.
+func (v *Device) TouchCancel() error {
+	return v.touch(v.vt.Cancel)
+}
+
 // Roundtrip waits until the compositor processed every request sent.
 func (v *Device) Roundtrip() error {
 	v.mu.Lock()
@@ -350,12 +410,15 @@ func (v *Device) Close() {
 	if v.vk != nil {
 		_ = v.vk.Destroy()
 	}
+	if v.vt != nil {
+		_ = v.vt.Destroy()
+	}
 	_ = v.vp.Destroy()
 	if v.vpMgr != nil {
 		_ = v.vpMgr.Destroy()
 	}
 	_ = v.d.Context().Close()
-	v.vp, v.vk = nil, nil
+	v.vp, v.vk, v.vt = nil, nil, nil
 }
 
 // HandleDisplayError implements wl.DisplayErrorHandler: the
@@ -374,8 +437,8 @@ func btoi(b bool) uint32 {
 // listener collects the globals and carries the seat, output and
 // keyboard listeners.
 type listener struct {
-	v                  *Device
-	seat, out, vp, vkm uint32
+	v                      *Device
+	seat, out, vp, vkm, vt uint32
 }
 
 func (g *listener) HandleRegistryGlobal(ev wl.RegistryGlobalEvent) {
@@ -390,6 +453,8 @@ func (g *listener) HandleRegistryGlobal(ev wl.RegistryGlobalEvent) {
 		g.vp = ev.Name
 	case "zwp_virtual_keyboard_manager_v1":
 		g.vkm = ev.Name
+	case "lys_virtual_touch_manager_v1":
+		g.vt = ev.Name
 	}
 }
 

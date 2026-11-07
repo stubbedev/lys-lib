@@ -95,3 +95,19 @@ func TestAKeymapOfItsOwnWinsOverTheSeats(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+// A touchscreen asked of a compositor without lys_virtual_touch_v1 (the
+// headless sway) fails Dial with ErrNoTouch rather than arming a device
+// whose touches would go nowhere.
+func TestTouchWithoutTheProtocolIsRefused(t *testing.T) {
+	if os.Getenv("LYS_TEST_HEADLESS") == "" {
+		t.Skip("LYS_TEST_HEADLESS is not set; vinput tests run under just check-headless")
+	}
+	d, err := Dial("", Options{Touch: true})
+	if !errors.Is(err, ErrNoTouch) {
+		if d != nil {
+			d.Close()
+		}
+		t.Fatalf("Dial with touch = %v, want ErrNoTouch", err)
+	}
+}

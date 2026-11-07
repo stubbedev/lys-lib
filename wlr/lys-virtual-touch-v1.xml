@@ -1,0 +1,126 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="lys_virtual_touch_v1">
+  <copyright>
+    Copyright (c) 2026 Alexander Bugge Stage
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software and associated documentation files (the "Software"),
+    to deal in the Software without restriction, including without limitation
+    the rights to use, copy, modify, merge, publish, distribute, sublicense,
+    and/or sell copies of the Software, and to permit persons to whom the
+    Software is furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice (including the next
+    paragraph) shall be included in all copies or substantial portions of the
+    Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+    THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+    DEALINGS IN THE SOFTWARE.
+  </copyright>
+
+  <description summary="touch input from a client, for remote desktops">
+    A remote-desktop service replays a remote user's touches on the local
+    session: the xdg-desktop-portal RemoteDesktop NotifyTouch* calls and an
+    EIS client's ei_touchscreen. wlr-virtual-pointer and
+    virtual-keyboard-unstable-v1 cover the pointer and the keyboard; no
+    protocol covers touch.
+
+    A virtual touch device places its touch points in the compositor's
+    output layout the way wlr-virtual-pointer's motion_absolute places the
+    pointer: a position is x/x_extent and y/y_extent of the bounding box of
+    every output. The compositor delivers the points as if a touchscreen
+    spanning the layout produced them.
+  </description>
+
+  <interface name="lys_virtual_touch_manager_v1" version="1">
+    <description summary="creates virtual touch devices">
+      A privileged global: compositors hide it from sandboxed clients.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the manager">
+        Devices already created keep working.
+      </description>
+    </request>
+
+    <request name="create_virtual_touch">
+      <description summary="create a virtual touch device">
+        Creates a touch device on the seat.
+      </description>
+      <arg name="seat" type="object" interface="wl_seat"/>
+      <arg name="id" type="new_id" interface="lys_virtual_touch_v1"/>
+    </request>
+  </interface>
+
+  <interface name="lys_virtual_touch_v1" version="1">
+    <description summary="a virtual touchscreen spanning the output layout">
+      Touch points of one device. Each down, motion, up and cancel takes
+      effect at the next frame, as wl_touch groups them. The device's points
+      are its own: their ids never collide with another device's.
+    </description>
+
+    <enum name="error">
+      <entry name="invalid_id" value="0" summary="a down with an id already down, or one at or above 65536"/>
+      <entry name="invalid_extent" value="1" summary="an extent of 0, or a position past its extent"/>
+    </enum>
+
+    <request name="down">
+      <description summary="a touch point goes down">
+        A new touch point id goes down at the position. The id must not be
+        down already on this device.
+      </description>
+      <arg name="time" type="uint" summary="timestamp in milliseconds"/>
+      <arg name="id" type="uint" summary="the touch point, below 65536"/>
+      <arg name="x" type="uint" summary="position on the x axis"/>
+      <arg name="y" type="uint" summary="position on the y axis"/>
+      <arg name="x_extent" type="uint" summary="size of the x axis"/>
+      <arg name="y_extent" type="uint" summary="size of the y axis"/>
+    </request>
+
+    <request name="motion">
+      <description summary="a touch point moves">
+        A point that is down moves to the position. A point not down is
+        ignored: it may have been cancelled by the compositor.
+      </description>
+      <arg name="time" type="uint" summary="timestamp in milliseconds"/>
+      <arg name="id" type="uint" summary="the touch point"/>
+      <arg name="x" type="uint" summary="position on the x axis"/>
+      <arg name="y" type="uint" summary="position on the y axis"/>
+      <arg name="x_extent" type="uint" summary="size of the x axis"/>
+      <arg name="y_extent" type="uint" summary="size of the y axis"/>
+    </request>
+
+    <request name="up">
+      <description summary="a touch point lifts">
+        A point that is down lifts. A point not down is ignored.
+      </description>
+      <arg name="time" type="uint" summary="timestamp in milliseconds"/>
+      <arg name="id" type="uint" summary="the touch point"/>
+    </request>
+
+    <request name="cancel">
+      <description summary="every touch point of the device is cancelled">
+        The device's points end without an up: what they were doing is
+        abandoned, as wl_touch.cancel has it.
+      </description>
+    </request>
+
+    <request name="frame">
+      <description summary="the end of a set of changes">
+        The downs, motions, ups and cancels since the last frame take effect
+        together.
+      </description>
+    </request>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the device">
+        The device's points that are still down are cancelled.
+      </description>
+    </request>
+  </interface>
+</protocol>
