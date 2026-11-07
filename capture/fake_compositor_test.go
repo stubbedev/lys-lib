@@ -623,7 +623,8 @@ func TestAStreamAsksOnlyForWhatChangedSinceABufferWasFilled(t *testing.T) {
 		captured = slices.Clone(f.captured)
 		f.mu.Unlock()
 	}
-	if got := s.Latest(); got == nil || got.Seq != live-1 || !slices.Equal(got.Damage, []Rect{{X: 60, Y: 30, Width: 10, Height: 5}}) {
+	var got StreamFrame
+	if !s.Latest(&got) || got.Seq != live-1 || !slices.Equal(got.Damage, []Rect{{X: 60, Y: 30, Width: 10, Height: 5}}) {
 		t.Errorf("the latest frame is %+v", got)
 	}
 	whole := []image.Rectangle{{Max: fakeSessionSize}}

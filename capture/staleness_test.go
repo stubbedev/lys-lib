@@ -59,7 +59,7 @@ func TestASessionForgetsTheOldestOfTooManyBuffers(t *testing.T) {
 }
 
 func TestASteadyStreamFrameAllocatesNothing(t *testing.T) {
-	s := &Stream{ring: make([]*shmBuffer, streamRing), slots: make([]streamSlot, streamRing)}
+	s := &Stream{ring: make([]*shmBuffer, streamRing), slots: make([]streamSlot, streamRing), latest: -1}
 	var b bufferDamage
 	bufs := make([]*wl.Buffer, streamRing)
 	for i := range bufs {
@@ -84,7 +84,8 @@ func TestASteadyStreamFrameAllocatesNothing(t *testing.T) {
 	if n := testing.AllocsPerRun(100, frame); n != 0 {
 		t.Errorf("a steady stream frame allocated %v times", n)
 	}
-	if got := s.Latest(); got == nil || got.Seq != seq-1 || len(got.Damage) != 2 {
+	var got StreamFrame
+	if !s.Latest(&got) || got.Seq != seq-1 || len(got.Damage) != 2 {
 		t.Errorf("the latest frame is %+v", got)
 	}
 }

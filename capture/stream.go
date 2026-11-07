@@ -28,8 +28,8 @@ type StreamInfo struct {
 	Transform Transform
 }
 
-// StreamFrame is one captured frame a Stream published. It, its Damage
-// and its pixels belong to a ring buffer the capture goroutine reuses a
+// StreamFrame is one captured frame a Stream published, copied out by
+// Latest. Its pixels stay in a ring buffer the capture goroutine reuses a
 // couple of frames later, so copy them out (ReadInto, Frame) promptly.
 type StreamFrame struct {
 	// Seq increments per published frame; an unchanged Seq means
@@ -75,11 +75,14 @@ type Stream struct {
 	info   StreamInfo
 	client *Client
 	ring   []*shmBuffer
-	// slots are each ring buffer's frame events and published frame,
-	// reused frame after frame.
+	// slots are each ring buffer's frame events and number, reused frame
+	// after frame.
 	slots []streamSlot
 
-	latest atomic.Pointer[StreamFrame]
+	// pubMu guards latest and the published slot's events against the
+	// capture goroutine, which captures into another slot meanwhile.
+	pubMu  sync.Mutex
+	latest int
 
 	stopping atomic.Bool
 	done     chan struct{}
@@ -95,7 +98,7 @@ type Stream struct {
 
 type streamSlot struct {
 	events frameState
-	frame  StreamFrame
+	seq    uint64
 }
 
 // OpenOutputStream starts continuous capture of the output with the
@@ -136,6 +139,7 @@ func openStream(client *Client, outputName string, cursor bool) (*Stream, error)
 	s := &Stream{
 		client: client,
 		done:   make(chan struct{}),
+		latest: -1,
 		info: StreamInfo{
 			Width: k.width, Height: k.height, Stride: stride,
 			Format: format, RefreshMHz: out.RefreshMHz, Transform: out.Transform,
@@ -157,8 +161,20 @@ func openStream(client *Client, outputName string, cursor bool) (*Stream, error)
 // Info is the negotiated geometry.
 func (s *Stream) Info() StreamInfo { return s.info }
 
-// Latest is the most recent published frame, nil before the first.
-func (s *Stream) Latest() *StreamFrame { return s.latest.Load() }
+// Latest copies the most recent published frame into dst, reusing its
+// Damage's storage, and reports false before the first.
+func (s *Stream) Latest(dst *StreamFrame) bool {
+	s.pubMu.Lock()
+	defer s.pubMu.Unlock()
+	if s.latest < 0 {
+		return false
+	}
+	sl := &s.slots[s.latest]
+	damage := append(dst.Damage[:0], sl.events.info.Damage...)
+	*dst = StreamFrame{Seq: sl.seq, FrameInfo: sl.events.info, stream: s, buf: s.ring[s.latest]}
+	dst.Damage = damage
+	return true
+}
 
 // Done is closed when the capture loop ended, on Close or on its own;
 // Err then says why.
@@ -255,7 +271,8 @@ func (s *Stream) run(cs *copySession) {
 // publish makes the frame just captured into slot the latest, numbered
 // seq.
 func (s *Stream) publish(slot int, seq uint64) {
-	sl := &s.slots[slot]
-	sl.frame = StreamFrame{Seq: seq, FrameInfo: sl.events.info, stream: s, buf: s.ring[slot]}
-	s.latest.Store(&sl.frame)
+	s.pubMu.Lock()
+	s.slots[slot].seq = seq
+	s.latest = slot
+	s.pubMu.Unlock()
 }

@@ -133,13 +133,14 @@ func TestHeadlessOutputCapture(t *testing.T) {
 		if info.Width != int(out.Width) || info.Stride != info.Width*info.Format.BytesPerPixel() {
 			t.Fatalf("stream info %+v", info)
 		}
+		var frame capture.StreamFrame
 		wltest.Eventually(t, "first stream frame", func() error {
-			if s.Latest() == nil {
+			if !s.Latest(&frame) {
 				return errors.New("no frame yet")
 			}
 			return nil
 		})
-		f, err := s.Latest().Frame()
+		f, err := frame.Frame()
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -150,7 +151,6 @@ func TestHeadlessOutputCapture(t *testing.T) {
 		if err := wltest.WantColor(img, 5, 5, fillRed); err != nil {
 			t.Fatal(err)
 		}
-		frame := s.Latest()
 		closed := make(chan error, 1)
 		go func() { closed <- s.Close() }()
 		select {
