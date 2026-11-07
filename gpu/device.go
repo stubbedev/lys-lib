@@ -50,6 +50,8 @@ var exportExtensions = []string{
 
 // Device is a Vulkan device rendering into dmabufs.
 type Device struct {
+	// readBack counts the bytes read back to the host.
+	readBack int
 	cmds     *vk.Commands
 	instance vk.Instance
 	phys     vk.PhysicalDevice

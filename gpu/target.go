@@ -351,23 +351,33 @@ func (f *frame) moveWithin(cb vk.CommandBuffer, rects []image.Rectangle, offset 
 // ReadPixels copies the target back into memory as premultiplied
 // RGBA: tests and screenshots.
 func (t *Target) ReadPixels() (*image.RGBA, error) {
+	return t.ReadRect(image.Rect(0, 0, t.buf.Width, t.buf.Height))
+}
+
+// ReadRect copies only r of the target back into memory as
+// premultiplied RGBA, in an image whose bounds are r: nothing outside
+// r leaves the GPU.
+func (t *Target) ReadRect(r image.Rectangle) (*image.RGBA, error) {
 	if t.s.vf == floatTargetFormat {
 		return nil, errors.New("gpu: a float target's pixels are not read back")
 	}
-	w, h := t.buf.Width, t.buf.Height
-	return t.s.d.readPixels(w, h, t.s.vf, false, func(cb vk.CommandBuffer, staging *buffer) {
+	if full := image.Rect(0, 0, t.buf.Width, t.buf.Height); r.Empty() || !r.In(full) {
+		return nil, fmt.Errorf("gpu: read back %v of a %v target", r, full.Size())
+	}
+	return t.s.d.readPixels(r, t.s.vf, false, func(cb vk.CommandBuffer, staging *buffer) {
 		t.acquire(cb)
-		t.s.download(cb, image.Rect(0, 0, w, h), staging, 0)
+		t.s.download(cb, r, staging, 0)
 		t.s.d.hostReadBarrier(cb)
 		t.release(cb)
 	})
 }
 
-// readPixels reads a w x h image in vf back as 8-bit RGBA: record
+// readPixels reads r of an image in vf back as 8-bit RGBA: record
 // copies it, tight, into the staging buffer it is handed. opaque reads
 // every alpha as 255, for a format whose alpha is padding.
-func (d *Device) readPixels(w, h int, vf vk.Format, opaque bool, record func(cb vk.CommandBuffer, staging *buffer)) (*image.RGBA, error) {
-	staging, err := d.newReadBuffer(w*h*4, vk.BufferUsageTransferDstBit, nil)
+func (d *Device) readPixels(r image.Rectangle, vf vk.Format, opaque bool, record func(cb vk.CommandBuffer, staging *buffer)) (*image.RGBA, error) {
+	size := r.Dx() * r.Dy() * 4
+	staging, err := d.newReadBuffer(size, vk.BufferUsageTransferDstBit, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -378,7 +388,8 @@ func (d *Device) readPixels(w, h int, vf vk.Format, opaque bool, record func(cb 
 	if err := staging.invalidate(); err != nil {
 		return nil, err
 	}
-	img := image.NewRGBA(image.Rect(0, 0, w, h))
+	d.readBack += size
+	img := image.NewRGBA(r)
 	src := staging.mapped
 	for i := 0; i < len(img.Pix); i += 4 {
 		img.Pix[i], img.Pix[i+1], img.Pix[i+2], img.Pix[i+3] = decode(vf, [4]byte(src[i:]))
