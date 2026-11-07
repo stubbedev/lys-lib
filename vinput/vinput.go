@@ -511,3 +511,23 @@ func (g *listener) HandleKeyboardLeave(wl.KeyboardLeaveEvent)           {}
 func (g *listener) HandleKeyboardKey(wl.KeyboardKeyEvent)               {}
 func (g *listener) HandleKeyboardModifiers(wl.KeyboardModifiersEvent)   {}
 func (g *listener) HandleKeyboardRepeatInfo(wl.KeyboardRepeatInfoEvent) {}
+
+// TouchAvailable reports whether the compositor on display serves
+// lys_virtual_touch_manager_v1, so Dial can arm Options.Touch there.
+func TouchAvailable(display string) (bool, error) {
+	d, err := wl.Connect(display)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = d.Context().Close() }()
+	reg, err := d.GetRegistry()
+	if err != nil {
+		return false, err
+	}
+	g := &listener{v: &Device{d: d}}
+	wlclient.RegistryAddListener(reg, g)
+	if err := g.v.roundtrip(); err != nil {
+		return false, fmt.Errorf("vinput: registry roundtrip: %w", err)
+	}
+	return g.vt != 0, nil
+}

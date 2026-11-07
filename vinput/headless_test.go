@@ -73,6 +73,9 @@ func TestClosedDeviceRefusesInput(t *testing.T) {
 }
 
 func TestDialWithoutACompositor(t *testing.T) {
+	if _, err := TouchAvailable("/nonexistent/wayland-0"); err == nil {
+		t.Error("TouchAvailable without a compositor succeeded")
+	}
 	if _, err := Dial("wayland-vinput-nonexistent", Options{}); err == nil {
 		t.Error("dialed a missing socket")
 	}
@@ -102,6 +105,9 @@ func TestAKeymapOfItsOwnWinsOverTheSeats(t *testing.T) {
 func TestTouchWithoutTheProtocolIsRefused(t *testing.T) {
 	if os.Getenv("LYS_TEST_HEADLESS") == "" {
 		t.Skip("LYS_TEST_HEADLESS is not set; vinput tests run under just check-headless")
+	}
+	if ok, err := TouchAvailable(""); ok || err != nil {
+		t.Fatalf("TouchAvailable = %v, %v on a compositor without the protocol", ok, err)
 	}
 	d, err := Dial("", Options{Touch: true})
 	if !errors.Is(err, ErrNoTouch) {
