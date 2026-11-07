@@ -120,6 +120,19 @@ not only `CommitDeferred`'s; it is opt-in, since a client that never reads
 per read for a peer a connected socket already knows. Reads are now `recvmsg`
 with no name, through `SyscallConn` so the poller and read deadlines still apply.
 
+### A deadline wake allocates nothing
+
+Not upstream yet.
+
+`wl/sock_linux.go`, `wl/context.go`, `wl/event.go`: a loop parked until its
+next frame wakes on the read deadline every frame, and each wake allocated
+twice: the net connection's raw `Read` wraps the poller's timeout in an
+`OpError`, and `readEvent` wrapped that again. The context now does its I/O
+through a duplicate of the socket opened as an `os.File`, whose raw `Read`
+returns the timeout as is, and `readEvent` passes a deadline through
+unwrapped. Contexts are made by `newContext`, which opens the duplicate.
+`wl/read_test.go` holds the test.
+
 ### A frame callback costs no allocation
 
 `wl/wayland.xml.go`, hand edited, as the scanner has no notion of it:

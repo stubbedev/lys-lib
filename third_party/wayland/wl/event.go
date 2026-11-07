@@ -5,6 +5,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	stdos "os"
 	"sync"
 
 	"golang.org/x/sys/unix"
@@ -57,6 +58,9 @@ func (ctx *Context) readEvent() (*Event, error) {
 		return nil, ErrContextConnNil
 	}
 	header, err := ctx.fill(headerSize)
+	if errors.Is(err, stdos.ErrDeadlineExceeded) {
+		return nil, err
+	}
 	if err != nil {
 		return nil, combinedError{ErrReadHeader, err}
 	}

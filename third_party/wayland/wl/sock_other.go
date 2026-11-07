@@ -6,24 +6,30 @@ import (
 	"errors"
 	"fmt"
 	"syscall"
+	"time"
 )
 
 type socketIO struct{ raw syscall.RawConn }
 
-func (ctx *Context) rawConn() (syscall.RawConn, error) {
-	if ctx.sock.raw != nil {
-		return ctx.sock.raw, nil
+func (ctx *Context) openSocket() error {
+	raw, err := ctx.conn.SyscallConn()
+	if err != nil {
+		return fmt.Errorf("wl: the socket's raw connection: %w", err)
 	}
+	ctx.sock.raw = raw
+	return nil
+}
+
+func (ctx *Context) rawConn() (syscall.RawConn, error) {
 	if ctx.conn == nil {
 		return nil, ErrContextConnNil
 	}
-	raw, err := ctx.conn.SyscallConn()
-	if err != nil {
-		return nil, fmt.Errorf("wl: the socket's raw connection: %w", err)
-	}
-	ctx.sock.raw = raw
-	return raw, nil
+	return ctx.sock.raw, nil
 }
+
+func (ctx *Context) setReadDeadline(t time.Time) error { return ctx.conn.SetReadDeadline(t) }
+
+func (ctx *Context) closeSocket() error { return nil }
 
 func (ctx *Context) socketSend() (int, error) {
 	if ctx.conn == nil {

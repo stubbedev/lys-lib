@@ -42,7 +42,10 @@ func clientContext(t testing.TB, fd int) *Context {
 	if err != nil {
 		t.Fatal(err)
 	}
-	ctx := &Context{conn: conn.(*net.UnixConn), objects: make(map[ProxyId]Proxy)}
+	ctx, err := newContext(conn.(*net.UnixConn))
+	if err != nil {
+		t.Fatal(err)
+	}
 	t.Cleanup(func() { ctx.Close() })
 	return ctx
 }

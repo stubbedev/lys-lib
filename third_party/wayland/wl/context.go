@@ -210,21 +210,27 @@ func Connect(addr string) (ret *Display, err error) {
 	if err != nil {
 		return nil, err
 	}
-	c := new(Context)
-	c.objects = make(map[ProxyId]Proxy)
-	c.currentId = 0
-	c.conn, err = net.DialUnix("unix", nil, &net.UnixAddr{Name: addr, Net: "unix"})
+	conn, err := net.DialUnix("unix", nil, &net.UnixAddr{Name: addr, Net: "unix"})
 	if err != nil {
 		return nil, err
 	}
-	err = c.conn.SetReadDeadline(time.Time{})
+	c, err := newContext(conn)
 	if err != nil {
-		c.conn.Close()
+		_ = conn.Close()
 		return nil, err
 	}
 	//DON'T dispatch events in separate goroutine
 	//go c.Run()
 	return c.newDisplay(), nil
+}
+
+// newContext is a context on conn, a connected socket.
+func newContext(conn *net.UnixConn) (*Context, error) {
+	c := &Context{conn: conn, objects: make(map[ProxyId]Proxy)}
+	if err := c.openSocket(); err != nil {
+		return nil, err
+	}
+	return c, nil
 }
 
 func (ctx *Context) newDisplay() *Display {
@@ -361,7 +367,7 @@ func (ctx *Context) SetReadDeadline(t time.Time) error {
 	if ctx.conn == nil {
 		return ErrContextConnNil
 	}
-	return ctx.conn.SetReadDeadline(t)
+	return ctx.setReadDeadline(t)
 }
 
 // Close (Context Close) closes Wayland connection
@@ -375,7 +381,7 @@ func (ctx *Context) Close() (err error) {
 	ctx.sendMu.Unlock()
 	ctx.mu.Lock()
 	if ctx.conn != nil {
-		err = ctx.conn.Close()
+		err = errors.Join(ctx.closeSocket(), ctx.conn.Close())
 		ctx.conn = nil
 	}
 	/*

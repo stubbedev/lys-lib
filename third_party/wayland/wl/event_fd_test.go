@@ -26,7 +26,10 @@ func TestQueuedFdsSurviveTheNextRead(t *testing.T) {
 	}
 	conn := c.(*net.UnixConn)
 	defer conn.Close()
-	ctx := &Context{conn: conn, objects: make(map[ProxyId]Proxy)}
+	ctx, err := newContext(conn)
+	if err != nil {
+		t.Fatal(err)
+	}
 	kb := NewKeyboard(ctx)
 
 	first, second := tempFile(t), tempFile(t)

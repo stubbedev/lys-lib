@@ -135,3 +135,24 @@ func TestASetDeadlineReachesARunAlreadyParked(t *testing.T) {
 		t.Fatal("a parked Run never woke")
 	}
 }
+
+// A loop parked until its next frame wakes on the read deadline every
+// frame; that wake allocates nothing.
+func TestADeadlineWakeAllocatesNothing(t *testing.T) {
+	if raceEnabled {
+		t.Skip("the race detector's instrumentation allocates")
+	}
+	ctx, _ := newSocketContext(t)
+	wake := func() {
+		if err := ctx.SetReadDeadline(time.Now().Add(time.Millisecond)); err != nil {
+			t.Fatal(err)
+		}
+		if err := ctx.Run(); !errors.Is(err, ErrContextRunTimeout) {
+			t.Fatalf("Run past the deadline: %v", err)
+		}
+	}
+	wake()
+	if n := testing.AllocsPerRun(20, wake); n != 0 {
+		t.Errorf("a deadline wake allocates %v times, want none", n)
+	}
+}
