@@ -1,5 +1,6 @@
-// Package edid reads a display's identity from its EDID: make, model and
-// serial, as outputs are described and matched by.
+// Package edid reads what a display's EDID says about it: its make, model
+// and serial, as outputs are described and matched by, its colour and its
+// variable refresh range.
 package edid
 
 import (
@@ -91,19 +92,14 @@ func Parse(b []byte, vendors Vendors) (Info, error) {
 	if name, ok := vendors[pnp]; ok {
 		info.Make = name
 	}
-	for i := range descriptorCount {
-		d := b[descriptorStart+i*descriptorSize:][:descriptorSize]
-		if d[0] != 0 || d[1] != 0 {
-			continue
-		}
-		text := descriptorText(d[5:])
-		switch d[3] {
+	eachDisplayDescriptor(b, func(tag byte, d []byte) {
+		switch tag {
 		case tagName:
-			info.Model = text
+			info.Model = descriptorText(d[5:])
 		case tagSerial:
-			info.Serial = text
+			info.Serial = descriptorText(d[5:])
 		}
-	}
+	})
 	if info.Model == "" {
 		info.Model = fmt.Sprintf("0x%04X", binary.LittleEndian.Uint16(b[10:]))
 	}
@@ -113,15 +109,20 @@ func Parse(b []byte, vendors Vendors) (Info, error) {
 	return info, nil
 }
 
+func eachDisplayDescriptor(b []byte, visit func(tag byte, d []byte)) {
+	for i := range descriptorCount {
+		d := b[descriptorStart+i*descriptorSize:][:descriptorSize]
+		if d[0] == 0 && d[1] == 0 {
+			visit(d[3], d)
+		}
+	}
+}
+
 func checkBase(b []byte) error {
 	if len(b) < blockSize || !bytes.Equal(b[:8], header) {
 		return fmt.Errorf("%w: %d bytes without the EDID header", ErrInvalid, len(b))
 	}
-	var sum byte
-	for _, c := range b[:blockSize] {
-		sum += c
-	}
-	if sum != 0 {
+	if sum := checksum(b[:blockSize]); sum != 0 {
 		return fmt.Errorf("%w: base block checksum is off by %d", ErrInvalid, sum)
 	}
 	return nil

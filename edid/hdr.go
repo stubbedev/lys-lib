@@ -1,14 +1,8 @@
 package edid
 
-import (
-	"fmt"
-
-	"github.com/stubbedev/lys-lib/third_party/gomath"
-)
+import "github.com/stubbedev/lys-lib/third_party/gomath"
 
 const (
-	tagCTA        = 0x02
-	ctaUseExtTag  = 7
 	extColorimety = 0x05
 	extHDRStatic  = 0x06
 	chromaOffset  = 25
@@ -44,21 +38,8 @@ func ParseHDR(b []byte) (HDR, error) {
 	}
 	var h HDR
 	h.Red, h.Green, h.Blue, h.White = chromaticities(b)
-	for at := blockSize; at+blockSize <= len(b); at += blockSize {
-		block := b[at : at+blockSize]
-		if block[0] != tagCTA {
-			continue
-		}
-		var sum byte
-		for _, c := range block {
-			sum += c
-		}
-		if sum != 0 {
-			return HDR{}, fmt.Errorf("%w: the CTA-861 extension at %d has a checksum off by %d", ErrInvalid, at, sum)
-		}
-		if err := h.readCTA(block); err != nil {
-			return HDR{}, err
-		}
+	if err := eachExtension(b, tagCTA, "CTA-861", func(block []byte) error { return eachCTADataBlock(block, h.readCTADataBlock) }); err != nil {
+		return HDR{}, err
 	}
 	return h, nil
 }
@@ -72,34 +53,18 @@ func chromaticities(b []byte) (red, green, blue, white Chromaticity) {
 	return at(0, low0>>6, low0>>4), at(2, low0>>2, low0), at(4, low1>>6, low1>>4), at(6, low1>>2, low1)
 }
 
-func (h *HDR) readCTA(block []byte) error {
-	end := int(block[2])
-	if end == 0 {
-		end = blockSize - 1
+func (h *HDR) readCTADataBlock(tag byte, data []byte) {
+	if tag != ctaUseExtTag || len(data) < 1 {
+		return
 	}
-	if end < 4 || end > blockSize-1 {
-		return fmt.Errorf("%w: a CTA-861 extension whose data blocks end at %d", ErrInvalid, end)
+	switch data[0] {
+	case extColorimety:
+		if len(data) >= 2 {
+			h.BT2020 = data[1]&0x80 != 0
+		}
+	case extHDRStatic:
+		h.readStatic(data[1:])
 	}
-	for i := 4; i < end; {
-		tag, n := block[i]>>5, int(block[i]&0x1f)
-		if i+1+n > end {
-			return fmt.Errorf("%w: a CTA-861 data block of %d bytes at %d overruns %d", ErrInvalid, n, i, end)
-		}
-		data := block[i+1 : i+1+n]
-		i += 1 + n
-		if tag != ctaUseExtTag || n < 1 {
-			continue
-		}
-		switch data[0] {
-		case extColorimety:
-			if n >= 2 {
-				h.BT2020 = data[1]&0x80 != 0
-			}
-		case extHDRStatic:
-			h.readStatic(data[1:])
-		}
-	}
-	return nil
 }
 
 func (h *HDR) readStatic(d []byte) {
