@@ -98,3 +98,41 @@ func TestDirectoryIsSyncedAfterTheRename(t *testing.T) {
 		t.Errorf("target is %q, want the renamed content", got)
 	}
 }
+
+func TestWriteSeekablePatchesWhatItWrote(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "f")
+	err := WriteSeekable(path, 0o640, func(w io.WriteSeeker) error {
+		if _, err := io.WriteString(w, "xxxxbody"); err != nil {
+			return err
+		}
+		if _, err := w.Seek(0, io.SeekStart); err != nil {
+			return err
+		}
+		_, err := io.WriteString(w, "head")
+		return err
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.ReadFile(path); string(got) != "headbody" {
+		t.Errorf("read %q, want headbody", got)
+	}
+	if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0o640 {
+		t.Errorf("mode %v (%v), want 0640", info.Mode().Perm(), err)
+	}
+}
+
+func TestFailedWriteSeekableLeavesNoTemporary(t *testing.T) {
+	dir := t.TempDir()
+	boom := errors.New("boom")
+	err := WriteSeekable(filepath.Join(dir, "f"), 0o600, func(w io.WriteSeeker) error {
+		_, _ = io.WriteString(w, "partial")
+		return boom
+	})
+	if !errors.Is(err, boom) {
+		t.Fatalf("write returned %v, want the producer's error", err)
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 0 {
+		t.Errorf("%d entries left in the directory, want none", len(entries))
+	}
+}

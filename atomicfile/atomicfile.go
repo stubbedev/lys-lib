@@ -18,6 +18,23 @@ import (
 // removed; a failure to sync the directory after it is reported with
 // path already replaced.
 func Write(path string, perm os.FileMode, write func(io.Writer) error) error {
+	return replace(path, perm, func(f *os.File) error {
+		buf := bufio.NewWriter(f)
+		if err := write(buf); err != nil {
+			return err
+		}
+		return buf.Flush()
+	})
+}
+
+// WriteSeekable is Write for a producer that seeks back over what it
+// wrote, as a muxer patching its header does: write is handed the
+// temporary itself, unbuffered.
+func WriteSeekable(path string, perm os.FileMode, write func(io.WriteSeeker) error) error {
+	return replace(path, perm, func(f *os.File) error { return write(f) })
+}
+
+func replace(path string, perm os.FileMode, write func(*os.File) error) error {
 	tmp, err := writeTemp(path, perm, write)
 	if err != nil {
 		return err
@@ -32,16 +49,12 @@ func Write(path string, perm os.FileMode, write func(io.Writer) error) error {
 	return nil
 }
 
-func writeTemp(path string, perm os.FileMode, write func(io.Writer) error) (string, error) {
+func writeTemp(path string, perm os.FileMode, write func(*os.File) error) (string, error) {
 	f, err := os.CreateTemp(filepath.Dir(path), "."+filepath.Base(path)+".tmp*")
 	if err != nil {
 		return "", fmt.Errorf("atomicfile: create a temporary beside %s: %w", path, err)
 	}
-	buf := bufio.NewWriter(f)
-	err = write(buf)
-	if err == nil {
-		err = buf.Flush()
-	}
+	err = write(f)
 	if err == nil {
 		err = f.Chmod(perm)
 	}
