@@ -1,7 +1,7 @@
 // Package udmabuf allocates linear, CPU-visible dmabufs through
-// /dev/udmabuf: a sealed memfd wrapped as a dmabuf, so tests and demos
-// can hand the compositor dmabufs they fill and read without a GPU
-// library.
+// /dev/udmabuf: a sealed memfd wrapped as a dmabuf, so a client hands
+// the compositor dmabufs it fills and reads on the CPU (video frames,
+// tests, demos) without a GPU library.
 package udmabuf
 
 import (

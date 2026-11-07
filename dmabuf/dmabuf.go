@@ -85,3 +85,33 @@ func ImportSyncFile(fd, syncFile int) error {
 		return fmt.Errorf("dmabuf: DMA_BUF_IOCTL_IMPORT_SYNC_FILE of sync_file %d onto dmabuf %d: %w", syncFile, fd, errno)
 	}
 }
+
+// DMA_BUF_IOCTL_SYNC and its flags.
+const (
+	dmaBufIoctlSync = 0x40086200
+	dmaBufSyncStart = 0
+	dmaBufSyncEnd   = 4
+)
+
+// BeginCPUWrite starts a CPU write through a mapping of the dmabuf fd
+// (DMA_BUF_IOCTL_SYNC): it waits for the devices still reading the
+// buffer and, on a system whose caches do not snoop, readies the
+// mapping. EndCPUWrite closes the write.
+func BeginCPUWrite(fd int) error { return cpuSync(fd, dmaBufSyncStart|dmaBufSyncWrite, "start") }
+
+// EndCPUWrite ends a CPU write BeginCPUWrite started, flushing it for
+// the device that reads the buffer next.
+func EndCPUWrite(fd int) error { return cpuSync(fd, dmaBufSyncEnd|dmaBufSyncWrite, "end") }
+
+func cpuSync(fd int, flags uint64, what string) error {
+	for {
+		_, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), dmaBufIoctlSync, uintptr(unsafe.Pointer(&flags))) //nolint:gosec // the kernel reads the flags during the call
+		switch errno {
+		case 0:
+			return nil
+		case unix.EINTR, unix.EAGAIN:
+			continue
+		}
+		return fmt.Errorf("dmabuf: DMA_BUF_IOCTL_SYNC %s of a CPU write to dmabuf %d: %w", what, fd, errno)
+	}
+}
