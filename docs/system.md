@@ -156,7 +156,7 @@ and administrator authentication other lys processes ask through it.
 | Package | What it does |
 | --- | --- |
 | `clib` | `Open` dlopens the first of a candidate list, joining every failure when none loads. `SystemCandidates` lists a soname's usual locations, the NixOS system profile included. `GoString` copies a C string |
-| `intconv` | Integer conversions without silent wraparound: `Exact` returns an error, `Must` panics, `Clamp` saturates, `Duration` scales a count. `Uint32Bits`, `Uint64Bits` and `Int32Bits` reinterpret two's-complement bits |
+| `intconv` | Integer conversions without silent wraparound: `Exact` returns an error, `Must` panics, `Clamp` saturates, `Duration` scales a count. `Uint32Bits`, `Uint64Bits`, `Int32Bits` and `Int64Bits` reinterpret two's-complement bits |
 | `atomicfile` | `Write` and `WriteFile` replace a file whole and durably: a synced temporary renamed over the target, then the directory synced |
 | `xdg` | `Env` resolves the base directories (`ConfigHome`, `StateDir` and so on), an app's directory under each, and `user-dirs.dirs` through `UserDir`. `xdg.OS` reads the process environment, and tests pass their own |
 | `peercred` | `UID` is the uid of the process at a Unix socket's other end, from `SO_PEERCRED` |

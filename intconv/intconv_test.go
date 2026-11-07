@@ -184,6 +184,9 @@ func TestBitsRoundTrip(t *testing.T) {
 		if got := Uint64Bits(c.signed); got != c.bits {
 			t.Errorf("Uint64Bits(%d) = %#x, want %#x", c.signed, got, c.bits)
 		}
+		if got := Int64Bits(c.bits); got != c.signed {
+			t.Errorf("Int64Bits(%#x) = %d, want %d", c.bits, got, c.signed)
+		}
 	}
 }
 

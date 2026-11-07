@@ -1,8 +1,9 @@
 // Package intconv converts between integer types without silent
 // wraparound: Exact refuses a value the target cannot hold, Must
 // panics on one, Clamp saturates it, and Duration scales a count into
-// a time.Duration. Uint32Bits, Uint64Bits and Int32Bits reinterpret
-// two's-complement bits, where a wire format means exactly that.
+// a time.Duration. Uint32Bits, Uint64Bits, Int32Bits and Int64Bits
+// reinterpret two's-complement bits, where a wire format means exactly
+// that.
 package intconv
 
 import (
@@ -121,6 +122,16 @@ func Int32Bits(v uint32) int32 {
 	x := int32(v & math.MaxInt32)
 	if v > math.MaxInt32 {
 		x += math.MinInt32
+	}
+	return x
+}
+
+// Int64Bits is the int64 with v's two's-complement bits, the value a
+// wire format's signed 64-bit field carries in v: Uint64Bits's inverse.
+func Int64Bits(v uint64) int64 {
+	x := int64(v & math.MaxInt64)
+	if v > math.MaxInt64 {
+		x += math.MinInt64
 	}
 	return x
 }
