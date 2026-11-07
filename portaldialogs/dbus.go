@@ -98,11 +98,16 @@ type Device struct {
 	Writable bool
 }
 
-// PasswordRequest asks for a password, (ssbb): Confirm asks for a new
-// one, typed twice; Retry says the previous answer was wrong.
+// PasswordRequest asks for a password, (ssbbssa(ssa(ss)s)): Confirm asks
+// for a new one, typed twice; Retry says the previous answer was wrong.
+// AcceptLabel and CancelLabel name the buttons, "" for the host's own;
+// Choices are extra questions shown under the entry, answered with the
+// password.
 type PasswordRequest struct {
-	Title, Body    string
-	Confirm, Retry bool
+	Title, Body              string
+	Confirm, Retry           bool
+	AcceptLabel, CancelLabel string
+	Choices                  []Choice
 }
 
 // Host shows the dialogs; each call blocks until the user answers or
@@ -129,8 +134,9 @@ type Host interface {
 	// ConfirmInstall replies whether to install a dynamic launcher,
 	// and under what name.
 	ConfirmInstall(Caller, LauncherRequest) (bool, string)
-	// Password replies whether the user entered a password, and it.
-	Password(Caller, PasswordRequest) (bool, string)
+	// Password replies whether the user entered a password and, when
+	// they did, it and what they picked for each choice.
+	Password(Caller, PasswordRequest) (bool, string, []Selection)
 	// Authenticate shows the authentication dialog for the request at
 	// the caller's handle, or updates the one showing, and replies once
 	// the user answers its prompt, cancels or picks another identity.
@@ -201,9 +207,9 @@ func (d *Daemon) ConfirmInstall(c Caller, r LauncherRequest) (bool, string, *dbu
 }
 
 // Password is the password prompt.
-func (d *Daemon) Password(c Caller, r PasswordRequest) (bool, string, *dbus.Error) {
-	ok, password := d.host.Password(c, r)
-	return ok, password, nil
+func (d *Daemon) Password(c Caller, r PasswordRequest) (bool, string, []Selection, *dbus.Error) {
+	ok, password, picked := d.host.Password(c, r)
+	return ok, password, picked, nil
 }
 
 // Authenticate is one prompt of an administrator authentication.
@@ -320,10 +326,11 @@ func (c *Client) ConfirmInstall(ctx context.Context, caller Caller, r LauncherRe
 	return ok, name, err
 }
 
-// Password asks for a password; ok is false when the user cancelled.
-func (c *Client) Password(ctx context.Context, caller Caller, r PasswordRequest) (ok bool, password string, err error) {
-	err = c.call(ctx, "Password", caller, r).Store(&ok, &password)
-	return ok, password, err
+// Password asks for a password; ok is false when the user cancelled, and
+// picked answers the request's choices.
+func (c *Client) Password(ctx context.Context, caller Caller, r PasswordRequest) (ok bool, password string, picked []Selection, err error) {
+	err = c.call(ctx, "Password", caller, r).Store(&ok, &password, &picked)
+	return ok, password, picked, err
 }
 
 // Dismiss takes down the dialog showing for the request at handle.

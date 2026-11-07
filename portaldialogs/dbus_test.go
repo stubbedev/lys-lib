@@ -70,12 +70,12 @@ func (f *fakeHost) ChooseDevices(c Caller, devices []Device) (bool, []string) {
 	return true, []string{devices[0].ID}
 }
 
-func (f *fakeHost) Password(c Caller, r PasswordRequest) (bool, string) {
+func (f *fakeHost) Password(c Caller, r PasswordRequest) (bool, string, []Selection) {
 	f.record(c, r)
 	if !f.yes {
-		return false, ""
+		return false, "", nil
 	}
-	return true, "typed"
+	return true, "typed", []Selection{{ID: r.Choices[0].ID, Value: "true"}}
 }
 
 func (f *fakeHost) Authenticate(c Caller, r AuthRequest) AuthReply {
@@ -181,9 +181,16 @@ func TestRoundTrip(t *testing.T) {
 		}
 		askedBy("ConfirmInstall", LauncherRequest{Name: "App", Icon: []byte{}})
 
-		pw := PasswordRequest{Title: "Unlock", Body: "login", Confirm: true, Retry: true}
-		if ok, typed, err := c.Password(ctx, caller, pw); err != nil || ok != yes || typed != map[bool]string{true: "typed"}[yes] {
+		pw := PasswordRequest{
+			Title: "Unlock", Body: "login", Confirm: true, Retry: true, AcceptLabel: "Update", CancelLabel: "Keep",
+			Choices: []Choice{{ID: "remember", Label: "Remember", Options: []Option{}}},
+		}
+		ok, typed, picked, err := c.Password(ctx, caller, pw)
+		if err != nil || ok != yes || typed != map[bool]string{true: "typed"}[yes] {
 			t.Errorf("Password (yes=%v) = %v, %q, %v", yes, ok, typed, err)
+		}
+		if want := map[bool][]Selection{true: {{ID: "remember", Value: "true"}}}[yes]; !slices.Equal(picked, want) {
+			t.Errorf("Password (yes=%v) picked %v, want %v", yes, picked, want)
 		}
 		askedBy("Password", pw)
 
@@ -256,7 +263,7 @@ func TestCallsWithoutHostFail(t *testing.T) {
 		{"UpdateChoices", func() error { _, err := c.UpdateChoices(ctx, "", nil); return err }},
 		{"ChooseDevices", func() error { _, _, err := c.ChooseDevices(ctx, Caller{}, nil); return err }},
 		{"ConfirmInstall", func() error { _, _, err := c.ConfirmInstall(ctx, Caller{}, LauncherRequest{}); return err }},
-		{"Password", func() error { _, _, err := c.Password(ctx, Caller{}, PasswordRequest{}); return err }},
+		{"Password", func() error { _, _, _, err := c.Password(ctx, Caller{}, PasswordRequest{}); return err }},
 		{"Authenticate", func() error { _, err := c.Authenticate(ctx, Caller{}, AuthRequest{}); return err }},
 		{"ShowAuthentication", func() error { return c.ShowAuthentication(ctx, Caller{}, AuthRequest{}) }},
 		{"Dismiss", func() error { return c.Dismiss(ctx, "") }},
