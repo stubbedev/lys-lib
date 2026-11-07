@@ -102,14 +102,7 @@ func (d *Device) createColor(cs *colorState) error {
 // colorLayout is the compositor's pipeline layout over the sampled set in
 // base, with the colour transform's set after it.
 func (d *Device) colorLayout(base vk.DescriptorSetLayout) (vk.PipelineLayout, error) {
-	sets := [2]vk.DescriptorSetLayout{base, d.comp.color.setLayout}
-	push := vk.PushConstantRange{StageFlags: vk.ShaderStageFlags(vk.ShaderStageVertexBit | vk.ShaderStageFragmentBit), Size: uint32(unsafe.Sizeof(drawConstants{}))}
-	lci := vk.PipelineLayoutCreateInfo{SType: vk.StructureTypePipelineLayoutCreateInfo, SetLayoutCount: 2, PSetLayouts: &sets[0], PushConstantRangeCount: 1, PPushConstantRanges: &push}
-	var layout vk.PipelineLayout
-	if r := d.cmds.CreatePipelineLayout(d.device, &lci, nil, &layout); r != vk.Success {
-		return 0, fmt.Errorf("vkCreatePipelineLayout: %w", resultError(r))
-	}
-	return layout, nil
+	return d.pipelineLayout(base, d.comp.color.setLayout)
 }
 
 func (cs *colorState) destroy(d *Device) {

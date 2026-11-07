@@ -20,6 +20,11 @@ import _ "embed" // the compiled shaders below
 //go:generate glslangValidator -V --quiet -DCOLOR -o shaders/grad.color.frag.spv shaders/grad.frag
 //go:generate glslangValidator -V --quiet -DCOLOR -o shaders/ycbcr444.color.frag.spv shaders/ycbcr444.frag
 //go:generate glslangValidator -V --quiet -DCOLOR -o shaders/ycbcrplanes.color.frag.spv shaders/ycbcrplanes.frag
+//go:generate glslangValidator -V --quiet -DCUT -o shaders/comp.cut.frag.spv shaders/comp.frag
+//go:generate glslangValidator -V --quiet -DCUT -DCOLOR -o shaders/comp.cut.color.frag.spv shaders/comp.frag
+//go:generate glslangValidator -V --quiet -DCUT -o shaders/glass.cut.frag.spv shaders/glass.frag
+//go:generate glslangValidator -V --quiet -DCUT -DCOLOR -o shaders/glass.cut.color.frag.spv shaders/glass.frag
+//go:generate glslangValidator -V --quiet -DCUT -o shaders/fill.cut.frag.spv shaders/fill.frag
 
 //go:embed shaders/prim.vert.spv
 var primVert []byte
@@ -71,3 +76,18 @@ var ycbcr444ColorFrag []byte
 
 //go:embed shaders/ycbcrplanes.color.frag.spv
 var ycbcrPlanesColorFrag []byte
+
+//go:embed shaders/comp.cut.frag.spv
+var compCutFrag []byte
+
+//go:embed shaders/comp.cut.color.frag.spv
+var compCutColorFrag []byte
+
+//go:embed shaders/glass.cut.frag.spv
+var glassCutFrag []byte
+
+//go:embed shaders/glass.cut.color.frag.spv
+var glassCutColorFrag []byte
+
+//go:embed shaders/fill.cut.frag.spv
+var fillCutFrag []byte

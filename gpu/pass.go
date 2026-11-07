@@ -33,6 +33,9 @@ type Pass struct {
 	// color is what SetColor last set; colorSet holds it for the shaders.
 	color    *ColorTransform
 	colorSet vk.DescriptorSet
+	// cutTex and cutSet are what SetCut last set, for the shaders.
+	cutTex *Texture
+	cutSet vk.DescriptorSet
 	// incomplete is whether a draw was skipped, its pipeline still on the
 	// worker Prepare started.
 	incomplete bool
@@ -72,6 +75,9 @@ type passOp struct {
 	pipe   vk.Pipeline
 	layout vk.PipelineLayout
 	color  vk.DescriptorSet
+	// cut is the set of the cut the op draws through, over cutTex.
+	cut    vk.DescriptorSet
+	cutTex *Texture
 	dc     drawConstants
 	// opaque marks a pipeline with blending off.
 	opaque bool
@@ -101,6 +107,7 @@ func (d *Device) Begin(t *Target, damage []image.Rectangle) (*Pass, error) {
 		return nil, err
 	}
 	d.settleColors()
+	d.settleCuts()
 	p := &d.reused
 	*p = Pass{d: d, t: t, ct: ct, damage: d.passRects.disjoint(damage, image.Rectangle{Max: t.Size()}), ops: d.passOps[:0]}
 	d.active = p
@@ -211,7 +218,13 @@ func (p *Pass) FillRect(r image.Rectangle, c color.RGBA, m Mask) {
 	dc := drawConstants{extra: [2][4]float32{p.coloredFill(col)}}
 	dc.setMask(m)
 	op := passOp{kind: opFill, dst: r, pipe: p.ct.fill, layout: p.d.comp.layout, dc: dc}
-	if c.A == 0xff && m == (Mask{}) {
+	switch {
+	case p.cutSet != 0:
+		if err := p.cutOp(&op, cutFragFill); err != nil {
+			p.fail(err)
+			return
+		}
+	case c.A == 0xff && m == (Mask{}):
 		if op.pipe, op.opaque, err = p.d.opaquePipeline(p.ct, opaqueFill); err != nil {
 			p.fail(err)
 			return
@@ -411,15 +424,23 @@ func (p *Pass) DrawTexture(t *Texture, src FRect, dst image.Rectangle, tr Transf
 	}
 	dc := drawConstants{target: [4]float32{2: alpha}}
 	dc.setMask(m)
-	h, v := tr.axes()
-	for i, corner := range [4][2]float64{{0, 0}, {1, 0}, {0, 1}, {1, 1}} {
-		var s [2]float64
-		s[h.source] = flip(corner[0], h.reversed)
-		s[v.source] = flip(corner[1], v.reversed)
-		dc.extra[i/2][i%2*2] = float32((src.X + float64(s[0]*src.W)) / float64(t.w))
-		dc.extra[i/2][i%2*2+1] = float32((src.Y + float64(s[1]*src.H)) / float64(t.h))
+	for i, uv := range textureCorners(src, tr, image.Pt(t.w, t.h)) {
+		dc.extra[i/2][i%2*2], dc.extra[i/2][i%2*2+1] = uv[0], uv[1]
 	}
 	op := passOp{kind: opTexture, dst: dst, tex: t, set: set, pipe: p.ct.tex, layout: p.d.comp.layout, dc: dc}
+	if p.cutSet != 0 {
+		if t.yuv() {
+			p.fail(errors.New("gpu: a cut DrawTexture of a YCbCr texture"))
+			return
+		}
+		op.color = p.colorSet
+		if err := p.cutOp(&op, cutFragTexture); err != nil {
+			p.fail(err)
+			return
+		}
+		p.add(op)
+		return
+	}
 	if p.colorSet != 0 {
 		op.color = p.colorSet
 		if op.pipe, op.layout, err = p.d.colorTexturePipeline(t, p.ct, p.t.s.vf); err != nil {
@@ -557,7 +578,7 @@ func (p *Pass) submit() error {
 		return errors.New("gpu: End on a closed target")
 	}
 	for _, op := range p.ops {
-		if op.tex != nil && op.tex.closed {
+		if op.tex != nil && op.tex.closed || op.cutTex != nil && op.cutTex.closed {
 			return errors.New("gpu: a pass drew a texture closed before End")
 		}
 	}
@@ -584,16 +605,21 @@ func (p *Pass) record(cb vk.CommandBuffer) {
 	ops := p.ops[max(start, 0):]
 	for i := range ops {
 		op := &ops[i]
-		if op.tex == nil || !p.touchesDamage(op.dst) {
+		if !p.touchesDamage(op.dst) {
 			continue
 		}
-		if op.tex.foreign && !slices.Contains(foreign, op.tex) {
-			foreign = append(foreign, op.tex)
-			op.tex.acquireForeign(cb)
-			d.passWork.barriers++
-		}
-		if op.tex.surf != nil {
-			op.tex.surf.to(cb, vk.ImageLayoutShaderReadOnlyOptimal)
+		for _, t := range [2]*Texture{op.tex, op.cutTex} {
+			if t == nil {
+				continue
+			}
+			if t.foreign && !slices.Contains(foreign, t) {
+				foreign = append(foreign, t)
+				t.acquireForeign(cb)
+				d.passWork.barriers++
+			}
+			if t.surf != nil {
+				t.surf.to(cb, vk.ImageLayoutShaderReadOnlyOptimal)
+			}
 		}
 	}
 	s.to(cb, vk.ImageLayoutColorAttachmentOptimal)
@@ -605,7 +631,8 @@ func (p *Pass) record(cb vk.CommandBuffer) {
 	stages := vk.ShaderStageFlags(vk.ShaderStageVertexBit | vk.ShaderStageFragmentBit)
 	var bound vk.Pipeline
 	boundOpaque := false
-	var set, colorBound vk.DescriptorSet
+	var set, colorBound, cutBound vk.DescriptorSet
+	var cutAt uint32
 	var scissor image.Rectangle
 	for i := range ops {
 		op := &ops[i]
@@ -626,11 +653,27 @@ func (p *Pass) record(cb vk.CommandBuffer) {
 		}
 		if op.kind == opTexture && op.set != set {
 			d.cmds.CmdBindDescriptorSets(cb, vk.PipelineBindPointGraphics, op.layout, 0, 1, &op.set, 0, nil)
-			set, colorBound = op.set, 0
+			set, colorBound, cutBound = op.set, 0, 0
 		}
 		if op.color != 0 && op.color != colorBound {
 			d.cmds.CmdBindDescriptorSets(cb, vk.PipelineBindPointGraphics, op.layout, 1, 1, &op.color, 0, nil)
 			colorBound = op.color
+			if cutAt == 1 {
+				cutBound = 0
+			}
+		}
+		if op.cut != 0 {
+			at := uint32(1)
+			if op.color != 0 {
+				at = 2
+			}
+			if op.cut != cutBound || at != cutAt {
+				d.cmds.CmdBindDescriptorSets(cb, vk.PipelineBindPointGraphics, op.layout, at, 1, &op.cut, 0, nil)
+				cutBound, cutAt = op.cut, at
+				if at == 1 {
+					colorBound = 0
+				}
+			}
 		}
 		op.dc.rect = [4]float32{float32(op.dst.Min.X), float32(op.dst.Min.Y), float32(op.dst.Dx()), float32(op.dst.Dy())}
 		op.dc.target[0], op.dc.target[1] = float32(s.w), float32(s.h)

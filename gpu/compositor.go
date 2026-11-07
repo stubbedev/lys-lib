@@ -27,6 +27,7 @@ type compositor struct {
 	yuv444   map[yuv444Key]*yuv444Kind
 	planes   map[planesKey]*planesKind
 	color    colorState
+	cut      cutState
 }
 
 // The YUV shaders' places in a compositor's frags.
@@ -42,6 +43,8 @@ type compTarget struct {
 	// opaqueTex and opaqueFill draw tex's and fill's shaders with
 	// blending off, for what covers the target whole.
 	opaqueTex, opaqueFill vk.Pipeline
+	// cut are the cut variants, by their places in cutState.frags.
+	cut [cutFrags]vk.Pipeline
 }
 
 type drawConstants struct {
@@ -198,7 +201,7 @@ func (d *Device) opaquePipeline(ct *compTarget, kind opaqueKind) (pipe vk.Pipeli
 }
 
 func (ct *compTarget) destroy(d *Device) {
-	for _, p := range []vk.Pipeline{ct.tex, ct.fill, ct.grad, ct.kawase, ct.goo, ct.glass, ct.colorTex, ct.colorGrad, ct.colorGlass, ct.opaqueTex, ct.opaqueFill} {
+	for _, p := range append([]vk.Pipeline{ct.tex, ct.fill, ct.grad, ct.kawase, ct.goo, ct.glass, ct.colorTex, ct.colorGrad, ct.colorGlass, ct.opaqueTex, ct.opaqueFill}, ct.cut[:]...) {
 		if p != 0 {
 			d.cmds.DestroyPipeline(d.device, p, nil)
 		}
@@ -297,6 +300,7 @@ func (d *Device) destroyComp() {
 		k.destroy(d)
 	}
 	c.color.destroy(d)
+	c.cut.destroy(d)
 	c.sets.destroy(d)
 	for _, m := range append([]vk.ShaderModule{c.vert, c.glass}, c.frags[:]...) {
 		if m != 0 {

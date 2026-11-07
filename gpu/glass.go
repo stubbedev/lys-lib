@@ -131,10 +131,14 @@ func (p *Pass) DrawGlass(t *Texture, src FRect, dst image.Rectangle, alpha float
 		return
 	}
 	op := passOp{kind: opTexture, dst: dst, tex: t, set: set, layout: p.d.comp.layout}
-	if p.colorSet != 0 {
+	switch {
+	case p.cutSet != 0:
+		op.color = p.colorSet
+		err = p.cutOp(&op, cutFragGlass)
+	case p.colorSet != 0:
 		op.pipe, err = p.d.colorGlassPipeline(p.ct)
 		op.layout, op.color = p.d.comp.color.layout, p.colorSet
-	} else {
+	default:
 		op.pipe, err = p.d.glassPipeline(p.ct)
 	}
 	if err != nil {
