@@ -22,6 +22,9 @@ type fakeHost struct {
 	caller    dbustest.Var[Caller]
 	dismissed dbustest.Var[[]string]
 	auth      dbustest.Var[AuthReply]
+	// triggers, when set, is BindShortcuts' reply in place of every
+	// row kept as offered.
+	triggers dbustest.Var[[]ShortcutTrigger]
 }
 
 func (f *fakeHost) record(c Caller, args ...any) {
@@ -76,6 +79,21 @@ func (f *fakeHost) Password(c Caller, r PasswordRequest) (bool, string, []Select
 		return false, "", nil
 	}
 	return true, "typed", []Selection{{ID: r.Choices[0].ID, Value: "true"}}
+}
+
+func (f *fakeHost) BindShortcuts(c Caller, r ShortcutsRequest) (bool, []ShortcutTrigger) {
+	f.record(c, r)
+	if !f.yes {
+		return false, nil
+	}
+	if set := f.triggers.Load(); set != nil {
+		return true, set
+	}
+	kept := make([]ShortcutTrigger, len(r.Rows))
+	for i, row := range r.Rows {
+		kept[i] = ShortcutTrigger{ID: row.ID, Trigger: row.Trigger}
+	}
+	return true, kept
 }
 
 func (f *fakeHost) Authenticate(c Caller, r AuthRequest) AuthReply {
@@ -194,6 +212,19 @@ func TestRoundTrip(t *testing.T) {
 		}
 		askedBy("Password", pw)
 
+		shortcuts := ShortcutsRequest{Title: "Assign", Note: "note", Rows: []ShortcutRow{
+			{ID: "print", Description: "Print", Trigger: "Ctrl+Alt+P"},
+			{ID: "talk", Description: "Talk", Trigger: "Super+F9", Refusal: "Super+F9 is bound"},
+		}}
+		bound, triggers, err := c.BindShortcuts(ctx, caller, shortcuts)
+		if err != nil || bound != yes {
+			t.Errorf("BindShortcuts (yes=%v) = %v, %v", yes, bound, err)
+		}
+		askedBy("BindShortcuts", shortcuts)
+		if want := map[bool][]ShortcutTrigger{true: {{"print", "Ctrl+Alt+P"}, {"talk", "Super+F9"}}}[yes]; !slices.Equal(triggers, want) {
+			t.Errorf("BindShortcuts (yes=%v) triggers %v, want %v", yes, triggers, want)
+		}
+
 		auth := AuthRequest{
 			Message: "Authentication is needed to run a program as another user", Icon: "dialog-password",
 			Details:    []AuthDetail{{"Program", "/usr/bin/true"}, {"Command line", "true --flag"}},
@@ -264,6 +295,10 @@ func TestCallsWithoutHostFail(t *testing.T) {
 		{"ChooseDevices", func() error { _, _, err := c.ChooseDevices(ctx, Caller{}, nil); return err }},
 		{"ConfirmInstall", func() error { _, _, err := c.ConfirmInstall(ctx, Caller{}, LauncherRequest{}); return err }},
 		{"Password", func() error { _, _, _, err := c.Password(ctx, Caller{}, PasswordRequest{}); return err }},
+		{"BindShortcuts", func() error {
+			_, _, err := c.BindShortcuts(ctx, Caller{}, ShortcutsRequest{Rows: []ShortcutRow{{ID: "a"}}})
+			return err
+		}},
 		{"Authenticate", func() error { _, err := c.Authenticate(ctx, Caller{}, AuthRequest{}); return err }},
 		{"ShowAuthentication", func() error { return c.ShowAuthentication(ctx, Caller{}, AuthRequest{}) }},
 		{"Dismiss", func() error { return c.Dismiss(ctx, "") }},
@@ -543,5 +578,43 @@ func TestWatchAuthenticationWithoutHostFails(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "/r/1") || !strings.Contains(err.Error(), ServiceName) {
 		t.Errorf("WatchAuthentication = %v, want an error naming the handle and %s", err, ServiceName)
+	}
+}
+
+func TestBindShortcutsRefusesMalformedRequestsAndReplies(t *testing.T) {
+	bus := dbustest.Start(t)
+	host := &fakeHost{yes: true}
+	release, err := NewDaemon(host).Export(bus.Conn(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(release)
+	c, ctx := NewClient(bus.Conn(t)), context.Background()
+	for name, r := range map[string]ShortcutsRequest{
+		"no shortcuts": {Title: "T"},
+		"an id twice":  {Rows: []ShortcutRow{{ID: "a"}, {ID: "a"}}},
+	} {
+		host.asked.Store([]any{"untouched"})
+		if ok, _, err := c.BindShortcuts(ctx, Caller{}, r); err == nil || ok {
+			t.Errorf("%s: BindShortcuts = %v, %v; want an error", name, ok, err)
+		}
+		if got := host.asked.Load(); !reflect.DeepEqual(got, []any{"untouched"}) {
+			t.Errorf("%s reached the host with %#v", name, got)
+		}
+	}
+	r := ShortcutsRequest{Rows: []ShortcutRow{{ID: "a"}, {ID: "b"}}}
+	for name, reply := range map[string][]ShortcutTrigger{
+		"a shortcut missing":  {{ID: "a"}},
+		"a shortcut twice":    {{ID: "a"}, {ID: "a"}},
+		"an unknown shortcut": {{ID: "a"}, {ID: "c"}},
+	} {
+		host.triggers.Store(reply)
+		if ok, triggers, err := c.BindShortcuts(ctx, Caller{}, r); err == nil || ok || triggers != nil {
+			t.Errorf("host replying %s: BindShortcuts = %v, %v, %v; want an error", name, ok, triggers, err)
+		}
+	}
+	host.triggers.Store([]ShortcutTrigger{{ID: "b", Trigger: "Super+F9"}, {ID: "a"}})
+	if ok, triggers, err := c.BindShortcuts(ctx, Caller{}, r); err != nil || !ok || len(triggers) != 2 {
+		t.Errorf("a reply in another order or with an unassigned shortcut = %v, %v, %v", ok, triggers, err)
 	}
 }

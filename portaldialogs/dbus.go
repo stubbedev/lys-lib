@@ -1,8 +1,9 @@
 // Package portaldialogs is the dev.stubbe.lys.PortalDialogs1 contract:
 // the native dialogs lys-shell shows behind the desktop-portal backend's
-// Access, Account, AppChooser, DynamicLauncher, Usb and Wallpaper
-// preview, in place of xdg-desktop-portal-gtk, and the password prompt
-// and administrator authentication other lys processes ask through it. It holds the requests and replies,
+// Access, Account, AppChooser, DynamicLauncher, GlobalShortcuts, Usb and
+// Wallpaper preview, in place of xdg-desktop-portal-gtk, and the password
+// prompt and administrator authentication other lys processes ask through
+// it. It holds the requests and replies,
 // the Host a shell implements, the Daemon serving one, the Client
 // calling it, and what every portal dialog is told about the request it
 // serves: its Caller and the Choices it carries.
@@ -137,6 +138,10 @@ type Host interface {
 	// Password replies whether the user entered a password and, when
 	// they did, it and what they picked for each choice.
 	Password(Caller, PasswordRequest) (bool, string, []Selection)
+	// BindShortcuts lets the user give each shortcut a trigger, starting
+	// from the request's, and replies whether they confirmed and, when
+	// they did, the trigger they left on every shortcut.
+	BindShortcuts(Caller, ShortcutsRequest) (bool, []ShortcutTrigger)
 	// Authenticate shows the authentication dialog for the request at
 	// the caller's handle, or updates the one showing, and replies once
 	// the user answers its prompt, cancels or picks another identity.
@@ -210,6 +215,21 @@ func (d *Daemon) ConfirmInstall(c Caller, r LauncherRequest) (bool, string, *dbu
 func (d *Daemon) Password(c Caller, r PasswordRequest) (bool, string, []Selection, *dbus.Error) {
 	ok, password, picked := d.host.Password(c, r)
 	return ok, password, picked, nil
+}
+
+// BindShortcuts is the global shortcuts editor.
+func (d *Daemon) BindShortcuts(c Caller, r ShortcutsRequest) (bool, []ShortcutTrigger, *dbus.Error) {
+	if err := r.check(); err != nil {
+		return false, nil, dbusx.InvalidArgs("BindShortcuts: " + err.Error())
+	}
+	ok, triggers := d.host.BindShortcuts(c, r)
+	if !ok {
+		return false, []ShortcutTrigger{}, nil
+	}
+	if err := r.checkReply(triggers); err != nil {
+		return false, nil, dbusx.Failed("BindShortcuts: host replied " + err.Error())
+	}
+	return true, triggers, nil
 }
 
 // Authenticate is one prompt of an administrator authentication.
@@ -331,6 +351,21 @@ func (c *Client) ConfirmInstall(ctx context.Context, caller Caller, r LauncherRe
 func (c *Client) Password(ctx context.Context, caller Caller, r PasswordRequest) (ok bool, password string, picked []Selection, err error) {
 	err = c.call(ctx, "Password", caller, r).Store(&ok, &password, &picked)
 	return ok, password, picked, err
+}
+
+// BindShortcuts lets the user give each shortcut of r a trigger; ok is
+// false when they cancelled, else triggers names each shortcut once.
+func (c *Client) BindShortcuts(ctx context.Context, caller Caller, r ShortcutsRequest) (ok bool, triggers []ShortcutTrigger, err error) {
+	if err := c.call(ctx, "BindShortcuts", caller, r).Store(&ok, &triggers); err != nil {
+		return false, nil, err
+	}
+	if !ok {
+		return false, nil, nil
+	}
+	if err := r.checkReply(triggers); err != nil {
+		return false, nil, fmt.Errorf("bind shortcuts %s: %w", caller.Handle, err)
+	}
+	return true, triggers, nil
 }
 
 // Dismiss takes down the dialog showing for the request at handle.

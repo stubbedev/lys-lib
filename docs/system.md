@@ -139,8 +139,9 @@ result is a `*dbus.Error`, and `Failed` and `InvalidArgs` make the common ones.
 
 `portaldialogs` is the `dev.stubbe.lys.PortalDialogs1` contract: the native
 dialogs lys-shell shows behind the desktop-portal backend's Access, Account,
-AppChooser, DynamicLauncher, Usb and Wallpaper preview, and the password prompt
-and administrator authentication other lys processes ask through it.
+AppChooser, DynamicLauncher, GlobalShortcuts (`BindShortcuts`, a trigger per
+shortcut), Usb and Wallpaper preview, and the password prompt and administrator
+authentication other lys processes ask through it.
 
 - `Host` is what a shell implements. Each call blocks until the user answers or
   the request is dismissed.
