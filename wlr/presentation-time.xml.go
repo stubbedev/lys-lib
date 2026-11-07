@@ -64,15 +64,15 @@ func (p *WpPresentation) Feedback(Surface *Surface) (*WpPresentationFeedback, er
 func (p *WpPresentation) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateWpPresentationClockIds) > 0 {
 			ev := WpPresentationClockIdEvent{}
 			ev.ClkId = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateWpPresentationClockIds {
 				h.HandleWpPresentationClockId(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }
@@ -133,16 +133,17 @@ func NewWpPresentationFeedback(ctx *Context) *WpPresentationFeedback {
 func (p *WpPresentationFeedback) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateWpPresentationFeedbackSyncOutputs) > 0 {
 			ev := WpPresentationFeedbackSyncOutputEvent{}
 			ev.Output = SafeCast[*Output](event.Proxy(p.Context()))
-			p.mu.RLock()
 			for h := range p.privateWpPresentationFeedbackSyncOutputs {
 				h.HandleWpPresentationFeedbackSyncOutput(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateWpPresentationFeedbackPresenteds) > 0 {
 			ev := WpPresentationFeedbackPresentedEvent{}
 			ev.TvSecHi = event.Uint32()
@@ -152,21 +153,20 @@ func (p *WpPresentationFeedback) Dispatch(event *Event) {
 			ev.SeqHi = event.Uint32()
 			ev.SeqLo = event.Uint32()
 			ev.Flags = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateWpPresentationFeedbackPresenteds {
 				h.HandleWpPresentationFeedbackPresented(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 2:
+		p.mu.RLock()
 		if len(p.privateWpPresentationFeedbackDiscardeds) > 0 {
 			ev := WpPresentationFeedbackDiscardedEvent{}
-			p.mu.RLock()
 			for h := range p.privateWpPresentationFeedbackDiscardeds {
 				h.HandleWpPresentationFeedbackDiscarded(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }

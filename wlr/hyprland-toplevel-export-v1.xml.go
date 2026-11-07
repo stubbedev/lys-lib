@@ -105,83 +105,83 @@ func (p *ToplevelExportFrameV1) Destroy() error {
 func (p *ToplevelExportFrameV1) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateToplevelExportFrameV1Buffers) > 0 {
 			ev := ToplevelExportFrameV1BufferEvent{}
 			ev.Format = event.Uint32()
 			ev.Width = event.Uint32()
 			ev.Height = event.Uint32()
 			ev.Stride = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateToplevelExportFrameV1Buffers {
 				h.HandleToplevelExportFrameV1Buffer(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateToplevelExportFrameV1Damages) > 0 {
 			ev := ToplevelExportFrameV1DamageEvent{}
 			ev.X = event.Uint32()
 			ev.Y = event.Uint32()
 			ev.Width = event.Uint32()
 			ev.Height = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateToplevelExportFrameV1Damages {
 				h.HandleToplevelExportFrameV1Damage(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 2:
+		p.mu.RLock()
 		if len(p.privateToplevelExportFrameV1Flagss) > 0 {
 			ev := ToplevelExportFrameV1FlagsEvent{}
 			ev.Flags = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateToplevelExportFrameV1Flagss {
 				h.HandleToplevelExportFrameV1Flags(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 3:
+		p.mu.RLock()
 		if len(p.privateToplevelExportFrameV1Readys) > 0 {
 			ev := ToplevelExportFrameV1ReadyEvent{}
 			ev.TvSecHi = event.Uint32()
 			ev.TvSecLo = event.Uint32()
 			ev.TvNsec = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateToplevelExportFrameV1Readys {
 				h.HandleToplevelExportFrameV1Ready(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 4:
+		p.mu.RLock()
 		if len(p.privateToplevelExportFrameV1Faileds) > 0 {
 			ev := ToplevelExportFrameV1FailedEvent{}
-			p.mu.RLock()
 			for h := range p.privateToplevelExportFrameV1Faileds {
 				h.HandleToplevelExportFrameV1Failed(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 5:
+		p.mu.RLock()
 		if len(p.privateToplevelExportFrameV1LinuxDmabufs) > 0 {
 			ev := ToplevelExportFrameV1LinuxDmabufEvent{}
 			ev.Format = event.Uint32()
 			ev.Width = event.Uint32()
 			ev.Height = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateToplevelExportFrameV1LinuxDmabufs {
 				h.HandleToplevelExportFrameV1LinuxDmabuf(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 6:
+		p.mu.RLock()
 		if len(p.privateToplevelExportFrameV1BufferDones) > 0 {
 			ev := ToplevelExportFrameV1BufferDoneEvent{}
-			p.mu.RLock()
 			for h := range p.privateToplevelExportFrameV1BufferDones {
 				h.HandleToplevelExportFrameV1BufferDone(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }

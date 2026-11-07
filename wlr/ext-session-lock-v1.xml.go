@@ -114,23 +114,23 @@ func (p *SessionLockV1) UnlockAndDestroy() error {
 func (p *SessionLockV1) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateSessionLockV1Lockeds) > 0 {
 			ev := SessionLockV1LockedEvent{}
-			p.mu.RLock()
 			for h := range p.privateSessionLockV1Lockeds {
 				h.HandleSessionLockV1Locked(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateSessionLockV1Finisheds) > 0 {
 			ev := SessionLockV1FinishedEvent{}
-			p.mu.RLock()
 			for h := range p.privateSessionLockV1Finisheds {
 				h.HandleSessionLockV1Finished(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }
@@ -224,17 +224,17 @@ func (p *SessionLockSurfaceV1) AckConfigure(Serial uint32) error {
 func (p *SessionLockSurfaceV1) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateSessionLockSurfaceV1Configures) > 0 {
 			ev := SessionLockSurfaceV1ConfigureEvent{}
 			ev.Serial = event.Uint32()
 			ev.Width = event.Uint32()
 			ev.Height = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateSessionLockSurfaceV1Configures {
 				h.HandleSessionLockSurfaceV1Configure(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }

@@ -56,6 +56,7 @@ func (p *ZwlrForeignToplevelManagerV1) Stop() error {
 func (p *ZwlrForeignToplevelManagerV1) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateZwlrForeignToplevelManagerV1Toplevels) > 0 {
 			ev := ZwlrForeignToplevelManagerV1ToplevelEvent{}
 			ev.Toplevel = func() *ZwlrForeignToplevelHandleV1 {
@@ -63,21 +64,20 @@ func (p *ZwlrForeignToplevelManagerV1) Dispatch(event *Event) {
 				ret.initZwlrForeignToplevelHandleV1()
 				return event.NewId(ret, p.Context()).(*ZwlrForeignToplevelHandleV1)
 			}()
-			p.mu.RLock()
 			for h := range p.privateZwlrForeignToplevelManagerV1Toplevels {
 				h.HandleZwlrForeignToplevelManagerV1Toplevel(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateZwlrForeignToplevelManagerV1Finisheds) > 0 {
 			ev := ZwlrForeignToplevelManagerV1FinishedEvent{}
-			p.mu.RLock()
 			for h := range p.privateZwlrForeignToplevelManagerV1Finisheds {
 				h.HandleZwlrForeignToplevelManagerV1Finished(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }
@@ -235,83 +235,83 @@ func (p *ZwlrForeignToplevelHandleV1) UnsetFullscreen() error {
 func (p *ZwlrForeignToplevelHandleV1) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateZwlrForeignToplevelHandleV1Titles) > 0 {
 			ev := ZwlrForeignToplevelHandleV1TitleEvent{}
 			ev.Title = event.String()
-			p.mu.RLock()
 			for h := range p.privateZwlrForeignToplevelHandleV1Titles {
 				h.HandleZwlrForeignToplevelHandleV1Title(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateZwlrForeignToplevelHandleV1AppIds) > 0 {
 			ev := ZwlrForeignToplevelHandleV1AppIdEvent{}
 			ev.AppId = event.String()
-			p.mu.RLock()
 			for h := range p.privateZwlrForeignToplevelHandleV1AppIds {
 				h.HandleZwlrForeignToplevelHandleV1AppId(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 2:
+		p.mu.RLock()
 		if len(p.privateZwlrForeignToplevelHandleV1OutputEnters) > 0 {
 			ev := ZwlrForeignToplevelHandleV1OutputEnterEvent{}
 			ev.Output = SafeCast[*Output](event.Proxy(p.Context()))
-			p.mu.RLock()
 			for h := range p.privateZwlrForeignToplevelHandleV1OutputEnters {
 				h.HandleZwlrForeignToplevelHandleV1OutputEnter(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 3:
+		p.mu.RLock()
 		if len(p.privateZwlrForeignToplevelHandleV1OutputLeaves) > 0 {
 			ev := ZwlrForeignToplevelHandleV1OutputLeaveEvent{}
 			ev.Output = SafeCast[*Output](event.Proxy(p.Context()))
-			p.mu.RLock()
 			for h := range p.privateZwlrForeignToplevelHandleV1OutputLeaves {
 				h.HandleZwlrForeignToplevelHandleV1OutputLeave(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 4:
+		p.mu.RLock()
 		if len(p.privateZwlrForeignToplevelHandleV1States) > 0 {
 			ev := ZwlrForeignToplevelHandleV1StateEvent{}
 			ev.State = event.Array()
-			p.mu.RLock()
 			for h := range p.privateZwlrForeignToplevelHandleV1States {
 				h.HandleZwlrForeignToplevelHandleV1State(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 5:
+		p.mu.RLock()
 		if len(p.privateZwlrForeignToplevelHandleV1Dones) > 0 {
 			ev := ZwlrForeignToplevelHandleV1DoneEvent{}
-			p.mu.RLock()
 			for h := range p.privateZwlrForeignToplevelHandleV1Dones {
 				h.HandleZwlrForeignToplevelHandleV1Done(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 6:
+		p.mu.RLock()
 		if len(p.privateZwlrForeignToplevelHandleV1Closeds) > 0 {
 			ev := ZwlrForeignToplevelHandleV1ClosedEvent{}
-			p.mu.RLock()
 			for h := range p.privateZwlrForeignToplevelHandleV1Closeds {
 				h.HandleZwlrForeignToplevelHandleV1Closed(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 7:
+		p.mu.RLock()
 		if len(p.privateZwlrForeignToplevelHandleV1Parents) > 0 {
 			ev := ZwlrForeignToplevelHandleV1ParentEvent{}
 			ev.Parent = SafeCast[*ZwlrForeignToplevelHandleV1](event.Proxy(p.Context()))
-			p.mu.RLock()
 			for h := range p.privateZwlrForeignToplevelHandleV1Parents {
 				h.HandleZwlrForeignToplevelHandleV1Parent(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }

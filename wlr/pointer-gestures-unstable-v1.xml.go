@@ -88,42 +88,42 @@ func (p *ZwpGestureSwipeV1) Destroy() error {
 func (p *ZwpGestureSwipeV1) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateZwpGestureSwipeV1Begins) > 0 {
 			ev := ZwpGestureSwipeV1BeginEvent{}
 			ev.Serial = event.Uint32()
 			ev.Time = event.Uint32()
 			ev.Surface = SafeCast[*Surface](event.Proxy(p.Context()))
 			ev.Fingers = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateZwpGestureSwipeV1Begins {
 				h.HandleZwpGestureSwipeV1Begin(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateZwpGestureSwipeV1Updates) > 0 {
 			ev := ZwpGestureSwipeV1UpdateEvent{}
 			ev.Time = event.Uint32()
 			ev.Dx = event.Float32()
 			ev.Dy = event.Float32()
-			p.mu.RLock()
 			for h := range p.privateZwpGestureSwipeV1Updates {
 				h.HandleZwpGestureSwipeV1Update(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 2:
+		p.mu.RLock()
 		if len(p.privateZwpGestureSwipeV1Ends) > 0 {
 			ev := ZwpGestureSwipeV1EndEvent{}
 			ev.Serial = event.Uint32()
 			ev.Time = event.Uint32()
 			ev.Cancelled = event.Int32()
-			p.mu.RLock()
 			for h := range p.privateZwpGestureSwipeV1Ends {
 				h.HandleZwpGestureSwipeV1End(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }
@@ -261,19 +261,20 @@ func (p *ZwpGesturePinchV1) Destroy() error {
 func (p *ZwpGesturePinchV1) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateZwpGesturePinchV1Begins) > 0 {
 			ev := ZwpGesturePinchV1BeginEvent{}
 			ev.Serial = event.Uint32()
 			ev.Time = event.Uint32()
 			ev.Surface = SafeCast[*Surface](event.Proxy(p.Context()))
 			ev.Fingers = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateZwpGesturePinchV1Begins {
 				h.HandleZwpGesturePinchV1Begin(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateZwpGesturePinchV1Updates) > 0 {
 			ev := ZwpGesturePinchV1UpdateEvent{}
 			ev.Time = event.Uint32()
@@ -281,24 +282,23 @@ func (p *ZwpGesturePinchV1) Dispatch(event *Event) {
 			ev.Dy = event.Float32()
 			ev.Scale = event.Float32()
 			ev.Rotation = event.Float32()
-			p.mu.RLock()
 			for h := range p.privateZwpGesturePinchV1Updates {
 				h.HandleZwpGesturePinchV1Update(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 2:
+		p.mu.RLock()
 		if len(p.privateZwpGesturePinchV1Ends) > 0 {
 			ev := ZwpGesturePinchV1EndEvent{}
 			ev.Serial = event.Uint32()
 			ev.Time = event.Uint32()
 			ev.Cancelled = event.Int32()
-			p.mu.RLock()
 			for h := range p.privateZwpGesturePinchV1Ends {
 				h.HandleZwpGesturePinchV1End(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }
@@ -438,30 +438,30 @@ func (p *ZwpGestureHoldV1) Destroy() error {
 func (p *ZwpGestureHoldV1) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateZwpGestureHoldV1Begins) > 0 {
 			ev := ZwpGestureHoldV1BeginEvent{}
 			ev.Serial = event.Uint32()
 			ev.Time = event.Uint32()
 			ev.Surface = SafeCast[*Surface](event.Proxy(p.Context()))
 			ev.Fingers = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateZwpGestureHoldV1Begins {
 				h.HandleZwpGestureHoldV1Begin(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateZwpGestureHoldV1Ends) > 0 {
 			ev := ZwpGestureHoldV1EndEvent{}
 			ev.Serial = event.Uint32()
 			ev.Time = event.Uint32()
 			ev.Cancelled = event.Int32()
-			p.mu.RLock()
 			for h := range p.privateZwpGestureHoldV1Ends {
 				h.HandleZwpGestureHoldV1End(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }

@@ -86,6 +86,7 @@ func (p *ZwpPrimarySelectionDeviceV1) Destroy() error {
 func (p *ZwpPrimarySelectionDeviceV1) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateZwpPrimarySelectionDeviceV1DataOffers) > 0 {
 			ev := ZwpPrimarySelectionDeviceV1DataOfferEvent{}
 			ev.Offer = func() *ZwpPrimarySelectionOfferV1 {
@@ -93,22 +94,21 @@ func (p *ZwpPrimarySelectionDeviceV1) Dispatch(event *Event) {
 				ret.initZwpPrimarySelectionOfferV1()
 				return event.NewId(ret, p.Context()).(*ZwpPrimarySelectionOfferV1)
 			}()
-			p.mu.RLock()
 			for h := range p.privateZwpPrimarySelectionDeviceV1DataOffers {
 				h.HandleZwpPrimarySelectionDeviceV1DataOffer(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateZwpPrimarySelectionDeviceV1Selections) > 0 {
 			ev := ZwpPrimarySelectionDeviceV1SelectionEvent{}
 			ev.Id = SafeCast[*ZwpPrimarySelectionOfferV1](event.Proxy(p.Context()))
-			p.mu.RLock()
 			for h := range p.privateZwpPrimarySelectionDeviceV1Selections {
 				h.HandleZwpPrimarySelectionDeviceV1Selection(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }
@@ -206,15 +206,15 @@ func (p *ZwpPrimarySelectionOfferV1) Destroy() error {
 func (p *ZwpPrimarySelectionOfferV1) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateZwpPrimarySelectionOfferV1Offers) > 0 {
 			ev := ZwpPrimarySelectionOfferV1OfferEvent{}
 			ev.MimeType = event.String()
-			p.mu.RLock()
 			for h := range p.privateZwpPrimarySelectionOfferV1Offers {
 				h.HandleZwpPrimarySelectionOfferV1Offer(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }
@@ -286,25 +286,25 @@ func (p *ZwpPrimarySelectionSourceV1) Destroy() error {
 func (p *ZwpPrimarySelectionSourceV1) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateZwpPrimarySelectionSourceV1Sends) > 0 {
 			ev := ZwpPrimarySelectionSourceV1SendEvent{}
 			ev.MimeType = event.String()
 			ev.Fd, ev.FdError = event.FD()
-			p.mu.RLock()
 			for h := range p.privateZwpPrimarySelectionSourceV1Sends {
 				h.HandleZwpPrimarySelectionSourceV1Send(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateZwpPrimarySelectionSourceV1Cancelleds) > 0 {
 			ev := ZwpPrimarySelectionSourceV1CancelledEvent{}
-			p.mu.RLock()
 			for h := range p.privateZwpPrimarySelectionSourceV1Cancelleds {
 				h.HandleZwpPrimarySelectionSourceV1Cancelled(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }

@@ -125,35 +125,35 @@ func (p *WpColorRepresentationManagerV1) GetSurface(Surface *Surface) (*WpColorR
 func (p *WpColorRepresentationManagerV1) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateWpColorRepresentationManagerV1SupportedAlphaModes) > 0 {
 			ev := WpColorRepresentationManagerV1SupportedAlphaModeEvent{}
 			ev.AlphaMode = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateWpColorRepresentationManagerV1SupportedAlphaModes {
 				h.HandleWpColorRepresentationManagerV1SupportedAlphaMode(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateWpColorRepresentationManagerV1SupportedCoefficientsAndRangess) > 0 {
 			ev := WpColorRepresentationManagerV1SupportedCoefficientsAndRangesEvent{}
 			ev.Coefficients = event.Uint32()
 			ev.Range = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateWpColorRepresentationManagerV1SupportedCoefficientsAndRangess {
 				h.HandleWpColorRepresentationManagerV1SupportedCoefficientsAndRanges(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 2:
+		p.mu.RLock()
 		if len(p.privateWpColorRepresentationManagerV1Dones) > 0 {
 			ev := WpColorRepresentationManagerV1DoneEvent{}
-			p.mu.RLock()
 			for h := range p.privateWpColorRepresentationManagerV1Dones {
 				h.HandleWpColorRepresentationManagerV1Done(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }

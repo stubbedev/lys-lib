@@ -55,14 +55,14 @@ func (p *CtmControlManagerV1) Destroy() error {
 func (p *CtmControlManagerV1) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateCtmControlManagerV1Blockeds) > 0 {
 			ev := CtmControlManagerV1BlockedEvent{}
-			p.mu.RLock()
 			for h := range p.privateCtmControlManagerV1Blockeds {
 				h.HandleCtmControlManagerV1Blocked(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }

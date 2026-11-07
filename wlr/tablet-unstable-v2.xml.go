@@ -139,6 +139,7 @@ func (p *ZwpTabletSeatV2) Destroy() error {
 func (p *ZwpTabletSeatV2) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateZwpTabletSeatV2Addeds) > 0 {
 			ev := ZwpTabletSeatV2AddedEvent{}
 			ev.Id = func() *ZwpTabletV2 {
@@ -146,13 +147,13 @@ func (p *ZwpTabletSeatV2) Dispatch(event *Event) {
 				ret.initZwpTabletV2()
 				return event.NewId(ret, p.Context()).(*ZwpTabletV2)
 			}()
-			p.mu.RLock()
 			for h := range p.privateZwpTabletSeatV2Addeds {
 				h.HandleZwpTabletSeatV2Added(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateZwpTabletSeatV2ToolAddeds) > 0 {
 			ev := ZwpTabletSeatV2ToolAddedEvent{}
 			ev.Id = func() *ZwpTabletToolV2 {
@@ -160,13 +161,13 @@ func (p *ZwpTabletSeatV2) Dispatch(event *Event) {
 				ret.initZwpTabletToolV2()
 				return event.NewId(ret, p.Context()).(*ZwpTabletToolV2)
 			}()
-			p.mu.RLock()
 			for h := range p.privateZwpTabletSeatV2ToolAddeds {
 				h.HandleZwpTabletSeatV2ToolAdded(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 2:
+		p.mu.RLock()
 		if len(p.privateZwpTabletSeatV2PadAddeds) > 0 {
 			ev := ZwpTabletSeatV2PadAddedEvent{}
 			ev.Id = func() *ZwpTabletPadV2 {
@@ -174,12 +175,11 @@ func (p *ZwpTabletSeatV2) Dispatch(event *Event) {
 				ret.initZwpTabletPadV2()
 				return event.NewId(ret, p.Context()).(*ZwpTabletPadV2)
 			}()
-			p.mu.RLock()
 			for h := range p.privateZwpTabletSeatV2PadAddeds {
 				h.HandleZwpTabletSeatV2PadAdded(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }
@@ -341,200 +341,200 @@ func (p *ZwpTabletToolV2) Destroy() error {
 func (p *ZwpTabletToolV2) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateZwpTabletToolV2Types) > 0 {
 			ev := ZwpTabletToolV2TypeEvent{}
 			ev.ToolType = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateZwpTabletToolV2Types {
 				h.HandleZwpTabletToolV2Type(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateZwpTabletToolV2HardwareSerials) > 0 {
 			ev := ZwpTabletToolV2HardwareSerialEvent{}
 			ev.HardwareSerialHi = event.Uint32()
 			ev.HardwareSerialLo = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateZwpTabletToolV2HardwareSerials {
 				h.HandleZwpTabletToolV2HardwareSerial(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 2:
+		p.mu.RLock()
 		if len(p.privateZwpTabletToolV2HardwareIdWacoms) > 0 {
 			ev := ZwpTabletToolV2HardwareIdWacomEvent{}
 			ev.HardwareIdHi = event.Uint32()
 			ev.HardwareIdLo = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateZwpTabletToolV2HardwareIdWacoms {
 				h.HandleZwpTabletToolV2HardwareIdWacom(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 3:
+		p.mu.RLock()
 		if len(p.privateZwpTabletToolV2Capabilitys) > 0 {
 			ev := ZwpTabletToolV2CapabilityEvent{}
 			ev.Capability = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateZwpTabletToolV2Capabilitys {
 				h.HandleZwpTabletToolV2Capability(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 4:
+		p.mu.RLock()
 		if len(p.privateZwpTabletToolV2Dones) > 0 {
 			ev := ZwpTabletToolV2DoneEvent{}
-			p.mu.RLock()
 			for h := range p.privateZwpTabletToolV2Dones {
 				h.HandleZwpTabletToolV2Done(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 5:
+		p.mu.RLock()
 		if len(p.privateZwpTabletToolV2Removeds) > 0 {
 			ev := ZwpTabletToolV2RemovedEvent{}
-			p.mu.RLock()
 			for h := range p.privateZwpTabletToolV2Removeds {
 				h.HandleZwpTabletToolV2Removed(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 6:
+		p.mu.RLock()
 		if len(p.privateZwpTabletToolV2ProximityIns) > 0 {
 			ev := ZwpTabletToolV2ProximityInEvent{}
 			ev.Serial = event.Uint32()
 			ev.Tablet = SafeCast[*ZwpTabletV2](event.Proxy(p.Context()))
 			ev.Surface = SafeCast[*Surface](event.Proxy(p.Context()))
-			p.mu.RLock()
 			for h := range p.privateZwpTabletToolV2ProximityIns {
 				h.HandleZwpTabletToolV2ProximityIn(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 7:
+		p.mu.RLock()
 		if len(p.privateZwpTabletToolV2ProximityOuts) > 0 {
 			ev := ZwpTabletToolV2ProximityOutEvent{}
-			p.mu.RLock()
 			for h := range p.privateZwpTabletToolV2ProximityOuts {
 				h.HandleZwpTabletToolV2ProximityOut(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 8:
+		p.mu.RLock()
 		if len(p.privateZwpTabletToolV2Downs) > 0 {
 			ev := ZwpTabletToolV2DownEvent{}
 			ev.Serial = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateZwpTabletToolV2Downs {
 				h.HandleZwpTabletToolV2Down(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 9:
+		p.mu.RLock()
 		if len(p.privateZwpTabletToolV2Ups) > 0 {
 			ev := ZwpTabletToolV2UpEvent{}
-			p.mu.RLock()
 			for h := range p.privateZwpTabletToolV2Ups {
 				h.HandleZwpTabletToolV2Up(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 10:
+		p.mu.RLock()
 		if len(p.privateZwpTabletToolV2Motions) > 0 {
 			ev := ZwpTabletToolV2MotionEvent{}
 			ev.X = event.Float32()
 			ev.Y = event.Float32()
-			p.mu.RLock()
 			for h := range p.privateZwpTabletToolV2Motions {
 				h.HandleZwpTabletToolV2Motion(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 11:
+		p.mu.RLock()
 		if len(p.privateZwpTabletToolV2Pressures) > 0 {
 			ev := ZwpTabletToolV2PressureEvent{}
 			ev.Pressure = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateZwpTabletToolV2Pressures {
 				h.HandleZwpTabletToolV2Pressure(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 12:
+		p.mu.RLock()
 		if len(p.privateZwpTabletToolV2Distances) > 0 {
 			ev := ZwpTabletToolV2DistanceEvent{}
 			ev.Distance = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateZwpTabletToolV2Distances {
 				h.HandleZwpTabletToolV2Distance(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 13:
+		p.mu.RLock()
 		if len(p.privateZwpTabletToolV2Tilts) > 0 {
 			ev := ZwpTabletToolV2TiltEvent{}
 			ev.TiltX = event.Float32()
 			ev.TiltY = event.Float32()
-			p.mu.RLock()
 			for h := range p.privateZwpTabletToolV2Tilts {
 				h.HandleZwpTabletToolV2Tilt(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 14:
+		p.mu.RLock()
 		if len(p.privateZwpTabletToolV2Rotations) > 0 {
 			ev := ZwpTabletToolV2RotationEvent{}
 			ev.Degrees = event.Float32()
-			p.mu.RLock()
 			for h := range p.privateZwpTabletToolV2Rotations {
 				h.HandleZwpTabletToolV2Rotation(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 15:
+		p.mu.RLock()
 		if len(p.privateZwpTabletToolV2Sliders) > 0 {
 			ev := ZwpTabletToolV2SliderEvent{}
 			ev.Position = event.Int32()
-			p.mu.RLock()
 			for h := range p.privateZwpTabletToolV2Sliders {
 				h.HandleZwpTabletToolV2Slider(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 16:
+		p.mu.RLock()
 		if len(p.privateZwpTabletToolV2Wheels) > 0 {
 			ev := ZwpTabletToolV2WheelEvent{}
 			ev.Degrees = event.Float32()
 			ev.Clicks = event.Int32()
-			p.mu.RLock()
 			for h := range p.privateZwpTabletToolV2Wheels {
 				h.HandleZwpTabletToolV2Wheel(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 17:
+		p.mu.RLock()
 		if len(p.privateZwpTabletToolV2Buttons) > 0 {
 			ev := ZwpTabletToolV2ButtonEvent{}
 			ev.Serial = event.Uint32()
 			ev.Button = event.Uint32()
 			ev.State = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateZwpTabletToolV2Buttons {
 				h.HandleZwpTabletToolV2Button(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 18:
+		p.mu.RLock()
 		if len(p.privateZwpTabletToolV2Frames) > 0 {
 			ev := ZwpTabletToolV2FrameEvent{}
 			ev.Time = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateZwpTabletToolV2Frames {
 				h.HandleZwpTabletToolV2Frame(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }
@@ -1120,54 +1120,54 @@ func (p *ZwpTabletV2) Destroy() error {
 func (p *ZwpTabletV2) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateZwpTabletV2Names) > 0 {
 			ev := ZwpTabletV2NameEvent{}
 			ev.Name = event.String()
-			p.mu.RLock()
 			for h := range p.privateZwpTabletV2Names {
 				h.HandleZwpTabletV2Name(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateZwpTabletV2Ids) > 0 {
 			ev := ZwpTabletV2IdEvent{}
 			ev.Vid = event.Uint32()
 			ev.Pid = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateZwpTabletV2Ids {
 				h.HandleZwpTabletV2Id(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 2:
+		p.mu.RLock()
 		if len(p.privateZwpTabletV2Paths) > 0 {
 			ev := ZwpTabletV2PathEvent{}
 			ev.Path = event.String()
-			p.mu.RLock()
 			for h := range p.privateZwpTabletV2Paths {
 				h.HandleZwpTabletV2Path(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 3:
+		p.mu.RLock()
 		if len(p.privateZwpTabletV2Dones) > 0 {
 			ev := ZwpTabletV2DoneEvent{}
-			p.mu.RLock()
 			for h := range p.privateZwpTabletV2Dones {
 				h.HandleZwpTabletV2Done(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 4:
+		p.mu.RLock()
 		if len(p.privateZwpTabletV2Removeds) > 0 {
 			ev := ZwpTabletV2RemovedEvent{}
-			p.mu.RLock()
 			for h := range p.privateZwpTabletV2Removeds {
 				h.HandleZwpTabletV2Removed(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }
@@ -1353,44 +1353,44 @@ func (p *ZwpTabletPadRingV2) Destroy() error {
 func (p *ZwpTabletPadRingV2) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateZwpTabletPadRingV2Sources) > 0 {
 			ev := ZwpTabletPadRingV2SourceEvent{}
 			ev.Source = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateZwpTabletPadRingV2Sources {
 				h.HandleZwpTabletPadRingV2Source(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateZwpTabletPadRingV2Angles) > 0 {
 			ev := ZwpTabletPadRingV2AngleEvent{}
 			ev.Degrees = event.Float32()
-			p.mu.RLock()
 			for h := range p.privateZwpTabletPadRingV2Angles {
 				h.HandleZwpTabletPadRingV2Angle(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 2:
+		p.mu.RLock()
 		if len(p.privateZwpTabletPadRingV2Stops) > 0 {
 			ev := ZwpTabletPadRingV2StopEvent{}
-			p.mu.RLock()
 			for h := range p.privateZwpTabletPadRingV2Stops {
 				h.HandleZwpTabletPadRingV2Stop(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 3:
+		p.mu.RLock()
 		if len(p.privateZwpTabletPadRingV2Frames) > 0 {
 			ev := ZwpTabletPadRingV2FrameEvent{}
 			ev.Time = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateZwpTabletPadRingV2Frames {
 				h.HandleZwpTabletPadRingV2Frame(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }
@@ -1548,44 +1548,44 @@ func (p *ZwpTabletPadStripV2) Destroy() error {
 func (p *ZwpTabletPadStripV2) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateZwpTabletPadStripV2Sources) > 0 {
 			ev := ZwpTabletPadStripV2SourceEvent{}
 			ev.Source = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateZwpTabletPadStripV2Sources {
 				h.HandleZwpTabletPadStripV2Source(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateZwpTabletPadStripV2Positions) > 0 {
 			ev := ZwpTabletPadStripV2PositionEvent{}
 			ev.Position = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateZwpTabletPadStripV2Positions {
 				h.HandleZwpTabletPadStripV2Position(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 2:
+		p.mu.RLock()
 		if len(p.privateZwpTabletPadStripV2Stops) > 0 {
 			ev := ZwpTabletPadStripV2StopEvent{}
-			p.mu.RLock()
 			for h := range p.privateZwpTabletPadStripV2Stops {
 				h.HandleZwpTabletPadStripV2Stop(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 3:
+		p.mu.RLock()
 		if len(p.privateZwpTabletPadStripV2Frames) > 0 {
 			ev := ZwpTabletPadStripV2FrameEvent{}
 			ev.Time = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateZwpTabletPadStripV2Frames {
 				h.HandleZwpTabletPadStripV2Frame(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }
@@ -1741,16 +1741,17 @@ func (p *ZwpTabletPadGroupV2) Destroy() error {
 func (p *ZwpTabletPadGroupV2) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateZwpTabletPadGroupV2Buttonss) > 0 {
 			ev := ZwpTabletPadGroupV2ButtonsEvent{}
 			ev.Buttons = event.Array()
-			p.mu.RLock()
 			for h := range p.privateZwpTabletPadGroupV2Buttonss {
 				h.HandleZwpTabletPadGroupV2Buttons(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateZwpTabletPadGroupV2Rings) > 0 {
 			ev := ZwpTabletPadGroupV2RingEvent{}
 			ev.Ring = func() *ZwpTabletPadRingV2 {
@@ -1758,13 +1759,13 @@ func (p *ZwpTabletPadGroupV2) Dispatch(event *Event) {
 				ret.initZwpTabletPadRingV2()
 				return event.NewId(ret, p.Context()).(*ZwpTabletPadRingV2)
 			}()
-			p.mu.RLock()
 			for h := range p.privateZwpTabletPadGroupV2Rings {
 				h.HandleZwpTabletPadGroupV2Ring(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 2:
+		p.mu.RLock()
 		if len(p.privateZwpTabletPadGroupV2Strips) > 0 {
 			ev := ZwpTabletPadGroupV2StripEvent{}
 			ev.Strip = func() *ZwpTabletPadStripV2 {
@@ -1772,43 +1773,42 @@ func (p *ZwpTabletPadGroupV2) Dispatch(event *Event) {
 				ret.initZwpTabletPadStripV2()
 				return event.NewId(ret, p.Context()).(*ZwpTabletPadStripV2)
 			}()
-			p.mu.RLock()
 			for h := range p.privateZwpTabletPadGroupV2Strips {
 				h.HandleZwpTabletPadGroupV2Strip(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 3:
+		p.mu.RLock()
 		if len(p.privateZwpTabletPadGroupV2Modess) > 0 {
 			ev := ZwpTabletPadGroupV2ModesEvent{}
 			ev.Modes = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateZwpTabletPadGroupV2Modess {
 				h.HandleZwpTabletPadGroupV2Modes(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 4:
+		p.mu.RLock()
 		if len(p.privateZwpTabletPadGroupV2Dones) > 0 {
 			ev := ZwpTabletPadGroupV2DoneEvent{}
-			p.mu.RLock()
 			for h := range p.privateZwpTabletPadGroupV2Dones {
 				h.HandleZwpTabletPadGroupV2Done(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 5:
+		p.mu.RLock()
 		if len(p.privateZwpTabletPadGroupV2ModeSwitchs) > 0 {
 			ev := ZwpTabletPadGroupV2ModeSwitchEvent{}
 			ev.Time = event.Uint32()
 			ev.Serial = event.Uint32()
 			ev.Mode = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateZwpTabletPadGroupV2ModeSwitchs {
 				h.HandleZwpTabletPadGroupV2ModeSwitch(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }
@@ -2034,6 +2034,7 @@ func (p *ZwpTabletPadV2) Destroy() error {
 func (p *ZwpTabletPadV2) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateZwpTabletPadV2Groups) > 0 {
 			ev := ZwpTabletPadV2GroupEvent{}
 			ev.PadGroup = func() *ZwpTabletPadGroupV2 {
@@ -2041,85 +2042,84 @@ func (p *ZwpTabletPadV2) Dispatch(event *Event) {
 				ret.initZwpTabletPadGroupV2()
 				return event.NewId(ret, p.Context()).(*ZwpTabletPadGroupV2)
 			}()
-			p.mu.RLock()
 			for h := range p.privateZwpTabletPadV2Groups {
 				h.HandleZwpTabletPadV2Group(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateZwpTabletPadV2Paths) > 0 {
 			ev := ZwpTabletPadV2PathEvent{}
 			ev.Path = event.String()
-			p.mu.RLock()
 			for h := range p.privateZwpTabletPadV2Paths {
 				h.HandleZwpTabletPadV2Path(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 2:
+		p.mu.RLock()
 		if len(p.privateZwpTabletPadV2Buttonss) > 0 {
 			ev := ZwpTabletPadV2ButtonsEvent{}
 			ev.Buttons = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateZwpTabletPadV2Buttonss {
 				h.HandleZwpTabletPadV2Buttons(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 3:
+		p.mu.RLock()
 		if len(p.privateZwpTabletPadV2Dones) > 0 {
 			ev := ZwpTabletPadV2DoneEvent{}
-			p.mu.RLock()
 			for h := range p.privateZwpTabletPadV2Dones {
 				h.HandleZwpTabletPadV2Done(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 4:
+		p.mu.RLock()
 		if len(p.privateZwpTabletPadV2Buttons) > 0 {
 			ev := ZwpTabletPadV2ButtonEvent{}
 			ev.Time = event.Uint32()
 			ev.Button = event.Uint32()
 			ev.State = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateZwpTabletPadV2Buttons {
 				h.HandleZwpTabletPadV2Button(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 5:
+		p.mu.RLock()
 		if len(p.privateZwpTabletPadV2Enters) > 0 {
 			ev := ZwpTabletPadV2EnterEvent{}
 			ev.Serial = event.Uint32()
 			ev.Tablet = SafeCast[*ZwpTabletV2](event.Proxy(p.Context()))
 			ev.Surface = SafeCast[*Surface](event.Proxy(p.Context()))
-			p.mu.RLock()
 			for h := range p.privateZwpTabletPadV2Enters {
 				h.HandleZwpTabletPadV2Enter(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 6:
+		p.mu.RLock()
 		if len(p.privateZwpTabletPadV2Leaves) > 0 {
 			ev := ZwpTabletPadV2LeaveEvent{}
 			ev.Serial = event.Uint32()
 			ev.Surface = SafeCast[*Surface](event.Proxy(p.Context()))
-			p.mu.RLock()
 			for h := range p.privateZwpTabletPadV2Leaves {
 				h.HandleZwpTabletPadV2Leave(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 7:
+		p.mu.RLock()
 		if len(p.privateZwpTabletPadV2Removeds) > 0 {
 			ev := ZwpTabletPadV2RemovedEvent{}
-			p.mu.RLock()
 			for h := range p.privateZwpTabletPadV2Removeds {
 				h.HandleZwpTabletPadV2Removed(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }

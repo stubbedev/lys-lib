@@ -80,56 +80,56 @@ func (p *ZxdgOutputV1) Destroy() error {
 func (p *ZxdgOutputV1) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateZxdgOutputV1LogicalPositions) > 0 {
 			ev := ZxdgOutputV1LogicalPositionEvent{}
 			ev.X = event.Int32()
 			ev.Y = event.Int32()
-			p.mu.RLock()
 			for h := range p.privateZxdgOutputV1LogicalPositions {
 				h.HandleZxdgOutputV1LogicalPosition(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateZxdgOutputV1LogicalSizes) > 0 {
 			ev := ZxdgOutputV1LogicalSizeEvent{}
 			ev.Width = event.Int32()
 			ev.Height = event.Int32()
-			p.mu.RLock()
 			for h := range p.privateZxdgOutputV1LogicalSizes {
 				h.HandleZxdgOutputV1LogicalSize(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 2:
+		p.mu.RLock()
 		if len(p.privateZxdgOutputV1Dones) > 0 {
 			ev := ZxdgOutputV1DoneEvent{}
-			p.mu.RLock()
 			for h := range p.privateZxdgOutputV1Dones {
 				h.HandleZxdgOutputV1Done(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 3:
+		p.mu.RLock()
 		if len(p.privateZxdgOutputV1Names) > 0 {
 			ev := ZxdgOutputV1NameEvent{}
 			ev.Name = event.String()
-			p.mu.RLock()
 			for h := range p.privateZxdgOutputV1Names {
 				h.HandleZxdgOutputV1Name(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 4:
+		p.mu.RLock()
 		if len(p.privateZxdgOutputV1Descriptions) > 0 {
 			ev := ZxdgOutputV1DescriptionEvent{}
 			ev.Description = event.String()
-			p.mu.RLock()
 			for h := range p.privateZxdgOutputV1Descriptions {
 				h.HandleZxdgOutputV1Description(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }

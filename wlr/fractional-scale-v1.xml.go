@@ -75,15 +75,15 @@ func (p *WpScaleV1) Destroy() error {
 func (p *WpScaleV1) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateWpScaleV1PreferredScales) > 0 {
 			ev := WpScaleV1PreferredScaleEvent{}
 			ev.Scale = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateWpScaleV1PreferredScales {
 				h.HandleWpScaleV1PreferredScale(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }

@@ -143,57 +143,57 @@ func (p *HotkeyV1) Commit() error {
 func (p *HotkeyV1) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateHotkeyV1Bounds) > 0 {
 			ev := HotkeyV1BoundEvent{}
-			p.mu.RLock()
 			for h := range p.privateHotkeyV1Bounds {
 				h.HandleHotkeyV1Bound(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateHotkeyV1Denieds) > 0 {
 			ev := HotkeyV1DeniedEvent{}
 			ev.Reason = event.Uint32()
 			ev.Message = event.String()
-			p.mu.RLock()
 			for h := range p.privateHotkeyV1Denieds {
 				h.HandleHotkeyV1Denied(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 2:
+		p.mu.RLock()
 		if len(p.privateHotkeyV1Revokeds) > 0 {
 			ev := HotkeyV1RevokedEvent{}
 			ev.Message = event.String()
-			p.mu.RLock()
 			for h := range p.privateHotkeyV1Revokeds {
 				h.HandleHotkeyV1Revoked(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 3:
+		p.mu.RLock()
 		if len(p.privateHotkeyV1Triggereds) > 0 {
 			ev := HotkeyV1TriggeredEvent{}
 			ev.Serial = event.Uint32()
 			ev.Time = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateHotkeyV1Triggereds {
 				h.HandleHotkeyV1Triggered(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 4:
+		p.mu.RLock()
 		if len(p.privateHotkeyV1Releaseds) > 0 {
 			ev := HotkeyV1ReleasedEvent{}
 			ev.Serial = event.Uint32()
 			ev.Time = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateHotkeyV1Releaseds {
 				h.HandleHotkeyV1Released(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }

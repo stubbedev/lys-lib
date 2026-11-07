@@ -77,29 +77,29 @@ func (p *GlobalShortcutV1) Destroy() error {
 func (p *GlobalShortcutV1) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateGlobalShortcutV1Presseds) > 0 {
 			ev := GlobalShortcutV1PressedEvent{}
 			ev.TvSecHi = event.Uint32()
 			ev.TvSecLo = event.Uint32()
 			ev.TvNsec = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateGlobalShortcutV1Presseds {
 				h.HandleGlobalShortcutV1Pressed(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateGlobalShortcutV1Releaseds) > 0 {
 			ev := GlobalShortcutV1ReleasedEvent{}
 			ev.TvSecHi = event.Uint32()
 			ev.TvSecLo = event.Uint32()
 			ev.TvNsec = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateGlobalShortcutV1Releaseds {
 				h.HandleGlobalShortcutV1Released(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }

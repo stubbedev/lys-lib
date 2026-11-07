@@ -63,24 +63,24 @@ func (p *ToplevelIconManagerV1) SetIcon(Toplevel *Toplevel, Icon *ToplevelIconV1
 func (p *ToplevelIconManagerV1) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateToplevelIconManagerV1IconSizes) > 0 {
 			ev := ToplevelIconManagerV1IconSizeEvent{}
 			ev.Size = event.Int32()
-			p.mu.RLock()
 			for h := range p.privateToplevelIconManagerV1IconSizes {
 				h.HandleToplevelIconManagerV1IconSize(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateToplevelIconManagerV1Dones) > 0 {
 			ev := ToplevelIconManagerV1DoneEvent{}
-			p.mu.RLock()
 			for h := range p.privateToplevelIconManagerV1Dones {
 				h.HandleToplevelIconManagerV1Done(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }

@@ -48,6 +48,7 @@ func (p *ForeignToplevelListV1) Destroy() error {
 func (p *ForeignToplevelListV1) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateForeignToplevelListV1Toplevels) > 0 {
 			ev := ForeignToplevelListV1ToplevelEvent{}
 			ev.Toplevel = func() *ForeignToplevelHandleV1 {
@@ -55,21 +56,20 @@ func (p *ForeignToplevelListV1) Dispatch(event *Event) {
 				ret.initForeignToplevelHandleV1()
 				return event.NewId(ret, p.Context()).(*ForeignToplevelHandleV1)
 			}()
-			p.mu.RLock()
 			for h := range p.privateForeignToplevelListV1Toplevels {
 				h.HandleForeignToplevelListV1Toplevel(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateForeignToplevelListV1Finisheds) > 0 {
 			ev := ForeignToplevelListV1FinishedEvent{}
-			p.mu.RLock()
 			for h := range p.privateForeignToplevelListV1Finisheds {
 				h.HandleForeignToplevelListV1Finished(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }
@@ -167,53 +167,53 @@ func (p *ForeignToplevelHandleV1) Destroy() error {
 func (p *ForeignToplevelHandleV1) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateForeignToplevelHandleV1Closeds) > 0 {
 			ev := ForeignToplevelHandleV1ClosedEvent{}
-			p.mu.RLock()
 			for h := range p.privateForeignToplevelHandleV1Closeds {
 				h.HandleForeignToplevelHandleV1Closed(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateForeignToplevelHandleV1Dones) > 0 {
 			ev := ForeignToplevelHandleV1DoneEvent{}
-			p.mu.RLock()
 			for h := range p.privateForeignToplevelHandleV1Dones {
 				h.HandleForeignToplevelHandleV1Done(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 2:
+		p.mu.RLock()
 		if len(p.privateForeignToplevelHandleV1Titles) > 0 {
 			ev := ForeignToplevelHandleV1TitleEvent{}
 			ev.Title = event.String()
-			p.mu.RLock()
 			for h := range p.privateForeignToplevelHandleV1Titles {
 				h.HandleForeignToplevelHandleV1Title(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 3:
+		p.mu.RLock()
 		if len(p.privateForeignToplevelHandleV1AppIds) > 0 {
 			ev := ForeignToplevelHandleV1AppIdEvent{}
 			ev.AppId = event.String()
-			p.mu.RLock()
 			for h := range p.privateForeignToplevelHandleV1AppIds {
 				h.HandleForeignToplevelHandleV1AppId(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 4:
+		p.mu.RLock()
 		if len(p.privateForeignToplevelHandleV1Identifiers) > 0 {
 			ev := ForeignToplevelHandleV1IdentifierEvent{}
 			ev.Identifier = event.String()
-			p.mu.RLock()
 			for h := range p.privateForeignToplevelHandleV1Identifiers {
 				h.HandleForeignToplevelHandleV1Identifier(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }

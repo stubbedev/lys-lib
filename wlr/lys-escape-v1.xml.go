@@ -72,14 +72,14 @@ func (p *LysEscapeArmV1) Destroy() error {
 func (p *LysEscapeArmV1) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateLysEscapeArmV1Presseds) > 0 {
 			ev := LysEscapeArmV1PressedEvent{}
-			p.mu.RLock()
 			for h := range p.privateLysEscapeArmV1Presseds {
 				h.HandleLysEscapeArmV1Pressed(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }

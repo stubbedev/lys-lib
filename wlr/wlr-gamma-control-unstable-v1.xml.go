@@ -83,24 +83,24 @@ func (p *ZwlrGammaControlV1) Destroy() error {
 func (p *ZwlrGammaControlV1) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateZwlrGammaControlV1GammaSizes) > 0 {
 			ev := ZwlrGammaControlV1GammaSizeEvent{}
 			ev.Size = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateZwlrGammaControlV1GammaSizes {
 				h.HandleZwlrGammaControlV1GammaSize(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateZwlrGammaControlV1Faileds) > 0 {
 			ev := ZwlrGammaControlV1FailedEvent{}
-			p.mu.RLock()
 			for h := range p.privateZwlrGammaControlV1Faileds {
 				h.HandleZwlrGammaControlV1Failed(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }

@@ -105,15 +105,15 @@ func (p *ActivationTokenV1) Destroy() error {
 func (p *ActivationTokenV1) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateActivationTokenV1Dones) > 0 {
 			ev := ActivationTokenV1DoneEvent{}
 			ev.Token = event.String()
-			p.mu.RLock()
 			for h := range p.privateActivationTokenV1Dones {
 				h.HandleActivationTokenV1Done(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }

@@ -176,26 +176,26 @@ func (p *ZwlrLayerSurfaceV1) SetLayer(Layer uint32) error {
 func (p *ZwlrLayerSurfaceV1) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateZwlrLayerSurfaceV1Configures) > 0 {
 			ev := ZwlrLayerSurfaceV1ConfigureEvent{}
 			ev.Serial = event.Uint32()
 			ev.Width = event.Uint32()
 			ev.Height = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateZwlrLayerSurfaceV1Configures {
 				h.HandleZwlrLayerSurfaceV1Configure(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateZwlrLayerSurfaceV1Closeds) > 0 {
 			ev := ZwlrLayerSurfaceV1ClosedEvent{}
-			p.mu.RLock()
 			for h := range p.privateZwlrLayerSurfaceV1Closeds {
 				h.HandleZwlrLayerSurfaceV1Closed(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }

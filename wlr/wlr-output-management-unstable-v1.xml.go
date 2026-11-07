@@ -82,6 +82,7 @@ func (p *ZwlrOutputManagerV1) Stop() error {
 func (p *ZwlrOutputManagerV1) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateZwlrOutputManagerV1Heads) > 0 {
 			ev := ZwlrOutputManagerV1HeadEvent{}
 			ev.Head = func() *ZwlrOutputHeadV1 {
@@ -89,31 +90,30 @@ func (p *ZwlrOutputManagerV1) Dispatch(event *Event) {
 				ret.initZwlrOutputHeadV1()
 				return event.NewId(ret, p.Context()).(*ZwlrOutputHeadV1)
 			}()
-			p.mu.RLock()
 			for h := range p.privateZwlrOutputManagerV1Heads {
 				h.HandleZwlrOutputManagerV1Head(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateZwlrOutputManagerV1Dones) > 0 {
 			ev := ZwlrOutputManagerV1DoneEvent{}
 			ev.Serial = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateZwlrOutputManagerV1Dones {
 				h.HandleZwlrOutputManagerV1Done(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 2:
+		p.mu.RLock()
 		if len(p.privateZwlrOutputManagerV1Finisheds) > 0 {
 			ev := ZwlrOutputManagerV1FinishedEvent{}
-			p.mu.RLock()
 			for h := range p.privateZwlrOutputManagerV1Finisheds {
 				h.HandleZwlrOutputManagerV1Finished(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }
@@ -257,37 +257,38 @@ func (p *ZwlrOutputHeadV1) Release() error {
 func (p *ZwlrOutputHeadV1) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateZwlrOutputHeadV1Names) > 0 {
 			ev := ZwlrOutputHeadV1NameEvent{}
 			ev.Name = event.String()
-			p.mu.RLock()
 			for h := range p.privateZwlrOutputHeadV1Names {
 				h.HandleZwlrOutputHeadV1Name(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateZwlrOutputHeadV1Descriptions) > 0 {
 			ev := ZwlrOutputHeadV1DescriptionEvent{}
 			ev.Description = event.String()
-			p.mu.RLock()
 			for h := range p.privateZwlrOutputHeadV1Descriptions {
 				h.HandleZwlrOutputHeadV1Description(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 2:
+		p.mu.RLock()
 		if len(p.privateZwlrOutputHeadV1PhysicalSizes) > 0 {
 			ev := ZwlrOutputHeadV1PhysicalSizeEvent{}
 			ev.Width = event.Int32()
 			ev.Height = event.Int32()
-			p.mu.RLock()
 			for h := range p.privateZwlrOutputHeadV1PhysicalSizes {
 				h.HandleZwlrOutputHeadV1PhysicalSize(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 3:
+		p.mu.RLock()
 		if len(p.privateZwlrOutputHeadV1Modes) > 0 {
 			ev := ZwlrOutputHeadV1ModeEvent{}
 			ev.Mode = func() *ZwlrOutputModeV1 {
@@ -295,112 +296,111 @@ func (p *ZwlrOutputHeadV1) Dispatch(event *Event) {
 				ret.initZwlrOutputModeV1()
 				return event.NewId(ret, p.Context()).(*ZwlrOutputModeV1)
 			}()
-			p.mu.RLock()
 			for h := range p.privateZwlrOutputHeadV1Modes {
 				h.HandleZwlrOutputHeadV1Mode(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 4:
+		p.mu.RLock()
 		if len(p.privateZwlrOutputHeadV1Enableds) > 0 {
 			ev := ZwlrOutputHeadV1EnabledEvent{}
 			ev.Enabled = event.Int32()
-			p.mu.RLock()
 			for h := range p.privateZwlrOutputHeadV1Enableds {
 				h.HandleZwlrOutputHeadV1Enabled(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 5:
+		p.mu.RLock()
 		if len(p.privateZwlrOutputHeadV1CurrentModes) > 0 {
 			ev := ZwlrOutputHeadV1CurrentModeEvent{}
 			ev.Mode = SafeCast[*ZwlrOutputModeV1](event.Proxy(p.Context()))
-			p.mu.RLock()
 			for h := range p.privateZwlrOutputHeadV1CurrentModes {
 				h.HandleZwlrOutputHeadV1CurrentMode(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 6:
+		p.mu.RLock()
 		if len(p.privateZwlrOutputHeadV1Positions) > 0 {
 			ev := ZwlrOutputHeadV1PositionEvent{}
 			ev.X = event.Int32()
 			ev.Y = event.Int32()
-			p.mu.RLock()
 			for h := range p.privateZwlrOutputHeadV1Positions {
 				h.HandleZwlrOutputHeadV1Position(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 7:
+		p.mu.RLock()
 		if len(p.privateZwlrOutputHeadV1Transforms) > 0 {
 			ev := ZwlrOutputHeadV1TransformEvent{}
 			ev.Transform = event.Int32()
-			p.mu.RLock()
 			for h := range p.privateZwlrOutputHeadV1Transforms {
 				h.HandleZwlrOutputHeadV1Transform(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 8:
+		p.mu.RLock()
 		if len(p.privateZwlrOutputHeadV1Scales) > 0 {
 			ev := ZwlrOutputHeadV1ScaleEvent{}
 			ev.Scale = event.Float32()
-			p.mu.RLock()
 			for h := range p.privateZwlrOutputHeadV1Scales {
 				h.HandleZwlrOutputHeadV1Scale(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 9:
+		p.mu.RLock()
 		if len(p.privateZwlrOutputHeadV1Finisheds) > 0 {
 			ev := ZwlrOutputHeadV1FinishedEvent{}
-			p.mu.RLock()
 			for h := range p.privateZwlrOutputHeadV1Finisheds {
 				h.HandleZwlrOutputHeadV1Finished(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 10:
+		p.mu.RLock()
 		if len(p.privateZwlrOutputHeadV1Makes) > 0 {
 			ev := ZwlrOutputHeadV1MakeEvent{}
 			ev.Make = event.String()
-			p.mu.RLock()
 			for h := range p.privateZwlrOutputHeadV1Makes {
 				h.HandleZwlrOutputHeadV1Make(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 11:
+		p.mu.RLock()
 		if len(p.privateZwlrOutputHeadV1Models) > 0 {
 			ev := ZwlrOutputHeadV1ModelEvent{}
 			ev.Model = event.String()
-			p.mu.RLock()
 			for h := range p.privateZwlrOutputHeadV1Models {
 				h.HandleZwlrOutputHeadV1Model(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 12:
+		p.mu.RLock()
 		if len(p.privateZwlrOutputHeadV1SerialNumbers) > 0 {
 			ev := ZwlrOutputHeadV1SerialNumberEvent{}
 			ev.SerialNumber = event.String()
-			p.mu.RLock()
 			for h := range p.privateZwlrOutputHeadV1SerialNumbers {
 				h.HandleZwlrOutputHeadV1SerialNumber(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 13:
+		p.mu.RLock()
 		if len(p.privateZwlrOutputHeadV1AdaptiveSyncs) > 0 {
 			ev := ZwlrOutputHeadV1AdaptiveSyncEvent{}
 			ev.State = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateZwlrOutputHeadV1AdaptiveSyncs {
 				h.HandleZwlrOutputHeadV1AdaptiveSync(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }
@@ -836,44 +836,44 @@ func (p *ZwlrOutputModeV1) Release() error {
 func (p *ZwlrOutputModeV1) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateZwlrOutputModeV1Sizes) > 0 {
 			ev := ZwlrOutputModeV1SizeEvent{}
 			ev.Width = event.Int32()
 			ev.Height = event.Int32()
-			p.mu.RLock()
 			for h := range p.privateZwlrOutputModeV1Sizes {
 				h.HandleZwlrOutputModeV1Size(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateZwlrOutputModeV1Refreshs) > 0 {
 			ev := ZwlrOutputModeV1RefreshEvent{}
 			ev.Refresh = event.Int32()
-			p.mu.RLock()
 			for h := range p.privateZwlrOutputModeV1Refreshs {
 				h.HandleZwlrOutputModeV1Refresh(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 2:
+		p.mu.RLock()
 		if len(p.privateZwlrOutputModeV1Preferreds) > 0 {
 			ev := ZwlrOutputModeV1PreferredEvent{}
-			p.mu.RLock()
 			for h := range p.privateZwlrOutputModeV1Preferreds {
 				h.HandleZwlrOutputModeV1Preferred(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 3:
+		p.mu.RLock()
 		if len(p.privateZwlrOutputModeV1Finisheds) > 0 {
 			ev := ZwlrOutputModeV1FinishedEvent{}
-			p.mu.RLock()
 			for h := range p.privateZwlrOutputModeV1Finisheds {
 				h.HandleZwlrOutputModeV1Finished(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }
@@ -1047,32 +1047,32 @@ func (p *ZwlrOutputConfigurationV1) Destroy() error {
 func (p *ZwlrOutputConfigurationV1) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateZwlrOutputConfigurationV1Succeededs) > 0 {
 			ev := ZwlrOutputConfigurationV1SucceededEvent{}
-			p.mu.RLock()
 			for h := range p.privateZwlrOutputConfigurationV1Succeededs {
 				h.HandleZwlrOutputConfigurationV1Succeeded(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateZwlrOutputConfigurationV1Faileds) > 0 {
 			ev := ZwlrOutputConfigurationV1FailedEvent{}
-			p.mu.RLock()
 			for h := range p.privateZwlrOutputConfigurationV1Faileds {
 				h.HandleZwlrOutputConfigurationV1Failed(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 2:
+		p.mu.RLock()
 		if len(p.privateZwlrOutputConfigurationV1Cancelleds) > 0 {
 			ev := ZwlrOutputConfigurationV1CancelledEvent{}
-			p.mu.RLock()
 			for h := range p.privateZwlrOutputConfigurationV1Cancelleds {
 				h.HandleZwlrOutputConfigurationV1Cancelled(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }

@@ -417,6 +417,7 @@ func (e *GoEvent) SerializeCase(num int) string {
 	b.WriteString(`	case `)
 	fmt.Fprintf(&b, "%d", num)
 	b.WriteString(`:
+		p.mu.RLock()
 		if len(p.private`)
 	b.WriteString(e.Name)
 	b.WriteString(`s) > 0 {
@@ -436,16 +437,15 @@ func (e *GoEvent) SerializeCase(num int) string {
 	for _, a := range e.Args {
 		b.WriteString(a.SerializeCall())
 	}
-	b.WriteString(`			p.mu.RLock()
-			for h := range p.private`)
+	b.WriteString(`			for h := range p.private`)
 	b.WriteString(e.Name)
 	b.WriteString(`s {
 				h.Handle`)
 	b.WriteString(e.Name)
 	b.WriteString(`(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 `)
 	return b.String()
 }

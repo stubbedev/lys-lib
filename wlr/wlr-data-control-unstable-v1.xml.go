@@ -102,6 +102,7 @@ func (p *ZwlrDataControlDeviceV1) SetPrimarySelection(Source *ZwlrDataControlSou
 func (p *ZwlrDataControlDeviceV1) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateZwlrDataControlDeviceV1DataOffers) > 0 {
 			ev := ZwlrDataControlDeviceV1DataOfferEvent{}
 			ev.Id = func() *ZwlrDataControlOfferV1 {
@@ -109,41 +110,40 @@ func (p *ZwlrDataControlDeviceV1) Dispatch(event *Event) {
 				ret.initZwlrDataControlOfferV1()
 				return event.NewId(ret, p.Context()).(*ZwlrDataControlOfferV1)
 			}()
-			p.mu.RLock()
 			for h := range p.privateZwlrDataControlDeviceV1DataOffers {
 				h.HandleZwlrDataControlDeviceV1DataOffer(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateZwlrDataControlDeviceV1Selections) > 0 {
 			ev := ZwlrDataControlDeviceV1SelectionEvent{}
 			ev.Id = SafeCast[*ZwlrDataControlOfferV1](event.Proxy(p.Context()))
-			p.mu.RLock()
 			for h := range p.privateZwlrDataControlDeviceV1Selections {
 				h.HandleZwlrDataControlDeviceV1Selection(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 2:
+		p.mu.RLock()
 		if len(p.privateZwlrDataControlDeviceV1Finisheds) > 0 {
 			ev := ZwlrDataControlDeviceV1FinishedEvent{}
-			p.mu.RLock()
 			for h := range p.privateZwlrDataControlDeviceV1Finisheds {
 				h.HandleZwlrDataControlDeviceV1Finished(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 3:
+		p.mu.RLock()
 		if len(p.privateZwlrDataControlDeviceV1PrimarySelections) > 0 {
 			ev := ZwlrDataControlDeviceV1PrimarySelectionEvent{}
 			ev.Id = SafeCast[*ZwlrDataControlOfferV1](event.Proxy(p.Context()))
-			p.mu.RLock()
 			for h := range p.privateZwlrDataControlDeviceV1PrimarySelections {
 				h.HandleZwlrDataControlDeviceV1PrimarySelection(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }
@@ -297,25 +297,25 @@ func (p *ZwlrDataControlSourceV1) Destroy() error {
 func (p *ZwlrDataControlSourceV1) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateZwlrDataControlSourceV1Sends) > 0 {
 			ev := ZwlrDataControlSourceV1SendEvent{}
 			ev.MimeType = event.String()
 			ev.Fd, ev.FdError = event.FD()
-			p.mu.RLock()
 			for h := range p.privateZwlrDataControlSourceV1Sends {
 				h.HandleZwlrDataControlSourceV1Send(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateZwlrDataControlSourceV1Cancelleds) > 0 {
 			ev := ZwlrDataControlSourceV1CancelledEvent{}
-			p.mu.RLock()
 			for h := range p.privateZwlrDataControlSourceV1Cancelleds {
 				h.HandleZwlrDataControlSourceV1Cancelled(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }
@@ -424,15 +424,15 @@ func (p *ZwlrDataControlOfferV1) Destroy() error {
 func (p *ZwlrDataControlOfferV1) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateZwlrDataControlOfferV1Offers) > 0 {
 			ev := ZwlrDataControlOfferV1OfferEvent{}
 			ev.MimeType = event.String()
-			p.mu.RLock()
 			for h := range p.privateZwlrDataControlOfferV1Offers {
 				h.HandleZwlrDataControlOfferV1Offer(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }

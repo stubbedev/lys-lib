@@ -650,27 +650,27 @@ func (p *Display) GetRegistry() (*Registry, error) {
 func (p *Display) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateDisplayErrors) > 0 {
 			ev := DisplayErrorEvent{}
 			ev.ObjectId = event.Proxy(p.Context())
 			ev.Code = event.Uint32()
 			ev.Message = event.String()
-			p.mu.RLock()
 			for h := range p.privateDisplayErrors {
 				h.HandleDisplayError(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateDisplayDeleteIds) > 0 {
 			ev := DisplayDeleteIdEvent{}
 			ev.Id = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateDisplayDeleteIds {
 				h.HandleDisplayDeleteId(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }
@@ -767,27 +767,27 @@ func (p *Registry) Bind(Name uint32, Iface string, Version uint32, Id Proxy) err
 func (p *Registry) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateRegistryGlobals) > 0 {
 			ev := RegistryGlobalEvent{}
 			ev.Name = event.Uint32()
 			ev.Interface = event.String()
 			ev.Version = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateRegistryGlobals {
 				h.HandleRegistryGlobal(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateRegistryGlobalRemoves) > 0 {
 			ev := RegistryGlobalRemoveEvent{}
 			ev.Name = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateRegistryGlobalRemoves {
 				h.HandleRegistryGlobalRemove(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }
@@ -1046,15 +1046,15 @@ func (p *Shm) Release() error {
 func (p *Shm) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateShmFormats) > 0 {
 			ev := ShmFormatEvent{}
 			ev.Format = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateShmFormats {
 				h.HandleShmFormat(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }
@@ -1118,15 +1118,15 @@ func (p *Buffer) Destroy() error {
 func (p *Buffer) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateBufferReleases) > 0 {
 			ev := BufferReleaseEvent{}
 			ev.B = p
-			p.mu.RLock()
 			for h := range p.privateBufferReleases {
 				h.HandleBufferRelease(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }
@@ -1217,35 +1217,35 @@ func (p *DataOffer) SetActions(DndActions uint32, PreferredAction uint32) error 
 func (p *DataOffer) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateDataOfferOffers) > 0 {
 			ev := DataOfferOfferEvent{}
 			ev.MimeType = event.String()
-			p.mu.RLock()
 			for h := range p.privateDataOfferOffers {
 				h.HandleDataOfferOffer(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateDataOfferSourceActionss) > 0 {
 			ev := DataOfferSourceActionsEvent{}
 			ev.SourceActions = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateDataOfferSourceActionss {
 				h.HandleDataOfferSourceActions(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 2:
+		p.mu.RLock()
 		if len(p.privateDataOfferActions) > 0 {
 			ev := DataOfferActionEvent{}
 			ev.DndAction = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateDataOfferActions {
 				h.HandleDataOfferAction(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }
@@ -1387,63 +1387,63 @@ func (p *DataSource) SetActions(DndActions uint32) error {
 func (p *DataSource) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateDataSourceTargets) > 0 {
 			ev := DataSourceTargetEvent{}
 			ev.MimeType = event.String()
-			p.mu.RLock()
 			for h := range p.privateDataSourceTargets {
 				h.HandleDataSourceTarget(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateDataSourceSends) > 0 {
 			ev := DataSourceSendEvent{}
 			ev.MimeType = event.String()
 			ev.Fd, ev.FdError = event.FD()
-			p.mu.RLock()
 			for h := range p.privateDataSourceSends {
 				h.HandleDataSourceSend(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 2:
+		p.mu.RLock()
 		if len(p.privateDataSourceCancelleds) > 0 {
 			ev := DataSourceCancelledEvent{}
-			p.mu.RLock()
 			for h := range p.privateDataSourceCancelleds {
 				h.HandleDataSourceCancelled(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 3:
+		p.mu.RLock()
 		if len(p.privateDataSourceDndDropPerformeds) > 0 {
 			ev := DataSourceDndDropPerformedEvent{}
-			p.mu.RLock()
 			for h := range p.privateDataSourceDndDropPerformeds {
 				h.HandleDataSourceDndDropPerformed(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 4:
+		p.mu.RLock()
 		if len(p.privateDataSourceDndFinisheds) > 0 {
 			ev := DataSourceDndFinishedEvent{}
-			p.mu.RLock()
 			for h := range p.privateDataSourceDndFinisheds {
 				h.HandleDataSourceDndFinished(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 5:
+		p.mu.RLock()
 		if len(p.privateDataSourceActions) > 0 {
 			ev := DataSourceActionEvent{}
 			ev.DndAction = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateDataSourceActions {
 				h.HandleDataSourceAction(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }
@@ -1676,6 +1676,7 @@ func (p *DataDevice) Release() error {
 func (p *DataDevice) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateDataDeviceDataOffers) > 0 {
 			ev := DataDeviceDataOfferEvent{}
 			ev.Id = func() *DataOffer {
@@ -1683,13 +1684,13 @@ func (p *DataDevice) Dispatch(event *Event) {
 				ret.initDataOffer()
 				return event.NewId(ret, p.Context()).(*DataOffer)
 			}()
-			p.mu.RLock()
 			for h := range p.privateDataDeviceDataOffers {
 				h.HandleDataDeviceDataOffer(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateDataDeviceEnters) > 0 {
 			ev := DataDeviceEnterEvent{}
 			ev.Serial = event.Uint32()
@@ -1697,52 +1698,51 @@ func (p *DataDevice) Dispatch(event *Event) {
 			ev.X = event.Float32()
 			ev.Y = event.Float32()
 			ev.Id = SafeCast[*DataOffer](event.Proxy(p.Context()))
-			p.mu.RLock()
 			for h := range p.privateDataDeviceEnters {
 				h.HandleDataDeviceEnter(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 2:
+		p.mu.RLock()
 		if len(p.privateDataDeviceLeaves) > 0 {
 			ev := DataDeviceLeaveEvent{}
-			p.mu.RLock()
 			for h := range p.privateDataDeviceLeaves {
 				h.HandleDataDeviceLeave(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 3:
+		p.mu.RLock()
 		if len(p.privateDataDeviceMotions) > 0 {
 			ev := DataDeviceMotionEvent{}
 			ev.Time = event.Uint32()
 			ev.X = event.Float32()
 			ev.Y = event.Float32()
-			p.mu.RLock()
 			for h := range p.privateDataDeviceMotions {
 				h.HandleDataDeviceMotion(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 4:
+		p.mu.RLock()
 		if len(p.privateDataDeviceDrops) > 0 {
 			ev := DataDeviceDropEvent{}
-			p.mu.RLock()
 			for h := range p.privateDataDeviceDrops {
 				h.HandleDataDeviceDrop(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 5:
+		p.mu.RLock()
 		if len(p.privateDataDeviceSelections) > 0 {
 			ev := DataDeviceSelectionEvent{}
 			ev.Id = SafeCast[*DataOffer](event.Proxy(p.Context()))
-			p.mu.RLock()
 			for h := range p.privateDataDeviceSelections {
 				h.HandleDataDeviceSelection(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }
@@ -2067,36 +2067,36 @@ func (p *ShellSurface) SetClass(Class string) error {
 func (p *ShellSurface) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateShellSurfacePings) > 0 {
 			ev := ShellSurfacePingEvent{}
 			ev.Serial = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateShellSurfacePings {
 				h.HandleShellSurfacePing(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateShellSurfaceConfigures) > 0 {
 			ev := ShellSurfaceConfigureEvent{}
 			ev.Edges = event.Uint32()
 			ev.Width = event.Int32()
 			ev.Height = event.Int32()
-			p.mu.RLock()
 			for h := range p.privateShellSurfaceConfigures {
 				h.HandleShellSurfaceConfigure(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 2:
+		p.mu.RLock()
 		if len(p.privateShellSurfacePopupDones) > 0 {
 			ev := ShellSurfacePopupDoneEvent{}
-			p.mu.RLock()
 			for h := range p.privateShellSurfacePopupDones {
 				h.HandleShellSurfacePopupDone(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }
@@ -2284,45 +2284,45 @@ func (p *Surface) Offset(X int32, Y int32) error {
 func (p *Surface) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateSurfaceEnters) > 0 {
 			ev := SurfaceEnterEvent{}
 			ev.Output = SafeCast[*Output](event.Proxy(p.Context()))
-			p.mu.RLock()
 			for h := range p.privateSurfaceEnters {
 				h.HandleSurfaceEnter(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateSurfaceLeaves) > 0 {
 			ev := SurfaceLeaveEvent{}
 			ev.Output = SafeCast[*Output](event.Proxy(p.Context()))
-			p.mu.RLock()
 			for h := range p.privateSurfaceLeaves {
 				h.HandleSurfaceLeave(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 2:
+		p.mu.RLock()
 		if len(p.privateSurfacePreferredBufferScales) > 0 {
 			ev := SurfacePreferredBufferScaleEvent{}
 			ev.Factor = event.Int32()
-			p.mu.RLock()
 			for h := range p.privateSurfacePreferredBufferScales {
 				h.HandleSurfacePreferredBufferScale(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 3:
+		p.mu.RLock()
 		if len(p.privateSurfacePreferredBufferTransforms) > 0 {
 			ev := SurfacePreferredBufferTransformEvent{}
 			ev.Transform = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateSurfacePreferredBufferTransforms {
 				h.HandleSurfacePreferredBufferTransform(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }
@@ -2490,25 +2490,25 @@ func (p *Seat) Release() error {
 func (p *Seat) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateSeatCapabilitiess) > 0 {
 			ev := SeatCapabilitiesEvent{}
 			ev.Capabilities = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateSeatCapabilitiess {
 				h.HandleSeatCapabilities(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateSeatNames) > 0 {
 			ev := SeatNameEvent{}
 			ev.Name = event.String()
-			p.mu.RLock()
 			for h := range p.privateSeatNames {
 				h.HandleSeatName(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }
@@ -2626,43 +2626,44 @@ func (p *Pointer) Release() error {
 func (p *Pointer) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privatePointerEnters) > 0 {
 			ev := PointerEnterEvent{}
 			ev.Serial = event.Uint32()
 			ev.Surface = SafeCast[*Surface](event.Proxy(p.Context()))
 			ev.SurfaceX = event.Float32()
 			ev.SurfaceY = event.Float32()
-			p.mu.RLock()
 			for h := range p.privatePointerEnters {
 				h.HandlePointerEnter(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privatePointerLeaves) > 0 {
 			ev := PointerLeaveEvent{}
 			ev.Serial = event.Uint32()
 			ev.Surface = SafeCast[*Surface](event.Proxy(p.Context()))
-			p.mu.RLock()
 			for h := range p.privatePointerLeaves {
 				h.HandlePointerLeave(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 2:
+		p.mu.RLock()
 		if len(p.privatePointerMotions) > 0 {
 			ev := PointerMotionEvent{}
 			ev.P = p
 			ev.Time = event.Uint32()
 			ev.SurfaceX = event.Float32()
 			ev.SurfaceY = event.Float32()
-			p.mu.RLock()
 			for h := range p.privatePointerMotions {
 				h.HandlePointerMotion(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 3:
+		p.mu.RLock()
 		if len(p.privatePointerButtons) > 0 {
 			ev := PointerButtonEvent{}
 			ev.P = p
@@ -2670,87 +2671,86 @@ func (p *Pointer) Dispatch(event *Event) {
 			ev.Time = event.Uint32()
 			ev.Button = event.Uint32()
 			ev.State = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privatePointerButtons {
 				h.HandlePointerButton(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 4:
+		p.mu.RLock()
 		if len(p.privatePointerAxiss) > 0 {
 			ev := PointerAxisEvent{}
 			ev.Time = event.Uint32()
 			ev.Axis = event.Uint32()
 			ev.Value = event.Float32()
-			p.mu.RLock()
 			for h := range p.privatePointerAxiss {
 				h.HandlePointerAxis(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 5:
+		p.mu.RLock()
 		if len(p.privatePointerFrames) > 0 {
 			ev := PointerFrameEvent{}
-			p.mu.RLock()
 			for h := range p.privatePointerFrames {
 				h.HandlePointerFrame(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 6:
+		p.mu.RLock()
 		if len(p.privatePointerAxisSources) > 0 {
 			ev := PointerAxisSourceEvent{}
 			ev.AxisSource = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privatePointerAxisSources {
 				h.HandlePointerAxisSource(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 7:
+		p.mu.RLock()
 		if len(p.privatePointerAxisStops) > 0 {
 			ev := PointerAxisStopEvent{}
 			ev.Time = event.Uint32()
 			ev.Axis = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privatePointerAxisStops {
 				h.HandlePointerAxisStop(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 8:
+		p.mu.RLock()
 		if len(p.privatePointerAxisDiscretes) > 0 {
 			ev := PointerAxisDiscreteEvent{}
 			ev.Axis = event.Uint32()
 			ev.Discrete = event.Int32()
-			p.mu.RLock()
 			for h := range p.privatePointerAxisDiscretes {
 				h.HandlePointerAxisDiscrete(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 9:
+		p.mu.RLock()
 		if len(p.privatePointerAxisValue120s) > 0 {
 			ev := PointerAxisValue120Event{}
 			ev.Axis = event.Uint32()
 			ev.Value120 = event.Int32()
-			p.mu.RLock()
 			for h := range p.privatePointerAxisValue120s {
 				h.HandlePointerAxisValue120(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 10:
+		p.mu.RLock()
 		if len(p.privatePointerAxisRelativeDirections) > 0 {
 			ev := PointerAxisRelativeDirectionEvent{}
 			ev.Axis = event.Uint32()
 			ev.Direction = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privatePointerAxisRelativeDirections {
 				h.HandlePointerAxisRelativeDirection(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }
@@ -3134,54 +3134,55 @@ func (p *Keyboard) Release() error {
 func (p *Keyboard) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateKeyboardKeymaps) > 0 {
 			ev := KeyboardKeymapEvent{}
 			ev.Format = event.Uint32()
 			ev.Fd, ev.FdError = event.FD()
 			ev.Size = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateKeyboardKeymaps {
 				h.HandleKeyboardKeymap(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateKeyboardEnters) > 0 {
 			ev := KeyboardEnterEvent{}
 			ev.Serial = event.Uint32()
 			ev.Surface = SafeCast[*Surface](event.Proxy(p.Context()))
 			ev.Keys = event.Array()
-			p.mu.RLock()
 			for h := range p.privateKeyboardEnters {
 				h.HandleKeyboardEnter(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 2:
+		p.mu.RLock()
 		if len(p.privateKeyboardLeaves) > 0 {
 			ev := KeyboardLeaveEvent{}
 			ev.Serial = event.Uint32()
 			ev.Surface = SafeCast[*Surface](event.Proxy(p.Context()))
-			p.mu.RLock()
 			for h := range p.privateKeyboardLeaves {
 				h.HandleKeyboardLeave(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 3:
+		p.mu.RLock()
 		if len(p.privateKeyboardKeys) > 0 {
 			ev := KeyboardKeyEvent{}
 			ev.Serial = event.Uint32()
 			ev.Time = event.Uint32()
 			ev.Key = event.Uint32()
 			ev.State = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateKeyboardKeys {
 				h.HandleKeyboardKey(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 4:
+		p.mu.RLock()
 		if len(p.privateKeyboardModifierss) > 0 {
 			ev := KeyboardModifiersEvent{}
 			ev.Serial = event.Uint32()
@@ -3189,23 +3190,22 @@ func (p *Keyboard) Dispatch(event *Event) {
 			ev.ModsLatched = event.Uint32()
 			ev.ModsLocked = event.Uint32()
 			ev.Group = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateKeyboardModifierss {
 				h.HandleKeyboardModifiers(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 5:
+		p.mu.RLock()
 		if len(p.privateKeyboardRepeatInfos) > 0 {
 			ev := KeyboardRepeatInfoEvent{}
 			ev.Rate = event.Int32()
 			ev.Delay = event.Int32()
-			p.mu.RLock()
 			for h := range p.privateKeyboardRepeatInfos {
 				h.HandleKeyboardRepeatInfo(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }
@@ -3458,6 +3458,7 @@ func (p *Touch) Release() error {
 func (p *Touch) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateTouchDowns) > 0 {
 			ev := TouchDownEvent{}
 			ev.Serial = event.Uint32()
@@ -3466,78 +3467,77 @@ func (p *Touch) Dispatch(event *Event) {
 			ev.Id = event.Int32()
 			ev.X = event.Float32()
 			ev.Y = event.Float32()
-			p.mu.RLock()
 			for h := range p.privateTouchDowns {
 				h.HandleTouchDown(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateTouchUps) > 0 {
 			ev := TouchUpEvent{}
 			ev.Serial = event.Uint32()
 			ev.Time = event.Uint32()
 			ev.Id = event.Int32()
-			p.mu.RLock()
 			for h := range p.privateTouchUps {
 				h.HandleTouchUp(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 2:
+		p.mu.RLock()
 		if len(p.privateTouchMotions) > 0 {
 			ev := TouchMotionEvent{}
 			ev.Time = event.Uint32()
 			ev.Id = event.Int32()
 			ev.X = event.Float32()
 			ev.Y = event.Float32()
-			p.mu.RLock()
 			for h := range p.privateTouchMotions {
 				h.HandleTouchMotion(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 3:
+		p.mu.RLock()
 		if len(p.privateTouchFrames) > 0 {
 			ev := TouchFrameEvent{}
-			p.mu.RLock()
 			for h := range p.privateTouchFrames {
 				h.HandleTouchFrame(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 4:
+		p.mu.RLock()
 		if len(p.privateTouchCancels) > 0 {
 			ev := TouchCancelEvent{}
-			p.mu.RLock()
 			for h := range p.privateTouchCancels {
 				h.HandleTouchCancel(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 5:
+		p.mu.RLock()
 		if len(p.privateTouchShapes) > 0 {
 			ev := TouchShapeEvent{}
 			ev.Id = event.Int32()
 			ev.Major = event.Float32()
 			ev.Minor = event.Float32()
-			p.mu.RLock()
 			for h := range p.privateTouchShapes {
 				h.HandleTouchShape(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 6:
+		p.mu.RLock()
 		if len(p.privateTouchOrientations) > 0 {
 			ev := TouchOrientationEvent{}
 			ev.Id = event.Int32()
 			ev.Orientation = event.Float32()
-			p.mu.RLock()
 			for h := range p.privateTouchOrientations {
 				h.HandleTouchOrientation(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }
@@ -3801,6 +3801,7 @@ func (p *Output) Release() error {
 func (p *Output) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateOutputGeometrys) > 0 {
 			ev := OutputGeometryEvent{}
 			ev.X = event.Int32()
@@ -3811,64 +3812,63 @@ func (p *Output) Dispatch(event *Event) {
 			ev.Make = event.String()
 			ev.Model = event.String()
 			ev.Transform = event.Int32()
-			p.mu.RLock()
 			for h := range p.privateOutputGeometrys {
 				h.HandleOutputGeometry(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateOutputModes) > 0 {
 			ev := OutputModeEvent{}
 			ev.Flags = event.Uint32()
 			ev.Width = event.Int32()
 			ev.Height = event.Int32()
 			ev.Refresh = event.Int32()
-			p.mu.RLock()
 			for h := range p.privateOutputModes {
 				h.HandleOutputMode(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 2:
+		p.mu.RLock()
 		if len(p.privateOutputDones) > 0 {
 			ev := OutputDoneEvent{}
-			p.mu.RLock()
 			for h := range p.privateOutputDones {
 				h.HandleOutputDone(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 3:
+		p.mu.RLock()
 		if len(p.privateOutputScales) > 0 {
 			ev := OutputScaleEvent{}
 			ev.Factor = event.Int32()
-			p.mu.RLock()
 			for h := range p.privateOutputScales {
 				h.HandleOutputScale(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 4:
+		p.mu.RLock()
 		if len(p.privateOutputNames) > 0 {
 			ev := OutputNameEvent{}
 			ev.Name = event.String()
-			p.mu.RLock()
 			for h := range p.privateOutputNames {
 				h.HandleOutputName(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 5:
+		p.mu.RLock()
 		if len(p.privateOutputDescriptions) > 0 {
 			ev := OutputDescriptionEvent{}
 			ev.Description = event.String()
-			p.mu.RLock()
 			for h := range p.privateOutputDescriptions {
 				h.HandleOutputDescription(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }

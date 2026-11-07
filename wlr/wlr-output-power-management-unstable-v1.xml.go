@@ -89,24 +89,24 @@ func (p *ZwlrOutputPowerV1) Destroy() error {
 func (p *ZwlrOutputPowerV1) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateZwlrOutputPowerV1Modes) > 0 {
 			ev := ZwlrOutputPowerV1ModeEvent{}
 			ev.Mode = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateZwlrOutputPowerV1Modes {
 				h.HandleZwlrOutputPowerV1Mode(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateZwlrOutputPowerV1Faileds) > 0 {
 			ev := ZwlrOutputPowerV1FailedEvent{}
-			p.mu.RLock()
 			for h := range p.privateZwlrOutputPowerV1Faileds {
 				h.HandleZwlrOutputPowerV1Failed(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }

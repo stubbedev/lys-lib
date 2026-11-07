@@ -102,6 +102,7 @@ func (p *DataControlDeviceV1) SetPrimarySelection(Source *DataControlSourceV1) e
 func (p *DataControlDeviceV1) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateDataControlDeviceV1DataOffers) > 0 {
 			ev := DataControlDeviceV1DataOfferEvent{}
 			ev.Id = func() *DataControlOfferV1 {
@@ -109,41 +110,40 @@ func (p *DataControlDeviceV1) Dispatch(event *Event) {
 				ret.initDataControlOfferV1()
 				return event.NewId(ret, p.Context()).(*DataControlOfferV1)
 			}()
-			p.mu.RLock()
 			for h := range p.privateDataControlDeviceV1DataOffers {
 				h.HandleDataControlDeviceV1DataOffer(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateDataControlDeviceV1Selections) > 0 {
 			ev := DataControlDeviceV1SelectionEvent{}
 			ev.Id = SafeCast[*DataControlOfferV1](event.Proxy(p.Context()))
-			p.mu.RLock()
 			for h := range p.privateDataControlDeviceV1Selections {
 				h.HandleDataControlDeviceV1Selection(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 2:
+		p.mu.RLock()
 		if len(p.privateDataControlDeviceV1Finisheds) > 0 {
 			ev := DataControlDeviceV1FinishedEvent{}
-			p.mu.RLock()
 			for h := range p.privateDataControlDeviceV1Finisheds {
 				h.HandleDataControlDeviceV1Finished(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 3:
+		p.mu.RLock()
 		if len(p.privateDataControlDeviceV1PrimarySelections) > 0 {
 			ev := DataControlDeviceV1PrimarySelectionEvent{}
 			ev.Id = SafeCast[*DataControlOfferV1](event.Proxy(p.Context()))
-			p.mu.RLock()
 			for h := range p.privateDataControlDeviceV1PrimarySelections {
 				h.HandleDataControlDeviceV1PrimarySelection(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }
@@ -297,25 +297,25 @@ func (p *DataControlSourceV1) Destroy() error {
 func (p *DataControlSourceV1) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateDataControlSourceV1Sends) > 0 {
 			ev := DataControlSourceV1SendEvent{}
 			ev.MimeType = event.String()
 			ev.Fd, ev.FdError = event.FD()
-			p.mu.RLock()
 			for h := range p.privateDataControlSourceV1Sends {
 				h.HandleDataControlSourceV1Send(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateDataControlSourceV1Cancelleds) > 0 {
 			ev := DataControlSourceV1CancelledEvent{}
-			p.mu.RLock()
 			for h := range p.privateDataControlSourceV1Cancelleds {
 				h.HandleDataControlSourceV1Cancelled(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }
@@ -424,15 +424,15 @@ func (p *DataControlOfferV1) Destroy() error {
 func (p *DataControlOfferV1) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateDataControlOfferV1Offers) > 0 {
 			ev := DataControlOfferV1OfferEvent{}
 			ev.MimeType = event.String()
-			p.mu.RLock()
 			for h := range p.privateDataControlOfferV1Offers {
 				h.HandleDataControlOfferV1Offer(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }

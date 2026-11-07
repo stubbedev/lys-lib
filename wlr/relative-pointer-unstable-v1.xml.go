@@ -72,6 +72,7 @@ func (p *ZwpRelativePointerV1) Destroy() error {
 func (p *ZwpRelativePointerV1) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateZwpRelativePointerV1Motions) > 0 {
 			ev := ZwpRelativePointerV1MotionEvent{}
 			ev.UtimeHi = event.Uint32()
@@ -80,12 +81,11 @@ func (p *ZwpRelativePointerV1) Dispatch(event *Event) {
 			ev.Dy = event.Float32()
 			ev.DxUnaccel = event.Float32()
 			ev.DyUnaccel = event.Float32()
-			p.mu.RLock()
 			for h := range p.privateZwpRelativePointerV1Motions {
 				h.HandleZwpRelativePointerV1Motion(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }

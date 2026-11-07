@@ -77,23 +77,23 @@ func (p *ZwpShortcutsInhibitorV1) Destroy() error {
 func (p *ZwpShortcutsInhibitorV1) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateZwpShortcutsInhibitorV1Actives) > 0 {
 			ev := ZwpShortcutsInhibitorV1ActiveEvent{}
-			p.mu.RLock()
 			for h := range p.privateZwpShortcutsInhibitorV1Actives {
 				h.HandleZwpShortcutsInhibitorV1Active(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateZwpShortcutsInhibitorV1Inactives) > 0 {
 			ev := ZwpShortcutsInhibitorV1InactiveEvent{}
-			p.mu.RLock()
 			for h := range p.privateZwpShortcutsInhibitorV1Inactives {
 				h.HandleZwpShortcutsInhibitorV1Inactive(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }

@@ -110,15 +110,15 @@ func (p *ZxdgExportedV2) Destroy() error {
 func (p *ZxdgExportedV2) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateZxdgExportedV2Handles) > 0 {
 			ev := ZxdgExportedV2HandleEvent{}
 			ev.Handle = event.String()
-			p.mu.RLock()
 			for h := range p.privateZxdgExportedV2Handles {
 				h.HandleZxdgExportedV2Handle(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }
@@ -188,14 +188,14 @@ func (p *ZxdgImportedV2) SetParentOf(Surface *Surface) error {
 func (p *ZxdgImportedV2) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateZxdgImportedV2Destroyeds) > 0 {
 			ev := ZxdgImportedV2DestroyedEvent{}
-			p.mu.RLock()
 			for h := range p.privateZxdgImportedV2Destroyeds {
 				h.HandleZxdgImportedV2Destroyed(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }

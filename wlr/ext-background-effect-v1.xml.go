@@ -55,15 +55,15 @@ func (p *ExtBackgroundEffectManagerV1) GetExtBackgroundEffect(Surface *Surface) 
 func (p *ExtBackgroundEffectManagerV1) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateExtBackgroundEffectManagerV1Capabilitiess) > 0 {
 			ev := ExtBackgroundEffectManagerV1CapabilitiesEvent{}
 			ev.Flags = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateExtBackgroundEffectManagerV1Capabilitiess {
 				h.HandleExtBackgroundEffectManagerV1Capabilities(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }

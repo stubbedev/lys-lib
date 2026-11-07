@@ -101,23 +101,23 @@ func (p *ZwpLockedPointerV1) SetRegion(Region *Region) error {
 func (p *ZwpLockedPointerV1) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateZwpLockedPointerV1Lockeds) > 0 {
 			ev := ZwpLockedPointerV1LockedEvent{}
-			p.mu.RLock()
 			for h := range p.privateZwpLockedPointerV1Lockeds {
 				h.HandleZwpLockedPointerV1Locked(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateZwpLockedPointerV1Unlockeds) > 0 {
 			ev := ZwpLockedPointerV1UnlockedEvent{}
-			p.mu.RLock()
 			for h := range p.privateZwpLockedPointerV1Unlockeds {
 				h.HandleZwpLockedPointerV1Unlocked(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }
@@ -213,23 +213,23 @@ func (p *ZwpConfinedPointerV1) SetRegion(Region *Region) error {
 func (p *ZwpConfinedPointerV1) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateZwpConfinedPointerV1Confineds) > 0 {
 			ev := ZwpConfinedPointerV1ConfinedEvent{}
-			p.mu.RLock()
 			for h := range p.privateZwpConfinedPointerV1Confineds {
 				h.HandleZwpConfinedPointerV1Confined(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateZwpConfinedPointerV1Unconfineds) > 0 {
 			ev := ZwpConfinedPointerV1UnconfinedEvent{}
-			p.mu.RLock()
 			for h := range p.privateZwpConfinedPointerV1Unconfineds {
 				h.HandleZwpConfinedPointerV1Unconfined(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }

@@ -124,65 +124,65 @@ func (p *ImageCopyCaptureSessionV1) Destroy() error {
 func (p *ImageCopyCaptureSessionV1) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateImageCopyCaptureSessionV1BufferSizes) > 0 {
 			ev := ImageCopyCaptureSessionV1BufferSizeEvent{}
 			ev.Width = event.Uint32()
 			ev.Height = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateImageCopyCaptureSessionV1BufferSizes {
 				h.HandleImageCopyCaptureSessionV1BufferSize(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateImageCopyCaptureSessionV1ShmFormats) > 0 {
 			ev := ImageCopyCaptureSessionV1ShmFormatEvent{}
 			ev.Format = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateImageCopyCaptureSessionV1ShmFormats {
 				h.HandleImageCopyCaptureSessionV1ShmFormat(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 2:
+		p.mu.RLock()
 		if len(p.privateImageCopyCaptureSessionV1DmabufDevices) > 0 {
 			ev := ImageCopyCaptureSessionV1DmabufDeviceEvent{}
 			ev.Device = event.Array()
-			p.mu.RLock()
 			for h := range p.privateImageCopyCaptureSessionV1DmabufDevices {
 				h.HandleImageCopyCaptureSessionV1DmabufDevice(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 3:
+		p.mu.RLock()
 		if len(p.privateImageCopyCaptureSessionV1DmabufFormats) > 0 {
 			ev := ImageCopyCaptureSessionV1DmabufFormatEvent{}
 			ev.Format = event.Uint32()
 			ev.Modifiers = event.Array()
-			p.mu.RLock()
 			for h := range p.privateImageCopyCaptureSessionV1DmabufFormats {
 				h.HandleImageCopyCaptureSessionV1DmabufFormat(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 4:
+		p.mu.RLock()
 		if len(p.privateImageCopyCaptureSessionV1Dones) > 0 {
 			ev := ImageCopyCaptureSessionV1DoneEvent{}
-			p.mu.RLock()
 			for h := range p.privateImageCopyCaptureSessionV1Dones {
 				h.HandleImageCopyCaptureSessionV1Done(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 5:
+		p.mu.RLock()
 		if len(p.privateImageCopyCaptureSessionV1Stoppeds) > 0 {
 			ev := ImageCopyCaptureSessionV1StoppedEvent{}
-			p.mu.RLock()
 			for h := range p.privateImageCopyCaptureSessionV1Stoppeds {
 				h.HandleImageCopyCaptureSessionV1Stopped(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }
@@ -426,59 +426,59 @@ func (p *ImageCopyCaptureFrameV1) Capture() error {
 func (p *ImageCopyCaptureFrameV1) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateImageCopyCaptureFrameV1Transforms) > 0 {
 			ev := ImageCopyCaptureFrameV1TransformEvent{}
 			ev.Transform = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateImageCopyCaptureFrameV1Transforms {
 				h.HandleImageCopyCaptureFrameV1Transform(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateImageCopyCaptureFrameV1Damages) > 0 {
 			ev := ImageCopyCaptureFrameV1DamageEvent{}
 			ev.X = event.Int32()
 			ev.Y = event.Int32()
 			ev.Width = event.Int32()
 			ev.Height = event.Int32()
-			p.mu.RLock()
 			for h := range p.privateImageCopyCaptureFrameV1Damages {
 				h.HandleImageCopyCaptureFrameV1Damage(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 2:
+		p.mu.RLock()
 		if len(p.privateImageCopyCaptureFrameV1PresentationTimes) > 0 {
 			ev := ImageCopyCaptureFrameV1PresentationTimeEvent{}
 			ev.TvSecHi = event.Uint32()
 			ev.TvSecLo = event.Uint32()
 			ev.TvNsec = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateImageCopyCaptureFrameV1PresentationTimes {
 				h.HandleImageCopyCaptureFrameV1PresentationTime(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 3:
+		p.mu.RLock()
 		if len(p.privateImageCopyCaptureFrameV1Readys) > 0 {
 			ev := ImageCopyCaptureFrameV1ReadyEvent{}
-			p.mu.RLock()
 			for h := range p.privateImageCopyCaptureFrameV1Readys {
 				h.HandleImageCopyCaptureFrameV1Ready(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 4:
+		p.mu.RLock()
 		if len(p.privateImageCopyCaptureFrameV1Faileds) > 0 {
 			ev := ImageCopyCaptureFrameV1FailedEvent{}
 			ev.Reason = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateImageCopyCaptureFrameV1Faileds {
 				h.HandleImageCopyCaptureFrameV1Failed(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }
@@ -674,45 +674,45 @@ func (p *ImageCopyCaptureCursorSessionV1) GetCaptureSession() (*ImageCopyCapture
 func (p *ImageCopyCaptureCursorSessionV1) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateImageCopyCaptureCursorSessionV1Enters) > 0 {
 			ev := ImageCopyCaptureCursorSessionV1EnterEvent{}
-			p.mu.RLock()
 			for h := range p.privateImageCopyCaptureCursorSessionV1Enters {
 				h.HandleImageCopyCaptureCursorSessionV1Enter(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateImageCopyCaptureCursorSessionV1Leaves) > 0 {
 			ev := ImageCopyCaptureCursorSessionV1LeaveEvent{}
-			p.mu.RLock()
 			for h := range p.privateImageCopyCaptureCursorSessionV1Leaves {
 				h.HandleImageCopyCaptureCursorSessionV1Leave(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 2:
+		p.mu.RLock()
 		if len(p.privateImageCopyCaptureCursorSessionV1Positions) > 0 {
 			ev := ImageCopyCaptureCursorSessionV1PositionEvent{}
 			ev.X = event.Int32()
 			ev.Y = event.Int32()
-			p.mu.RLock()
 			for h := range p.privateImageCopyCaptureCursorSessionV1Positions {
 				h.HandleImageCopyCaptureCursorSessionV1Position(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 3:
+		p.mu.RLock()
 		if len(p.privateImageCopyCaptureCursorSessionV1Hotspots) > 0 {
 			ev := ImageCopyCaptureCursorSessionV1HotspotEvent{}
 			ev.X = event.Int32()
 			ev.Y = event.Int32()
-			p.mu.RLock()
 			for h := range p.privateImageCopyCaptureCursorSessionV1Hotspots {
 				h.HandleImageCopyCaptureCursorSessionV1Hotspot(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }

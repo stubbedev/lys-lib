@@ -101,15 +101,15 @@ func (p *ZxdgToplevelDecorationV1) UnsetMode() error {
 func (p *ZxdgToplevelDecorationV1) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateZxdgToplevelDecorationV1Configures) > 0 {
 			ev := ZxdgToplevelDecorationV1ConfigureEvent{}
 			ev.Mode = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateZxdgToplevelDecorationV1Configures {
 				h.HandleZxdgToplevelDecorationV1Configure(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }

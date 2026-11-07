@@ -80,23 +80,23 @@ func (p *ExtIdleNotificationV1) Destroy() error {
 func (p *ExtIdleNotificationV1) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateExtIdleNotificationV1Idleds) > 0 {
 			ev := ExtIdleNotificationV1IdledEvent{}
-			p.mu.RLock()
 			for h := range p.privateExtIdleNotificationV1Idleds {
 				h.HandleExtIdleNotificationV1Idled(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateExtIdleNotificationV1Resumeds) > 0 {
 			ev := ExtIdleNotificationV1ResumedEvent{}
-			p.mu.RLock()
 			for h := range p.privateExtIdleNotificationV1Resumeds {
 				h.HandleExtIdleNotificationV1Resumed(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }

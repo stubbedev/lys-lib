@@ -252,15 +252,15 @@ func (p *WmBase) Pong(Serial uint32) error {
 func (p *WmBase) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateWmBasePings) > 0 {
 			ev := WmBasePingEvent{}
 			ev.Serial = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateWmBasePings {
 				h.HandleWmBasePing(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }
@@ -428,15 +428,15 @@ func (p *Surface) AckConfigure(Serial uint32) error {
 func (p *Surface) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateSurfaceConfigures) > 0 {
 			ev := SurfaceConfigureEvent{}
 			ev.Serial = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateSurfaceConfigures {
 				h.HandleSurfaceConfigure(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }
@@ -584,47 +584,47 @@ func (p *Toplevel) SetMinimized() error {
 func (p *Toplevel) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateToplevelConfigures) > 0 {
 			ev := ToplevelConfigureEvent{}
 			ev.Width = event.Int32()
 			ev.Height = event.Int32()
 			ev.States = event.Array()
-			p.mu.RLock()
 			for h := range p.privateToplevelConfigures {
 				h.HandleToplevelConfigure(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateToplevelCloses) > 0 {
 			ev := ToplevelCloseEvent{}
-			p.mu.RLock()
 			for h := range p.privateToplevelCloses {
 				h.HandleToplevelClose(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 2:
+		p.mu.RLock()
 		if len(p.privateToplevelConfigureBoundss) > 0 {
 			ev := ToplevelConfigureBoundsEvent{}
 			ev.Width = event.Int32()
 			ev.Height = event.Int32()
-			p.mu.RLock()
 			for h := range p.privateToplevelConfigureBoundss {
 				h.HandleToplevelConfigureBounds(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 3:
+		p.mu.RLock()
 		if len(p.privateToplevelWmCapabilitiess) > 0 {
 			ev := ToplevelWmCapabilitiesEvent{}
 			ev.Capabilities = event.Array()
-			p.mu.RLock()
 			for h := range p.privateToplevelWmCapabilitiess {
 				h.HandleToplevelWmCapabilities(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }
@@ -792,37 +792,37 @@ func (p *Popup) Reposition(Positioner *Positioner, Token uint32) error {
 func (p *Popup) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privatePopupConfigures) > 0 {
 			ev := PopupConfigureEvent{}
 			ev.X = event.Int32()
 			ev.Y = event.Int32()
 			ev.Width = event.Int32()
 			ev.Height = event.Int32()
-			p.mu.RLock()
 			for h := range p.privatePopupConfigures {
 				h.HandlePopupConfigure(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privatePopupPopupDones) > 0 {
 			ev := PopupPopupDoneEvent{}
-			p.mu.RLock()
 			for h := range p.privatePopupPopupDones {
 				h.HandlePopupPopupDone(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 2:
+		p.mu.RLock()
 		if len(p.privatePopupRepositioneds) > 0 {
 			ev := PopupRepositionedEvent{}
 			ev.Token = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privatePopupRepositioneds {
 				h.HandlePopupRepositioned(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }

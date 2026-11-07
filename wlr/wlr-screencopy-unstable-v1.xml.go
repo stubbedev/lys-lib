@@ -111,83 +111,83 @@ func (p *ZwlrScreencopyFrameV1) CopyWithDamage(Buffer *Buffer) error {
 func (p *ZwlrScreencopyFrameV1) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateZwlrScreencopyFrameV1Buffers) > 0 {
 			ev := ZwlrScreencopyFrameV1BufferEvent{}
 			ev.Format = event.Uint32()
 			ev.Width = event.Uint32()
 			ev.Height = event.Uint32()
 			ev.Stride = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateZwlrScreencopyFrameV1Buffers {
 				h.HandleZwlrScreencopyFrameV1Buffer(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateZwlrScreencopyFrameV1Flagss) > 0 {
 			ev := ZwlrScreencopyFrameV1FlagsEvent{}
 			ev.Flags = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateZwlrScreencopyFrameV1Flagss {
 				h.HandleZwlrScreencopyFrameV1Flags(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 2:
+		p.mu.RLock()
 		if len(p.privateZwlrScreencopyFrameV1Readys) > 0 {
 			ev := ZwlrScreencopyFrameV1ReadyEvent{}
 			ev.TvSecHi = event.Uint32()
 			ev.TvSecLo = event.Uint32()
 			ev.TvNsec = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateZwlrScreencopyFrameV1Readys {
 				h.HandleZwlrScreencopyFrameV1Ready(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 3:
+		p.mu.RLock()
 		if len(p.privateZwlrScreencopyFrameV1Faileds) > 0 {
 			ev := ZwlrScreencopyFrameV1FailedEvent{}
-			p.mu.RLock()
 			for h := range p.privateZwlrScreencopyFrameV1Faileds {
 				h.HandleZwlrScreencopyFrameV1Failed(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 4:
+		p.mu.RLock()
 		if len(p.privateZwlrScreencopyFrameV1Damages) > 0 {
 			ev := ZwlrScreencopyFrameV1DamageEvent{}
 			ev.X = event.Uint32()
 			ev.Y = event.Uint32()
 			ev.Width = event.Uint32()
 			ev.Height = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateZwlrScreencopyFrameV1Damages {
 				h.HandleZwlrScreencopyFrameV1Damage(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 5:
+		p.mu.RLock()
 		if len(p.privateZwlrScreencopyFrameV1LinuxDmabufs) > 0 {
 			ev := ZwlrScreencopyFrameV1LinuxDmabufEvent{}
 			ev.Format = event.Uint32()
 			ev.Width = event.Uint32()
 			ev.Height = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateZwlrScreencopyFrameV1LinuxDmabufs {
 				h.HandleZwlrScreencopyFrameV1LinuxDmabuf(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 6:
+		p.mu.RLock()
 		if len(p.privateZwlrScreencopyFrameV1BufferDones) > 0 {
 			ev := ZwlrScreencopyFrameV1BufferDoneEvent{}
-			p.mu.RLock()
 			for h := range p.privateZwlrScreencopyFrameV1BufferDones {
 				h.HandleZwlrScreencopyFrameV1BufferDone(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }

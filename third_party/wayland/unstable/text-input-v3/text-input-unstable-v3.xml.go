@@ -172,68 +172,68 @@ func (p *ZwpInputV3) Commit() error {
 func (p *ZwpInputV3) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateZwpInputV3Enters) > 0 {
 			ev := ZwpInputV3EnterEvent{}
 			ev.Surface = SafeCast[*Surface](event.Proxy(p.Context()))
-			p.mu.RLock()
 			for h := range p.privateZwpInputV3Enters {
 				h.HandleZwpInputV3Enter(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateZwpInputV3Leaves) > 0 {
 			ev := ZwpInputV3LeaveEvent{}
 			ev.Surface = SafeCast[*Surface](event.Proxy(p.Context()))
-			p.mu.RLock()
 			for h := range p.privateZwpInputV3Leaves {
 				h.HandleZwpInputV3Leave(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 2:
+		p.mu.RLock()
 		if len(p.privateZwpInputV3PreeditStrings) > 0 {
 			ev := ZwpInputV3PreeditStringEvent{}
 			ev.Text = event.String()
 			ev.CursorBegin = event.Int32()
 			ev.CursorEnd = event.Int32()
-			p.mu.RLock()
 			for h := range p.privateZwpInputV3PreeditStrings {
 				h.HandleZwpInputV3PreeditString(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 3:
+		p.mu.RLock()
 		if len(p.privateZwpInputV3CommitStrings) > 0 {
 			ev := ZwpInputV3CommitStringEvent{}
 			ev.Text = event.String()
-			p.mu.RLock()
 			for h := range p.privateZwpInputV3CommitStrings {
 				h.HandleZwpInputV3CommitString(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 4:
+		p.mu.RLock()
 		if len(p.privateZwpInputV3DeleteSurroundingTexts) > 0 {
 			ev := ZwpInputV3DeleteSurroundingTextEvent{}
 			ev.BeforeLength = event.Uint32()
 			ev.AfterLength = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateZwpInputV3DeleteSurroundingTexts {
 				h.HandleZwpInputV3DeleteSurroundingText(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 5:
+		p.mu.RLock()
 		if len(p.privateZwpInputV3Dones) > 0 {
 			ev := ZwpInputV3DoneEvent{}
 			ev.Serial = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateZwpInputV3Dones {
 				h.HandleZwpInputV3Done(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }

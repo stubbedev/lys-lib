@@ -96,27 +96,27 @@ func (p *ZwpDmabufV1) GetSurfaceFeedback(Surface *Surface) (*ZwpDmabufFeedbackV1
 func (p *ZwpDmabufV1) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateZwpDmabufV1Formats) > 0 {
 			ev := ZwpDmabufV1FormatEvent{}
 			ev.Format = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateZwpDmabufV1Formats {
 				h.HandleZwpDmabufV1Format(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateZwpDmabufV1Modifiers) > 0 {
 			ev := ZwpDmabufV1ModifierEvent{}
 			ev.Format = event.Uint32()
 			ev.ModifierHi = event.Uint32()
 			ev.ModifierLo = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateZwpDmabufV1Modifiers {
 				h.HandleZwpDmabufV1Modifier(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }
@@ -232,24 +232,24 @@ func (p *ZwpBufferParamsV1) CreateImmed(Width int32, Height int32, Format uint32
 func (p *ZwpBufferParamsV1) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateZwpBufferParamsV1Createds) > 0 {
 			ev := ZwpBufferParamsV1CreatedEvent{}
 			ev.Buffer = func() *Buffer { ret := newServerBuffer(); return event.NewId(ret, p.Context()).(*Buffer) }()
-			p.mu.RLock()
 			for h := range p.privateZwpBufferParamsV1Createds {
 				h.HandleZwpBufferParamsV1Created(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateZwpBufferParamsV1Faileds) > 0 {
 			ev := ZwpBufferParamsV1FailedEvent{}
-			p.mu.RLock()
 			for h := range p.privateZwpBufferParamsV1Faileds {
 				h.HandleZwpBufferParamsV1Failed(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }
@@ -351,74 +351,74 @@ func (p *ZwpDmabufFeedbackV1) Destroy() error {
 func (p *ZwpDmabufFeedbackV1) Dispatch(event *Event) {
 	switch event.Opcode {
 	case 0:
+		p.mu.RLock()
 		if len(p.privateZwpDmabufFeedbackV1Dones) > 0 {
 			ev := ZwpDmabufFeedbackV1DoneEvent{}
-			p.mu.RLock()
 			for h := range p.privateZwpDmabufFeedbackV1Dones {
 				h.HandleZwpDmabufFeedbackV1Done(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 1:
+		p.mu.RLock()
 		if len(p.privateZwpDmabufFeedbackV1FormatTables) > 0 {
 			ev := ZwpDmabufFeedbackV1FormatTableEvent{}
 			ev.Fd, ev.FdError = event.FD()
 			ev.Size = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateZwpDmabufFeedbackV1FormatTables {
 				h.HandleZwpDmabufFeedbackV1FormatTable(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 2:
+		p.mu.RLock()
 		if len(p.privateZwpDmabufFeedbackV1MainDevices) > 0 {
 			ev := ZwpDmabufFeedbackV1MainDeviceEvent{}
 			ev.Device = event.Array()
-			p.mu.RLock()
 			for h := range p.privateZwpDmabufFeedbackV1MainDevices {
 				h.HandleZwpDmabufFeedbackV1MainDevice(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 3:
+		p.mu.RLock()
 		if len(p.privateZwpDmabufFeedbackV1TrancheDones) > 0 {
 			ev := ZwpDmabufFeedbackV1TrancheDoneEvent{}
-			p.mu.RLock()
 			for h := range p.privateZwpDmabufFeedbackV1TrancheDones {
 				h.HandleZwpDmabufFeedbackV1TrancheDone(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 4:
+		p.mu.RLock()
 		if len(p.privateZwpDmabufFeedbackV1TrancheTargetDevices) > 0 {
 			ev := ZwpDmabufFeedbackV1TrancheTargetDeviceEvent{}
 			ev.Device = event.Array()
-			p.mu.RLock()
 			for h := range p.privateZwpDmabufFeedbackV1TrancheTargetDevices {
 				h.HandleZwpDmabufFeedbackV1TrancheTargetDevice(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 5:
+		p.mu.RLock()
 		if len(p.privateZwpDmabufFeedbackV1TrancheFormatss) > 0 {
 			ev := ZwpDmabufFeedbackV1TrancheFormatsEvent{}
 			ev.Indices = uint16Array(event)
-			p.mu.RLock()
 			for h := range p.privateZwpDmabufFeedbackV1TrancheFormatss {
 				h.HandleZwpDmabufFeedbackV1TrancheFormats(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 	case 6:
+		p.mu.RLock()
 		if len(p.privateZwpDmabufFeedbackV1TrancheFlagss) > 0 {
 			ev := ZwpDmabufFeedbackV1TrancheFlagsEvent{}
 			ev.Flags = event.Uint32()
-			p.mu.RLock()
 			for h := range p.privateZwpDmabufFeedbackV1TrancheFlagss {
 				h.HandleZwpDmabufFeedbackV1TrancheFlags(ev)
 			}
-			p.mu.RUnlock()
 		}
+		p.mu.RUnlock()
 
 	}
 }
