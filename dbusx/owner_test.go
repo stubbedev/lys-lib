@@ -100,8 +100,8 @@ func TestStoppingAWatchLeavesTheConnectionAsItWas(t *testing.T) {
 		t.Fatal(err)
 	}
 	_ = client.Close()
-	if err := stopped(); err == nil {
-		t.Error("stop on a closed connection reported no error")
+	if err := stopped(); err != nil {
+		t.Errorf("stop on a closed connection, whose rules the bus dropped = %v", err)
 	}
 }
 

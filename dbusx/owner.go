@@ -2,6 +2,7 @@ package dbusx
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -54,7 +55,7 @@ const unwatchTimeout = 5 * time.Second
 // until ctx ends or stop is called, whichever comes first, and then
 // removes both, so a connection shared with others is left as it was.
 // stop returns once they are gone, with the error removing the rule
-// met; calling it again, or after ctx ended, waits for the same removal
+// met (none for a closed connection, whose rules the bus dropped); calling it again, or after ctx ended, waits for the same removal
 // and reports the same error. stop must not be called from appeared.
 func WatchOwner(ctx context.Context, conn *dbus.Conn, name string, appeared func()) (stop func() error, err error) {
 	match := OwnerMatch(name)
@@ -72,7 +73,7 @@ func WatchOwner(ctx context.Context, conn *dbus.Conn, name string, appeared func
 			conn.RemoveSignal(signals)
 			unwatch, cancelUnwatch := context.WithTimeout(context.WithoutCancel(ctx), unwatchTimeout)
 			defer cancelUnwatch()
-			if err := conn.RemoveMatchSignalContext(unwatch, match...); err != nil {
+			if err := conn.RemoveMatchSignalContext(unwatch, match...); err != nil && !errors.Is(err, dbus.ErrClosed) {
 				unwatchErr = fmt.Errorf("stop watching %s: %w", name, err)
 			}
 		}()
