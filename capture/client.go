@@ -124,7 +124,6 @@ func ConnectTo(socket string) (*Client, error) {
 		sessionToplevels: make(map[*wlr.ForeignToplevelHandleV1]struct{}),
 	}
 	display.AddErrorHandler(c)
-	display.AddDeleteIdHandler(c)
 	reg, err := display.GetRegistry()
 	if err != nil {
 		_ = c.Close()
@@ -261,14 +260,6 @@ func (c *Client) HandleDisplayError(ev wl.DisplayErrorEvent) {
 		id = ev.ObjectId.Id()
 	}
 	c.protoErr = fmt.Errorf("capture: compositor error on object %d (code %d): %s", id, ev.Code, ev.Message)
-}
-
-// HandleDisplayDeleteId implements wl.DisplayDeleteIdHandler: the
-// compositor finished with a destroyed object, so its id leaves the
-// proxy map. Without this every capture would leak its frame and
-// buffer proxies for the connection's lifetime.
-func (c *Client) HandleDisplayDeleteId(ev wl.DisplayDeleteIdEvent) {
-	c.ctx.Unregister(wl.ProxyId(ev.Id))
 }
 
 // usable fails once the client is closed or the compositor killed the
