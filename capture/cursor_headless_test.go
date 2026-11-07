@@ -83,3 +83,52 @@ func TestHeadlessCursorFollowsThePointerAndCopiesItsImageOnce(t *testing.T) {
 		t.Fatal("a cursor opened on a missing output")
 	}
 }
+
+// A new pointer image over the source is copied once, at its own size:
+// the image buffers follow it from shape to shape.
+func TestHeadlessCursorCopiesEachNewImage(t *testing.T) {
+	wltest.Require(t)
+	p := wltest.NewPainter(t)
+	p.Layer(wltest.AnchorTop|wltest.AnchorBottom|wltest.AnchorLeft|wltest.AnchorRight, 0, 0, fillGreen)
+	p.Run()
+	pointer, err := vinput.Dial("", vinput.Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(pointer.Close)
+	out := captureClient(t).Outputs()[0]
+	w, h := uint32(out.Width), uint32(out.Height)
+	k, err := capture.OpenOutputCursor(out.Name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = k.Close() })
+	if err := errors.Join(pointer.MotionAbsolute(w/3, h/3, w, h), pointer.Roundtrip()); err != nil {
+		t.Fatal(err)
+	}
+	p.Cursor(16, fillRed)
+	wltest.Eventually(t, "the painter's 16x16 image", func() error {
+		if s := k.State(); s.Width != 16 || s.Height != 16 {
+			return fmt.Errorf("state %+v", s)
+		}
+		return nil
+	})
+	first := k.State()
+	for i, side := range []int32{24, 32, 20} {
+		p.Cursor(side, fillRed)
+		want := first.Shape + uint64(i) + 1
+		wltest.Eventually(t, fmt.Sprintf("the %dx%d image", side, side), func() error {
+			if s := k.State(); s.Shape != want || s.Width != int(side) || s.Height != int(side) || s.HotspotX != int(side)/2 {
+				return fmt.Errorf("state %+v, want shape %d", s, want)
+			}
+			return nil
+		})
+		img := make([]byte, side*side*4)
+		if gotW, gotH, ok := k.ReadImage(want, img, int(side), int(side)); !ok || gotW != int(side) || gotH != int(side) {
+			t.Fatalf("read the %dx%d image as %dx%d, ok %v", side, side, gotW, gotH, ok)
+		}
+		if px := uint32(img[0]) | uint32(img[1])<<8 | uint32(img[2])<<16 | uint32(img[3])<<24; px != 0xffd02030 {
+			t.Fatalf("the image's first pixel %#x, want the painted red", px)
+		}
+	}
+}

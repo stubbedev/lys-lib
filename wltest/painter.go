@@ -40,9 +40,15 @@ type Painter struct {
 	wm      *xdg.WmBase
 	layers  *wlr.ZwlrLayerShellV1
 	output  *wl.Output
+	seat    *wl.Seat
+	pointer *wl.Pointer
 	mu      sync.Mutex
 	err     error
 	surface []*painted
+	// enter is the serial of the pointer's latest enter into a surface,
+	// entered whether there was one; guarded by mu.
+	enter   uint32
+	entered bool
 	// paintMu serializes painting between the event goroutine's
 	// configures, the test's resizes and the connection's close; closed
 	// stops the configures still buffered at the close from painting
@@ -110,11 +116,38 @@ func (p *Painter) HandleRegistryGlobal(ev wl.RegistryGlobalEvent) {
 		if p.reg.Bind(ev.Name, ev.Interface, min(ev.Version, 4), l) == nil {
 			p.layers = l
 		}
+	case "wl_seat":
+		if p.seat == nil {
+			p.seat = wlclient.RegistryBindSeatInterface(p.reg, ev.Name, 1)
+			p.seat.AddCapabilitiesHandler(p)
+		}
 	case "wl_output":
 		if p.output == nil {
 			p.output = wlclient.RegistryBindOutputInterface(p.reg, ev.Name, 1)
 		}
 	}
+}
+
+// HandleSeatCapabilities follows the seat's pointer, once it has one.
+func (p *Painter) HandleSeatCapabilities(ev wl.SeatCapabilitiesEvent) {
+	if ev.Capabilities&wl.SeatCapabilityPointer == 0 || p.pointer != nil {
+		return
+	}
+	pointer, err := p.seat.GetPointer()
+	if err != nil {
+		p.fail(fmt.Errorf("wltest: the seat's pointer: %w", err))
+		return
+	}
+	pointer.AddEnterHandler(p)
+	p.pointer = pointer
+}
+
+// HandlePointerEnter keeps the enter's serial, which setting the
+// pointer's image needs.
+func (p *Painter) HandlePointerEnter(ev wl.PointerEnterEvent) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.enter, p.entered = ev.Serial, true
 }
 
 // HandleRegistryGlobalRemove implements the registry listener.
@@ -174,6 +207,31 @@ func (p *Painter) Layer(anchor uint32, w, h int32, c color.RGBA) {
 		p.t.Fatal(err)
 	}
 	p.show(s)
+}
+
+// Cursor sets the pointer's image over the painter's surfaces to a side x
+// side square of c with its hotspot in the middle, once the pointer has
+// entered one of them. A new call is a new image.
+func (p *Painter) Cursor(side int32, c color.RGBA) {
+	p.t.Helper()
+	Eventually(p.t, "the pointer over a painted surface", func() error {
+		p.mu.Lock()
+		defer p.mu.Unlock()
+		if !p.entered {
+			return errors.New("the pointer entered none")
+		}
+		return p.err
+	})
+	p.mu.Lock()
+	serial := p.enter
+	p.mu.Unlock()
+	p.paintMu.Lock()
+	defer p.paintMu.Unlock()
+	s := p.newSurface(c)
+	s.w, s.h = side, side
+	if err := errors.Join(p.pointer.SetCursor(serial, s.s, side/2, side/2), s.paint()); err != nil {
+		p.t.Fatalf("wltest: set a %dx%d pointer image: %v", side, side, err)
+	}
 }
 
 // Window is a toplevel a Painter shows, painted at the size the compositor
