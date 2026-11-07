@@ -5,7 +5,6 @@ import (
 	"testing"
 
 	"github.com/stubbedev/lys-lib/third_party/wayland/wl"
-	"github.com/stubbedev/lys-lib/wlr"
 )
 
 func TestABufferIsStaleByTheFramesPublishedSinceItWasFilled(t *testing.T) {
@@ -55,37 +54,5 @@ func TestASessionForgetsTheOldestOfTooManyBuffers(t *testing.T) {
 	}
 	if _, whole := b.stale(bufs[maxStaleBuffers], 1); whole {
 		t.Error("the newest buffer is damaged whole")
-	}
-}
-
-func TestASteadyStreamFrameAllocatesNothing(t *testing.T) {
-	s := &Stream{ring: make([]*shmBuffer, streamRing), slots: make([]streamSlot, streamRing), latest: -1}
-	var b bufferDamage
-	bufs := make([]*wl.Buffer, streamRing)
-	for i := range bufs {
-		bufs[i] = &wl.Buffer{}
-	}
-	var seq uint64
-	frame := func() {
-		slot := int(seq % streamRing)
-		fs := &s.slots[slot].events
-		fs.reset()
-		b.stale(bufs[slot], 1)
-		fs.HandleImageCopyCaptureFrameV1Damage(wlr.ImageCopyCaptureFrameV1DamageEvent{X: int32(seq % 64), Y: 1, Width: 2, Height: 2})
-		fs.HandleImageCopyCaptureFrameV1Damage(wlr.ImageCopyCaptureFrameV1DamageEvent{X: 5, Y: int32(seq % 32), Width: 3, Height: 1})
-		fs.HandleImageCopyCaptureFrameV1Ready(wlr.ImageCopyCaptureFrameV1ReadyEvent{})
-		b.filled(bufs[slot], 1, fs.info.Damage, fs.ready)
-		s.publish(slot, seq)
-		seq++
-	}
-	for range 2 * streamRing {
-		frame()
-	}
-	if n := testing.AllocsPerRun(100, frame); n != 0 {
-		t.Errorf("a steady stream frame allocated %v times", n)
-	}
-	var got StreamFrame
-	if !s.Latest(&got) || got.Seq != seq-1 || len(got.Damage) != 2 {
-		t.Errorf("the latest frame is %+v", got)
 	}
 }

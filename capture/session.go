@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"sync/atomic"
 
 	"github.com/stubbedev/lys-lib/dmabuf"
 	"github.com/stubbedev/lys-lib/dmabufwl"
@@ -320,13 +321,30 @@ func (cs *copySession) destroy() error {
 	return nil
 }
 
+// frameWait is how captureFrame waits for a frame's verdict on client:
+// holding client.mu throughout, or giving it up while no event is in
+// (yield), and giving up once quit is set.
+type frameWait struct {
+	client *Client
+	yield  bool
+	quit   *atomic.Bool
+}
+
+func (w frameWait) until(done func() bool) error {
+	finished := func() bool { return (w.quit != nil && w.quit.Load()) || done() }
+	if w.yield {
+		return w.client.dispatchYielding(finished)
+	}
+	return w.client.dispatchUntil(finished)
+}
+
 // captureFrame runs one frame into buf, recording its events in fs:
 // create, attach, damage what changed since buf was last filled (all of
 // it for a buffer new to the session or filled under other constraints),
-// capture, and dispatch until the verdict, the session's stop, or done
-// says to give up. A frame failed because the session stopped marks it
+// capture, and wait until the verdict, the session's stop, or the
+// wait's quit. A frame failed because the session stopped marks it
 // stopped, ahead of its stopped event.
-func (cs *copySession) captureFrame(dispatch func(func() bool) error, buf *wl.Buffer, width, height int32, fs *frameState) error {
+func (cs *copySession) captureFrame(wait frameWait, buf *wl.Buffer, width, height int32, fs *frameState) error {
 	frame, err := cs.session.CreateFrame()
 	if err != nil {
 		return fmt.Errorf("capture: create a capture frame: %w", err)
@@ -345,7 +363,7 @@ func (cs *copySession) captureFrame(dispatch func(func() bool) error, buf *wl.Bu
 		cs.damage.filled(buf, gen, nil, false)
 		return fmt.Errorf("capture: capture a frame: %w", err)
 	}
-	err = dispatch(func() bool { return fs.finished() || cs.state.stopped })
+	err = wait.until(func() bool { return fs.finished() || cs.state.stopped })
 	cs.damage.filled(buf, gen, fs.info.Damage, err == nil && fs.ready)
 	if err != nil {
 		return err

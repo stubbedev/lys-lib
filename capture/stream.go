@@ -224,12 +224,10 @@ func (s *Stream) run(cs *copySession) {
 	defer func() { _ = cs.destroy() }()
 	var seq uint64
 	slot, failures := 0, 0
-	dispatch := func(done func() bool) error {
-		return s.client.dispatchUntil(func() bool { return s.stopping.Load() || done() })
-	}
+	wait := frameWait{client: s.client, quit: &s.stopping}
 	for !s.stopping.Load() {
 		buf, fs := s.ring[slot], &s.slots[slot].events
-		err := cs.captureFrame(dispatch, buf.wl, buf.wlWidth, buf.wlHeight, fs)
+		err := cs.captureFrame(wait, buf.wl, buf.wlWidth, buf.wlHeight, fs)
 		if err != nil {
 			if !s.stopping.Load() {
 				s.err = err

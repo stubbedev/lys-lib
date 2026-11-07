@@ -73,8 +73,13 @@ func fakeDamage(n int) image.Rectangle {
 	if n == 0 {
 		return image.Rectangle{Max: fakeSessionSize}
 	}
+	n %= fakeDamageCycle
 	return image.Rect(n*10, n*5, n*10+10, n*5+5)
 }
+
+// fakeDamageCycle is how many live frames' damage differs before it
+// repeats, each inside fakeSessionSize.
+const fakeDamageCycle = 16
 
 const fakeDevice = uint64(226<<8 | 128)
 
@@ -88,7 +93,7 @@ var (
 func startFakeCompositor(t *testing.T) *fakeCompositor {
 	t.Helper()
 	ln, _ := wltest.LoopbackDisplay(t, "wayland-capture-fake")
-	f := &fakeCompositor{t: t, ifaces: map[uint32]string{1: "wl_display"}, next: 0xff000000, buffers: map[uint32]*fakeCapture{}}
+	f := newFakeCompositor(t)
 	done := make(chan struct{})
 	t.Cleanup(func() {
 		_ = ln.Close()
@@ -96,15 +101,24 @@ func startFakeCompositor(t *testing.T) *fakeCompositor {
 	})
 	go func() {
 		defer close(done)
-		conn, err := ln.AcceptUnix()
-		if err != nil {
-			return
-		}
-		defer func() { _ = conn.Close() }()
-		f.conn = conn
-		f.serve()
+		f.accept(ln)
 	}()
 	return f
+}
+
+func newFakeCompositor(t *testing.T) *fakeCompositor {
+	return &fakeCompositor{t: t, ifaces: map[uint32]string{1: "wl_display"}, next: 0xff000000, buffers: map[uint32]*fakeCapture{}}
+}
+
+// accept serves the first client ln takes until it hangs up.
+func (f *fakeCompositor) accept(ln *net.UnixListener) {
+	conn, err := ln.AcceptUnix()
+	if err != nil {
+		return
+	}
+	defer func() { _ = conn.Close() }()
+	f.conn = conn
+	f.serve()
 }
 
 func (f *fakeCompositor) serve() {
