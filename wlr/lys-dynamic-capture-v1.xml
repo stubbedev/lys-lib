@@ -1,0 +1,59 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<protocol name="lys_dynamic_capture_v1">
+  <copyright>
+    Copyright (c) 2026 Alexander Bugge Stage
+
+    Permission is hereby granted, free of charge, to any person obtaining a
+    copy of this software and associated documentation files (the "Software"),
+    to deal in the Software without restriction, including without limitation
+    the rights to use, copy, modify, merge, publish, distribute, sublicense,
+    and/or sell copies of the Software, and to permit persons to whom the
+    Software is furnished to do so, subject to the following conditions:
+
+    The above copyright notice and this permission notice (including the next
+    paragraph) shall be included in all copies or substantial portions of the
+    Software.
+
+    THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+    IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+    FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT.  IN NO EVENT SHALL
+    THE AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+    LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING
+    FROM, OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER
+    DEALINGS IN THE SOFTWARE.
+  </copyright>
+
+  <description summary="a capture source whose content the user switches">
+    A call or a stream often has to show one window, then another, then a
+    whole output, and stopping the share to pick again in the portal dialog
+    interrupts it. A dynamic capture source captures whatever the
+    compositor's cast target is at each frame: a window, an output or
+    nothing. The user changes the target with the compositor's own controls;
+    the session goes on.
+  </description>
+
+  <interface name="lys_dynamic_capture_source_manager_v1" version="1">
+    <description summary="creates dynamic capture sources">
+      A privileged global: compositors hide it from sandboxed clients.
+    </description>
+
+    <request name="destroy" type="destructor">
+      <description summary="destroy the manager">
+        Sources already created stay.
+      </description>
+    </request>
+
+    <request name="create_source">
+      <description summary="create a source that follows the cast target">
+        An ext_image_copy_capture_session_v1 on this source captures the cast
+        target as it is at each frame. When the target changes, the session
+        is not stopped: it sends new buffer constraints when the size
+        changes, and the next frame's damage covers the whole buffer. Without
+        a target, frames are a solid fill at the last target's size, damaged
+        only when the target goes. A session created before the first target
+        is chosen waits for it before its first constraints.
+      </description>
+      <arg name="source" type="new_id" interface="ext_image_capture_source_v1"/>
+    </request>
+  </interface>
+</protocol>
