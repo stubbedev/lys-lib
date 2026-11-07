@@ -2,8 +2,9 @@
 // remote-desktop clients prefer over the portal's Notify* D-Bus calls.
 // A portal's ConnectToEIS hands the app one end of a socket pair; Serve
 // speaks the ei protocol on the other, advertises a named seat with a
-// pointer and a keyboard, and replays what the client emulates onto a
-// Handler.
+// pointer, a keyboard and, over the regions it is given, an absolute
+// pointer and a touchscreen, and replays what the client emulates onto
+// a Handler.
 package eis
 
 import (
@@ -28,6 +29,39 @@ type Handler interface {
 	ScrollStop(x, y bool)
 	Key(code uint32, pressed bool)
 	Keysym(sym uint32, pressed bool)
+	// MotionAbsolute places the pointer at a point of the compositor's
+	// logical layout, inside one of the regions.
+	MotionAbsolute(x, y float64)
+	// TouchDown, TouchMotion, TouchUp and TouchCancel drive the touch
+	// point id, placed in the layout as MotionAbsolute is. A touch that
+	// went down outside every region never reaches the Handler.
+	TouchDown(id uint32, x, y float64)
+	TouchMotion(id uint32, x, y float64)
+	TouchUp(id uint32)
+	TouchCancel(id uint32)
+}
+
+// Region is an area of the compositor's logical layout the absolute
+// devices reach: its offset and size in logical pixels, the scale of the
+// output it shows, and the mapping id that pairs it with the screen-cast
+// stream of the same area (empty for none).
+type Region struct {
+	X, Y, Width, Height uint32
+	Scale               float32
+	MappingID           string
+}
+
+func (r Region) contains(x, y float32) bool {
+	return x >= float32(r.X) && y >= float32(r.Y) && x < float32(r.X)+float32(r.Width) && y < float32(r.Y)+float32(r.Height)
+}
+
+func checkRegions(regions []Region) error {
+	for i, r := range regions {
+		if r.Width == 0 || r.Height == 0 || r.Scale <= 0 {
+			return fmt.Errorf("eis: region %d is %dx%d at scale %g: a region needs an area and a positive scale", i, r.Width, r.Height, r.Scale)
+		}
+	}
+	return nil
 }
 
 // The interfaces served, at the versions this server implements; a
@@ -40,6 +74,8 @@ const (
 	ifSeat       = "ei_seat"
 	ifDevice     = "ei_device"
 	ifPointer    = "ei_pointer"
+	ifAbsolute   = "ei_pointer_absolute"
+	ifTouch      = "ei_touchscreen"
 	ifScroll     = "ei_scroll"
 	ifButton     = "ei_button"
 	ifKeyboard   = "ei_keyboard"
@@ -47,24 +83,37 @@ const (
 )
 
 var supported = map[string]uint32{
-	ifConnection: 1, ifCallback: 1, ifPingpong: 1, ifSeat: 1, ifDevice: 1,
-	ifPointer: 1, ifScroll: 1, ifButton: 1, ifKeyboard: 1, ifText: 1,
+	ifConnection: 1, ifCallback: 1, ifPingpong: 1, ifSeat: 1, ifDevice: 2,
+	ifPointer: 1, ifAbsolute: 1, ifTouch: 2, ifScroll: 1, ifButton: 1, ifKeyboard: 1, ifText: 1,
 }
 
 // Seat capability bits: the server picks them (reis's DeviceCapability
 // values, which libei's EI_DEVICE_CAP_* mirror).
 const (
 	capPointer  uint64 = 1 << 0
+	capAbsolute uint64 = 1 << 1
 	capKeyboard uint64 = 1 << 2
+	capTouch    uint64 = 1 << 3
 	capScroll   uint64 = 1 << 4
 	capButton   uint64 = 1 << 5
 	capText     uint64 = 1 << 6
 )
 
+// capInterface lists each capability with its interface and whether
+// only a seat with regions offers it.
 var capInterface = []struct {
-	bit   uint64
-	iface string
-}{{capPointer, ifPointer}, {capKeyboard, ifKeyboard}, {capScroll, ifScroll}, {capButton, ifButton}, {capText, ifText}}
+	bit     uint64
+	iface   string
+	regions bool
+}{
+	{capPointer, ifPointer, false},
+	{capAbsolute, ifAbsolute, true},
+	{capKeyboard, ifKeyboard, false},
+	{capTouch, ifTouch, true},
+	{capScroll, ifScroll, false},
+	{capButton, ifButton, false},
+	{capText, ifText, false},
+}
 
 const deviceTypeVirtual = 1
 
@@ -72,10 +121,13 @@ const deviceTypeVirtual = 1
 // count up from 1.
 const serverIDBase = 0xff00_0000_0000_0000
 
-// Pair makes a socket pair, serves h on one end as seat and returns
-// the other for the client.
-func Pair(h Handler, seat string) (*os.File, error) {
+// Pair makes a socket pair, serves h on one end as seat over regions
+// and returns the other for the client.
+func Pair(h Handler, seat string, regions []Region) (*os.File, error) {
 	if err := checkSeat(seat); err != nil {
+		return nil, err
+	}
+	if err := checkRegions(regions); err != nil {
 		return nil, err
 	}
 	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM|syscall.SOCK_CLOEXEC, 0)
@@ -97,7 +149,7 @@ func Pair(h Handler, seat string) (*os.File, error) {
 	}
 	go func() {
 		defer func() { _ = unix.Close() }()
-		_ = Serve(unix, h, seat)
+		_ = Serve(unix, h, seat, regions)
 	}()
 	return os.NewFile(uintptr(fds[1]), "eis-client"), nil
 }
@@ -108,6 +160,7 @@ type server struct {
 	h    Handler
 	// seatName names the seat, and its devices after it.
 	seatName   string
+	regions    []Region
 	objects    map[uint64]string
 	negotiated map[string]uint32
 	nextID     uint64
@@ -115,18 +168,25 @@ type server struct {
 	connection uint64
 	seat       uint64
 	bound      bool
+	// touches are the touch points down inside a region.
+	touches map[uint32]struct{}
 }
 
 // Serve runs the protocol on conn until the client disconnects,
 // advertising a seat called seat whose devices are seat-keyboard and
-// seat-pointer. A clean disconnect is nil.
-func Serve(conn *net.UnixConn, h Handler, seat string) error {
+// seat-pointer, and with regions also seat-absolute and
+// seat-touchscreen, which reach those regions. A clean disconnect is
+// nil.
+func Serve(conn *net.UnixConn, h Handler, seat string, regions []Region) error {
 	if err := checkSeat(seat); err != nil {
 		return err
 	}
+	if err := checkRegions(regions); err != nil {
+		return err
+	}
 	s := &server{
-		conn: conn, h: h, seatName: seat, objects: map[uint64]string{0: ifHandshake},
-		negotiated: map[string]uint32{}, nextID: serverIDBase,
+		conn: conn, h: h, seatName: seat, regions: regions, objects: map[uint64]string{0: ifHandshake},
+		negotiated: map[string]uint32{}, nextID: serverIDBase, touches: map[uint32]struct{}{},
 	}
 	// The server opens with its handshake version.
 	if err := s.send(newMessage(0, 0).u32(1)); err != nil {
@@ -237,6 +297,15 @@ func (s *server) dispatch(m message) (done bool, err error) {
 				s.h.Motion(float64(x), float64(y))
 			}
 		}
+	case ifAbsolute:
+		if m.opcode == 1 {
+			x, y := r.f32(), r.f32()
+			if r.err == nil && s.inRegion(x, y) {
+				s.h.MotionAbsolute(float64(x), float64(y))
+			}
+		}
+	case ifTouch:
+		s.touch(m.opcode, r)
 	case ifScroll:
 		switch m.opcode {
 		case 1:
@@ -285,6 +354,46 @@ func (s *server) dispatch(m message) (done bool, err error) {
 	return false, err
 }
 
+// touch replays a touchscreen request: a touch going down outside
+// every region is dropped with everything after it under its id.
+func (s *server) touch(opcode uint32, r *reader) {
+	id := r.u32()
+	if opcode == 1 || opcode == 2 {
+		x, y := r.f32(), r.f32()
+		if r.err != nil {
+			return
+		}
+		_, down := s.touches[id]
+		switch {
+		case opcode == 1 && s.inRegion(x, y):
+			s.touches[id] = struct{}{}
+			s.h.TouchDown(id, float64(x), float64(y))
+		case opcode == 2 && down && s.inRegion(x, y):
+			s.h.TouchMotion(id, float64(x), float64(y))
+		}
+		return
+	}
+	if _, down := s.touches[id]; r.err != nil || !down {
+		return
+	}
+	delete(s.touches, id)
+	switch opcode {
+	case 3:
+		s.h.TouchUp(id)
+	case 4:
+		s.h.TouchCancel(id)
+	}
+}
+
+func (s *server) inRegion(x, y float32) bool {
+	for _, r := range s.regions {
+		if r.contains(x, y) {
+			return true
+		}
+	}
+	return false
+}
+
 // handshake runs the setup the ei_handshake object (id 0) carries.
 func (s *server) handshake(opcode uint32, r *reader) error {
 	switch opcode {
@@ -330,6 +439,9 @@ func (s *server) addSeat() error {
 		return err
 	}
 	for _, c := range capInterface {
+		if c.regions && len(s.regions) == 0 {
+			continue
+		}
 		if _, ok := s.negotiated[c.iface]; ok {
 			if err := s.send(newMessage(s.seat, 2).u64(c.bit).str(c.iface)); err != nil {
 				return err
@@ -340,8 +452,11 @@ func (s *server) addSeat() error {
 }
 
 // bind adds the devices for the bound capabilities, once: a keyboard
-// (with text for keysyms) and a pointer with buttons and scrolling.
-// Each is resumed straight away, since a paused device cannot emulate.
+// (with text for keysyms), a pointer with buttons and scrolling, an
+// absolute pointer with the same and a touchscreen, the last two over
+// the seat's regions. Buttons or scrolling bound with an absolute
+// pointer and no relative one come on the absolute pointer alone. Each
+// device is resumed straight away, since a paused device cannot emulate.
 func (s *server) bind(caps uint64) error {
 	if s.bound {
 		return nil
@@ -355,17 +470,31 @@ func (s *server) bind(caps uint64) error {
 		if caps&capText != 0 {
 			ifaces = append(ifaces, ifText)
 		}
-		if err := s.addDevice(s.seatName+"-keyboard", ifaces); err != nil {
+		if err := s.addDevice(s.seatName+"-keyboard", ifaces, false); err != nil {
 			return err
 		}
 	}
-	if caps&(capPointer|capButton|capScroll) != 0 {
-		return s.addDevice(s.seatName+"-pointer", []string{ifPointer, ifButton, ifScroll})
+	absolute := caps&capAbsolute != 0 && len(s.regions) > 0
+	if caps&capPointer != 0 || !absolute && caps&(capButton|capScroll) != 0 {
+		if err := s.addDevice(s.seatName+"-pointer", []string{ifPointer, ifButton, ifScroll}, false); err != nil {
+			return err
+		}
+	}
+	if absolute {
+		if err := s.addDevice(s.seatName+"-absolute", []string{ifAbsolute, ifButton, ifScroll}, true); err != nil {
+			return err
+		}
+	}
+	if caps&capTouch != 0 && len(s.regions) > 0 {
+		return s.addDevice(s.seatName+"-touchscreen", []string{ifTouch}, true)
 	}
 	return nil
 }
 
-func (s *server) addDevice(name string, ifaces []string) error {
+// addDevice announces a device with the negotiated ones of ifaces and,
+// for an absolute device, the seat's regions, each after its mapping id
+// when the client's ei_device has region_mapping_id (version 2).
+func (s *server) addDevice(name string, ifaces []string, absolute bool) error {
 	v, ok := s.negotiated[ifDevice]
 	if !ok {
 		return nil
@@ -375,6 +504,15 @@ func (s *server) addDevice(name string, ifaces []string) error {
 		newMessage(s.seat, 4).u64(dev).u32(v),
 		newMessage(dev, 1).str(name),
 		newMessage(dev, 2).u32(deviceTypeVirtual),
+	}
+	for _, r := range s.regions {
+		if !absolute {
+			break
+		}
+		if r.MappingID != "" && v >= 2 {
+			msgs = append(msgs, newMessage(dev, 12).str(r.MappingID))
+		}
+		msgs = append(msgs, newMessage(dev, 4).u32(r.X).u32(r.Y).u32(r.Width).u32(r.Height).f32(r.Scale))
 	}
 	for _, iface := range ifaces {
 		if iv, ok := s.negotiated[iface]; ok {

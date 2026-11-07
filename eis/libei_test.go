@@ -43,6 +43,18 @@ type libei struct {
 	scrollStop     func(dev uintptr, x, y bool)
 	key            func(dev uintptr, code uint32, press bool)
 	keysym         func(dev uintptr, sym uint32, press bool)
+	motionAbsolute func(dev uintptr, x, y float64)
+	touchNew       func(dev uintptr) uintptr
+	touchDown      func(touch uintptr, x, y float64)
+	touchMotion    func(touch uintptr, x, y float64)
+	touchUp        func(touch uintptr)
+	touchUnref     func(touch uintptr) uintptr
+	getRegion      func(dev uintptr, index uintptr) uintptr
+	regionX        func(region uintptr) uint32
+	regionY        func(region uintptr) uint32
+	regionWidth    func(region uintptr) uint32
+	regionHeight   func(region uintptr) uint32
+	regionMapping  func(region uintptr) string
 	bindCaps       uintptr // variadic, NULL-terminated
 }
 
@@ -90,6 +102,18 @@ func loadLibei(t *testing.T) *libei {
 			{&l.scrollStop, "ei_device_scroll_stop"},
 			{&l.key, "ei_device_keyboard_key"},
 			{&l.keysym, "ei_device_text_keysym"},
+			{&l.motionAbsolute, "ei_device_pointer_motion_absolute"},
+			{&l.touchNew, "ei_device_touch_new"},
+			{&l.touchDown, "ei_touch_down"},
+			{&l.touchMotion, "ei_touch_motion"},
+			{&l.touchUp, "ei_touch_up"},
+			{&l.touchUnref, "ei_touch_unref"},
+			{&l.getRegion, "ei_device_get_region"},
+			{&l.regionX, "ei_region_get_x"},
+			{&l.regionY, "ei_region_get_y"},
+			{&l.regionWidth, "ei_region_get_width"},
+			{&l.regionHeight, "ei_region_get_height"},
+			{&l.regionMapping, "ei_region_get_mapping_id"},
 		} {
 			sym, err := purego.Dlsym(h, f.name)
 			if err != nil {
@@ -118,7 +142,9 @@ const (
 	evDeviceResumed = 8
 
 	eiCapPointer  = 1 << 0
+	eiCapAbsolute = 1 << 1
 	eiCapKeyboard = 1 << 2
+	eiCapTouch    = 1 << 3
 	eiCapScroll   = 1 << 4
 	eiCapButton   = 1 << 5
 	eiCapText     = 1 << 6
@@ -149,6 +175,16 @@ func (r *recorder) ScrollDiscrete(dx, dy int32) { r.add(fmt.Sprint("discrete ", 
 func (r *recorder) ScrollStop(x, y bool)        { r.add(fmt.Sprint("stop ", x, " ", y)) }
 func (r *recorder) Key(c uint32, p bool)        { r.add(fmt.Sprint("key ", c, " ", p)) }
 func (r *recorder) Keysym(sym uint32, p bool)   { r.add(fmt.Sprint("keysym ", sym, " ", p)) }
+func (r *recorder) MotionAbsolute(x, y float64) { r.add(fmt.Sprint("absolute ", x, " ", y)) }
+func (r *recorder) TouchDown(id uint32, x, y float64) {
+	r.add(fmt.Sprint("down ", id, " ", x, " ", y))
+}
+
+func (r *recorder) TouchMotion(id uint32, x, y float64) {
+	r.add(fmt.Sprint("touch ", id, " ", x, " ", y))
+}
+func (r *recorder) TouchUp(id uint32)     { r.add(fmt.Sprint("up ", id)) }
+func (r *recorder) TouchCancel(id uint32) { r.add(fmt.Sprint("cancel ", id)) }
 
 // testSeat is the seat the tests' servers advertise.
 const testSeat = "lys-lib-test"
@@ -159,6 +195,9 @@ type session struct {
 	// seats and devices are the names of the seats added and the
 	// devices resumed, in order.
 	seats, devices []string
+	// regions are the resumed devices' regions, as
+	// "device x,y wxh mapping".
+	regions []string
 }
 
 // drive connects a libei sender to fd and emulates input on every
@@ -195,6 +234,14 @@ func drive(t *testing.T, l *libei, fd int, caps []uintptr, want int, timeout tim
 			case evDeviceResumed:
 				dev := l.eventDevice(ev)
 				got.devices = append(got.devices, l.deviceName(dev))
+				for i := uintptr(0); ; i++ {
+					r := l.getRegion(dev, i)
+					if r == 0 {
+						break
+					}
+					got.regions = append(got.regions, fmt.Sprintf("%s %d,%d %dx%d %s", l.deviceName(dev),
+						l.regionX(r), l.regionY(r), l.regionWidth(r), l.regionHeight(r), l.regionMapping(r)))
+				}
 				emulate(l, ei, dev)
 			}
 			l.eventUnref(ev)
@@ -224,6 +271,19 @@ func emulate(l *libei, ei, dev uintptr) {
 	if l.hasCap(dev, eiCapText) {
 		l.keysym(dev, 0x41, true)
 	}
+	if l.hasCap(dev, eiCapAbsolute) {
+		r := l.getRegion(dev, 1)
+		l.motionAbsolute(dev, float64(l.regionX(r))+float64(l.regionWidth(r))/2, float64(l.regionY(r))+float64(l.regionHeight(r))/2)
+	}
+	if l.hasCap(dev, eiCapTouch) {
+		touch := l.touchNew(dev)
+		l.touchDown(touch, 10, 20)
+		l.frame(dev, l.now(ei))
+		l.touchMotion(touch, 30, 40)
+		l.frame(dev, l.now(ei))
+		l.touchUp(touch)
+		l.touchUnref(touch)
+	}
 	l.frame(dev, l.now(ei))
 	l.stopEmulating(dev)
 }
@@ -231,7 +291,7 @@ func emulate(l *libei, ei, dev uintptr) {
 func TestLibeiSenderEmulatesThroughTheServer(t *testing.T) {
 	l := loadLibei(t)
 	rec := &recorder{}
-	client, err := Pair(rec, testSeat)
+	client, err := Pair(rec, testSeat, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -267,7 +327,7 @@ func TestLibeiSenderEmulatesThroughTheServer(t *testing.T) {
 func TestLibeiPointerOnlyBindGetsNoKeyboard(t *testing.T) {
 	l := loadLibei(t)
 	rec := &recorder{}
-	client, err := Pair(rec, testSeat)
+	client, err := Pair(rec, testSeat, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -281,5 +341,68 @@ func TestLibeiPointerOnlyBindGetsNoKeyboard(t *testing.T) {
 		if e[:3] == "key" {
 			t.Errorf("a keyboard event without a keyboard bind: %s", e)
 		}
+	}
+}
+
+// A seat with regions gives an absolute pointer and a touchscreen over
+// each of them, every region announced with its mapping id; absolute
+// motion to a region's centre and a touch inside the first reach the
+// Handler in layout coordinates.
+func TestLibeiAbsoluteDevicesReachTheRegions(t *testing.T) {
+	l := loadLibei(t)
+	rec := &recorder{}
+	regions := []Region{
+		{X: 0, Y: 0, Width: 1920, Height: 1080, Scale: 1, MappingID: "41"},
+		{X: 1920, Y: 0, Width: 1280, Height: 1024, Scale: 1.5, MappingID: "57"},
+	}
+	client, err := Pair(rec, testSeat, regions)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fd, err := syscall.Dup(int(client.Fd()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = client.Close()
+	got := drive(t, l, fd, []uintptr{eiCapAbsolute, eiCapTouch, eiCapButton}, 2, 5*time.Second)
+	if want := []string{testSeat + "-absolute", testSeat + "-touchscreen"}; !slices.Equal(got.devices, want) {
+		t.Fatalf("devices %q resumed, want %q", got.devices, want)
+	}
+	want := []string{
+		testSeat + "-absolute 0,0 1920x1080 41", testSeat + "-absolute 1920,0 1280x1024 57",
+		testSeat + "-touchscreen 0,0 1920x1080 41", testSeat + "-touchscreen 1920,0 1280x1024 57",
+	}
+	if !slices.Equal(got.regions, want) {
+		t.Errorf("regions %q, want %q", got.regions, want)
+	}
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) && len(rec.list()) < 4 {
+		time.Sleep(10 * time.Millisecond)
+	}
+	events := rec.list()
+	var id uint32
+	if len(events) > 1 {
+		_, _ = fmt.Sscanf(events[1], "down %d", &id)
+	}
+	handled := []string{"absolute 2560 512", fmt.Sprint("down ", id, " 10 20"), fmt.Sprint("touch ", id, " 30 40"), fmt.Sprint("up ", id)}
+	if got := events; id == 0 || !slices.Equal(got, handled) {
+		t.Errorf("handled %q, want %q", got, handled)
+	}
+}
+
+// A seat without regions offers neither an absolute pointer nor a
+// touchscreen: binding them alone gets no device.
+func TestLibeiNoRegionsNoAbsoluteDevices(t *testing.T) {
+	l := loadLibei(t)
+	rec := &recorder{}
+	client, err := Pair(rec, testSeat, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fd, _ := syscall.Dup(int(client.Fd()))
+	_ = client.Close()
+	got := drive(t, l, fd, []uintptr{eiCapAbsolute, eiCapTouch}, 1, 500*time.Millisecond)
+	if len(got.devices) != 0 || len(rec.list()) != 0 {
+		t.Errorf("devices %q and events %q without regions", got.devices, rec.list())
 	}
 }
