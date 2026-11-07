@@ -105,6 +105,7 @@ func (p *`)
 
 type GoStruct struct {
 	Name     string
+	Reused   bool
 	Comment  string
 	Cons     GoConstructor
 	Mets     []*GoMethod
@@ -171,7 +172,6 @@ type GoConstructor struct{}
 func (*GoConstructor) Serialize(s *GoStruct) string {
 	var b strings.Builder
 
-	// Generate init method if there are handlers
 	if len(s.Handlers) > 0 {
 		b.WriteString(`// init`)
 		b.WriteString(s.Name)
@@ -196,6 +196,29 @@ func (ret *`)
 		b.WriteString("}\n")
 	}
 
+	if s.Reused {
+		b.WriteString(`// Reset drops every handler of a retired `)
+		b.WriteString(s.Name)
+		b.WriteString(`, which New`)
+		b.WriteString(s.Name)
+		b.WriteString(` reuses
+func (p *`)
+		b.WriteString(s.Name)
+		b.WriteString(`) Reset() {
+`)
+		if len(s.Handlers) > 0 {
+			b.WriteString("\tp.mu.Lock()\n")
+			for _, h := range s.Handlers {
+				b.WriteString("\tclear(p.private")
+				b.WriteString(s.Name)
+				b.WriteString(h.Name)
+				b.WriteString("s)\n")
+			}
+			b.WriteString("\tp.mu.Unlock()\n")
+		}
+		b.WriteString("}\n")
+	}
+
 	b.WriteString(`// New`)
 	b.WriteString(s.Name)
 	b.WriteString(` is a constructor for the `)
@@ -205,16 +228,26 @@ func New`)
 	b.WriteString(s.Name)
 	b.WriteString(`(ctx *Context) *`)
 	b.WriteString(s.Name)
-	b.WriteString(` {
-	ret := new(`)
+	b.WriteString(" {\n")
+	indent := "\t"
+	if s.Reused {
+		b.WriteString("\tret, ok := Reused[*")
+		b.WriteString(s.Name)
+		b.WriteString("](ctx)\n\tif !ok {\n\t\tret = new(")
+		indent = "\t\t"
+	} else {
+		b.WriteString("\tret := new(")
+	}
 	b.WriteString(s.Name)
-	b.WriteString(`)
-`)
-	// Initialize handler maps
+	b.WriteString(")\n")
 	if len(s.Handlers) > 0 {
-		b.WriteString("\tret.init")
+		b.WriteString(indent)
+		b.WriteString("ret.init")
 		b.WriteString(s.Name)
 		b.WriteString("()\n")
+	}
+	if s.Reused {
+		b.WriteString("\t}\n")
 	}
 	b.WriteString(`	ctx.Register(ret)
 	return ret

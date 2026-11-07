@@ -861,23 +861,19 @@ type Callback struct {
 	more []CallbackDoneHandler
 }
 
-func (p *Callback) reset() {
+// Reset drops every handler of a retired Callback, which NewCallback reuses.
+func (p *Callback) Reset() {
 	p.mu.Lock()
-	p.done, p.more = nil, nil
+	clear(p.more)
+	p.done, p.more = nil, p.more[:0]
 	p.mu.Unlock()
 }
 
 // NewCallback is a constructor for the Callback object: one delete_id
 // retired, as a frame costs one and they are all alike.
 func NewCallback(ctx *Context) *Callback {
-	ctx.mu.Lock()
-	var ret *Callback
-	if n := len(ctx.freeCallbacks); n > 0 {
-		ret = ctx.freeCallbacks[n-1]
-		ctx.freeCallbacks = ctx.freeCallbacks[:n-1]
-	}
-	ctx.mu.Unlock()
-	if ret == nil {
+	ret, ok := Reused[*Callback](ctx)
+	if !ok {
 		ret = new(Callback)
 	}
 	ctx.Register(ret)

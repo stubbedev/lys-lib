@@ -231,7 +231,7 @@ func (ctx *Context) eventFDCount(ev *Event, proxy Proxy) int {
 		return 0
 	}
 	ctx.mu.RLock()
-	c := ctx.zombies[ev.Pid]
+	c, _ := ctx.zombies[ev.Pid].(fdEvents)
 	ctx.mu.RUnlock()
 	if c == nil {
 		return 0

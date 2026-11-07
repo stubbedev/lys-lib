@@ -375,10 +375,24 @@ func (ret *ImageCopyCaptureFrameV1) initImageCopyCaptureFrameV1() {
 	ret.privateImageCopyCaptureFrameV1Faileds = make(map[ImageCopyCaptureFrameV1FailedHandler]struct{})
 }
 
+// Reset drops every handler of a retired ImageCopyCaptureFrameV1, which NewImageCopyCaptureFrameV1 reuses
+func (p *ImageCopyCaptureFrameV1) Reset() {
+	p.mu.Lock()
+	clear(p.privateImageCopyCaptureFrameV1Transforms)
+	clear(p.privateImageCopyCaptureFrameV1Damages)
+	clear(p.privateImageCopyCaptureFrameV1PresentationTimes)
+	clear(p.privateImageCopyCaptureFrameV1Readys)
+	clear(p.privateImageCopyCaptureFrameV1Faileds)
+	p.mu.Unlock()
+}
+
 // NewImageCopyCaptureFrameV1 is a constructor for the ImageCopyCaptureFrameV1 object
 func NewImageCopyCaptureFrameV1(ctx *Context) *ImageCopyCaptureFrameV1 {
-	ret := new(ImageCopyCaptureFrameV1)
-	ret.initImageCopyCaptureFrameV1()
+	ret, ok := Reused[*ImageCopyCaptureFrameV1](ctx)
+	if !ok {
+		ret = new(ImageCopyCaptureFrameV1)
+		ret.initImageCopyCaptureFrameV1()
+	}
 	ctx.Register(ret)
 	return ret
 }

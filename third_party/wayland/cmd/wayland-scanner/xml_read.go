@@ -2,10 +2,12 @@ package main
 
 import (
 	"log"
+	"maps"
 	"os"
+	"slices"
 )
 
-func xmlProcess(inputFile, outputFile string) {
+func xmlProcess(inputFile, outputFile string, reused map[string]bool) {
 	var data, err = os.ReadFile(inputFile)
 	if err != nil {
 		log.Fatalln("Cannot read input file:", err)
@@ -26,6 +28,8 @@ func xmlProcess(inputFile, outputFile string) {
 	for _, iface := range xml.Interface {
 		var s GoStruct
 		s.Name = removePrefixAndCamelCase(iface.Name, f.PkgName)
+		s.Reused = reused[iface.Name]
+		delete(reused, iface.Name)
 
 		if iface.Description != nil {
 			s.Comment = sanitizeSingleLineComment(iface.Description.Summary)
@@ -159,6 +163,9 @@ func xmlProcess(inputFile, outputFile string) {
 
 			}
 		}
+	}
+	if len(reused) > 0 {
+		log.Fatalln("No interface to reuse in", inputFile+":", slices.Sorted(maps.Keys(reused)))
 	}
 	var data2 = f.Serialize()
 	err = os.WriteFile(outputFile, []byte(data2), 0666)

@@ -6,13 +6,13 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"reflect"
 	"sync"
 	"time"
 
 	"golang.org/x/sys/unix"
 
 	sys "github.com/stubbedev/lys-lib/third_party/wayland/os"
-	//"reflect"
 )
 
 // Context wraps the wayland connection together with the map of all Context objects (proxies)
@@ -21,7 +21,7 @@ type Context struct {
 	conn      *net.UnixConn
 	currentId ProxyId
 	objects   map[ProxyId]Proxy
-	zombies   map[ProxyId]fdEvents
+	zombies   map[ProxyId]Proxy
 	fds       []int
 	in        []byte
 	inStart   int
@@ -56,8 +56,8 @@ type Context struct {
 	sends    int
 	// sendErr is what ended writing on this connection, for good.
 	sendErr error
-	// freeCallbacks are the frame and sync callbacks delete_id retired.
-	freeCallbacks []*Callback
+	// free holds the Reusable proxies delete_id retired, by type.
+	free map[reflect.Type][]Reusable
 }
 
 // markUnsent records a freshly allocated client id as not yet on the wire.
@@ -151,10 +151,9 @@ func (ctx *Context) Register(proxy Proxy) {
 func (ctx *Context) Unregister(id ProxyId) {
 	ctx.mu.Lock()
 	if ctx.zombies == nil {
-		ctx.zombies = make(map[ProxyId]fdEvents)
+		ctx.zombies = make(map[ProxyId]Proxy)
 	}
-	c, _ := ctx.objects[id].(fdEvents)
-	ctx.zombies[id] = c
+	ctx.zombies[id] = ctx.objects[id]
 	delete(ctx.objects, id)
 	ctx.mu.Unlock()
 	ctx.forgetUnsent(id)
@@ -176,14 +175,15 @@ type idReaper struct{ ctx *Context }
 func (r idReaper) HandleDisplayDeleteId(ev DisplayDeleteIdEvent) {
 	id := ProxyId(ev.Id)
 	r.ctx.mu.Lock()
-	delete(r.ctx.zombies, id)
-	if cb, ok := r.ctx.objects[id].(*Callback); ok {
-		cb.reset()
-		r.ctx.freeCallbacks = append(r.ctx.freeCallbacks, cb)
+	p, live := r.ctx.objects[id]
+	if !live {
+		p = r.ctx.zombies[id]
 	}
+	delete(r.ctx.zombies, id)
 	delete(r.ctx.objects, id)
 	r.ctx.mu.Unlock()
 	r.ctx.forgetUnsent(id)
+	r.ctx.retire(p)
 }
 
 // LookupProxy looks up a specific proxy by it's Id in the map of all Context objects (proxies)
@@ -388,6 +388,7 @@ func (ctx *Context) Close() (err error) {
 	*/
 	ctx.objects = nil
 	ctx.zombies = nil
+	ctx.free = nil
 	for _, fd := range ctx.fds {
 		err = errors.Join(err, sys.Close(fd))
 	}

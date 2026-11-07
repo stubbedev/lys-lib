@@ -123,5 +123,19 @@ with no name, through `SyscallConn` so the poller and read deadlines still apply
 ### A frame callback costs no allocation
 
 `wl/wayland.xml.go`, hand edited, as the scanner has no notion of it:
-`wl_callback` keeps its handler in a slot instead of a map, and `delete_id` puts
-it on a free list `NewCallback` takes from, as a window's every frame made one.
+`wl_callback` keeps its handler in a slot instead of a map, and is `Reusable`
+(below), as a window's every frame made one.
+
+### A proxy made every frame is reused
+
+Not upstream yet.
+
+`wl/reuse.go`, `wl/context.go`, `cmd/wayland-scanner`: once `delete_id`
+retires the id of a `Reusable` proxy, destroyed by either side, the proxy drops
+its handlers and its constructor takes it back, handler maps and all, rather
+than allocating a proxy and a map per event again. Zombies keep their proxy for
+this. The scanner's `-reuse` names the interfaces to generate this for
+(`ext_image_copy_capture_frame_v1` in `wlr`). A proxy must not be used once
+destroyed, as with libwayland's `wl_proxy_destroy`; a client that also
+unregisters ids on `delete_id` itself turns them back into zombies.
+`wl/reuse_test.go` holds the tests.
