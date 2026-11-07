@@ -680,7 +680,9 @@ func TestAStreamAsksOnlyForWhatChangedSinceABufferWasFilled(t *testing.T) {
 // keeping surfaces out of screen sharing masks them only in the cast.
 func TestOnlyAScreenshotIsDeclaredOneShot(t *testing.T) {
 	f := startFakeCompositor(t)
+	f.mu.Lock()
 	f.live = 2
+	f.mu.Unlock()
 	c, err := Connect()
 	if err != nil {
 		t.Fatal(err)
