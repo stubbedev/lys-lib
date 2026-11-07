@@ -89,6 +89,17 @@ type consumed struct {
 	seq       uint64
 	transform uint32
 	damage    []cMetaRegion
+	flags     int32
+	// cursor is the buffer's cursor meta, nil without one.
+	cursor *seenCursor
+}
+
+// seenCursor is a received cursor meta: its header and, when it carried
+// one, its bitmap header and pixels.
+type seenCursor struct {
+	head   cMetaCursor
+	bitmap *cMetaBitmap
+	pixels []byte
 }
 
 var (
@@ -129,7 +140,7 @@ func newConsumerOfFormat(t *testing.T, loop *loopThread, format []byte) *consume
 			defer l.streamQueue(c.stream, raw)
 			buf := (*cPwBuffer)(raw).buffer
 			d := buf.datas
-			got := consumed{size: d.chunk.size, dataType: d.typ, fd: d.fd}
+			got := consumed{size: d.chunk.size, dataType: d.typ, fd: d.fd, flags: d.chunk.flags}
 			if d.data != nil && d.chunk.size > 0 {
 				got.first = *(*byte)(d.data)
 			}
@@ -146,6 +157,8 @@ func newConsumerOfFormat(t *testing.T, loop *loopThread, format []byte) *consume
 						}
 						got.damage = append(got.damage, r)
 					}
+				case metaCursor:
+					got.cursor = readCursor(m)
 				}
 			}
 			select {
@@ -160,7 +173,7 @@ func newConsumerOfFormat(t *testing.T, loop *loopThread, format []byte) *consume
 				return
 			}
 			// Ask for the metas the producer offers.
-			withPods(bufferPods(0, 0)[1:], func(params unsafe.Pointer, n uint32) int32 {
+			withPods(append(bufferPods(0, 0)[1:], cursorMetaPod()), func(params unsafe.Pointer, n uint32) int32 {
 				return l.streamUpdate(c.stream, params, n)
 			})
 		})
@@ -358,4 +371,21 @@ func TestProducerRenegotiatesAResizedSource(t *testing.T) {
 			t.Errorf("after the resize a frame = %+v", f)
 		}
 	}
+}
+
+// readCursor copies a cursor meta out of the buffer the consumer holds.
+func readCursor(m cSpaMeta) *seenCursor {
+	mem := unsafe.Slice((*byte)(m.data), m.size)
+	head := *(*cMetaCursor)(m.data)
+	seen := &seenCursor{head: head}
+	if head.id == 0 || head.bitmapOffset == 0 {
+		return seen
+	}
+	bm := *(*cMetaBitmap)(unsafe.Pointer(&mem[head.bitmapOffset]))
+	seen.bitmap = &bm
+	if bm.offset != 0 && bm.width > 0 {
+		at := head.bitmapOffset + bm.offset
+		seen.pixels = slices.Clone(mem[at : at+uint32(bm.stride)*bm.height])
+	}
+	return seen
 }

@@ -152,5 +152,26 @@ type cMetaBusy struct {
 type cSpaChunk struct {
 	offset, size uint32
 	stride       int32
-	_            int32
+	flags        int32
+}
+
+// chunkFlagCorrupted is SPA_CHUNK_FLAG_CORRUPTED: the data is not a frame.
+const chunkFlagCorrupted = 1 << 0
+
+// cMetaCursor mirrors struct spa_meta_cursor: an id of 0 is no news, and
+// a bitmapOffset of 0 no new image.
+type cMetaCursor struct {
+	id, flags    uint32
+	x, y         int32
+	hotX, hotY   int32
+	bitmapOffset uint32
+}
+
+// cMetaBitmap mirrors struct spa_meta_bitmap: a format of 0 is no image,
+// and an offset past the struct where its pixels start.
+type cMetaBitmap struct {
+	format        uint32
+	width, height uint32
+	stride        int32
+	offset        uint32
 }

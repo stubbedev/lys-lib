@@ -106,6 +106,9 @@ type Config struct {
 	// output's wl_output transform; 0 for a window).
 	Transform uint32
 	Source    Source
+	// Cursor, when set, is the pointer the buffers carry as a cursor meta
+	// (see Cursor); the frames then hold no pointer of their own.
+	Cursor Cursor
 }
 
 // Producer is one running PipeWire video output stream. Its Source is
@@ -132,6 +135,8 @@ type Producer struct {
 	resizable     Resizable
 	renegotiating bool
 	format        []byte
+	// cursor tells the consumer of Config.Cursor; nil without one.
+	cursor *cursorSender
 	// pending is the buffer a fill did not finish: it stays this
 	// producer's until it goes out, as a source may be filling it.
 	pending *buffer
@@ -171,6 +176,10 @@ func Start(cfg Config) (*Producer, error) {
 	if notifier, ok := cfg.Source.(FrameNotifier); ok {
 		p.notifies = true
 		notifier.NotifyFrames(p.scheduleChanged)
+	}
+	if cfg.Cursor != nil {
+		p.cursor = &cursorSender{source: cfg.Cursor}
+		cfg.Cursor.NotifyCursor(p.scheduleChanged)
 	}
 	p.dmabuf, _ = cfg.Source.(DmabufSource)
 	p.resizable, _ = cfg.Source.(Resizable)
@@ -289,6 +298,9 @@ func (p *Producer) portParams() []portParam {
 	}
 	layout := bufferPodsOf(p.cfg.Stride, p.cfg.Height, p.dataTypes())
 	params[1].pods = append(params[1].pods, layout[1:]...)
+	if p.cursor != nil {
+		params[1].pods = append(params[1].pods, cursorMetaPod())
+	}
 	params[2] = portParam{id: paramFormat, flags: paramInfoRead | paramInfoWrite, pods: [][]byte{p.format}}
 	params[3] = portParam{id: paramBuffers, flags: paramInfoRead, pods: layout[:1]}
 	return params
@@ -510,13 +522,41 @@ func (p *Producer) frame(n *node, now time.Time) *buffer {
 	}
 	if !p.fill(b, now) {
 		p.pending = b
-		return nil
+		return p.cursorOnly(n, now)
 	}
 	p.pending = nil
+	p.paced(now)
+	return b
+}
+
+// paced moves the next frame's time on past a buffer that went out at now.
+func (p *Producer) paced(now time.Time) {
 	p.next = p.next.Add(p.interval)
 	if p.next.Before(now) {
 		p.next = now.Add(p.interval)
 	}
+}
+
+// cursorOnly is a buffer holding no frame, only the pointer's news, when
+// there is news and a free buffer to carry it; nil otherwise.
+func (p *Producer) cursorOnly(n *node, now time.Time) *buffer {
+	if p.cursor == nil || !p.cursor.pending() {
+		return nil
+	}
+	b := n.dequeue()
+	if b == nil {
+		return nil
+	}
+	if b.chunk == nil || b.cursor.head == nil {
+		b.release()
+		return nil
+	}
+	b.chunk.size, b.chunk.flags = 0, chunkFlagCorrupted
+	p.stampCommon(b, now)
+	if b.damage != nil {
+		writeDamage(b.damage, nil)
+	}
+	p.paced(now)
 	return b
 }
 
@@ -532,7 +572,7 @@ func (p *Producer) early(now time.Time) time.Duration {
 // frame while this one is on its way.
 func (p *Producer) prepare(n *node) {
 	prep, ok := p.cfg.Source.(DmabufPreparer)
-	if !ok || !p.useDmabuf {
+	if !ok || !p.useDmabuf || p.pending != nil {
 		return
 	}
 	if next := n.dequeue(); next != nil {
@@ -545,6 +585,9 @@ func (p *Producer) prepare(n *node) {
 // the stream is ending, tells the source its frames are gone with them.
 func (p *Producer) buffersCleared() {
 	p.pending = nil
+	if p.cursor != nil {
+		p.cursor.reset()
+	}
 	select {
 	case <-p.closing:
 		return
@@ -589,7 +632,7 @@ func (p *Producer) fill(b *buffer, now time.Time) bool {
 	var ok bool
 	if b.dmabuf != nil {
 		damage, ok = p.dmabuf.FillDmabuf(b.dmabuf)
-		b.chunk.offset, b.chunk.stride = b.dmabuf.Offset(), chunk
+		b.chunk.offset, b.chunk.stride, b.chunk.flags = b.dmabuf.Offset(), chunk, 0
 		b.chunk.size = 0
 		if ok {
 			b.chunk.size = b.dmabuf.Stride() * p.cfg.Height
@@ -599,7 +642,7 @@ func (p *Producer) fill(b *buffer, now time.Time) bool {
 			return false
 		}
 		damage, ok = p.cfg.Source.Fill(b.data)
-		b.chunk.offset, b.chunk.stride = 0, chunk
+		b.chunk.offset, b.chunk.stride, b.chunk.flags = 0, chunk, 0
 		b.chunk.size = 0
 		if ok {
 			b.chunk.size = min(p.cfg.Stride*p.cfg.Height, uint32(min(len(b.data), math.MaxUint32)))
@@ -612,8 +655,20 @@ func (p *Producer) fill(b *buffer, now time.Time) bool {
 	return true
 }
 
-// stamp writes the metas the consumer negotiated.
+// stamp writes the metas the consumer negotiated on a buffer holding a
+// frame that changed by damage.
 func (p *Producer) stamp(b *buffer, now time.Time, damage []Rect) {
+	p.stampCommon(b, now)
+	if b.damage != nil {
+		p.damage = ClampDamage(p.damage, damage, int(p.cfg.Width), int(p.cfg.Height), maxDamageRegions)
+		writeDamage(b.damage, p.damage)
+	}
+}
+
+// stampCommon writes the metas every buffer carries, frame or not: the
+// header, the transform and the pointer. A cursor that laid its bitmap
+// out wrong ends the stream.
+func (p *Producer) stampCommon(b *buffer, now time.Time) {
 	if b.header != nil {
 		*b.header = cMetaHeader{pts: now.Sub(p.start).Nanoseconds(), seq: p.seq}
 		p.seq++
@@ -621,9 +676,11 @@ func (p *Producer) stamp(b *buffer, now time.Time, damage []Rect) {
 	if b.transform != nil {
 		*b.transform = p.cfg.Transform
 	}
-	if b.damage != nil {
-		p.damage = ClampDamage(p.damage, damage, int(p.cfg.Width), int(p.cfg.Height), maxDamageRegions)
-		writeDamage(b.damage, p.damage)
+	if p.cursor == nil || b.cursor.head == nil {
+		return
+	}
+	if err := p.cursor.stamp(b.cursor); err != nil {
+		p.k.abort(err)
 	}
 }
 

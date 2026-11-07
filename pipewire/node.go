@@ -120,6 +120,7 @@ type buffer struct {
 	transform *uint32
 	damage    []cMetaRegion
 	busy      *cMetaBusy
+	cursor    cursorMeta
 	data      []byte
 	dataMap   mapping
 
@@ -715,6 +716,8 @@ func (b *buffer) layMeta(typ, at, size uint32) error {
 		b.damage, err = viewSlice[cMetaRegion](b.meta.data, at, size/metaRegionSize)
 	case metaBusy:
 		b.busy, err = view[cMetaBusy](b.meta.data, at)
+	case metaCursor:
+		b.cursor, err = layCursorMeta(b.meta.data, at, size)
 	}
 	if err != nil {
 		return fmt.Errorf("meta %d: %w", typ, err)

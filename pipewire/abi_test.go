@@ -43,6 +43,12 @@ func TestSharedStructsMatchTheCLayout(t *testing.T) {
 		"spa_meta_busy.count":         {unsafe.Offsetof(cMetaBusy{}.count), 4},
 		"spa_chunk":                   {unsafe.Sizeof(cSpaChunk{}), 16},
 		"spa_chunk.stride":            {unsafe.Offsetof(cSpaChunk{}.stride), 8},
+		"spa_chunk.flags":             {unsafe.Offsetof(cSpaChunk{}.flags), 12},
+		"spa_meta_cursor":             {unsafe.Sizeof(cMetaCursor{}), 28},
+		"spa_meta_cursor.hotspot":     {unsafe.Offsetof(cMetaCursor{}.hotX), 16},
+		"spa_meta_cursor.bitmap_off":  {unsafe.Offsetof(cMetaCursor{}.bitmapOffset), 24},
+		"spa_meta_bitmap":             {unsafe.Sizeof(cMetaBitmap{}), 20},
+		"spa_meta_bitmap.offset":      {unsafe.Offsetof(cMetaBitmap{}.offset), 16},
 	} {
 		if tc[0] != tc[1] {
 			t.Errorf("%s at %d, C has %d", name, tc[0], tc[1])
