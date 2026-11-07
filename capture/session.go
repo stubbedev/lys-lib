@@ -140,6 +140,17 @@ func (k constraints) layout() (Format, int, error) {
 	return 0, 0, fmt.Errorf("%w: the session offers only %v", ErrFormat, k.shm)
 }
 
+// cursorLayout is layout preferring a format with alpha, which a cursor
+// image, mostly transparent, needs to keep its shape.
+func (k constraints) cursorLayout() (Format, int, error) {
+	for _, f := range k.shm {
+		if f.Supported() && f.hasAlpha() {
+			return f, k.width * f.BytesPerPixel(), nil
+		}
+	}
+	return k.layout()
+}
+
 // dmabufFormats are the dmabuf layouts the constraints accept, in the
 // compositor's order, each format with at least one explicit modifier.
 // ErrUnsupported means the session takes no dmabuf: no format, no
@@ -268,8 +279,11 @@ type copySession struct {
 	source  *wlr.ImageCaptureSourceV1
 	release func()
 	session *wlr.ImageCopyCaptureSessionV1
-	state   *sessionState
-	damage  bufferDamage
+	// cursor is the cursor session the session belongs to, nil for a
+	// session on the source itself.
+	cursor *wlr.ImageCopyCaptureCursorSessionV1
+	state  *sessionState
+	damage bufferDamage
 }
 
 // openSession opens a session on src and dispatches until its first
@@ -288,8 +302,7 @@ func (c *Client) openSession(src Source, cursor bool) (*copySession, error) {
 		release()
 		return nil, errors.Join(fmt.Errorf("capture: create a capture session: %w", err), source.Destroy())
 	}
-	cs := &copySession{source: source, release: release, session: session, state: &sessionState{}}
-	cs.state.listen(session)
+	cs := newCopySession(source, release, session, nil)
 	if err := c.dispatchUntil(func() bool { return cs.state.stopped || cs.state.generation > 0 }); err != nil {
 		return nil, errors.Join(err, cs.destroy())
 	}
@@ -300,6 +313,14 @@ func (c *Client) openSession(src Source, cursor bool) (*copySession, error) {
 		return nil, errors.Join(fmt.Errorf("capture: the capture session advertised a %dx%d buffer", k.width, k.height), cs.destroy())
 	}
 	return cs, nil
+}
+
+// newCopySession tracks session, opened on source (through cursor when
+// that is not nil), from its first constraints on.
+func newCopySession(source *wlr.ImageCaptureSourceV1, release func(), session *wlr.ImageCopyCaptureSessionV1, cursor *wlr.ImageCopyCaptureCursorSessionV1) *copySession {
+	cs := &copySession{source: source, release: release, session: session, cursor: cursor, state: &sessionState{}}
+	cs.state.listen(session)
+	return cs
 }
 
 // usable fails once the session stopped or sent a malformed
@@ -314,7 +335,11 @@ func (cs *copySession) usable() error {
 // destroy releases the session, its source and its claim on it.
 func (cs *copySession) destroy() error {
 	cs.release()
-	err := errors.Join(cs.session.Destroy(), cs.source.Destroy())
+	err := cs.session.Destroy()
+	if cs.cursor != nil {
+		err = errors.Join(err, cs.cursor.Destroy())
+	}
+	err = errors.Join(err, cs.source.Destroy())
 	if err != nil {
 		return fmt.Errorf("capture: destroy the capture session: %w", err)
 	}

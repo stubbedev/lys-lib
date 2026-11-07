@@ -5,7 +5,6 @@ import (
 	"fmt"
 	"slices"
 	"sync"
-	"sync/atomic"
 )
 
 // streamRing is the number of shm buffers a Stream rotates through:
@@ -70,11 +69,13 @@ func (f *StreamFrame) Frame() (*Frame, error) {
 // repeated screencopy, the session negotiates its constraints once,
 // and a frame's capture completes only when the output's content
 // changed: a static screen costs no copies at all. Consumers poll
-// Latest and copy the newest frame out.
+// Latest and copy the newest frame out. Err says why the loop ended on its
+// own: ErrSessionStopped, ErrReconfigured, ErrFailed after repeated
+// refusals, or a dispatch failure.
 type Stream struct {
-	info   StreamInfo
-	client *Client
-	ring   []*shmBuffer
+	captureLoop
+	info StreamInfo
+	ring []*shmBuffer
 	// slots are each ring buffer's frame events and number, reused frame
 	// after frame.
 	slots []streamSlot
@@ -83,12 +84,6 @@ type Stream struct {
 	// capture goroutine, which captures into another slot meanwhile.
 	pubMu  sync.Mutex
 	latest int
-
-	stopping atomic.Bool
-	done     chan struct{}
-	// err is why the capture loop ended on its own (the session
-	// stopped, the connection died); read after done closes.
-	err error
 
 	// memMu guards the ring mappings against Close unmapping them
 	// under a consumer's copy.
@@ -137,9 +132,8 @@ func openStream(client *Client, outputName string, cursor bool) (*Stream, error)
 		return nil, errors.Join(err, cs.destroy())
 	}
 	s := &Stream{
-		client: client,
-		done:   make(chan struct{}),
-		latest: -1,
+		captureLoop: newCaptureLoop(client),
+		latest:      -1,
 		info: StreamInfo{
 			Width: k.width, Height: k.height, Stride: stride,
 			Format: format, RefreshMHz: out.RefreshMHz, Transform: out.Transform,
@@ -176,34 +170,13 @@ func (s *Stream) Latest(dst *StreamFrame) bool {
 	return true
 }
 
-// Done is closed when the capture loop ended, on Close or on its own;
-// Err then says why.
-func (s *Stream) Done() <-chan struct{} { return s.done }
-
-// Err is why the capture loop ended on its own: ErrSessionStopped,
-// ErrReconfigured, ErrFailed after repeated refusals, a
-// dispatch failure, or nil after Close.
-func (s *Stream) Err() error {
-	select {
-	case <-s.done:
-		return s.err
-	default:
-		return nil
-	}
-}
-
 // Close stops the capture goroutine, waits for it, and drops the
 // connection and the ring. Frames already handed out read nothing
 // afterwards.
 func (s *Stream) Close() error {
-	if s.stopping.Swap(true) {
-		<-s.done
+	if !s.stop() {
 		return nil
 	}
-	// Wake a capture parked on a static screen: the sync's reply is an
-	// event, so the loop's dispatch returns and sees the stop flag.
-	_, _ = s.client.display.Sync()
-	<-s.done
 	s.unmap()
 	return s.client.Close()
 }
@@ -224,14 +197,12 @@ func (s *Stream) run(cs *copySession) {
 	defer func() { _ = cs.destroy() }()
 	var seq uint64
 	slot, failures := 0, 0
-	wait := frameWait{client: s.client, quit: &s.stopping}
+	wait := s.wait()
 	for !s.stopping.Load() {
 		buf, fs := s.ring[slot], &s.slots[slot].events
 		err := cs.captureFrame(wait, buf.wl, buf.wlWidth, buf.wlHeight, fs)
 		if err != nil {
-			if !s.stopping.Load() {
-				s.err = err
-			}
+			s.fail(err)
 			return
 		}
 		if !fs.finished() && !cs.state.stopped {
@@ -242,19 +213,19 @@ func (s *Stream) run(cs *copySession) {
 		switch {
 		case err == nil:
 		case errors.Is(err, ErrSessionStopped):
-			s.err = err
+			s.fail(err)
 			return
 		case cs.state.current.width != s.info.Width || cs.state.current.height != s.info.Height:
 			// The output changed mode: the ring no longer fits the
 			// session's constraints, so every further copy would fail.
-			s.err = ErrReconfigured
+			s.fail(ErrReconfigured)
 			return
 		default:
 			// A transient refusal is retried; a compositor that keeps
 			// refusing would otherwise spin this loop hot.
 			failures++
 			if failures >= maxStreamFailures {
-				s.err = err
+				s.fail(err)
 				return
 			}
 			continue

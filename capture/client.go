@@ -16,6 +16,7 @@ import (
 const (
 	ifaceShm           = "wl_shm"
 	ifaceOutput        = "wl_output"
+	ifaceSeat          = "wl_seat"
 	ifaceScreencopy    = "zwlr_screencopy_manager_v1"
 	ifaceDmabuf        = "zwp_linux_dmabuf_v1"
 	ifaceCopyCapture   = "ext_image_copy_capture_manager_v1"
@@ -82,6 +83,11 @@ type Client struct {
 	toplevelSrc   *wlr.ForeignToplevelImageCaptureSourceManagerV1
 	toplevelList  *wlr.ForeignToplevelListV1
 	hyprland      *wlr.ToplevelExportManagerV1
+	// seat is the first wl_seat and seatCaps its capabilities; pointer is
+	// its wl_pointer, made for the first cursor session.
+	seat     *wl.Seat
+	seatCaps uint32
+	pointer  *wl.Pointer
 
 	outputs   []*outputState
 	toplevels []*toplevelState
@@ -181,6 +187,13 @@ func (c *Client) HasOutputCapture() bool {
 	return c.copyCapture != nil && c.outputSource != nil && c.shm != nil
 }
 
+// HasCursorCapture reports whether the pointer over a source can be
+// followed through an ext-image-copy-capture cursor session: the copy
+// manager is offered and the seat has a pointer.
+func (c *Client) HasCursorCapture() bool {
+	return c.copyCapture != nil && c.shm != nil && c.seatCaps&wl.SeatCapabilityPointer != 0
+}
+
 // HasHyprlandExport reports whether Hyprland's toplevel-export protocol
 // is available.
 func (c *Client) HasHyprlandExport() bool { return c.hyprland != nil && c.shm != nil }
@@ -195,6 +208,15 @@ func (c *Client) HandleRegistryGlobal(ev wl.RegistryGlobalEvent) {
 		out := wl.NewOutput(c.ctx)
 		if c.bind(ev, maxOutputVersion, out) {
 			c.addOutput(out, ev.Name)
+		}
+	case ifaceSeat:
+		if c.seat != nil {
+			return
+		}
+		seat := wl.NewSeat(c.ctx)
+		if c.bind(ev, 1, seat) {
+			c.seat = seat
+			seat.AddCapabilitiesHandler(c)
 		}
 	case ifaceScreencopy:
 		mgr := wlr.NewZwlrScreencopyManagerV1(c.ctx)
@@ -235,6 +257,9 @@ func (c *Client) HandleRegistryGlobal(ev wl.RegistryGlobalEvent) {
 		}
 	}
 }
+
+// HandleSeatCapabilities implements wl.SeatCapabilitiesHandler.
+func (c *Client) HandleSeatCapabilities(ev wl.SeatCapabilitiesEvent) { c.seatCaps = ev.Capabilities }
 
 // HandleRegistryGlobalRemove implements wl.RegistryGlobalRemoveHandler:
 // an unplugged output leaves the list.
