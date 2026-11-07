@@ -13,10 +13,27 @@ import (
 // marks bottom-up rows (hyprland's toplevel-export shares the enum).
 const screencopyYInvert = 1
 
+// Intent is what a capture is for, which decides what a compositor that
+// keeps surfaces out of screen sharing lets it show.
+type Intent uint8
+
+const (
+	// Screencast is a capture whose frames may leave the user's sight: a
+	// share, a recording, a preview of either. The compositor masks the
+	// surfaces kept out of screen sharing.
+	Screencast Intent = iota
+	// Screenshot is a one-shot capture the user asked for, declared so
+	// through lys_capture_hint_v1 where the compositor offers it; it then
+	// shows what a screenshot may show.
+	Screenshot
+)
+
 // Options tunes one capture.
 type Options struct {
 	// Cursor composites the pointer into the frame.
 	Cursor bool
+	// Intent is what the capture is for; the zero value is Screencast.
+	Intent Intent
 	// Dst is reused for the frame's pixels when it is large enough,
 	// sparing the continuous-capture paths an allocation per frame.
 	Dst []byte
@@ -128,6 +145,9 @@ func (c *Client) screencopy1(o Output, region *image.Rectangle, opts Options) (*
 		return nil, err
 	}
 	defer func() { _ = frame.Destroy() }()
+	if err := c.declareScreencopy(frame, opts.Intent); err != nil {
+		return nil, err
+	}
 	if err := c.awaitAdvertised(st); err != nil {
 		return nil, err
 	}
@@ -179,6 +199,30 @@ func (c *Client) startScreencopy(o Output, region *image.Rectangle, cursor bool)
 	st := &copyState{}
 	scEvents{st}.listen(frame)
 	return st, frame, nil
+}
+
+// declareScreencopy declares a Screenshot frame one-shot before its copy,
+// where the compositor offers lys_capture_hint_v1.
+func (c *Client) declareScreencopy(frame *wlr.ZwlrScreencopyFrameV1, intent Intent) error {
+	if intent != Screenshot || c.captureHint == nil {
+		return nil
+	}
+	if err := c.captureHint.OneshotScreencopy(frame); err != nil {
+		return fmt.Errorf("capture: declare a screencopy frame one-shot: %w", err)
+	}
+	return nil
+}
+
+// declareSession declares a Screenshot session one-shot before its first
+// frame, where the compositor offers lys_capture_hint_v1.
+func (c *Client) declareSession(session *wlr.ImageCopyCaptureSessionV1, intent Intent) error {
+	if intent != Screenshot || c.captureHint == nil {
+		return nil
+	}
+	if err := c.captureHint.OneshotSession(session); err != nil {
+		return fmt.Errorf("capture: declare a capture session one-shot: %w", err)
+	}
+	return nil
 }
 
 // awaitAdvertised dispatches until the compositor sent every buffer

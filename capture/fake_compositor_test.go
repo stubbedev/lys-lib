@@ -45,6 +45,12 @@ type fakeCompositor struct {
 	copies  int
 	// session is the capture session opened last.
 	session uint32
+	// oneshot are the frames and sessions declared one-shot, frameSession
+	// each session frame's session, and declared whether each copy's frame
+	// or session was declared one-shot when it copied.
+	oneshot      map[uint32]bool
+	frameSession map[uint32]uint32
+	declared     []bool
 }
 
 const (
@@ -56,6 +62,7 @@ const (
 	fakeGlobalScreencopy
 	fakeGlobalOutput
 	fakeGlobalOutputSource
+	fakeGlobalCaptureHint
 )
 
 // fakeCapture is one session frame as the client asked for it.
@@ -107,7 +114,7 @@ func startFakeCompositor(t *testing.T) *fakeCompositor {
 }
 
 func newFakeCompositor(t *testing.T) *fakeCompositor {
-	return &fakeCompositor{t: t, ifaces: map[uint32]string{1: "wl_display"}, next: 0xff000000, buffers: map[uint32]*fakeCapture{}}
+	return &fakeCompositor{t: t, ifaces: map[uint32]string{1: "wl_display"}, next: 0xff000000, buffers: map[uint32]*fakeCapture{}, oneshot: map[uint32]bool{}, frameSession: map[uint32]uint32{}}
 }
 
 // accept serves the first client ln takes until it hangs up.
@@ -230,6 +237,7 @@ func (f *fakeCompositor) request(id uint32, opcode uint16, body []byte) {
 				{fakeGlobalScreencopy, ifaceScreencopy, 3},
 				{fakeGlobalOutput, ifaceOutput, 4},
 				{fakeGlobalOutputSource, ifaceOutputSource, 1},
+				{fakeGlobalCaptureHint, ifaceCaptureHint, 1},
 			} {
 				f.send(reg, 0, wireU32(g.name), wireString(g.iface), wireU32(g.version))
 			}
@@ -275,10 +283,19 @@ func (f *fakeCompositor) request(id uint32, opcode uint16, body []byte) {
 			f.send(session, 3, wireU32(uint32(fakeFormat)), wireArray(binary.LittleEndian.AppendUint64(nil, uint64(fakeModifier))))
 			f.send(session, 4)
 		}
+	case ifaceCaptureHint:
+		if opcode == 1 || opcode == 2 {
+			f.mu.Lock()
+			f.oneshot[u32At(body, 0)] = true
+			f.mu.Unlock()
+		}
 	case "session":
 		switch opcode {
 		case 0:
 			f.ifaces[u32At(body, 0)] = "frame"
+			f.mu.Lock()
+			f.frameSession[u32At(body, 0)] = id
+			f.mu.Unlock()
 		case 1:
 			f.gone(id)
 		}
@@ -304,6 +321,7 @@ func (f *fakeCompositor) request(id uint32, opcode uint16, body []byte) {
 			f.mu.Lock()
 			n := f.frames
 			f.frames++
+			f.declared = append(f.declared, f.oneshot[f.frameSession[id]])
 			if c := f.buffers[id]; c != nil {
 				f.captured = append(f.captured, *c)
 			}
@@ -404,6 +422,7 @@ func (f *fakeCompositor) screencopyFrame(id uint32, opcode uint16) {
 	case 0, 2: // copy, copy_with_damage
 		f.mu.Lock()
 		f.copies++
+		f.declared = append(f.declared, f.oneshot[id])
 		f.mu.Unlock()
 		f.send(id, 1, wireU32(0))
 		f.send(id, 2, wireU32(0), wireU32(0), wireU32(0))
@@ -653,5 +672,42 @@ func TestAStreamAsksOnlyForWhatChangedSinceABufferWasFilled(t *testing.T) {
 		if !slices.Equal(c.damage, want) {
 			t.Errorf("frame %d damaged %v, want %v", n, c.damage, want)
 		}
+	}
+}
+
+// A screenshot declares its screencopy frame or capture session one-shot
+// before it copies, and a screencast declares nothing, so a compositor
+// keeping surfaces out of screen sharing masks them only in the cast.
+func TestOnlyAScreenshotIsDeclaredOneShot(t *testing.T) {
+	f := startFakeCompositor(t)
+	f.live = 2
+	c, err := Connect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	o, ok := c.OutputByName("FAKE-1")
+	if !ok {
+		t.Fatalf("outputs %+v", c.Outputs())
+	}
+	tls, err := c.Toplevels()
+	if err != nil || len(tls) != 1 {
+		t.Fatalf("toplevels %+v, %v", tls, err)
+	}
+	for _, capture := range []func(Options) (*Frame, error){
+		func(opts Options) (*Frame, error) { return c.CaptureOutput(o, opts) },
+		func(opts Options) (*Frame, error) { return c.CaptureOutputRegion(o, image.Rect(0, 0, 10, 10), opts) },
+		func(opts Options) (*Frame, error) { return c.CaptureToplevel(tls[0], opts) },
+	} {
+		for _, intent := range []Intent{Screenshot, Screencast} {
+			if _, err := capture(Options{Intent: intent}); err != nil {
+				t.Fatalf("intent %d: %v", intent, err)
+			}
+		}
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if want := []bool{true, false, true, false, true, false}; !slices.Equal(f.declared, want) {
+		t.Errorf("copies declared one-shot %v, want %v", f.declared, want)
 	}
 }

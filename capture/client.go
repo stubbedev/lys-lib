@@ -24,6 +24,7 @@ const (
 	ifaceToplevelSrc   = "ext_foreign_toplevel_image_capture_source_manager_v1"
 	ifaceToplevelList  = "ext_foreign_toplevel_list_v1"
 	ifaceHyprlandShare = "hyprland_toplevel_export_manager_v1"
+	ifaceCaptureHint   = "lys_capture_hint_manager_v1"
 )
 
 // Bind ceilings: the highest version of each global the client speaks.
@@ -83,6 +84,7 @@ type Client struct {
 	toplevelSrc   *wlr.ForeignToplevelImageCaptureSourceManagerV1
 	toplevelList  *wlr.ForeignToplevelListV1
 	hyprland      *wlr.ToplevelExportManagerV1
+	captureHint   *wlr.LysCaptureHintManagerV1
 	// seat is the first wl_seat and seatCaps its capabilities; pointer is
 	// its wl_pointer, made for the first cursor session.
 	seat     *wl.Seat
@@ -254,6 +256,11 @@ func (c *Client) HandleRegistryGlobal(ev wl.RegistryGlobalEvent) {
 		mgr := wlr.NewToplevelExportManagerV1(c.ctx)
 		if c.bind(ev, maxHyprlandVersion, mgr) {
 			c.hyprland = mgr
+		}
+	case ifaceCaptureHint:
+		mgr := wlr.NewLysCaptureHintManagerV1(c.ctx)
+		if c.bind(ev, 1, mgr) {
+			c.captureHint = mgr
 		}
 	}
 }

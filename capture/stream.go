@@ -122,7 +122,7 @@ func openStream(client *Client, outputName string, cursor bool) (*Stream, error)
 	}
 	client.mu.Lock()
 	defer client.mu.Unlock()
-	cs, err := client.openSession(out, cursor)
+	cs, err := client.openSession(out, cursor, Screencast)
 	if err != nil {
 		return nil, err
 	}

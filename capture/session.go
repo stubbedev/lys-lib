@@ -289,7 +289,7 @@ type copySession struct {
 // openSession opens a session on src and dispatches until its first
 // constraints are done. ErrSessionStopped means the source went away
 // before they were.
-func (c *Client) openSession(src Source, cursor bool) (*copySession, error) {
+func (c *Client) openSession(src Source, cursor bool, intent Intent) (*copySession, error) {
 	if err := c.usable(); err != nil {
 		return nil, err
 	}
@@ -303,6 +303,9 @@ func (c *Client) openSession(src Source, cursor bool) (*copySession, error) {
 		return nil, errors.Join(fmt.Errorf("capture: create a capture session: %w", err), source.Destroy())
 	}
 	cs := newCopySession(source, release, session, nil)
+	if err := c.declareSession(session, intent); err != nil {
+		return nil, errors.Join(err, cs.destroy())
+	}
 	if err := c.dispatchUntil(func() bool { return cs.state.stopped || cs.state.generation > 0 }); err != nil {
 		return nil, errors.Join(err, cs.destroy())
 	}

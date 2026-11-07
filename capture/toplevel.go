@@ -133,7 +133,7 @@ func (t Toplevel) imageSource(c *Client) (*wlr.ImageCaptureSourceV1, func(), err
 // captureSourceOnce opens a session on src, negotiates, and copies one
 // frame into a fresh shm buffer.
 func (c *Client) captureSourceOnce(src Source, opts Options) (_ *Frame, err error) {
-	cs, err := c.openSession(src, opts.Cursor)
+	cs, err := c.openSession(src, opts.Cursor, opts.Intent)
 	if err != nil {
 		return nil, err
 	}

@@ -48,7 +48,7 @@ func (c *Client) OpenDmabufSession(src Source, cursor bool) (*DmabufSession, err
 	if c.dmabuf == nil {
 		return nil, fmt.Errorf("%w: %s", ErrUnsupported, ifaceDmabuf)
 	}
-	cs, err := c.openSession(src, cursor)
+	cs, err := c.openSession(src, cursor, Screencast)
 	if err != nil {
 		return nil, err
 	}
