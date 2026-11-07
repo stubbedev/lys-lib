@@ -65,15 +65,15 @@ func (c AlphaCut) Uniforms(size image.Point, opaque bool) CutUniforms {
 	}
 	return CutUniforms{
 		{ax[0], ax[1], ay[0], ay[1]},
-		{o[0] - x0*ax[0] - y0*ay[0], o[1] - x0*ax[1] - y0*ay[1], c.Threshold, full},
+		{o[0] - float32(x0*ax[0]) - float32(y0*ay[0]), o[1] - float32(x0*ax[1]) - float32(y0*ay[1]), c.Threshold, full},
 	}
 }
 
 // UV is the normalised texture coordinate under the target point (x, y),
 // and whether it lies on the texture.
 func (u CutUniforms) UV(x, y float32) (s, t float32, on bool) {
-	s = u[1][0] + x*u[0][0] + y*u[0][2]
-	t = u[1][1] + x*u[0][1] + y*u[0][3]
+	s = u[1][0] + float32(x*u[0][0]) + float32(y*u[0][2])
+	t = u[1][1] + float32(x*u[0][1]) + float32(y*u[0][3])
 	return s, t, s >= 0 && t >= 0 && s <= 1 && t <= 1
 }
 
@@ -92,7 +92,7 @@ func textureCorners(src FRect, tr Transform, size image.Point) [4][2]float32 {
 		var s [2]float64
 		s[h.source] = flip(corner[0], h.reversed)
 		s[v.source] = flip(corner[1], v.reversed)
-		out[i] = [2]float32{float32((src.X + s[0]*src.W) / float64(size.X)), float32((src.Y + s[1]*src.H) / float64(size.Y))}
+		out[i] = [2]float32{float32((src.X + float64(s[0]*src.W)) / float64(size.X)), float32((src.Y + float64(s[1]*src.H)) / float64(size.Y))}
 	}
 	return out
 }
