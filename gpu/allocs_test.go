@@ -5,10 +5,11 @@ import (
 	"testing"
 
 	"github.com/stubbedev/lys-lib/render"
+	"github.com/stubbedev/lys-lib/testbuild"
 )
 
 func TestAFramesAllocations(t *testing.T) {
-	if raceEnabled {
+	if testbuild.Race {
 		t.Skip("the race detector allocates on its own")
 	}
 	d := openDevice(t)

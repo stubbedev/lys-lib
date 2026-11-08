@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/stubbedev/lys-lib/fourcc"
+	"github.com/stubbedev/lys-lib/testbuild"
 	"github.com/stubbedev/lys-lib/third_party/vk"
 )
 
@@ -304,7 +305,7 @@ func TestDisjointCoversTheDamageOnce(t *testing.T) {
 }
 
 func TestASteadyPassDoesNotAllocate(t *testing.T) {
-	if raceEnabled {
+	if testbuild.Race {
 		t.Skip("the race detector allocates on its own")
 	}
 	d := openDevice(t)

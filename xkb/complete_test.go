@@ -18,6 +18,7 @@ import (
 	"github.com/ebitengine/purego"
 
 	"github.com/stubbedev/lys-lib/clib"
+	"github.com/stubbedev/lys-lib/testbuild"
 )
 
 type libxkbMore struct {
@@ -418,7 +419,7 @@ func TestEveryRegistryEntryMatchesLibxkbcommon(t *testing.T) {
 		})
 	}
 	for i, c := range cases {
-		if raceEnabled && i%16 != 0 {
+		if testbuild.Race && i%16 != 0 {
 			continue
 		}
 		select {

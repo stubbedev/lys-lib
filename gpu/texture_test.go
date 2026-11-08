@@ -9,6 +9,7 @@ import (
 	"golang.org/x/sys/unix"
 
 	"github.com/stubbedev/lys-lib/fourcc"
+	"github.com/stubbedev/lys-lib/testbuild"
 	"github.com/stubbedev/lys-lib/third_party/vk"
 )
 
@@ -205,7 +206,7 @@ func TestAnUpdateLargerThanTheRingGrowsIt(t *testing.T) {
 }
 
 func TestASteadyUpdateDoesNotWaitOrAllocate(t *testing.T) {
-	if raceEnabled {
+	if testbuild.Race {
 		t.Skip("the race detector allocates on its own")
 	}
 	d := openDevice(t)

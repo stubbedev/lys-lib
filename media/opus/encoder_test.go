@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"testing"
+
+	"github.com/stubbedev/lys-lib/testbuild"
 )
 
 // signal is a test input: interleaved int16 PCM of some channels.
@@ -538,7 +540,7 @@ func TestEncodeAppendsOneCBRPacket(t *testing.T) {
 }
 
 func TestEncodeAllocatesNothing(t *testing.T) {
-	if raceEnabled {
+	if testbuild.Race {
 		t.Skip("-race instrumentation allocates")
 	}
 	enc, err := NewEncoder(2, 128000, CBR)

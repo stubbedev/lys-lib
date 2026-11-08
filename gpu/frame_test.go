@@ -3,10 +3,12 @@ package gpu
 import (
 	"image"
 	"testing"
+
+	"github.com/stubbedev/lys-lib/testbuild"
 )
 
 func TestBeginningARenderPassAllocatesNothing(t *testing.T) {
-	if raceEnabled {
+	if testbuild.Race {
 		t.Skip("the race detector allocates on its own")
 	}
 	d := openDevice(t)

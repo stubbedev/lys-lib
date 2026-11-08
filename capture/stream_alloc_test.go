@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stubbedev/lys-lib/testbuild"
 	"github.com/stubbedev/lys-lib/wltest"
 )
 
@@ -97,7 +98,7 @@ func TestASteadyStreamFrameOnTheWireAllocatesNothing(t *testing.T) {
 	for range 4 * fakeDamageCycle {
 		next()
 	}
-	if raceEnabled {
+	if testbuild.Race {
 		t.Skip("the race detector drops pooled objects at random")
 	}
 	if n := testing.AllocsPerRun(200, next); n != 0 {
