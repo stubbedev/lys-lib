@@ -167,6 +167,13 @@ prompt and administrator authentication.
 | `Emitter` | Sends the authentication signals |
 | `Caller`, `Choice` | The request context every dialog receives |
 
+## wmipc
+
+`wmipc` is the wire contract of lys-wm's IPC socket: the socket variable, request
+and event names, and the small types both sides share. `Output`, `Workspace` and
+`Window` are the views clients decode, a subset of what the compositor sends.
+lys-wm's tests hold those views to its own JSON.
+
 ## pam
 
 `pam` binds libpam through purego.

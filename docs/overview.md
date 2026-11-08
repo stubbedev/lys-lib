@@ -70,6 +70,7 @@ Test helpers load `libpipewire-0.3.so.0` (`pipewire/pwtest`) and `libei.so.1`
 | [`eis`](/system#eis) | EIS server (the receiving end of libei) |
 | [`dbusx`](/system#dbusx) | D-Bus services on [patched godbus](/third-party/godbus) |
 | [`portaldialogs`](/system#portaldialogs) | The `dev.stubbe.lys.PortalDialogs1` contract |
+| [`wmipc`](/system#wmipc) | The wire contract of lys-wm's IPC socket |
 | [`pam`](/system#pam) | libpam transactions |
 | [`appearance`, `portalsettings`](/system#appearance-portalsettings) | Desktop preferences as xdg-desktop-portal publishes them |
 | [`icons`, `icontheme`](/system#icons-icontheme) | Freedesktop icon theme lookup and raster cache |
