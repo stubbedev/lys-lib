@@ -220,4 +220,4 @@ contexts, and resolves locales from the environment.
 | `peercred` | `UID` of the process at a Unix socket's other end (`SO_PEERCRED`) |
 | `debug` | `Log` traces only in builds with the `lysdebug` tag; otherwise it compiles out with its arguments. `LYS_DEBUG` selects categories: unset, empty or `*` for all, a comma-separated list for those, `-name` to exclude one |
 | `logutil` | The injectable `*slog.Logger` the libraries emit through; a discarding sink until `Set` |
-| `testbuild` | `Race`, `AllocBudgetsHold` and `SkipAllocBudget`, for tests that depend on how the binary was built |
+| `testbuild` | `Race`, `AllocBudgetsHold`, `SkipAllocBudget` and `GoroutineID`, for tests that depend on how the binary was built or which goroutine runs |
