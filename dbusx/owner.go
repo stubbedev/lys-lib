@@ -73,7 +73,7 @@ func WatchOwner(ctx context.Context, conn *dbus.Conn, name string, appeared func
 			conn.RemoveSignal(signals)
 			unwatch, cancelUnwatch := context.WithTimeout(context.WithoutCancel(ctx), unwatchTimeout)
 			defer cancelUnwatch()
-			if err := conn.RemoveMatchSignalContext(unwatch, match...); err != nil && !errors.Is(err, dbus.ErrClosed) {
+			if err := conn.RemoveMatchSignalContext(unwatch, match...); err != nil && !errors.Is(err, dbus.ErrClosed) && conn.Connected() {
 				unwatchErr = fmt.Errorf("stop watching %s: %w", name, err)
 			}
 		}()
