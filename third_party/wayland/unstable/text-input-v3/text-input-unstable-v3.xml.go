@@ -47,6 +47,15 @@ const ZwpInputV3ContentHintLatin = 0x100
 // ZwpInputV3ContentHintMultiline means the text input is multiline
 const ZwpInputV3ContentHintMultiline = 0x200
 
+// ZwpInputV3ContentHintOnScreenInputProvided means an on-screen way to fill in the input is already provided by the client
+const ZwpInputV3ContentHintOnScreenInputProvided = 0x400
+
+// ZwpInputV3ContentHintNoEmoji means prefer not offering emoji support
+const ZwpInputV3ContentHintNoEmoji = 0x800
+
+// ZwpInputV3ContentHintPreeditShown means the text input will display preedit text in place
+const ZwpInputV3ContentHintPreeditShown = 0x1000
+
 // ZwpInputV3ContentPurposeNormal means default input, allowing all characters
 const ZwpInputV3ContentPurposeNormal = 0
 
@@ -89,6 +98,36 @@ const ZwpInputV3ContentPurposeDatetime = 12
 // ZwpInputV3ContentPurposeTerminal means input for a terminal
 const ZwpInputV3ContentPurposeTerminal = 13
 
+// ZwpInputV3ErrorInvalidAction means an invalid or duplicate action was specified
+const ZwpInputV3ErrorInvalidAction = 0
+
+// ZwpInputV3ActionNone means no action
+const ZwpInputV3ActionNone = 0
+
+// ZwpInputV3ActionSubmit means the action is submitted
+const ZwpInputV3ActionSubmit = 1
+
+// ZwpInputV3PreeditHintWhole means simple pre-edit text style, typically underlined
+const ZwpInputV3PreeditHintWhole = 1
+
+// ZwpInputV3PreeditHintSelection means hint for a selected piece of text, e.g. per-character navigation and composition
+const ZwpInputV3PreeditHintSelection = 2
+
+// ZwpInputV3PreeditHintPrediction means predicted text, not typed by the user
+const ZwpInputV3PreeditHintPrediction = 3
+
+// ZwpInputV3PreeditHintPrefix means prefixed text not being currently edited, e.g. prior to a 'selection' section
+const ZwpInputV3PreeditHintPrefix = 4
+
+// ZwpInputV3PreeditHintSuffix means suffixed text not being currently edited, e.g. after a 'selection' section
+const ZwpInputV3PreeditHintSuffix = 5
+
+// ZwpInputV3PreeditHintSpellingError means spelling error
+const ZwpInputV3PreeditHintSpellingError = 6
+
+// ZwpInputV3PreeditHintComposeError means wrong composition, e.g. user input that can not be transliterated
+const ZwpInputV3PreeditHintComposeError = 7
+
 // ZwpInputV3 text input
 type ZwpInputV3 struct {
 	BaseProxy
@@ -99,6 +138,9 @@ type ZwpInputV3 struct {
 	privateZwpInputV3CommitStrings          map[ZwpInputV3CommitStringHandler]struct{}
 	privateZwpInputV3DeleteSurroundingTexts map[ZwpInputV3DeleteSurroundingTextHandler]struct{}
 	privateZwpInputV3Dones                  map[ZwpInputV3DoneHandler]struct{}
+	privateZwpInputV3Actions                map[ZwpInputV3ActionHandler]struct{}
+	privateZwpInputV3Languages              map[ZwpInputV3LanguageHandler]struct{}
+	privateZwpInputV3PreeditHints           map[ZwpInputV3PreeditHintHandler]struct{}
 }
 
 // initZwpInputV3 initializes the ZwpInputV3 object's handler maps
@@ -109,6 +151,9 @@ func (ret *ZwpInputV3) initZwpInputV3() {
 	ret.privateZwpInputV3CommitStrings = make(map[ZwpInputV3CommitStringHandler]struct{})
 	ret.privateZwpInputV3DeleteSurroundingTexts = make(map[ZwpInputV3DeleteSurroundingTextHandler]struct{})
 	ret.privateZwpInputV3Dones = make(map[ZwpInputV3DoneHandler]struct{})
+	ret.privateZwpInputV3Actions = make(map[ZwpInputV3ActionHandler]struct{})
+	ret.privateZwpInputV3Languages = make(map[ZwpInputV3LanguageHandler]struct{})
+	ret.privateZwpInputV3PreeditHints = make(map[ZwpInputV3PreeditHintHandler]struct{})
 }
 
 // NewZwpInputV3 is a constructor for the ZwpInputV3 object
@@ -166,6 +211,24 @@ func (p *ZwpInputV3) SetCursorRectangle(X int32, Y int32, Width int32, Height in
 func (p *ZwpInputV3) Commit() error {
 
 	return p.Context().SendRequest(p, 7)
+}
+
+// SetAvailableActions set the available actions
+func (p *ZwpInputV3) SetAvailableActions(AvailableActions []int32) error {
+
+	return p.Context().SendRequest(p, 8, AvailableActions)
+}
+
+// ShowInputPanel show input panel
+func (p *ZwpInputV3) ShowInputPanel() error {
+
+	return p.Context().SendRequest(p, 9)
+}
+
+// HideInputPanel hide input panel
+func (p *ZwpInputV3) HideInputPanel() error {
+
+	return p.Context().SendRequest(p, 10)
 }
 
 // Dispatch dispatches event for object ZwpInputV3
@@ -234,6 +297,39 @@ func (p *ZwpInputV3) Dispatch(event *Event) {
 			}
 		}
 		p.mu.RUnlock()
+	case 6:
+		p.mu.RLock()
+		if len(p.privateZwpInputV3Actions) > 0 {
+			ev := ZwpInputV3ActionEvent{}
+			ev.Action = event.Uint32()
+			ev.Serial = event.Uint32()
+			for h := range p.privateZwpInputV3Actions {
+				h.HandleZwpInputV3Action(ev)
+			}
+		}
+		p.mu.RUnlock()
+	case 7:
+		p.mu.RLock()
+		if len(p.privateZwpInputV3Languages) > 0 {
+			ev := ZwpInputV3LanguageEvent{}
+			ev.Language = event.String()
+			for h := range p.privateZwpInputV3Languages {
+				h.HandleZwpInputV3Language(ev)
+			}
+		}
+		p.mu.RUnlock()
+	case 8:
+		p.mu.RLock()
+		if len(p.privateZwpInputV3PreeditHints) > 0 {
+			ev := ZwpInputV3PreeditHintEvent{}
+			ev.Start = event.Uint32()
+			ev.End = event.Uint32()
+			ev.Hint = event.Uint32()
+			for h := range p.privateZwpInputV3PreeditHints {
+				h.HandleZwpInputV3PreeditHint(ev)
+			}
+		}
+		p.mu.RUnlock()
 
 	}
 }
@@ -278,6 +374,30 @@ type ZwpInputV3DeleteSurroundingTextEvent struct {
 type ZwpInputV3DoneEvent struct {
 	// Serial is the
 	Serial uint32
+}
+
+// ZwpInputV3ActionEvent is the action performed
+type ZwpInputV3ActionEvent struct {
+	// Action is the action performed
+	Action uint32
+	// Serial is the serial number of the action event
+	Serial uint32
+}
+
+// ZwpInputV3LanguageEvent is the notify of language selection
+type ZwpInputV3LanguageEvent struct {
+	// Language is the new language set by IME
+	Language string
+}
+
+// ZwpInputV3PreeditHintEvent is the pre-edit
+type ZwpInputV3PreeditHintEvent struct {
+	// Start is the starting point of the affected substring
+	Start uint32
+	// End is the end point of the affected substring
+	End uint32
+	// Hint is the hint to apply
+	Hint uint32
 }
 
 // ZwpInputV3EnterHandler is the handler interface for ZwpInputV3EnterEvent
@@ -410,6 +530,72 @@ func (p *ZwpInputV3) RemoveDoneHandler(h ZwpInputV3DoneHandler) {
 	defer p.mu.Unlock()
 
 	delete(p.privateZwpInputV3Dones, h)
+}
+
+// ZwpInputV3ActionHandler is the handler interface for ZwpInputV3ActionEvent
+type ZwpInputV3ActionHandler interface {
+	HandleZwpInputV3Action(ZwpInputV3ActionEvent)
+}
+
+// AddActionHandler adds the Action handler
+func (p *ZwpInputV3) AddActionHandler(h ZwpInputV3ActionHandler) {
+	if h != nil {
+		p.mu.Lock()
+		p.privateZwpInputV3Actions[h] = struct{}{}
+		p.mu.Unlock()
+	}
+}
+
+// RemoveActionHandler removes the Action handler
+func (p *ZwpInputV3) RemoveActionHandler(h ZwpInputV3ActionHandler) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	delete(p.privateZwpInputV3Actions, h)
+}
+
+// ZwpInputV3LanguageHandler is the handler interface for ZwpInputV3LanguageEvent
+type ZwpInputV3LanguageHandler interface {
+	HandleZwpInputV3Language(ZwpInputV3LanguageEvent)
+}
+
+// AddLanguageHandler adds the Language handler
+func (p *ZwpInputV3) AddLanguageHandler(h ZwpInputV3LanguageHandler) {
+	if h != nil {
+		p.mu.Lock()
+		p.privateZwpInputV3Languages[h] = struct{}{}
+		p.mu.Unlock()
+	}
+}
+
+// RemoveLanguageHandler removes the Language handler
+func (p *ZwpInputV3) RemoveLanguageHandler(h ZwpInputV3LanguageHandler) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	delete(p.privateZwpInputV3Languages, h)
+}
+
+// ZwpInputV3PreeditHintHandler is the handler interface for ZwpInputV3PreeditHintEvent
+type ZwpInputV3PreeditHintHandler interface {
+	HandleZwpInputV3PreeditHint(ZwpInputV3PreeditHintEvent)
+}
+
+// AddPreeditHintHandler adds the PreeditHint handler
+func (p *ZwpInputV3) AddPreeditHintHandler(h ZwpInputV3PreeditHintHandler) {
+	if h != nil {
+		p.mu.Lock()
+		p.privateZwpInputV3PreeditHints[h] = struct{}{}
+		p.mu.Unlock()
+	}
+}
+
+// RemovePreeditHintHandler removes the PreeditHint handler
+func (p *ZwpInputV3) RemovePreeditHintHandler(h ZwpInputV3PreeditHintHandler) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	delete(p.privateZwpInputV3PreeditHints, h)
 }
 
 // ZwpInputManagerV3 text input manager

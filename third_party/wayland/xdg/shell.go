@@ -1,7 +1,7 @@
 // Package xdg implements the stable XDG Window Manager Base protocol
 package xdg
 
-//go:generate ../../../../../bin/go-wayland-scanner -pkg xdg -i xdg-shell.xml -o xdg-shell.xml.go
+//go:generate go run ../cmd/wayland-scanner -i ../../../protocols/xdg-shell.xml -o xdg-shell.xml.go
 
 import "github.com/stubbedev/lys-lib/third_party/wayland/wl"
 

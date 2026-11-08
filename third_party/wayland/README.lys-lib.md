@@ -5,7 +5,8 @@ v0.4.6 and neurlang/wayland#50 and #51, not yet in a tag (MIT, LICENSE), that
 lys-lib and lys-ui use, with upstream's tests: `wl`, `os`, `xdg`, `wlclient`,
 `unstable/text-input-v3`,
 `unstable/xdg-decoration-v1`, and `cmd/wayland-scanner`, which
-generates `wlr`'s bindings (`go tool wayland-scanner`). They are
+generates `wlr`'s bindings (`go tool wayland-scanner`). Their protocol XML
+lives in `protocols/`, shared with every other binding in the family. They are
 carried as packages of the lys-lib module and imported as
 `github.com/stubbedev/lys-lib/third_party/wayland/...`. A file differs
 from upstream by that import path and the patches below, nothing else.
@@ -135,7 +136,8 @@ unwrapped. Contexts are made by `newContext`, which opens the duplicate.
 
 ### A frame callback costs no allocation
 
-`wl/wayland.xml.go`, hand edited, as the scanner has no notion of it:
+`wl/wayland.xml.go`, generated from `protocols/wayland.xml` and hand edited, as
+the scanner has no notion of it (a regeneration merges these edits three-way):
 `wl_callback` keeps its handler in a slot instead of a map, and is `Reusable`
 (below), as a window's every frame made one.
 

@@ -6,9 +6,10 @@ import (
 )
 
 func main() {
-	var inputFile, reuse string
+	var inputFile, outputFile, reuse string
 
 	flag.StringVar(&inputFile, "i", "", "input xml file name")
+	flag.StringVar(&outputFile, "o", "", "output go file name; the input file name with .go appended when empty")
 	flag.StringVar(&reuse, "reuse", "", "comma-separated interfaces whose proxies delete_id hands back to their constructor")
 
 	flag.Parse()
@@ -19,5 +20,8 @@ func main() {
 			reused[name] = true
 		}
 	}
-	xmlProcess(inputFile, inputFile+".go", reused)
+	if outputFile == "" {
+		outputFile = inputFile + ".go"
+	}
+	xmlProcess(inputFile, outputFile, reused)
 }

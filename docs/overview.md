@@ -50,6 +50,7 @@ Test helpers load `libpipewire-0.3.so.0` (`pipewire/pwtest`) and `libei.so.1`
 | [`xkb`](/xkb) | The XKB keyboard model, plus `xkb/registry` and `xkb/x11` |
 | [`wlr`](/wayland#wlr) | Protocol bindings beyond the core and xdg-shell |
 | [`third_party/wayland`](/third-party/wayland) | Core client library and scanner |
+| `protocols` | The Wayland protocol XML every lys binding is generated from |
 
 ### Media
 

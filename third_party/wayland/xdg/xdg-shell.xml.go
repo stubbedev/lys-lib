@@ -188,6 +188,18 @@ const ToplevelStateTiledBottom = 8
 // ToplevelStateSuspended
 const ToplevelStateSuspended = 9
 
+// ToplevelStateConstrainedLeft
+const ToplevelStateConstrainedLeft = 10
+
+// ToplevelStateConstrainedRight
+const ToplevelStateConstrainedRight = 11
+
+// ToplevelStateConstrainedTop
+const ToplevelStateConstrainedTop = 12
+
+// ToplevelStateConstrainedBottom
+const ToplevelStateConstrainedBottom = 13
+
 // ToplevelWmCapabilitiesWindowMenu means show_window_menu is available
 const ToplevelWmCapabilitiesWindowMenu = 1
 
@@ -354,7 +366,7 @@ func (p *Positioner) SetReactive() error {
 	return p.Context().SendRequest(p, 7)
 }
 
-// SetParentSize
+// SetParentSize set parent size
 func (p *Positioner) SetParentSize(ParentWidth int32, ParentHeight int32) error {
 
 	return p.Context().SendRequest(p, 8, ParentWidth, ParentHeight)
@@ -631,11 +643,11 @@ func (p *Toplevel) Dispatch(event *Event) {
 
 // ToplevelConfigureEvent is the suggest a surface change
 type ToplevelConfigureEvent struct {
-	// Width is the
+	// Width is the suggested width of window
 	Width int32
-	// Height is the
+	// Height is the suggested height of window
 	Height int32
-	// States is the
+	// States is the suggested states of the window
 	States []int32
 }
 
@@ -645,9 +657,9 @@ type ToplevelCloseEvent struct {
 
 // ToplevelConfigureBoundsEvent is the recommended window geometry bounds
 type ToplevelConfigureBoundsEvent struct {
-	// Width is the
+	// Width is the suggested maximum width of surface
 	Width int32
-	// Height is the
+	// Height is the suggested maximum height of surface
 	Height int32
 }
 
