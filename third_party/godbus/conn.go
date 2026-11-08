@@ -340,6 +340,7 @@ func (conn *Conn) Close() error {
 		conn.eavesdroppedLck.Lock()
 		if conn.eavesdropped != nil {
 			close(conn.eavesdropped)
+			conn.eavesdropped = nil
 		}
 		conn.eavesdroppedLck.Unlock()
 

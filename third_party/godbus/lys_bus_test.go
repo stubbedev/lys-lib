@@ -183,3 +183,31 @@ func TestConcurrentExportsAndCalls(t *testing.T) {
 		t.Errorf("%d objects left after every interface was unexported", left)
 	}
 }
+
+func TestClosingAnEavesdroppingConnectionWhileMessagesArriveDoesNotPanic(t *testing.T) {
+	for range 30 {
+		server, client := pairedConns(t)
+		seen := make(chan *dbus.Message, 1)
+		client.Eavesdrop(seen)
+		target := client.Names()[0]
+		stop := make(chan struct{})
+		flooded := make(chan struct{})
+		go func() {
+			defer close(flooded)
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				if call := server.Object(target, "/").Go("a.b.Ping", dbus.FlagNoReplyExpected, nil); call.Err != nil {
+					return
+				}
+			}
+		}()
+		<-seen
+		_ = client.Close()
+		close(stop)
+		<-flooded
+	}
+}
