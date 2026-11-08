@@ -46,7 +46,7 @@ func main() {
 }
 
 func run(dir string) error {
-	data, err := os.ReadFile(filepath.Join(dir, "sources.json"))
+	data, err := os.ReadFile(filepath.Join(dir, "sources.json")) //nolint:gosec // the directory is the developer's own -dir
 	if err != nil {
 		return fmt.Errorf("read the manifest: %w", err)
 	}
@@ -81,7 +81,7 @@ func download(client *http.Client, url string) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("build request for %s: %w", url, err)
 	}
-	resp, err := client.Do(req) //nolint:gosec // the URLs are the pinned sources.json entries
+	resp, err := client.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("fetch %s: %w", url, err)
 	}
