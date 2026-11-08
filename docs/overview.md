@@ -71,7 +71,10 @@ Test helpers load `libpipewire-0.3.so.0` (`pipewire/pwtest`) and `libei.so.1`
 | [`dbusx`](/system#dbusx) | D-Bus services on [patched godbus](/third-party/godbus) |
 | [`portaldialogs`](/system#portaldialogs) | The `dev.stubbe.lys.PortalDialogs1` contract |
 | [`pam`](/system#pam) | libpam transactions |
-| [`clib`, `intconv`, `atomicfile`, `xdg`, `peercred`, `debug`](/system#small-helpers) | Shared helpers |
+| [`appearance`, `portalsettings`](/system#appearance-portalsettings) | Desktop preferences as xdg-desktop-portal publishes them |
+| [`icons`, `icontheme`](/system#icons-icontheme) | Freedesktop icon theme lookup and raster cache |
+| [`i18n`](/system#i18n) | gettext catalogs in pure Go |
+| [`clib`, `intconv`, `atomicfile`, `assetfile`, `xdg`, `peercred`, `debug`, `logutil`, `testbuild`](/system#small-helpers) | Shared helpers |
 
 ### Test support
 

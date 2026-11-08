@@ -181,6 +181,26 @@ prompt and administrator authentication.
   returns a copy of `PAM_AUTHTOK`.
 - `CheckLibrary` reports whether libpam and libc load.
 
+## appearance, portalsettings
+
+`appearance` holds the color scheme, accent and contrast as values.
+`portalsettings.Monitor` follows them, the icon theme and the fonts over the
+xdg-desktop-portal Settings interface. Without a session bus every value reads
+unknown. Bus and portal restarts reconnect with backoff.
+
+## icons, icontheme
+
+`icons` is the freedesktop icon theme spec in pure Go: `index.theme`
+inheritance, directory lookup with hicolor fallback, a raster cache per name,
+size and scale, and bundled [Lucide](https://lucide.dev) icons as the last tier.
+`icontheme` is its narrow form for programs that only rasterize named icons,
+such as a compositor.
+
+## i18n
+
+`i18n` reads GNU `.mo` and `.po` catalogs with plural forms and message
+contexts, and resolves locales from the environment.
+
 ## Small helpers
 
 | Package | Purpose |
@@ -188,6 +208,9 @@ prompt and administrator authentication.
 | `clib` | `Open` dlopens the first loadable candidate, joining all failures. `SystemCandidates` lists a soname's usual paths, including the NixOS system profile. `GoString` copies a C string |
 | `intconv` | Integer conversion without silent wraparound: `Exact` errors, `Must` panics, `Clamp` saturates, `Duration` scales a count. `Uint32Bits`, `Uint64Bits`, `Int32Bits`, `Int64Bits` reinterpret two's-complement bits |
 | `atomicfile` | `Write`, `WriteFile`, `WriteSeekable` replace a file whole and durably: synced temporary, rename, directory sync |
+| `assetfile` | `Open` opens an asset without blocking and rejects anything but a regular file within a size limit |
 | `xdg` | `Env` resolves base directories (`ConfigHome`, `StateDir`, …), an app's directory under each, and `user-dirs.dirs` via `UserDir`. `xdg.OS` reads the process environment |
 | `peercred` | `UID` of the process at a Unix socket's other end (`SO_PEERCRED`) |
 | `debug` | `Log` traces only in builds with the `lysdebug` tag; otherwise it compiles out with its arguments. `LYS_DEBUG` selects categories: unset, empty or `*` for all, a comma-separated list for those, `-name` to exclude one |
+| `logutil` | The injectable `*slog.Logger` the libraries emit through; a discarding sink until `Set` |
+| `testbuild` | `Race`, `AllocBudgetsHold` and `SkipAllocBudget`, for tests that depend on how the binary was built |
