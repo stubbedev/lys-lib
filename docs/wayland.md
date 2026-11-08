@@ -1,13 +1,12 @@
 # Wayland
 
-Toolkit-level windows and surfaces are in
-[lys-ui](https://github.com/stubbedev/lys-ui). These packages are the parts
-that do not need a toolkit.
+Toolkit windows and surfaces are in [lys-ui](https://github.com/stubbedev/lys-ui).
+These packages need no toolkit. The keyboard model is on its [own page](/xkb).
 
 ## capture
 
-`capture` copies screen contents out of the compositor on a private Wayland
-connection, independent of the application's own session and event loop.
+`capture` copies screen contents on a private Wayland connection, independent of
+the application's own event loop.
 
 ```go
 package main
@@ -50,43 +49,49 @@ func main() {
 }
 ```
 
-Every capture call blocks until the compositor finished the copy, so run
-captures off the UI goroutine. A `Client` is safe for use from several
-goroutines, but its calls serialize: captures that must overlap need separate
-clients.
+- Capture calls block until the compositor finishes the copy; keep them off the
+  UI goroutine.
+- A `Client` is safe for concurrent use, but its calls serialize. Use separate
+  clients for overlapping captures.
+- `Connect` (or `ConnectTo` with a socket) succeeds on any compositor. The
+  `Has*` methods report what is offered; a capture whose protocol is missing
+  fails with `ErrUnsupported`.
 
-Protocols are feature-detected. `Connect` succeeds on any compositor, the `Has*`
-methods report what is offered, and a capture whose protocol is missing fails
-with `ErrUnsupported` naming it.
-
-| Capture | Call | Protocol |
+| Capture | API | Protocol |
 | --- | --- | --- |
-| An output or a region of one, into memory | `CaptureOutput`, `CaptureOutputRegion` | wlr-screencopy |
-| One output frame, into memory | `CaptureOutputOnce` | ext-image-copy-capture |
-| A window, into memory | `Toplevels`, `CaptureToplevel` | ext-foreign-toplevel-list, ext-image-copy-capture |
-| A window on Hyprland | `CaptureHyprlandWindow` | hyprland-toplevel-export |
-| An output, continuously and driven by damage | `OpenOutputStream` | ext-image-copy-capture |
-| An output, into a dmabuf | `ImportDmabuf`, `CaptureOutputDmabuf`, `CopyOutputDmabuf` | wlr-screencopy, linux-dmabuf |
-| A window or an output, into a dmabuf, as a session | `OpenDmabufSession` | ext-image-copy-capture, linux-dmabuf |
+| Output or region, to memory | `CaptureOutput`, `CaptureOutputRegion` | wlr-screencopy |
+| One output frame, to memory | `CaptureOutputOnce` | ext-image-copy-capture |
+| Window, to memory | `Toplevels`, `CaptureToplevel` | ext-foreign-toplevel-list, ext-image-copy-capture |
+| Window on Hyprland | `CaptureHyprlandWindow` | hyprland-toplevel-export |
+| Compositor's cast target | `CaptureDynamic`, `Dynamic` | lys-dynamic-capture |
+| Output, continuous and damage-driven | `OpenOutputStream` | ext-image-copy-capture |
+| Output or region, to a dmabuf | `ImportDmabuf`, `DmabufFormat`, `CaptureOutputDmabuf`, `CopyOutputDmabuf`, `CopyOutputRegionDmabuf` | wlr-screencopy, linux-dmabuf |
+| Output, window or cast target, to a dmabuf, as a session | `OpenDmabufSession` | ext-image-copy-capture, linux-dmabuf |
+| Pointer position and image | `OpenOutputCursor`, `OpenToplevelCursor`, `OpenDynamicCursor` | ext-image-copy-capture |
 
-The dmabuf paths are what a screencast producer wants: no copy through shared
-memory. [`dmabufprobe`](/rendering#dmabufs) picks the modifier to allocate.
+- The dmabuf paths avoid shared-memory copies;
+  [`dmabufprobe`](/rendering#dmabufs) picks the modifier.
+- A window takes one session per `Client`. While a `DmabufSession` is open on it,
+  `CaptureToplevel` and another `OpenDmabufSession` fail with `ErrToplevelBusy`.
+  `Dynamic` sessions may overlap; a size change reports `ErrReconfigured`.
+- `Frame.Image` converts the 8-bit and 10-bit packed formats to `image.RGBA`.
 
-A window takes one session at a time on a `Client`. While a `DmabufSession` is
-open, `CaptureToplevel` and another `OpenDmabufSession` on that window fail with
-`ErrToplevelBusy`.
+`Options`:
 
-`Frame.Image` converts to `image.RGBA` for the 8-bit and 10-bit packed formats
-compositors hand out. `Options.Dst` reuses a buffer between frames, and
-`Options.AwaitDamage` waits for the source to change. A stream and a dmabuf
-session keep, per buffer, what changed since that buffer was last filled, and
-ask the compositor to copy only that into it when it comes round again.
+| Field | Effect |
+| --- | --- |
+| `Cursor` | Composite the pointer into the frame |
+| `Intent` | `Screencast` (default) or `Screenshot`; `Screenshot` is declared through lys-capture-hint so the compositor may show surfaces it hides from screen sharing |
+| `Dst` | Reuse this buffer for the frame's pixels when large enough |
+| `AwaitDamage` | Wait for the source to change and report the damage in `Frame.Damage` |
+
+Streams and dmabuf sessions track per-buffer damage and ask the compositor to
+copy only what changed since that buffer was last filled.
 
 ## vinput, keymapfd
 
-`vinput` injects pointer and keyboard input through `zwlr_virtual_pointer_v1` and
-`zwp_virtual_keyboard_v1` on a private connection. It is the input half of a
-remote-desktop bridge, and of lys-ui's headless test harness.
+`vinput` injects input on a private connection through
+`zwlr_virtual_pointer_v1`, `zwp_virtual_keyboard_v1` and `lys_virtual_touch_v1`.
 
 ```go
 package main
@@ -122,69 +127,54 @@ func main() {
 ```
 
 `Dial` takes an absolute socket path, a name inside `XDG_RUNTIME_DIR`, or `""`
-for `WAYLAND_DISPLAY`. The seat's keymap is relayed to the virtual keyboard, so
-key codes mean what they mean on the real keyboard. A seat that announces none,
-such as a headless compositor's, needs `Options.FallbackKeymap`, since the
-protocol refuses key events before any keymap is set. `Options.Keymap` makes the
-keyboard carry a keymap of its own instead, the way wtype does. A `Device`'s methods are
-safe to call from any goroutine.
+for `WAYLAND_DISPLAY`. A `Device` is safe to use from any goroutine.
 
-`keymapfd.Read` reads the xkb keymap a `wl_keyboard.keymap` event carries. It maps
-the fd and never reads it: a compositor may hand every client a dup of one shared
-memfd, whose file offset a `read()` would move for all of them. Hyprland does.
+| Option | Effect |
+| --- | --- |
+| `Keyboard` | Also create a virtual keyboard. The seat's keymap is relayed to it, so key codes match the real keyboard |
+| `Touch` | Also create a touchscreen spanning the output layout; needs `lys_virtual_touch_manager_v1` (`TouchAvailable` checks, `ErrNoTouch` otherwise) |
+| `FallbackKeymap` | xkb_v1 keymap used when the seat announces none, such as on a headless compositor |
+| `Keymap` | xkb_v1 keymap the keyboard carries instead of the seat's; overrides `FallbackKeymap` |
 
-## xkb
-
-`xkb` is the XKB keyboard model in pure Go, held to libxkbcommon by differential
-tests and linking no C. [Its own page](/xkb) maps every libxkbcommon function to
-Go. A `Context` finds its include files the way libxkbcommon
-does: `$XDG_CONFIG_HOME/xkb` or `~/.config/xkb`, `~/.xkb`, `$XKB_CONFIG_EXTRA_PATH` or
-`/etc/xkb`, then `$XKB_CONFIG_ROOT` or the system's xkeyboard-config data.
-
-```go
-ctx := xkb.NewContext(os.Getenv)
-km, err := ctx.NewKeymapFromString(text)
-if err != nil {
-	return fmt.Errorf("compile the seat keymap: %w", err)
-}
-state := km.NewState()
-state.UpdateMask(depressed, latched, locked, 0, 0, group)
-sym := state.KeyGetOneSym(xkb.Keycode(evdevCode + 8))
-```
-
-Keymap text is untrusted: a keymap that fails to compile returns an error and no
-keymap, and a caller must stop reading keys through its old one. `UpdateKey`,
-`KeyGetOneSym`, `SerializeMods` and `KeyGetUTF8` allocate nothing, so they are
-safe on a per-key path. Compiling reads each file at most once, and a build for a
-distribution sets `xkb.defaultRoot` and `xkb.defaultXLocaleDir` with `-X` where the
-usual paths do not hold its data.
+`keymapfd.Read` reads the keymap a `wl_keyboard.keymap` event carries. It maps
+the fd and never calls `read()`, which would move a shared memfd's offset for
+every client holding it.
 
 ## wlr
 
-`wlr` holds the generated bindings for protocols beyond the core and xdg-shell,
-all in one package. The XML sits beside the generated code, and `just generate`
-regenerates it with `third_party/wayland/cmd/wayland-scanner`.
+`wlr` holds generated bindings for protocols beyond the core and xdg-shell, in
+one package. The XML lives beside the code; `just generate` regenerates it with
+`third_party/wayland/cmd/wayland-scanner`.
 
 | Area | Protocols |
 | --- | --- |
 | Shell and windows | wlr-layer-shell, ext-session-lock, wlr-foreign-toplevel-management, ext-foreign-toplevel-list, xdg-activation, xdg-dialog, xdg-foreign, xdg-output, xdg-system-bell, xdg-toplevel-icon |
-| Capture | wlr-screencopy, ext-image-capture-source, ext-image-copy-capture, hyprland-toplevel-export |
-| Buffers and presentation | linux-dmabuf, viewporter, fractional-scale, presentation-time, alpha-modifier, color-representation, content-type, ext-background-effect |
-| Input | pointer-constraints, pointer-gestures, relative-pointer, tablet, cursor-shape, keyboard-shortcuts-inhibit, hyprland-global-shortcuts, xx-hotkey, zwlr-virtual-pointer, zwp-virtual-keyboard, lys-escape |
+| Outputs | wlr-output-management, wlr-output-power-management |
+| Capture | wlr-screencopy, ext-image-capture-source, ext-image-copy-capture, hyprland-toplevel-export, lys-capture-hint, lys-dynamic-capture |
+| Buffers and presentation | linux-dmabuf, linux-drm-syncobj, viewporter, fractional-scale, presentation-time, alpha-modifier, color-representation, content-type, ext-background-effect |
+| Input | pointer-constraints, pointer-gestures, relative-pointer, tablet, cursor-shape, keyboard-shortcuts-inhibit, hyprland-global-shortcuts, xx-hotkey, zwlr-virtual-pointer, zwp-virtual-keyboard, lys-virtual-touch, lys-escape |
 | Clipboard | ext-data-control, wlr-data-control, primary-selection |
 | Session | ext-idle-notify, idle-inhibit, wlr-gamma-control, hyprland-ctm-control |
 
 The core protocol and xdg-shell come from
-[`third_party/wayland`](/third-party/wayland), as `wl` and `xdg`, with the client
-helper `wlclient` and the `text-input-v3` and `xdg-decoration-v1`
-bindings under `unstable`. Every family member shares those `wl` types.
+[`third_party/wayland`](/third-party/wayland) as `wl` and `xdg`, with the
+client helper `wlclient` and the `text-input-v3` and `xdg-decoration-v1`
+bindings under `unstable`.
 
 ## xcursor
 
-`xcursor` reads Xcursor files and resolves themes through `XCURSOR_PATH`, `Inherits` and
-nominal sizes, refusing malformed files with an error. `Nearest` reads one image and
-leaves the rest of the file unread; `Widest` reads one by its width; `NearestFrames` and
-`Theme.Frames` read an animated
-cursor at one size. `Pixels` is the file's own bytes, which are `wl_shm`'s `argb8888`.
-lys-wm draws its cursors from it and lys-ui's client sessions theirs. `Shapes`, `Names`
-and `Builtin` hold cursor-shape-v1's names and the arrow for a machine without a theme.
+`xcursor` reads Xcursor files and resolves themes through `XCURSOR_PATH`
+(`SearchPath`), `Inherits` and nominal sizes. Malformed files are an error.
+
+| API | Returns |
+| --- | --- |
+| `Open` | A `Theme` |
+| `Nearest` | The image nearest a size, reading only that image |
+| `Widest`, `ReadWidest` | The widest image |
+| `NearestFrames`, `Theme.Frames` | An animated cursor's frames at one size |
+| `Builtin` | A built-in arrow for systems without a theme |
+| `Shapes` | cursor-shape-v1 shapes in protocol order, with their Xcursor names |
+| `Names` | Xcursor names to try for a CSS cursor name, best first |
+
+`Image.Pixels` holds the pixels as the file stores them, which is `wl_shm`
+`argb8888`.

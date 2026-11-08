@@ -2,10 +2,10 @@
 
 ## Video encoding
 
-`gpu.Encoder` encodes H.264 and H.265 on the device's hardware encoder: its
-Vulkan video queue when that encodes the codec, else its VA-API driver.
-`Backend` reports which, `VulkanVideo` or `VAAPI`. VA-API is there for GPUs whose
-Vulkan driver encodes no video, and [needs `libva`](/overview#pure-go).
+`gpu.Encoder` encodes H.264 and H.265 on the device's hardware: its Vulkan video
+queue if that encodes the codec, else its VA-API driver
+([needs libva](/overview#native-libraries)). `Backend` reports `VulkanVideo` or
+`VAAPI`.
 
 ```go
 package main
@@ -64,40 +64,49 @@ func main() {
 }
 ```
 
-The source is a `Buffer` a compositor copied a screen into: hand `frame.Dmabuf()`
-to [`capture`](/wayland#capture) to fill it. A compute pass crops, turns, overlays
-(`SetOverlay`) and converts it to NV12, and the backend encodes that while the
-next frame converts, so `src` is free to take the next frame when `Encode`
-returns. Like the `Device`, an `Encoder` belongs to one goroutine.
+`EncoderConfig`:
 
-`NewEncoder` fails with `ErrNoVideoEncoder`, carrying both backends' reasons,
-when neither encodes the codec. A device without constant-QP coding runs its own
-rate control at a bitrate matching QP 20 on desktop content.
+| Field | Effect |
+| --- | --- |
+| `Codec` | `H264` or `H265` |
+| `Width`, `Height` | Frame size (after `Transform`) |
+| `FrameRate` | Nominal rate, for the stream's level; frames may arrive at any time |
+| `KeyInterval` | Frames between keyframes |
+| `Source` | Region of the buffer to read; zero reads all of it |
+| `Transform` | The captured output's `wl_output` transform, undone by the encoder |
+| `QP` | Constant quantiser, 0 (best) to 51. Devices without constant-QP coding use a bitrate matching QP 20 on desktop content |
 
-Each `Packet` is one Annex-B access unit without the parameter sets. `ParameterSets`
-gives those as NAL units without start codes: the SPS and PPS for H.264, the VPS,
-SPS and PPS for H.265. That is the shape `media/mux` takes.
+- The source is a `Buffer`; pass `frame.Dmabuf()` to [`capture`](/wayland#capture)
+  to fill it.
+- A compute pass crops, rotates, draws the overlay (`SetOverlay`) and converts
+  to NV12. Encoding overlaps the next conversion, so the buffer is free again
+  when `Encode` returns.
+- An `Encoder` belongs to one goroutine.
+- `NewEncoder` fails with `ErrNoVideoEncoder`, carrying both backends' reasons,
+  when neither encodes the codec.
+- Each `Packet` is one Annex-B access unit without parameter sets.
+  `ParameterSets` returns them as NAL units without start codes (SPS and PPS for
+  H.264; VPS, SPS and PPS for H.265), the form `media/mux` takes.
 
 ## media/mux
 
 `mux` writes timestamped H.264, H.265 and Opus samples into fragmented MP4
-(`NewMP4`) and Matroska (`NewMKV`) files. Both write whole fragments or clusters
-at a time, so a file cut short by a crash still plays up to the last one written.
+(`NewMP4`) and Matroska (`NewMKV`).
 
-Video samples are Annex-B access units without B-frames, and audio samples are
-single Opus packets at 48 kHz. Each sample's duration runs to the next one's PTS
-on the same track, so PTS must increase strictly within a track, on a clock
-shared by all tracks.
+- Video samples are Annex-B access units without B-frames. Audio samples are
+  single Opus packets at 48 kHz.
+- A sample lasts until the next PTS on its track; the last repeats the previous
+  duration. PTS must strictly increase within a track, on a clock shared by all
+  tracks.
+- Whole fragments or clusters are written at once, so a truncated file plays up
+  to the last one written.
 
 ## media/opus
 
-`opus` is a pure-Go Opus encoder (RFC 6716) for lys-shell's recordings:
-CELT-only fullband 20 ms frames at a constant or constrained variable bitrate,
-from 48 kHz interleaved signed 16-bit samples, one or two channels. It ports the
-RFC's reference encoder with libopus's later analysis, and leaves out libopus's
-tonality analysis.
-
-This writes one second of silence into an MP4 with one Opus track:
+`opus` is a pure-Go Opus encoder (RFC 6716): CELT-only, fullband, 20 ms frames,
+from 48 kHz interleaved signed 16-bit PCM, one or two channels. Rate control is
+`CBR` or `ConstrainedVBR` (no packet exceeds twice the average). Tonality
+analysis is not implemented. `AppendHead` writes the stream's ID header.
 
 ```go
 package main
@@ -148,54 +157,39 @@ func main() {
 
 ## media/vorbis
 
-`vorbis` is a pure-Go Ogg Vorbis decoder (Vorbis I) for the sounds freedesktop
-sound themes ship. `Decode` reads the first logical Vorbis stream of an Ogg file
-in one call and returns its sample rate, channel count and interleaved signed
-16-bit samples, the layout a PulseAudio sample cache upload or a playback stream
-takes. It covers the whole specification (floor types 0 and 1, residue types 0,
-1 and 2, coupling, any channel count), checks every page's CRC, and matches
-libvorbis to within one least significant bit. Invalid input fails with
-`ErrNotVorbis`, `ErrCorrupt` or `ErrTruncated`; the setup header's codebooks are
-bounded, so a hostile file cannot make it allocate without limit.
+`vorbis` is a pure-Go Ogg Vorbis I decoder. `Decode` reads the first logical
+Vorbis stream of an Ogg file and returns a `Sound`: sample rate, channel count
+and interleaved signed 16-bit samples.
+
+- Full specification: floor types 0 and 1, residue types 0–2, coupling, any
+  channel count. Every page CRC is checked.
+- Output is within one LSB of libvorbis.
+- Errors: `ErrNotVorbis`, `ErrCorrupt`, `ErrTruncated`. Codebook sizes are
+  bounded, so hostile input cannot force unbounded allocation.
 
 ```go
-package main
-
-import (
-	"fmt"
-	"log"
-	"os"
-
-	"github.com/stubbedev/lys-lib/media/vorbis"
-)
-
-func main() {
-	data, err := os.ReadFile("/run/current-system/sw/share/sounds/freedesktop/stereo/message-new-instant.oga")
-	if err != nil {
-		log.Fatal(err)
-	}
-	sound, err := vorbis.Decode(data)
-	if err != nil {
-		log.Fatal(err)
-	}
-	fmt.Println(sound.SampleRate, sound.Channels, sound.Frames())
+sound, err := vorbis.Decode(data)
+if err != nil {
+	return err
 }
+fmt.Println(sound.SampleRate, sound.Channels, sound.Frames())
 ```
 
 ## audiomix
 
-`audiomix.Mixer` sums sources of interleaved 16-bit PCM into frames, sample by
-sample with clipping. `Push` queues what a source delivered and `Mix` takes the
-oldest samples of every source, with missing ones as silence. A source running
-fast is trimmed from its oldest samples past the backlog given to `New`, rather
-than growing without end.
+`audiomix.Mixer` sums sources of interleaved 16-bit PCM with clipping.
+`New(sources, channels, backlog)` creates it. `Push` queues a source's
+little-endian samples; `Mix` fills a frame from every source's oldest samples,
+padding missing ones with silence. A source more than `backlog` frames ahead is
+trimmed from its oldest samples.
 
 ## v4l2
 
-`v4l2` streams a V4L2 capture node in pure Go, with mmap buffers over ioctls.
-`Open` takes the device, a frame size and a frame rate cap, and asks for YUYV,
-else MJPEG, at about the frame's width and at least `MinWidth`.
+`v4l2` streams a V4L2 capture node in pure Go with mmap buffers.
 
-`Frames` delivers `*image.RGBA` pictures letterboxed to the frame's aspect, and
-`Recycle` hands one back for reuse. `Err` reports why the stream ended, and
-`CaptureCard` names a node that captures video.
+- `Open(device, frame, maxFPS)` requests YUYV, else MJPEG, near the frame's width
+  and at least `MinWidth` (640).
+- `Frames` delivers `*image.RGBA` pictures letterboxed to the frame's aspect;
+  `Recycle` returns one for reuse; `Err` says why the stream ended; `Format`
+  names the negotiated format.
+- `CaptureCard` returns a node's card name if it captures video.

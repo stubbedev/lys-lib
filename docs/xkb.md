@@ -1,49 +1,71 @@
 # xkb
 
-Package `xkb` is the XKB keyboard model in pure Go: keymap compilation from
-rules and text, the key state machine, keysyms and Compose. Package
-`xkb/registry` lists what a ruleset offers. Package `xkb/x11` is the small X11
-client that `xkb.SetupX11` can read keymaps through.
+`xkb` is the XKB keyboard model in pure Go: keymap compilation from rules and
+text, keyboard state, keysyms and Compose. `xkb/registry` lists what a ruleset
+offers. `xkb/x11` is an X11 client that `SetupX11` reads keymaps through. No C
+is linked.
 
-It follows libxkbcommon 1.13, whose sources (MIT) it was written against, and
-differential tests hold it to that library: every layout, variant, option and
-model `evdev.xml` and `evdev.extras.xml` offer, in both keymap formats, with key
-events, masks and latches driven through both.
+Behaviour follows libxkbcommon 1.13. Differential tests compare against it for
+every layout, variant, option and model in `evdev.xml` and `evdev.extras.xml`,
+in both keymap formats, driving key events, masks and latches through both.
+
+```go
+ctx := xkb.NewContext(os.Getenv)
+km, err := ctx.NewKeymapFromString(text)
+if err != nil {
+	return fmt.Errorf("compile the seat keymap: %w", err)
+}
+state := km.NewState()
+state.UpdateMask(depressed, latched, locked, 0, 0, group)
+sym := state.KeyGetOneSym(xkb.Keycode(evdevCode + 8))
+```
+
+- Keymap text is untrusted. A keymap that fails to compile returns an error and
+  no keymap; stop reading keys through the previous one.
+- `UpdateKey`, `KeyGetOneSym`, `SerializeMods` and `KeyGetUTF8` do not allocate.
+- Compiling reads each file at most once.
+
+## Include paths
+
+A `Context` adds the default include path on first use, unless created with
+`ContextNoDefaultIncludes`:
+
+1. `$XDG_CONFIG_HOME/xkb`, or `~/.config/xkb`
+2. `~/.xkb`
+3. `$XKB_CONFIG_EXTRA_PATH`, or `/etc/xkb`
+4. The XKB extension directories
+5. `$XKB_CONFIG_ROOT`, or the system's xkeyboard-config data
+
+`XKB_LOG_LEVEL` and `XKB_LOG_VERBOSITY` set logging. An environment variable set
+to the empty string counts as unset. Distribution builds whose data lives
+elsewhere set `xkb.defaultRoot` and `xkb.defaultXLocaleDir` with `-X`.
 
 ## Keymap formats
 
-`FormatTextV1` is the classic format, at most 4 layouts. `FormatTextV2` adds up
-to 32 layouts, several actions per level, canonical virtual modifiers and the
-`unlockOnPress`, `latchOnPress` and `lockOnRelease` action fields, and a latch
-survives a key that does not break it while the latching key is held.
+| Format | Capabilities |
+| --- | --- |
+| `FormatTextV1` | Classic xkbcomp format, at most 4 layouts. Used for X11 and `wl_keyboard` |
+| `FormatTextV2` | Up to 32 layouts, several actions per level, canonical virtual modifiers, `unlockOnPress`, `latchOnPress` and `lockOnRelease`; a latch survives a non-breaking key pressed while the latching key is held. Not X11-compatible |
 
-`NewKeymapFromNames` compiles in `FormatTextV2`, as `xkb_keymap_new_from_names`
-does. `NewKeymapFromString` parses in `FormatTextV1`, what a client should use
-for the keymap a compositor sends. `Keymap.Text` is always `FormatTextV1`, what a
-compositor should send: anything the format cannot express degrades and logs an
-error. Use `Keymap.AsString` to choose.
+- `NewKeymapFromNames` compiles in `FormatTextV2`.
+- `NewKeymapFromString` parses `FormatTextV1`, the format compositors send.
+- `Keymap.Text` serializes `FormatTextV1` without includes; what the format
+  cannot express degrades and logs an error. `Keymap.AsString` takes a format.
 
 ## Differences from libxkbcommon
 
-These are deliberate, and each one is tested:
-
-- There is no reference counting. `ref` and `unref` have no equivalent, and the
-  garbage collector frees everything. Nothing holds an operating system resource.
-- A variadic C function takes a Go variadic parameter.
-- A file included several times is parsed once, so the warnings its parser logs
-  appear once. Every other message is logged as many times as libxkbcommon logs
-  it, with the same level and `[XKB-NNN]` code.
-- One failure logs its codes in one chain rather than a line of context each, so
-  error codes match libxkbcommon by presence and warnings by count. Messages are
-  worded like libxkbcommon's without being byte for byte equal:
-  masks print as numbers, and an error carries the same detail in the returned
-  error value.
-- An environment variable set to the empty string counts as unset.
-- On a system with neither glibc locale data nor musl, a locale other than `C`
-  and `POSIX` counts as not installed, as glibc's `newlocale` reports it.
-- `xkb_x11_keymap_new_from_device` takes an `xcb_connection_t`. Here the
-  connection is the `X11Conn` interface, so this package links no X client
-  library: `xkb/x11` implements it, and any other connection can.
+- No reference counting; `ref` and `unref` have no equivalent.
+- Variadic C functions take Go variadic parameters.
+- A file included several times is parsed once, so its parser warnings appear
+  once. Other messages are logged as often as libxkbcommon logs them, with the
+  same level and `[XKB-NNN]` code.
+- One failure logs its codes in one chain, not one line of context each.
+  Error codes match by presence, warnings by count. Wording is similar, not
+  identical; masks print as numbers.
+- Without glibc locale data or musl, locales other than `C` and `POSIX` count
+  as not installed.
+- X11 functions take the `X11Conn` interface instead of an `xcb_connection_t`;
+  `xkb/x11` implements it.
 
 ## Function coverage
 

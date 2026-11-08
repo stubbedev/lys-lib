@@ -2,11 +2,10 @@
 
 ## pipewire
 
-`pipewire` is the video producer a ScreenCast portal streams through: a node
-exported over PipeWire's native protocol, a client-node as libpipewire's
-`pw_stream` exports one, fed one captured frame per cycle the graph drives. The
-protocol, the shared memory and the realtime cycle are all in Go, and
-libpipewire is not involved.
+`pipewire` is a ScreenCast video producer: a client-node exported over
+PipeWire's native protocol, in Go, without libpipewire. The producer drives its
+own graph; a cycle runs when the source has a frame, stamped with header,
+transform and damage metas.
 
 ```go
 package main
@@ -50,32 +49,49 @@ func main() {
 }
 ```
 
-`Start` returns once the server has registered the node, so a consumer can link
-to `NodeID`. A `Source` fills one frame and reports what changed, nil being the
-whole frame, and returning false skips the cycle. Two optional interfaces extend
-it:
+`Start` returns once the server registered the node, so a consumer can link to
+`NodeID`.
 
-- `DmabufSource` also fills GPU buffers. The producer offers its modifier's
-  format first and fills each buffer in place. A consumer that takes the plain
-  format gets shared memory through `Fill`.
-- `Resizable` is for frames that change size, such as a window being resized. The
-  producer offers the new size and holds frames back until the consumer has
-  renegotiated.
+`Config`:
+
+| Field | Effect |
+| --- | --- |
+| `Application` | Client `application.name`. Required |
+| `Name` | Node name consumers link to. Required |
+| `Width`, `Height`, `Stride`, `Format` | Frame geometry and `VideoFormat` |
+| `FPS` | Maximum frame rate, advertised and paced; frames go out when the source has one. Required |
+| `Transform` | Constant `spa_meta_videotransform` value (the output's transform; 0 for a window) |
+| `Source` | Fills frames |
+| `Cursor` | Optional; carries the pointer as `SPA_META_Cursor` metadata instead of in the frame |
+
+A `Source.Fill` copies one frame and returns the damage (nil is the whole frame);
+returning false skips the cycle. Optional interfaces:
+
+| Interface | Effect |
+| --- | --- |
+| `DmabufSource` | Fills GPU buffers in place. Its modifier's format is offered first; consumers of the plain format get shared memory through `Fill` |
+| `DmabufPreparer` | Starts filling the next cycle's dmabuf early (`PrepareDmabuf`) |
+| `FrameNotifier` | Signals when a GPU frame is ready instead of being polled |
+| `Resizable` | Frames change size; the producer renegotiates and holds frames until the consumer follows |
+| `Restarter` | Told when the consumer's buffers are replaced, so the next fill produces a frame |
 
 ## eis
 
-`eis` is an EIS server: the receiving end of libei, which remote-desktop clients
-prefer over the portal's `Notify*` D-Bus calls. A portal's `ConnectToEIS` hands
-the app one end of a socket pair. `Pair` makes that pair and returns the client's
-end, and `Serve` runs the protocol on an existing connection. Both advertise a
-named seat with a pointer and a keyboard, and replay what the client emulates
-onto a `Handler`.
+`eis` is an EIS server, the receiving end of libei. A portal's `ConnectToEIS`
+hands the app one end of a socket pair.
+
+- `Pair` makes the pair, serves a `Handler` on one end and returns the client's
+  end. `Serve` runs on an existing connection.
+- Both advertise a named seat with a pointer and a keyboard, plus an absolute
+  pointer and a touchscreen over the given `Region`s, and replay emulated input
+  onto the `Handler`.
+- `NewReceiver` serves a libei receiver context instead: the client binds a
+  keyboard and pointer, and the caller emulates input on them.
 
 ## dbusx
 
-`dbusx` is the D-Bus plumbing every lys process shares, on the
-[patched godbus](/third-party/godbus). Import that copy, not upstream's module:
-its `Conn` is the one `dbusx` takes.
+`dbusx` is shared D-Bus plumbing on the [patched godbus](/third-party/godbus).
+Import that copy, not upstream: `dbusx` takes its `Conn`.
 
 ```go
 package main
@@ -125,40 +141,53 @@ func main() {
 | Need | Use |
 | --- | --- |
 | One interface under a well-known name | `Serve` with a `Service` |
-| Several interfaces at a path, as zbus's `object_server().at` does | `Export` with `Interface`s, all or nothing |
-| A well-known name alone | `Own`, with `ErrNameTaken` when it is owned |
-| Properties computed on every read, and writable ones | `Getters`, `Setters` |
-| A signal whose name and signature exist once | `NewSignal`, whose `Signal[T]` declares, emits and decodes it |
-| Methods run one at a time in arrival order | `Interface.Ordered`, for a caller that does not wait for each reply |
-| A service that starts or restarts after its client did | `WatchOwner`, `NameOwner` |
+| Several interfaces at one path, all or nothing | `Export` with `Interface`s |
+| A well-known name alone | `Own`; `ErrNameTaken` if owned |
+| Computed and writable properties | `Getters`, `Setters` |
+| A signal declared once | `NewSignal`; `Signal[T]` declares, emits and decodes it |
+| Methods run one at a time in arrival order | `Interface.Ordered` |
+| Following a service that starts or restarts | `WatchOwner`, `NameOwner` |
 
-Introspection data is built on demand. A method is an exported method whose last
-result is a `*dbus.Error`, and `Failed` and `InvalidArgs` make the common ones.
+A D-Bus method is an exported method whose last result is `*dbus.Error`;
+`Failed` and `InvalidArgs` build common errors. Introspection is generated on
+demand.
 
 ## portaldialogs
 
-`portaldialogs` is the `dev.stubbe.lys.PortalDialogs1` contract: the native
-dialogs lys-shell shows behind the desktop-portal backend's Access, Account,
-AppChooser, DynamicLauncher, GlobalShortcuts (`BindShortcuts`, a trigger per
-shortcut), Usb and Wallpaper preview, and the password prompt and administrator
-authentication other lys processes ask through it.
+`portaldialogs` is the `dev.stubbe.lys.PortalDialogs1` contract: native dialogs
+lys-shell shows for the desktop-portal backend (Access, Account, AppChooser,
+DynamicLauncher, GlobalShortcuts, Usb, Wallpaper preview), plus the password
+prompt and administrator authentication.
 
-- `Host` is what a shell implements. Each call blocks until the user answers or
-  the request is dismissed.
-- `Daemon` serves a `Host` on the bus: `NewDaemon`, then `Export`.
-- `Client` calls it, bounded only by the `ctx` it is given, since a dialog waits
-  on the user. `WatchAuthentication` follows a running authentication.
-- `Emitter` sends the authentication signals.
-- `Caller` and `Choice` are what every portal dialog is told about the request it
-  serves.
+| Type | Role |
+| --- | --- |
+| `Host` | Implemented by a shell; each call blocks until the user answers or the request is dismissed |
+| `Daemon` | Serves a `Host`: `NewDaemon`, then `Export` |
+| `Client` | Calls the service, bounded only by its `ctx`; `WatchAuthentication` follows an authentication |
+| `Emitter` | Sends the authentication signals |
+| `Caller`, `Choice` | The request context every dialog receives |
+
+## pam
+
+`pam` binds libpam through purego.
+
+- `Start(service, user, confdir, converse)` opens a `Txn`. `confdir`, if set,
+  reads the service from that directory (`pam_start_confdir`) instead of
+  `/etc/pam.d`.
+- A `Converse` function answers each batch of `Message`s with `Reply`s or a PAM
+  error code.
+- `Txn` wraps `Authenticate`, `AcctMgmt`, `Chauthtok`, `Setcred`, `OpenSession`,
+  `CloseSession`, `Putenv`, `Getenvlist`, `Strerror` and `End`. `Authtok`
+  returns a copy of `PAM_AUTHTOK`.
+- `CheckLibrary` reports whether libpam and libc load.
 
 ## Small helpers
 
-| Package | What it does |
+| Package | Purpose |
 | --- | --- |
-| `clib` | `Open` dlopens the first of a candidate list, joining every failure when none loads. `SystemCandidates` lists a soname's usual locations, the NixOS system profile included. `GoString` copies a C string |
-| `intconv` | Integer conversions without silent wraparound: `Exact` returns an error, `Must` panics, `Clamp` saturates, `Duration` scales a count. `Uint32Bits`, `Uint64Bits`, `Int32Bits` and `Int64Bits` reinterpret two's-complement bits |
-| `atomicfile` | `Write` and `WriteFile` replace a file whole and durably: a synced temporary renamed over the target, then the directory synced |
-| `xdg` | `Env` resolves the base directories (`ConfigHome`, `StateDir` and so on), an app's directory under each, and `user-dirs.dirs` through `UserDir`. `xdg.OS` reads the process environment, and tests pass their own |
-| `peercred` | `UID` is the uid of the process at a Unix socket's other end, from `SO_PEERCRED` |
-| `debug` | `Log` is a trace call that compiles out, arguments included, without the `lysdebug` build tag. In a tagged build `LYS_DEBUG` selects categories: unset or `*` for all, a comma-separated list for those, `-name` to exclude one |
+| `clib` | `Open` dlopens the first loadable candidate, joining all failures. `SystemCandidates` lists a soname's usual paths, including the NixOS system profile. `GoString` copies a C string |
+| `intconv` | Integer conversion without silent wraparound: `Exact` errors, `Must` panics, `Clamp` saturates, `Duration` scales a count. `Uint32Bits`, `Uint64Bits`, `Int32Bits`, `Int64Bits` reinterpret two's-complement bits |
+| `atomicfile` | `Write`, `WriteFile`, `WriteSeekable` replace a file whole and durably: synced temporary, rename, directory sync |
+| `xdg` | `Env` resolves base directories (`ConfigHome`, `StateDir`, …), an app's directory under each, and `user-dirs.dirs` via `UserDir`. `xdg.OS` reads the process environment |
+| `peercred` | `UID` of the process at a Unix socket's other end (`SO_PEERCRED`) |
+| `debug` | `Log` traces only in builds with the `lysdebug` tag; otherwise it compiles out with its arguments. `LYS_DEBUG` selects categories: unset, empty or `*` for all, a comma-separated list for those, `-name` to exclude one |

@@ -4,7 +4,7 @@ layout: home
 hero:
   name: lys-lib
   text: Building blocks in pure Go
-  tagline: What lys-ui draws with and what lys-shell talks to the system through. Rendering, Vulkan, Wayland capture, media muxing, PipeWire and D-Bus, with CGO_ENABLED=0.
+  tagline: Rendering, Vulkan, Wayland capture, media, PipeWire, EIS and D-Bus with CGO_ENABLED=0.
   image:
     src: /lys-lib.svg
     alt: lys-lib
@@ -21,15 +21,15 @@ hero:
 
 features:
   - title: Rendering and GPU
-    details: A 2D canvas with CPU and Vulkan renderers, frames shared as dmabufs, and DRM ioctls without libdrm.
+    details: 2D canvas with CPU and Vulkan renderers, dmabufs, DRM ioctls.
     link: /rendering
   - title: Wayland
-    details: Screen and window capture, virtual input, and generated bindings for protocols beyond the core and xdg-shell.
+    details: Screen and window capture, virtual input, protocol bindings.
     link: /wayland
   - title: Media
-    details: H.264 and H.265 hardware encoding, MP4 and Matroska muxing, a pure-Go Opus encoder, PCM mixing and V4L2 webcams.
+    details: Hardware H.264/H.265, MP4 and Matroska, Opus, Vorbis, PCM mixing, V4L2.
     link: /media
   - title: System services
-    details: A PipeWire video producer without libpipewire, an EIS server, and D-Bus services on a patched godbus.
+    details: PipeWire video producer, EIS server, D-Bus, PAM.
     link: /system
 ---
