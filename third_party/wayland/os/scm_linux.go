@@ -36,10 +36,6 @@ func ParseUnixRights(m *SocketControlMessage) (fds []int, err error) {
 	return syscall.ParseUnixRights(m)
 }
 
-func fallocate(fd int, mode uint32, off int64, size int64) error {
-	return syscall.Fallocate(fd, mode, off, size)
-}
-
 // UnixRights calls a system call
 func UnixRights(fd int) []byte {
 	return syscall.UnixRights(fd)

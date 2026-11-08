@@ -36,12 +36,6 @@ func ParseUnixRights(m *SocketControlMessage) (fds []int, err error) {
 	return syscall.ParseUnixRights(m)
 }
 
-// fallocate is not available on Darwin, use ftruncate instead
-func fallocate(fd int, mode uint32, off int64, size int64) error {
-	// Darwin doesn't have fallocate, use ftruncate to set file size
-	return syscall.Ftruncate(fd, off+size)
-}
-
 // UnixRights calls a system call
 func UnixRights(fd int) []byte {
 	return syscall.UnixRights(fd)

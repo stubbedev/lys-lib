@@ -33,10 +33,6 @@ func ParseUnixRights(*SocketControlMessage) (fds []int, err error) {
 	return nil, ErrUnsupportedOS
 }
 
-func fallocate(fd int, mode uint32, off int64, size int64) error {
-	return ErrUnsupportedOS
-}
-
 // UnixRights calls a system call
 func UnixRights(int) []byte {
 	return nil
