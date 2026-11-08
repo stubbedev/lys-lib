@@ -14,6 +14,7 @@ import (
 
 	"github.com/stubbedev/lys-lib/dmabuf"
 	"github.com/stubbedev/lys-lib/fourcc"
+	"github.com/stubbedev/lys-lib/wlr"
 	"github.com/stubbedev/lys-lib/wltest"
 )
 
@@ -51,6 +52,8 @@ type fakeCompositor struct {
 	oneshot      map[uint32]bool
 	frameSession map[uint32]uint32
 	declared     []bool
+	// dynamicSources counts the lys-dynamic-capture sources created.
+	dynamicSources int
 }
 
 const (
@@ -63,6 +66,7 @@ const (
 	fakeGlobalOutput
 	fakeGlobalOutputSource
 	fakeGlobalCaptureHint
+	fakeGlobalDynamicSource
 )
 
 // fakeCapture is one session frame as the client asked for it.
@@ -238,6 +242,7 @@ func (f *fakeCompositor) request(id uint32, opcode uint16, body []byte) {
 				{fakeGlobalOutput, ifaceOutput, 4},
 				{fakeGlobalOutputSource, ifaceOutputSource, 1},
 				{fakeGlobalCaptureHint, ifaceCaptureHint, 1},
+				{fakeGlobalDynamicSource, ifaceDynamicSource, 1},
 			} {
 				f.send(reg, 0, wireU32(g.name), wireString(g.iface), wireU32(g.version))
 			}
@@ -258,6 +263,13 @@ func (f *fakeCompositor) request(id uint32, opcode uint16, body []byte) {
 	case ifaceToplevelSrc, ifaceOutputSource:
 		if opcode == 0 {
 			f.ifaces[u32At(body, 0)] = "source"
+		}
+	case ifaceDynamicSource:
+		if opcode == 1 {
+			f.ifaces[u32At(body, 0)] = "source"
+			f.mu.Lock()
+			f.dynamicSources++
+			f.mu.Unlock()
 		}
 	case ifaceShm:
 		if opcode == 0 {
@@ -711,5 +723,46 @@ func TestOnlyAScreenshotIsDeclaredOneShot(t *testing.T) {
 	defer f.mu.Unlock()
 	if want := []bool{true, false, true, false, true, false}; !slices.Equal(f.declared, want) {
 		t.Errorf("copies declared one-shot %v, want %v", f.declared, want)
+	}
+}
+
+func TestADynamicSourceCapturesTheCastTarget(t *testing.T) {
+	fake := startFakeCompositor(t)
+	c, err := Connect()
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = c.Close() })
+	if !c.HasDynamicCapture() {
+		t.Fatal("a compositor offering lys_dynamic_capture_source_manager_v1 has no dynamic capture")
+	}
+	f, err := c.CaptureDynamic(Options{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if f.Width != fakeSessionSize.X || f.Height != fakeSessionSize.Y {
+		t.Fatalf("the dynamic frame is %dx%d, want the session's %v", f.Width, f.Height, fakeSessionSize)
+	}
+	s, err := c.OpenDmabufSession(Dynamic{}, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+	fake.mu.Lock()
+	defer fake.mu.Unlock()
+	if fake.dynamicSources != 2 {
+		t.Fatalf("%d dynamic sources created, want one per session", fake.dynamicSources)
+	}
+}
+
+func TestADynamicSourceIsUnsupportedWithoutTheManager(t *testing.T) {
+	c := &Client{copyCapture: &wlr.ImageCopyCaptureManagerV1{}}
+	if c.HasDynamicCapture() {
+		t.Fatal("a compositor without the manager has dynamic capture")
+	}
+	if _, _, err := (Dynamic{}).imageSource(c); !errors.Is(err, ErrUnsupported) {
+		t.Fatalf("a dynamic source without the manager: %v, want ErrUnsupported", err)
 	}
 }

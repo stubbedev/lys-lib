@@ -13,8 +13,9 @@ import (
 	"github.com/stubbedev/lys-lib/wlr"
 )
 
-// Source is what an ext-image-copy-capture session captures: an Output
-// or a Toplevel, as the Client that opens the session lists them.
+// Source is what an ext-image-copy-capture session captures: an Output,
+// a Toplevel, as the Client that opens the session lists them, or the
+// compositor's cast target (Dynamic).
 type Source interface {
 	// imageSource creates a capture source on c, and the release of
 	// the claim the session opened on it holds until it is destroyed.
