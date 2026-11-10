@@ -60,8 +60,7 @@ type celtDecoder struct {
 	bands  bandDecoder
 	x      [2][FrameSize]float32
 	freq   [2][FrameSize]float32
-	fftIn  [longN4]complex64
-	fftO   [longN4]complex64
+	fft    [longN4]complex64
 	masks  [2 * nbBands]uint
 	pitchX [decodeBufferSize >> 1]float32
 	xcorr  [plcPitchLagMax >> 1]float32
@@ -577,14 +576,14 @@ func iir(x []float32, lpc *[celtLPCOrder]float32, mem *[celtLPCOrder]float32, y 
 // the stream's channels are not the output's.
 func (d *celtDecoder) synthesise(c, lm, start, end int, transient, silence bool) {
 	n := shortMdct << lm
-	blocks, nb, t := 1, n, imdcts[lm]
+	blocks, nb, t := 1, n, mdcts[lm]
 	if transient {
-		blocks, nb, t = 1<<lm, shortMdct, imdcts[0]
+		blocks, nb, t = 1<<lm, shortMdct, shortMDCT
 	}
 	inverse := func(freq []float32, ch int) {
 		syn := d.mem[ch][decodeBufferSize-n:]
 		for b := range blocks {
-			t.backward(freq[b:], blocks, syn[nb*b:], d.fftIn[:], d.fftO[:])
+			t.backward(freq[b:], blocks, syn[nb*b:], &d.fft)
 		}
 	}
 	switch {

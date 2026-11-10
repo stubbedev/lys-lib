@@ -129,8 +129,7 @@ type Encoder struct {
 	logE         [2][nbBands]float32
 	logE2        [2][nbBands]float32
 	errs         [2][nbBands]float32
-	fftIn        [longN4]complex64
-	fftOut       [longN4]complex64
+	fft          [longN4]complex64
 	intraOld     [2][nbBands]float32
 	intraErr     [2][nbBands]float32
 	intraBuf     []byte
@@ -467,10 +466,10 @@ func (e *Encoder) computeEnergies(short bool, logE *[2][nbBands]float32) {
 	for ch := range e.channels {
 		if short {
 			for b := range shortBlocks {
-				shortMDCT.forward(e.in[ch][b*shortMdct:], e.freq[ch][b:], shortBlocks, e.fftIn[:], e.fftOut[:])
+				shortMDCT.forward(e.in[ch][b*shortMdct:], e.freq[ch][b:], shortBlocks, &e.fft)
 			}
 		} else {
-			longMDCT.forward(e.in[ch][:], e.freq[ch][:], 1, e.fftIn[:], e.fftOut[:])
+			longMDCT.forward(e.in[ch][:], e.freq[ch][:], 1, &e.fft)
 		}
 		bandEnergies(e.freq[ch][:], e.norm[ch][:], &e.amp[ch], &logE[ch])
 	}
