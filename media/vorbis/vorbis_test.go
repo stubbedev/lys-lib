@@ -419,3 +419,68 @@ func resealAll(data []byte) {
 		off += size
 	}
 }
+
+func oggPackets(t *testing.T, data []byte) [][]byte {
+	t.Helper()
+	ogg := newOggReader(data)
+	var packets [][]byte
+	for {
+		p, ok, err := ogg.next()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !ok {
+			return packets
+		}
+		packets = append(packets, slices.Clone(p.data))
+	}
+}
+
+func TestDecoderMatchesDecode(t *testing.T) {
+	for _, f := range fixtures {
+		t.Run(f.name, func(t *testing.T) {
+			data := readFixture(t, f.name+".ogg")
+			whole, err := Decode(data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			packets := oggPackets(t, data)
+			d, err := NewDecoder(packets[0], packets[1], packets[2])
+			if err != nil {
+				t.Fatal(err)
+			}
+			if d.SampleRate() != f.rate || d.Channels() != f.channels {
+				t.Errorf("%d Hz, %d channels; want %d Hz, %d channels", d.SampleRate(), d.Channels(), f.rate, f.channels)
+			}
+			for range 2 {
+				var out []int16
+				for _, p := range packets[3:] {
+					if out, err = d.Decode(out, p); err != nil {
+						t.Fatal(err)
+					}
+				}
+				if len(out) < len(whole.Samples) || !slices.Equal(out[:len(whole.Samples)], whole.Samples) {
+					t.Fatalf("%d samples differ from Decode's %d", len(out), len(whole.Samples))
+				}
+				d.Reset()
+			}
+		})
+	}
+}
+
+func TestDecoderRejectsBadHeadersAndPackets(t *testing.T) {
+	packets := oggPackets(t, readFixture(t, "stereo-coupled.ogg"))
+	if _, err := NewDecoder(packets[1], packets[0], packets[2]); !errors.Is(err, ErrNotVorbis) {
+		t.Errorf("headers out of order: error %v", err)
+	}
+	if _, err := NewDecoder(packets[0], packets[1], packets[2][:len(packets[2])/2]); !errors.Is(err, ErrCorrupt) && !errors.Is(err, ErrTruncated) {
+		t.Errorf("truncated setup: error %v", err)
+	}
+	d, err := NewDecoder(packets[0], packets[1], packets[2])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := d.Decode(nil, packets[0]); !errors.Is(err, ErrCorrupt) {
+		t.Errorf("header as audio: error %v", err)
+	}
+}

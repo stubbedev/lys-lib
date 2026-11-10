@@ -106,12 +106,7 @@ type decoder struct {
 
 func readHeaders(ogg *oggReader) (*decoder, error) {
 	d := &decoder{}
-	parse := [3]func([]byte) error{
-		d.parseIdentification,
-		func(h []byte) error { return checkHeader(h, 3, "comment") },
-		d.parseSetup,
-	}
-	for i, header := range parse {
+	for i, parse := range d.headerParsers() {
 		p, ok, err := ogg.next()
 		if err != nil {
 			return nil, err
@@ -119,12 +114,33 @@ func readHeaders(ogg *oggReader) (*decoder, error) {
 		if !ok {
 			return nil, fmt.Errorf("vorbis: stream ends after %d of 3 headers: %w", i, ErrTruncated)
 		}
-		if err := header(p.data); err != nil {
+		if err := parse(p.data); err != nil {
 			return nil, err
 		}
 	}
 	d.allocate()
 	return d, nil
+}
+
+func parseHeaders(headers [3][]byte) (*decoder, error) {
+	d := &decoder{}
+	for i, parse := range d.headerParsers() {
+		if err := parse(headers[i]); err != nil {
+			return nil, err
+		}
+	}
+	d.allocate()
+	return d, nil
+}
+
+// headerParsers parse the identification, comment and setup headers,
+// in stream order.
+func (d *decoder) headerParsers() [3]func([]byte) error {
+	return [3]func([]byte) error{
+		d.parseIdentification,
+		func(h []byte) error { return checkHeader(h, 3, "comment") },
+		d.parseSetup,
+	}
 }
 
 func checkHeader(h []byte, kind byte, name string) error {
@@ -509,3 +525,42 @@ func toPCM(x float32) int16 {
 	}
 	return int16(v)
 }
+
+// Decoder decodes a Vorbis stream packet by packet, for a container
+// that carries the packets itself (Matroska, MP4). A Decoder belongs
+// to one goroutine.
+type Decoder struct{ d *decoder }
+
+// NewDecoder parses the stream's identification, comment and setup
+// headers.
+func NewDecoder(id, comment, setup []byte) (*Decoder, error) {
+	d, err := parseHeaders([3][]byte{id, comment, setup})
+	if err != nil {
+		return nil, err
+	}
+	return &Decoder{d: d}, nil
+}
+
+// SampleRate is the stream's rate in frames per second.
+func (d *Decoder) SampleRate() int { return d.d.rate }
+
+// Channels is the stream's channel count, in Vorbis channel order.
+func (d *Decoder) Channels() int { return d.d.channels }
+
+// Decode decodes one audio packet and appends its interleaved signed
+// 16-bit frames to dst. The first packet after NewDecoder or Reset
+// only primes the overlap and appends nothing, as Vorbis I specifies.
+func (d *Decoder) Decode(dst []int16, packet []byte) ([]int16, error) {
+	if len(packet) == 0 {
+		return dst, nil
+	}
+	out, err := d.d.decodePacket(packet, dst)
+	if err != nil {
+		return dst, fmt.Errorf("vorbis: packet of %d bytes: %w", len(packet), err)
+	}
+	return out, nil
+}
+
+// Reset forgets the overlap with the packet before, for decoding from
+// a packet that does not follow the last one decoded (after a seek).
+func (d *Decoder) Reset() { d.d.started = false }
