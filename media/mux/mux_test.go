@@ -101,8 +101,8 @@ func TestParameterSetsRejectTruncationAndWrongTypes(t *testing.T) {
 
 func TestAnnexBSplitsOnBothStartCodes(t *testing.T) {
 	var got [][]byte
-	err := annexB([]byte{0, 0, 0, 1, 9, 0x10, 0, 0, 1, 0x65, 1, 2, 0, 0, 0, 0, 1, 0x41, 3}, func(nal []byte) error {
-		got = append(got, nal)
+	err := annexB([]byte{0, 0, 0, 1, 9, 0x10, 0, 0, 1, 0x65, 1, 2, 0, 0, 0, 0, 1, 0x41, 3}, func(unit []byte) error {
+		got = append(got, unit)
 		return nil
 	})
 	if err != nil {
@@ -356,5 +356,52 @@ func TestMKVCloseFinalisesTheHeaderWhenSeekable(t *testing.T) {
 	}
 	if pos, err := f.Seek(0, io.SeekCurrent); err != nil || pos != int64(len(b)) {
 		t.Errorf("writer left at %d (%v), the file ends at %d", pos, err, len(b))
+	}
+}
+
+func TestPayloadClassifiesNALUnits(t *testing.T) {
+	sps264 := unhex(t, "67640015acd94141feab0110000003001000000780f162d960")
+	pps264 := unhex(t, "68ebe3cb22c0")
+	vps265 := unhex(t, "40010c01ffff01600000030090000003000003003f959809")
+	sps265 := unhex(t, "42010101600000030090000003000003003fa00a080f1d565959a4932bc05a020000030002000003007810")
+	pps265 := unhex(t, "4401c172b46240")
+	avc, err := H264{SPS: sps264, PPS: pps264}.describe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	hevc, err := H265{VPS: vps265, SPS: sps265, PPS: pps265}.describe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name  string
+		track track
+		units [][]byte
+		kept  [][]byte
+		key   bool
+	}{
+		{"H.264 IDR with its parameter sets", avc, [][]byte{{0x09, 0x10}, sps264, pps264, {0x65, 1}}, [][]byte{{0x65, 1}}, true},
+		{"H.264 non-IDR slice", avc, [][]byte{{0x09, 0x30}, {0x06, 5}, {0x41, 2}}, [][]byte{{0x06, 5}, {0x41, 2}}, false},
+		{"H.265 IDR with its parameter sets", hevc, [][]byte{{0x46, 1, 0x10}, vps265, sps265, pps265, {0x26, 1, 3}}, [][]byte{{0x26, 1, 3}}, true},
+		{"H.265 CRA", hevc, [][]byte{{0x2a, 1, 4}}, [][]byte{{0x2a, 1, 4}}, true},
+		{"H.265 reserved IRAP", hevc, [][]byte{{0x2e, 1, 4}}, [][]byte{{0x2e, 1, 4}}, true},
+		{"H.265 trailing picture", hevc, [][]byte{{0x46, 1, 0x30}, {0x4e, 1, 6}, {0x02, 1, 5}}, [][]byte{{0x4e, 1, 6}, {0x02, 1, 5}}, false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			var au, want []byte
+			for _, u := range c.units {
+				au = append(append(au, startCode...), u...)
+			}
+			for _, u := range c.kept {
+				want = append(binary.BigEndian.AppendUint32(want, uint32(len(u))), u...)
+			}
+			got, key, err := c.track.payload(nil, au)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !bytes.Equal(got, want) || key != c.key {
+				t.Errorf("payload % x key %v, want % x key %v", got, key, want, c.key)
+			}
+		})
 	}
 }

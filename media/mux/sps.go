@@ -17,7 +17,7 @@ type avcSPS struct {
 }
 
 func parseAVCSPS(unit []byte) (avcSPS, error) {
-	if len(unit) < 4 || nalTypeH264(unit) != nalH264SPS {
+	if len(unit) < 4 || nal.H264Type(unit) != nal.H264NALSPS {
 		return avcSPS{}, errors.New("mux: H.264 SPS is not an SPS NAL unit")
 	}
 	var sps nal.H264SPS
@@ -67,13 +67,13 @@ func avcC(s avcSPS, sps, pps []byte) ([]byte, error) {
 	return b, nil
 }
 
-func appendNAL16(b, nal []byte) ([]byte, error) {
-	size, err := intconv.Exact[uint16](len(nal))
+func appendNAL16(b, unit []byte) ([]byte, error) {
+	size, err := intconv.Exact[uint16](len(unit))
 	if err != nil {
-		return nil, fmt.Errorf("%d bytes is past the 16-bit parameter set length: %w", len(nal), err)
+		return nil, fmt.Errorf("%d bytes is past the 16-bit parameter set length: %w", len(unit), err)
 	}
 	b = binary.BigEndian.AppendUint16(b, size)
-	return append(b, nal...), nil
+	return append(b, unit...), nil
 }
 
 const hevcPTLGeneral = 12
@@ -88,7 +88,7 @@ type hevcSPS struct {
 }
 
 func parseHEVCSPS(unit []byte) (hevcSPS, error) {
-	if len(unit) < 3+hevcPTLGeneral || nalTypeH265(unit) != nalH265SPS {
+	if len(unit) < 3+hevcPTLGeneral || nal.HEVCType(unit) != nal.HEVCNALSPS {
 		return hevcSPS{}, errors.New("mux: H.265 SPS is not an SPS NAL unit")
 	}
 	rbsp := nal.Unescape(nil, unit[2:])
@@ -162,7 +162,7 @@ func hvcC(s hevcSPS, vps, sps, pps []byte) ([]byte, error) {
 	}
 	b = append(b, s.temporalLayers<<3|nested<<2|(nalLenSize-1), 3)
 	for _, ps := range [][]byte{vps, sps, pps} {
-		b = append(b, 0x80|nalTypeH265(ps), 0, 1)
+		b = append(b, 0x80|nal.HEVCType(ps), 0, 1)
 		var err error
 		if b, err = appendNAL16(b, ps); err != nil {
 			return nil, fmt.Errorf("mux: H.265 parameter set: %w", err)

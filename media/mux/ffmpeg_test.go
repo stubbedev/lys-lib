@@ -12,6 +12,8 @@ import (
 	"strconv"
 	"testing"
 	"time"
+
+	"github.com/stubbedev/lys-lib/internal/nal"
 )
 
 func requireFFmpeg(t *testing.T) {
@@ -73,21 +75,21 @@ func encodeVideo(t *testing.T, c codec) [][]byte {
 func videoTrack(t *testing.T, c codec, first []byte) Track {
 	t.Helper()
 	sets := map[uint8][]byte{}
-	err := annexB(first, func(nal []byte) error {
-		typ := nalTypeH264(nal)
+	err := annexB(first, func(unit []byte) error {
+		typ := nal.H264Type(unit)
 		if c == codecH265 {
-			typ = nalTypeH265(nal)
+			typ = nal.HEVCType(unit)
 		}
-		sets[typ] = slices.Clone(nal)
+		sets[typ] = slices.Clone(unit)
 		return nil
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if c == codecH265 {
-		return H265{VPS: sets[nalH265VPS], SPS: sets[nalH265SPS], PPS: sets[nalH265PPS]}
+		return H265{VPS: sets[nal.HEVCNALVPS], SPS: sets[nal.HEVCNALSPS], PPS: sets[nal.HEVCNALPPS]}
 	}
-	return H264{SPS: sets[nalH264SPS], PPS: sets[nalH264PPS]}
+	return H264{SPS: sets[nal.H264NALSPS], PPS: sets[nal.H264NALPPS]}
 }
 
 type oggOpus struct {

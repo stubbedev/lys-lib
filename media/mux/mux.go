@@ -22,6 +22,7 @@ import (
 	"time"
 
 	"github.com/stubbedev/lys-lib/intconv"
+	"github.com/stubbedev/lys-lib/internal/nal"
 )
 
 // Track describes one stream of a file: H264, H265 or Opus.
@@ -111,7 +112,7 @@ func (h H264) describe() (track, error) {
 	if err != nil {
 		return track{}, err
 	}
-	if len(h.PPS) == 0 || nalTypeH264(h.PPS) != nalH264PPS {
+	if len(h.PPS) == 0 || nal.H264Type(h.PPS) != nal.H264NALPPS {
 		return track{}, errors.New("mux: H.264 PPS is not a PPS NAL unit")
 	}
 	width, height, err := frameSize(sps.width, sps.height)
@@ -133,10 +134,10 @@ func (h H265) describe() (track, error) {
 	if err != nil {
 		return track{}, err
 	}
-	if len(h.VPS) < 2 || nalTypeH265(h.VPS) != nalH265VPS {
+	if len(h.VPS) < 2 || nal.HEVCType(h.VPS) != nal.HEVCNALVPS {
 		return track{}, errors.New("mux: H.265 VPS is not a VPS NAL unit")
 	}
-	if len(h.PPS) < 2 || nalTypeH265(h.PPS) != nalH265PPS {
+	if len(h.PPS) < 2 || nal.HEVCType(h.PPS) != nal.HEVCNALPPS {
 		return track{}, errors.New("mux: H.265 PPS is not a PPS NAL unit")
 	}
 	width, height, err := frameSize(sps.width, sps.height)
@@ -255,12 +256,12 @@ func (t *track) payload(dst, data []byte) ([]byte, bool, error) {
 		return append(dst, data...), true, nil
 	}
 	key := false
-	err := annexB(data, func(nal []byte) error {
-		typ, drop := t.classify(nal)
+	err := annexB(data, func(unit []byte) error {
+		typ, drop := t.classify(unit)
 		switch {
 		case typ == nalParamSet:
 			for _, p := range t.params {
-				if bytes.Equal(p, nal) {
+				if bytes.Equal(p, unit) {
 					return nil
 				}
 			}
@@ -270,12 +271,12 @@ func (t *track) payload(dst, data []byte) ([]byte, bool, error) {
 		case typ == nalKey:
 			key = true
 		}
-		size, err := intconv.Exact[uint32](len(nal))
+		size, err := intconv.Exact[uint32](len(unit))
 		if err != nil {
-			return fmt.Errorf("NAL unit of %d bytes: %w", len(nal), err)
+			return fmt.Errorf("NAL unit of %d bytes: %w", len(unit), err)
 		}
 		dst = binary.BigEndian.AppendUint32(dst, size)
-		dst = append(dst, nal...)
+		dst = append(dst, unit...)
 		return nil
 	})
 	if err != nil {
@@ -296,39 +297,26 @@ const (
 )
 
 const (
-	nalH264IDR = 5
-	nalH264SPS = 7
-	nalH264PPS = 8
 	nalH264AUD = 9
-
-	nalH265IRAPFirst = 16
-	nalH265IRAPLast  = 23
-	nalH265VPS       = 32
-	nalH265SPS       = 33
-	nalH265PPS       = 34
-	nalH265AUD       = 35
+	nalH265AUD = 35
 )
 
-func nalTypeH264(nal []byte) uint8 { return nal[0] & 0x1f }
-
-func nalTypeH265(nal []byte) uint8 { return nal[0] >> 1 & 0x3f }
-
-func (t *track) classify(nal []byte) (role nalRole, drop bool) {
+func (t *track) classify(unit []byte) (role nalRole, drop bool) {
 	if t.codec == codecH264 {
-		switch nalTypeH264(nal) {
-		case nalH264IDR:
+		switch nal.H264Type(unit) {
+		case nal.H264NALIDR:
 			return nalKey, false
-		case nalH264SPS, nalH264PPS:
+		case nal.H264NALSPS, nal.H264NALPPS:
 			return nalParamSet, true
 		case nalH264AUD:
 			return nalPicture, true
 		}
 		return nalPicture, false
 	}
-	switch typ := nalTypeH265(nal); {
-	case typ >= nalH265IRAPFirst && typ <= nalH265IRAPLast:
+	switch typ := nal.HEVCType(unit); {
+	case typ >= nal.HEVCNALBLAWLP && typ <= nal.HEVCNALIRAPMax:
 		return nalKey, false
-	case typ == nalH265VPS || typ == nalH265SPS || typ == nalH265PPS:
+	case typ == nal.HEVCNALVPS || typ == nal.HEVCNALSPS || typ == nal.HEVCNALPPS:
 		return nalParamSet, true
 	case typ == nalH265AUD:
 		return nalPicture, true
@@ -338,7 +326,7 @@ func (t *track) classify(nal []byte) (role nalRole, drop bool) {
 
 var startCode = []byte{0, 0, 1}
 
-func annexB(au []byte, each func(nal []byte) error) error {
+func annexB(au []byte, each func(unit []byte) error) error {
 	i := bytes.Index(au, startCode)
 	if i < 0 || bytes.IndexFunc(au[:i], func(r rune) bool { return r != 0 }) >= 0 {
 		return errors.New("access unit does not start with an Annex-B start code")
@@ -346,17 +334,17 @@ func annexB(au []byte, each func(nal []byte) error) error {
 	rest := au[i+len(startCode):]
 	for len(rest) > 0 {
 		end := bytes.Index(rest, startCode)
-		nal := rest
+		unit := rest
 		if end >= 0 {
-			nal, rest = rest[:end], rest[end+len(startCode):]
+			unit, rest = rest[:end], rest[end+len(startCode):]
 		} else {
 			rest = nil
 		}
-		nal = bytes.TrimRight(nal, "\x00")
-		if len(nal) == 0 {
+		unit = bytes.TrimRight(unit, "\x00")
+		if len(unit) == 0 {
 			continue
 		}
-		if err := each(nal); err != nil {
+		if err := each(unit); err != nil {
 			return err
 		}
 	}
