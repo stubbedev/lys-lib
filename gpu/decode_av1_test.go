@@ -4,7 +4,6 @@ import (
 	"errors"
 	"image"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 
@@ -162,21 +161,5 @@ func TestDecodeAV1DoesNotAllocate(t *testing.T) {
 	}
 	if n := testing.AllocsPerRun(len(pkts)-i-1, step); n != 0 {
 		t.Errorf("%.1f allocations a frame, want 0", n)
-	}
-}
-
-// A 10-bit stream is refused, naming its bit depth.
-func TestDecodeAV1Refuses10Bit(t *testing.T) {
-	d := decodingDevice(t, demux.AV1)
-	cl := ffmpegClip(t, "a.mp4", 192, 128, 0.2, libaom("", "-pix_fmt", "yuv420p10le")...)
-	track, pkts := packets(t, cl.path)
-	v, err := d.NewVideoDecoder(track)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer v.Close()
-	err = v.Decode(pkts[0])
-	if !errors.Is(err, ErrNoVideoDecoder) || !strings.Contains(err.Error(), "at 10 bits") {
-		t.Errorf("decoding a 10-bit stream: %v, want ErrNoVideoDecoder naming 10 bits", err)
 	}
 }

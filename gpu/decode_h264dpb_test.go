@@ -8,11 +8,13 @@ import (
 	"github.com/stubbedev/lys-lib/internal/nal"
 )
 
-// dpbRun decodes pictures through a h264State as the decoder does.
+// dpbRun decodes pictures through a h264State as the decoder does;
+// inferred are the frames gaps in frame_num inferred.
 type dpbRun struct {
-	t     *testing.T
-	sps   nal.H264SPS
-	state h264State
+	t        *testing.T
+	sps      nal.H264SPS
+	state    h264State
+	inferred []h264Pic
 }
 
 func newDPBRun(t *testing.T, sps nal.H264SPS) *dpbRun {
@@ -26,7 +28,20 @@ func newDPBRun(t *testing.T, sps nal.H264SPS) *dpbRun {
 func (r *dpbRun) pic(h nal.H264SliceHeader, idr, ref, intra bool) (h264Pic, error) {
 	r.t.Helper()
 	p := h264Pic{hdr: &h, sps: &r.sps, idr: idr, ref: ref, intra: intra}
-	if err := r.state.begin(&p); err != nil {
+	gap, err := r.state.begin(&p)
+	if err != nil {
+		return p, err
+	}
+	for range gap {
+		var q h264Pic
+		if err := r.state.infer(&q, &r.sps); err != nil {
+			return p, err
+		}
+		r.state.finish(&q)
+		q.hdr = &nal.H264SliceHeader{FrameNum: q.hdr.FrameNum}
+		r.inferred = append(r.inferred, q)
+	}
+	if err := r.state.place(&p); err != nil {
 		return p, err
 	}
 	r.state.finish(&p)
@@ -175,9 +190,10 @@ func TestH264MemoryManagement(t *testing.T) {
 	}
 }
 
-// A gap in frame_num is an error; before the first picture decoding
-// can start at, pictures are dropped, and after a start at an I picture
-// that is no IDR, so are the pictures leading it.
+// A gap in frame_num an SPS allows none of is an error; before the
+// first picture decoding can start at, pictures are dropped, and after
+// a start at an I picture that is no IDR, so are the pictures leading
+// it.
 func TestH264StartAndGaps(t *testing.T) {
 	r := newDPBRun(t, nal.H264SPS{Log2MaxFrameNum: 4, Log2MaxPicOrderCntLsb: 6, MaxNumRefFrames: 2})
 	if _, err := r.pic(nal.H264SliceHeader{FrameNum: 3, PicOrderCntLsb: 10}, false, true, false); !errors.Is(err, errSkipPicture) {
@@ -193,7 +209,48 @@ func TestH264StartAndGaps(t *testing.T) {
 		t.Fatalf("a picture after the I picture: %v", err)
 	}
 	if _, err := r.pic(nal.H264SliceHeader{FrameNum: 9, PicOrderCntLsb: 30}, false, true, false); err == nil || errors.Is(err, errSkipPicture) {
-		t.Fatalf("frame_num jumping from 6 to 9: %v, want an error", err)
+		t.Fatalf("frame_num jumping from 6 to 9 in an SPS that allows no gaps: %v, want an error", err)
+	}
+}
+
+// A gap in frame_num that the SPS allows infers the frames it leaves
+// non-existing (8.2.5.2): short-term references of the frame numbers
+// missing, which sliding window marking takes in, counted in picture
+// order as their frame_num gives (type 2) or on from the reference
+// frame before (type 0); of a gap longer than the reference frames,
+// only the last max_num_ref_frames.
+func TestH264FrameNumGap(t *testing.T) {
+	r := newDPBRun(t, nal.H264SPS{Log2MaxFrameNum: 4, PicOrderCntType: 2, MaxNumRefFrames: 3, GapsInFrameNumAllowed: true})
+	for i := range 3 {
+		r.must(nal.H264SliceHeader{FrameNum: uint32(i)}, i == 0, true)
+	}
+	p := r.must(nal.H264SliceHeader{FrameNum: 6}, false, true)
+	var nums []uint32
+	var pocs []int32
+	for _, q := range r.inferred {
+		nums, pocs = append(nums, q.hdr.FrameNum), append(pocs, q.poc[0])
+		if !q.nonExisting || !q.ref {
+			t.Errorf("inferred frame %d is non-existing %v, a reference %v; want both", q.hdr.FrameNum, q.nonExisting, q.ref)
+		}
+	}
+	if !slices.Equal(nums, []uint32{3, 4, 5}) || !slices.Equal(pocs, []int32{6, 8, 10}) || p.poc[0] != 12 {
+		t.Errorf("inferred frames %v at POC %v, the next at %d; want 3, 4, 5 at 6, 8, 10, then 12", nums, pocs, p.poc[0])
+	}
+	if got := r.refs(); !slices.Equal(got, []int{4, 5, 6}) {
+		t.Errorf("references %v, want inferred frames 4 and 5 and frame 6", got)
+	}
+	r.inferred = r.inferred[:0]
+	r.must(nal.H264SliceHeader{FrameNum: 3}, false, true)
+	if len(r.inferred) != 3 || r.inferred[0].hdr.FrameNum != 0 || r.inferred[2].hdr.FrameNum != 2 {
+		t.Errorf("a gap of 12 frames across the wrap infers %d, want the last 3, frames 0 to 2", len(r.inferred))
+	}
+
+	r = newDPBRun(t, nal.H264SPS{Log2MaxFrameNum: 4, Log2MaxPicOrderCntLsb: 6, MaxNumRefFrames: 2, GapsInFrameNumAllowed: true})
+	r.must(nal.H264SliceHeader{FrameNum: 0}, true, true)
+	r.must(nal.H264SliceHeader{FrameNum: 1, PicOrderCntLsb: 4}, false, true)
+	p = r.must(nal.H264SliceHeader{FrameNum: 3, PicOrderCntLsb: 8}, false, true)
+	if len(r.inferred) != 1 || r.inferred[0].poc != [2]int32{6, 6} || p.poc[0] != 8 {
+		t.Errorf("type 0: inferred %v, then POC %d; want one frame at POC 6, then 8", r.inferred, p.poc[0])
 	}
 }
 

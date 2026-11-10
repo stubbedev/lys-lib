@@ -45,6 +45,7 @@ var decodeCodecs = []decodeEntry{
 	{demux.H264, videoOp{"VK_KHR_video_decode_h264", vk.VideoCodecOperationDecodeH264BitKhr}, newH264Decoder},
 	{demux.H265, videoOp{"VK_KHR_video_decode_h265", vk.VideoCodecOperationDecodeH265BitKhr}, newH265Decoder},
 	{demux.AV1, videoOp{"VK_KHR_video_decode_av1", vk.VideoCodecOperationDecodeAv1BitKhr}, newAV1Decoder},
+	{demux.VP9, videoOp{"VK_KHR_video_decode_vp9", vk.VideoCodecOperationDecodeVp9BitKhr}, newVP9Decoder},
 }
 
 // decodeEntry is a codec the decoder reads.
@@ -132,7 +133,8 @@ func (d *Device) probeVideo(p vk.PhysicalDevice, sync2 bool, have map[string]boo
 
 // probeDecode finds p's video decode queue family and the codecs it
 // decodes, as probeVideo does for encoding; decoding also needs the
-// sampler YCbCr conversion the renderer samples its pictures through.
+// sampler YCbCr conversion the renderer samples its pictures through,
+// and VP9 the videoDecodeVP9 feature.
 func (d *Device) probeDecode(p vk.PhysicalDevice, sync2, ycbcr bool, have map[string]bool) (*decodeQueue, map[demux.Codec]error) {
 	ops := make([]videoOp, len(decodeCodecs))
 	for i, c := range decodeCodecs {
@@ -151,6 +153,10 @@ func (d *Device) probeDecode(p vk.PhysicalDevice, sync2, ycbcr bool, have map[st
 	for i, c := range decodeCodecs {
 		if !offered[i] {
 			why[c.codec] = reasons[i]
+			continue
+		}
+		if c.codec == demux.VP9 && !d.probeVP9(p) {
+			why[c.codec] = errors.New("no videoDecodeVP9 feature")
 			continue
 		}
 		if found == nil {
@@ -250,4 +256,14 @@ func (q *decodeQueue) extensions() []string {
 		}
 	}
 	return exts
+}
+
+// probeVP9 reports whether p has the videoDecodeVP9 feature, which
+// VK_KHR_video_decode_vp9 decodes with once enabled.
+func (d *Device) probeVP9(p vk.PhysicalDevice) bool {
+	vp9 := vk.PhysicalDeviceVideoDecodeVP9FeaturesKHR{SType: vk.StructureTypePhysicalDeviceVideoDecodeVp9FeaturesKhr}
+	f2 := vk.PhysicalDeviceFeatures2{SType: vk.StructureTypePhysicalDeviceFeatures2, PNext: (*uintptr)(unsafe.Pointer(&vp9))}
+	d.cmds.GetPhysicalDeviceFeatures2(p, &f2)
+	runtime.KeepAlive(&vp9)
+	return vp9.VideoDecodeVP9 != 0
 }

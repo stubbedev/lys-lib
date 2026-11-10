@@ -90,8 +90,8 @@ func main() {
 
 ## Video decoding
 
-`gpu.VideoDecoder` decodes H.264, H.265 and AV1 on the device's Vulkan video
-decode queue, the device the renderer draws with. It takes [`demux`](#media-demux)
+`gpu.VideoDecoder` decodes H.264, H.265, AV1 and VP9 on the device's Vulkan
+video decode queue, the device the renderer draws with. It takes [`demux`](#media-demux)
 packets in decode order and hands out frames in presentation order, each a
 `Texture` a `Pass` draws through its YCbCr conversion: the picture never leaves
 the GPU.
@@ -165,45 +165,64 @@ func main() {
 - `DecodeCodecs` lists what the device decodes. `NewVideoDecoder` fails with
   `ErrNoVideoDecoder`, naming the codec and why, for any other; lavapipe
   decodes nothing.
-- `Decode` takes one packet (an access unit; an AV1 temporal unit, whose hidden
-  frames it decodes too). `Next` returns the next frame in presentation order,
+- `Decode` takes one packet (an access unit; an AV1 temporal unit or a VP9
+  superframe, whose hidden frames it decodes too). `Next` returns the next frame in presentation order,
   or nil until more packets complete one; it waits for that frame's decode.
   `Flush` at the end of the track hands out the frames held back for
   reordering.
 - A frame carries its packet's `PTS` and `Duration`. `Texture` is larger than
   the picture by the codec's padding: draw `Rect` of it. Its YCbCr matrix, range
-  and chroma siting come from the stream's VUI or AV1 colour config (an unnamed
-  matrix is BT.709 from 720 lines up, BT.601 below). An AV1 frame's `Rect` is
-  its render size where that crops the frame, else the frame.
+  and chroma siting come from the stream's VUI, AV1 colour config or VP9
+  colour space (an unnamed matrix is BT.709 from 720 lines up, BT.601 below).
+  An AV1 frame's `Rect` is its render size where that crops the frame, else the
+  frame; a VP9 frame's is the frame. An 8-bit stream decodes into NV12
+  textures, a 10-bit one into P010 (`G10X6_B10X6R10X6_2PLANE_420`), both drawn
+  through the sampler's YCbCr conversion.
 - The texture belongs to the decoder: `Release` hands the frame back, and the
   decoder decodes into it again once the passes submitted so far, which may
   sample it, have finished. Up to 8 frames may be held beside the ones held for
-  reordering and the AV1 frames decoded hidden to be shown later; `Close`
+  reordering and the AV1 and VP9 frames decoded hidden to be shown later; `Close`
   releases them all.
 - To seek, `Reset` the decoder, `Seek` the file and decode from the keyframe,
   dropping frames before the target. Decoding starts at an IDR or I picture
-  (H.264), an IRAP picture (H.265) or a key frame (AV1, from the first packet
-  marked a keyframe); pictures before it, and leading pictures that predict
+  (H.264), an IRAP picture (H.265) or a key frame (AV1 and VP9, from the first
+  packet marked a keyframe); pictures before it, and leading pictures that predict
   from before it (open-GOP B-frames, RASL pictures), are dropped.
 - Streams decode bit-exactly as ffmpeg decodes them: H.264 Baseline, Main and
   High (B-frames, reference marking, every picture order count type, scaling
-  matrices, slices), H.265 Main (reference picture sets in the SPS or slice
-  headers, long-term pictures, CRA starts, slices, wavefronts, scaling lists),
-  and AV1 Main (hidden frames shown by later frame headers, all seven
-  references, compound and skip modes, tiles, 64x64 and 128x128 superblocks,
-  segmentation, delta q and loop filter, CDEF, loop restoration, global
-  motion, error resilient frames, screen content tools; libaom and SVT-AV1
-  streams), 8-bit 4:2:0 progressive only. Interlaced H.264, 10-bit and
-  4:2:2/4:4:4 streams are errors that say so, as are AV1 frames coded at a
-  superres-scaled width, AV1 inter frames whose size differs from their
-  references' (reference scaling), a frame showing a frame it already showed,
-  and frames smaller than the device decodes (NVIDIA decodes AV1 from 128x128).
-  AV1 film grain is applied where the device applies it into distinct output
-  pictures; a frame applying grain on a device that decodes only into its
-  reference pictures (NVIDIA) is an error that says so. VP9 has no decoder yet.
+  matrices, slices, gaps in `frame_num`), H.265 Main and Main 10 (reference
+  picture sets in the SPS or slice headers, long-term pictures, CRA starts,
+  slices, wavefronts, scaling lists), AV1 Main at 8 and 10 bits (hidden frames
+  shown by later frame headers, all seven references, compound and skip modes,
+  tiles, 64x64 and 128x128 superblocks, segmentation, delta q and loop filter,
+  CDEF, loop restoration, global motion, error resilient frames, screen content
+  tools; libaom and SVT-AV1 streams), and VP9 profiles 0 and 2 at 8 and 10
+  bits (hidden alternate reference frames in superframes, all three
+  references, segmentation with temporal prediction and cyclic refresh, tile
+  columns, error resilient and lossless frames, odd sizes; libvpx streams in
+  WebM and MP4), 4:2:0 progressive only. Interlaced H.264, 10-bit H.264,
+  12-bit and 4:2:2/4:4:4 streams are errors that say so, as are AV1 frames
+  coded at a superres-scaled width, AV1 and VP9 inter frames whose size
+  differs from their references' (reference scaling), a frame showing a frame
+  it already showed, and frames smaller than the device decodes (NVIDIA
+  decodes AV1 from 128x128, H.265 from 144x144). AV1 film grain is applied
+  where the device applies it into distinct output pictures; a frame applying
+  grain on a device that decodes only into its reference pictures (NVIDIA) is
+  an error that says so.
+- A gap in H.264 `frame_num` that the SPS allows
+  (`gaps_in_frame_num_value_allowed_flag`) infers the frames it leaves
+  non-existing (8.2.5.2): each decodes as a skip slice copying the reference
+  frame before it, so it holds a DPB slot and its place in the reference lists,
+  and a stream predicting from it (frames lost) reads what ffmpeg conceals it
+  with; ffmpeg deblocks such a stream a little differently, taking the copy
+  for the frame it copies. A gap the SPS does not allow is an error naming the frames missing.
 - `internal/av1` reads the OBUs, sequence headers, frame headers (with the
-  reference frame state they predict from) and tile groups; its tests check it
-  against ffmpeg's `trace_headers` element for element.
+  reference frame state they predict from) and tile groups; `internal/vp9`
+  reads superframe indexes and uncompressed headers (with the reference frame
+  sizes, loop filter deltas, segmentation features and motion vector reuse
+  they predict from; the device reads the compressed header and keeps the
+  probability contexts). Their tests check them against ffmpeg's
+  `trace_headers` element for element.
 - A device whose decoder writes its output into its reference pictures (NVIDIA)
   has each picture copied into its frame on the decode queue; one with distinct
   output pictures decodes into the frame directly.

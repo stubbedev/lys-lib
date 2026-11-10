@@ -328,7 +328,6 @@ type (
 	StdVideoAV1Level                       int32
 	StdVideoVP9Profile                     int32
 	StdVideoVP9Level                       int32
-	StdVideoDecodeVP9PictureInfo           [128]byte
 	StdVideoEncodeAV1DecoderModelInfo      [32]byte
 	StdVideoEncodeAV1OperatingPointInfo    [64]byte
 	StdVideoEncodeAV1ReferenceInfo         [32]byte
@@ -8601,7 +8600,7 @@ type VideoDecodeVP9PictureInfoKHR struct {
 	SType                    StructureType
 	PNext                    *uintptr
 	PStdPictureInfo          *StdVideoDecodeVP9PictureInfo
-	ReferenceNameSlotIndices int32
+	ReferenceNameSlotIndices [3]int32
 	UncompressedHeaderOffset uint32
 	CompressedHeaderOffset   uint32
 	TilesOffset              uint32

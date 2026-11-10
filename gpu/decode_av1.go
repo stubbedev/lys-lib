@@ -14,13 +14,7 @@ import (
 	"github.com/stubbedev/lys-lib/third_party/vk"
 )
 
-// av1Slots are the DPB slots an AV1 stream needs: a picture for each of
-// its eight reference frame slots and the one being decoded.
-const av1Slots = av1.NumRefFrames + 1
-
-// av1Decoder is AV1's part of a decoder, as h264Decoder is H.264's. The
-// stream's eight reference frame slots each name the DPB slot of the
-// picture they hold.
+// av1Decoder is AV1's part of a decoder, as h264Decoder is H.264's.
 type av1Decoder struct {
 	stream        av1.Stream
 	seq           []byte
@@ -35,8 +29,10 @@ type av1Decoder struct {
 	tiles    []av1.Tile
 	offsets  []uint32
 	sizes    []uint32
-	slotOf   [av1.NumRefFrames]int
-	pictures [av1Slots]av1Picture
+	refSlots
+	// refs are what decoding a picture that references a DPB slot reads
+	// of its picture.
+	refs [refSlotPictures]vk.StdVideoDecodeAV1ReferenceInfo
 
 	filmGrain   bool
 	profileInfo vk.VideoDecodeAV1ProfileInfoKHR
@@ -58,20 +54,9 @@ type av1Decoder struct {
 	grainStd  vk.StdVideoAV1FilmGrain
 	setupInfo vk.VideoDecodeAV1DpbSlotInfoKHR
 	refInfo   [av1.RefsPerFrame]vk.VideoDecodeAV1DpbSlotInfoKHR
-	refSlots  [av1.RefsPerFrame]int
+	active    [av1.RefsPerFrame]int
 	refPtrs   [av1.RefsPerFrame]unsafe.Pointer
 	req       decodePicture
-}
-
-// av1Picture is a DPB slot's picture: how many reference frame slots
-// hold it, what decoding a picture that references it reads of it, and
-// its output frame while the stream may still show it (a frame decoded
-// hidden, to be shown by a later frame header).
-type av1Picture struct {
-	users int
-	ref   vk.StdVideoDecodeAV1ReferenceInfo
-	frame *VideoFrame
-	rect  image.Rectangle
 }
 
 // newAV1Decoder reads config, the track's av1C, for the sequence header
@@ -114,26 +99,6 @@ func (c *av1Decoder) sequence(b []byte) error {
 	c.seq = append(c.seq[:0], b...)
 	c.paramsChanged = true
 	return nil
-}
-
-// forget drops every reference picture.
-func (c *av1Decoder) forget() {
-	for i := range c.slotOf {
-		c.slotOf[i] = -1
-	}
-	for i := range c.pictures {
-		c.release(i)
-		c.pictures[i].users = 0
-	}
-}
-
-// release drops slot's hidden frame, which nothing can show any more.
-func (c *av1Decoder) release(slot int) {
-	p := &c.pictures[slot]
-	if p.frame != nil {
-		p.frame.free(0)
-		p.frame = nil
-	}
 }
 
 func (c *av1Decoder) reset() {
@@ -263,13 +228,7 @@ func (c *av1Decoder) picture(v *VideoDecoder, p demux.Packet, data []byte) error
 			return err
 		}
 	}
-	setup := -1
-	for i := range c.pictures {
-		if c.pictures[i].users == 0 {
-			setup = i
-			break
-		}
-	}
+	setup := c.free()
 	frame, err := v.frame()
 	if err != nil {
 		return err
@@ -289,15 +248,15 @@ func (c *av1Decoder) picture(v *VideoDecoder, p demux.Packet, data []byte) error
 				return fmt.Errorf("gpu: AV1 %s at order hint %d references slot %d, which holds no decoded picture", h.FrameType, h.OrderHint, idx)
 			}
 			c.picInfo.ReferenceNameSlotIndices[i] = intconv.Must[int32](slot)
-			if slices.Contains(c.refSlots[:n], slot) {
+			if slices.Contains(c.active[:n], slot) {
 				continue
 			}
-			c.refInfo[n] = vk.VideoDecodeAV1DpbSlotInfoKHR{SType: vk.StructureTypeVideoDecodeAv1DpbSlotInfoKhr, PStdReferenceInfo: &c.pictures[slot].ref}
-			c.refSlots[n], c.refPtrs[n] = slot, unsafe.Pointer(&c.refInfo[n])
+			c.refInfo[n] = vk.VideoDecodeAV1DpbSlotInfoKHR{SType: vk.StructureTypeVideoDecodeAv1DpbSlotInfoKhr, PStdReferenceInfo: &c.refs[slot]}
+			c.active[n], c.refPtrs[n] = slot, unsafe.Pointer(&c.refInfo[n])
 			n++
 		}
 	}
-	c.req.refs, c.req.refInfo = c.refSlots[:n], c.refPtrs[:n]
+	c.req.refs, c.req.refInfo = c.active[:n], c.refPtrs[:n]
 	if err := v.submit(&c.req); err != nil {
 		return err
 	}
@@ -307,50 +266,24 @@ func (c *av1Decoder) picture(v *VideoDecoder, p demux.Packet, data []byte) error
 	frame.rect = pic.rect
 	c.refresh(setup, h.RefreshFrameFlags)
 	c.stream.Update(h)
-	switch {
-	case h.ShowFrame:
+	if h.ShowFrame {
 		frame.pts, frame.duration = p.PTS, p.Duration
 		v.queue(frame, 0, false, false)
-	case h.ShowableFrame && pic.users > 0:
-		pic.frame = frame
-	default:
-		frame.free(0)
+	} else {
+		c.keep(setup, frame, h.ShowableFrame)
 	}
 	return nil
-}
-
-// refresh points the reference frame slots flags names at DPB slot
-// setup, releasing the pictures no slot holds any more.
-func (c *av1Decoder) refresh(setup int, flags uint8) {
-	for i := range c.slotOf {
-		if flags>>i&1 == 0 {
-			continue
-		}
-		if old := c.slotOf[i]; old >= 0 {
-			if c.pictures[old].users--; c.pictures[old].users == 0 {
-				c.release(old)
-			}
-		}
-		c.slotOf[i] = setup
-		c.pictures[setup].users++
-	}
 }
 
 // showExisting shows the frame c.hdr names, decoded hidden before; a
 // key frame shown so also takes every reference frame slot.
 func (c *av1Decoder) showExisting(v *VideoDecoder, p demux.Packet) error {
 	h := &c.hdr
-	slot := c.slotOf[h.FrameToShowMapIdx]
-	if slot < 0 {
-		return fmt.Errorf("gpu: AV1 frame header shows slot %d, which holds no decoded picture", h.FrameToShowMapIdx)
+	f, slot, err := c.takeHidden(h.FrameToShowMapIdx)
+	if err != nil {
+		return err
 	}
-	pic := &c.pictures[slot]
-	f := pic.frame
-	if f == nil {
-		return fmt.Errorf("%w: the frame header shows the %s in slot %d a second time, which the decoder does not copy out again", ErrNoVideoDecoder, h.FrameType, h.FrameToShowMapIdx)
-	}
-	pic.frame = nil
-	f.pts, f.duration, f.rect = p.PTS, p.Duration, pic.rect
+	f.pts, f.duration = p.PTS, p.Duration
 	v.queue(f, 0, false, false)
 	c.refresh(slot, h.RefreshFrameFlags)
 	c.stream.Update(h)
@@ -369,8 +302,9 @@ func (c *av1Decoder) rect() image.Rectangle {
 func (c *av1Decoder) shape() (decodeShape, error) {
 	q := &c.stream.Seq
 	col := &q.Color
-	if q.Profile != 0 || col.BitDepth != 8 || col.MonoChrome || !col.SubsamplingX || !col.SubsamplingY {
-		return decodeShape{}, fmt.Errorf("%w: the sequence is profile %d at %d bits, monochrome %v, subsampled %v by %v; only 8-bit 4:2:0 Main is decoded", ErrNoVideoDecoder, q.Profile, col.BitDepth, col.MonoChrome, col.SubsamplingX, col.SubsamplingY)
+	depth, ok := depthOf(col.BitDepth)
+	if q.Profile != 0 || !ok || col.MonoChrome || !col.SubsamplingX || !col.SubsamplingY {
+		return decodeShape{}, fmt.Errorf("%w: the sequence is profile %d at %d bits, monochrome %v, subsampled %v by %v; only 4:2:0 Main at 8 or 10 bits is decoded", ErrNoVideoDecoder, q.Profile, col.BitDepth, col.MonoChrome, col.SubsamplingX, col.SubsamplingY)
 	}
 	signal := videoSignal{typed: true, fullRange: col.ColorRange, described: col.ColorDescriptionPresent, matrix: col.MatrixCoefficients, lines: c.hdr.FrameHeight}
 	switch col.ChromaSamplePosition {
@@ -389,7 +323,7 @@ func (c *av1Decoder) shape() (decodeShape, error) {
 	c.filmGrain = q.FilmGrainPresent
 	return decodeShape{
 		profile: int(q.Profile), coded: [2]int{c.hdr.FrameWidth, c.hdr.FrameHeight},
-		slots: av1Slots, refs: av1.RefsPerFrame, hidden: av1.NumRefFrames, ycbcr: ycbcr,
+		slots: refSlotPictures, refs: av1.RefsPerFrame, hidden: av1.NumRefFrames, depth: depth, ycbcr: ycbcr,
 	}, nil
 }
 
@@ -587,14 +521,14 @@ func (c *av1Decoder) fill(setup int) {
 			signBias |= 1 << i
 		}
 	}
-	c.pictures[setup].ref = vk.StdVideoDecodeAV1ReferenceInfo{
+	c.refs[setup] = vk.StdVideoDecodeAV1ReferenceInfo{
 		Flags: bitfield(
 			flagBit{h.DisableFrameEndUpdateCDF, vk.StdVideoDecodeAV1ReferenceDisableFrameEndUpdateCdf},
 			flagBit{h.Seg.Enabled, vk.StdVideoDecodeAV1ReferenceSegmentationEnabled},
 		),
 		FrameType: uint8(h.FrameType), RefFrameSignBias: signBias, OrderHint: h.OrderHint, SavedOrderHints: h.OrderHints,
 	}
-	c.setupInfo = vk.VideoDecodeAV1DpbSlotInfoKHR{SType: vk.StructureTypeVideoDecodeAv1DpbSlotInfoKhr, PStdReferenceInfo: &c.pictures[setup].ref}
+	c.setupInfo = vk.VideoDecodeAV1DpbSlotInfoKHR{SType: vk.StructureTypeVideoDecodeAv1DpbSlotInfoKhr, PStdReferenceInfo: &c.refs[setup]}
 }
 
 // fillGrain lays out the frame's film grain parameters.

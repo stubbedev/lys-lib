@@ -227,3 +227,14 @@ picture and reference structures, with their flag bits, laid out as
 `vulkan_video_codec_av1std.h` and `vulkan_video_codec_av1std_decode.h`
 lay them out, their opaque arrays dropped from `types_gen.go`;
 `TestStdVideoAV1Layouts` pins them.
+
+`stdvideo_vp9_lysui.go`: the VP9 colour config, loop filter,
+segmentation and decode picture structures, with their flag bits, laid
+out as `vulkan_video_codec_vp9std.h` and
+`vulkan_video_codec_vp9std_decode.h` lay them out, their opaque array
+dropped from `types_gen.go`; `TestStdVideoVP9Layouts` pins them.
+`types_gen.go`: `VkVideoDecodeVP9PictureInfoKHR::referenceNameSlotIndices`
+is an array of `VK_MAX_VIDEO_VP9_REFERENCES_PER_FRAME_KHR` (3) indices,
+not vk-gen's single `int32`, which laid the header offsets after it where
+the driver reads the indices. `stdvideo_decode_lysui.go`:
+`StdVideoH265ProfileIdcMain10`.

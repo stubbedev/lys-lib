@@ -32,6 +32,10 @@ type h264Decoder struct {
 	rbsp          []byte
 	slices        [][]byte
 	offsets       []uint32
+	// gapPPS is the PPS the skip slices of the frames a gap in
+	// frame_num infers name, and gapPic the frame being inferred.
+	gapPPS *nal.H264PPS
+	gapPic h264Pic
 
 	candidates  []vk.StdVideoH264ProfileIdc
 	profileInfo vk.VideoDecodeH264ProfileInfoKHR
@@ -214,21 +218,21 @@ func (c *h264Decoder) picture(v *VideoDecoder, p demux.Packet) error {
 		return err
 	}
 	c.state.slots = shape.slots
-	if err := c.state.begin(&pic); err != nil {
-		if errors.Is(err, errSkipPicture) {
-			return nil
-		}
+	gap, err := c.state.begin(&pic)
+	if err == nil && gap > 0 {
+		err = c.inferGap(v, sps, shape, gap)
+	}
+	if err == nil {
+		err = c.state.place(&pic)
+	}
+	if errors.Is(err, errSkipPicture) {
+		return nil
+	}
+	if err != nil {
 		return err
 	}
-	c.active = sps
-	if err := v.shapeFor(shape); err != nil {
+	if err := c.prepare(v, sps, shape); err != nil {
 		return err
-	}
-	if c.paramsChanged {
-		if err := v.createParameters(); err != nil {
-			return err
-		}
-		c.paramsChanged = false
 	}
 	frame, err := v.frame()
 	if err != nil {
@@ -249,7 +253,39 @@ func (c *h264Decoder) picture(v *VideoDecoder, p demux.Packet) error {
 		at += copy(buf[at:], startCode)
 		at += copy(buf[at:], unit)
 	}
-	c.fill(&pic)
+	if err := c.submit(v, &pic, frame, total); err != nil {
+		return err
+	}
+	frame.pts, frame.duration = p.PTS, p.Duration
+	x0, y0, x1, y1 := sps.CropRect()
+	frame.rect = image.Rect(x0, y0, x1, y1)
+	c.state.finish(&pic)
+	v.queue(frame, pic.order(), pic.idr || pic.mmco5, pic.idr && c.hdr.NoOutputOfPriorPics)
+	return nil
+}
+
+// prepare makes the session for shape, sps active, and the session
+// parameters of the parameter sets the stream has sent.
+func (c *h264Decoder) prepare(v *VideoDecoder, sps *nal.H264SPS, shape decodeShape) error {
+	c.active = sps
+	if err := v.shapeFor(shape); err != nil {
+		return err
+	}
+	if !c.paramsChanged {
+		return nil
+	}
+	if err := v.createParameters(); err != nil {
+		return err
+	}
+	c.paramsChanged = false
+	return nil
+}
+
+// submit decodes pic into frame from the first total bytes of the
+// stream buffer, its slices at c.offsets, with every reference frame
+// active.
+func (c *h264Decoder) submit(v *VideoDecoder, pic *h264Pic, frame *VideoFrame, total int) error {
+	c.fill(pic)
 	c.req = decodePicture{frame: frame, bytes: total, info: unsafe.Pointer(&c.picInfo), setup: pic.slot, setupInfo: unsafe.Pointer(&c.setupInfo)}
 	n := 0
 	for slot := range c.state.slots {
@@ -266,15 +302,68 @@ func (c *h264Decoder) picture(v *VideoDecoder, p demux.Packet) error {
 		n++
 	}
 	c.req.refs, c.req.refInfo = c.refSlots[:n], c.refPtrs[:n]
-	if err := v.submit(&c.req); err != nil {
+	return v.submit(&c.req)
+}
+
+// inferGap decodes a picture for each of the gap frames in frame_num
+// before the picture being decoded, a skip slice copying the reference
+// frame before it, and takes it into the reference frames unshown. The
+// frames are non-existing (8.2.5.2), but the device needs a decoded
+// picture in each DPB slot a decode names; they go to it as ordinary
+// short-term references, not flagged is_non_existing, so a stream that
+// predicts from them (frames lost) reads the copy, as ffmpeg conceals
+// the loss.
+func (c *h264Decoder) inferGap(v *VideoDecoder, sps *nal.H264SPS, shape decodeShape, gap int) error {
+	pps, err := c.skipPPS(sps)
+	if err != nil {
 		return err
 	}
-	frame.pts, frame.duration = p.PTS, p.Duration
-	x0, y0, x1, y1 := sps.CropRect()
-	frame.rect = image.Rect(x0, y0, x1, y1)
-	c.state.finish(&pic)
-	v.queue(frame, pic.order(), pic.idr || pic.mmco5, pic.idr && c.hdr.NoOutputOfPriorPics)
+	if err := c.prepare(v, sps, shape); err != nil {
+		return err
+	}
+	lsbMask := int32(1)<<sps.Log2MaxPicOrderCntLsb - 1
+	for range gap {
+		q := &c.gapPic
+		if err := c.state.infer(q, sps); err != nil {
+			return err
+		}
+		q.hdr.PPSID = pps.ID
+		unit := nal.H264SkipSlice(sps, pps, q.hdr.FrameNum, intconv.Must[uint32](q.poc[0]&lsbMask))
+		frame, err := v.frame()
+		if err != nil {
+			return err
+		}
+		total := len(startCode) + len(unit)
+		buf, err := v.stream(total)
+		if err != nil {
+			return err
+		}
+		copy(buf[copy(buf, startCode):], unit)
+		c.offsets = append(c.offsets[:0], 0)
+		if err := c.submit(v, q, frame, total); err != nil {
+			return err
+		}
+		frame.free(0)
+		c.state.finish(q)
+	}
 	return nil
+}
+
+// skipPPS is the PPS the skip slices of sps's gap frames name: one the
+// parameter sets hold under an ID the stream leaves unused.
+func (c *h264Decoder) skipPPS(sps *nal.H264SPS) (*nal.H264PPS, error) {
+	if p := c.gapPPS; p != nil && c.pps[p.ID] == p && p.SPSID == sps.ID {
+		return p, nil
+	}
+	for id := len(c.pps) - 1; id >= 0; id-- {
+		if c.pps[id] != nil {
+			continue
+		}
+		p := nal.H264SkipPPS(uint8(id), sps.ID)
+		c.gapPPS, c.pps[id], c.paramsChanged = &p, &p, true
+		return &p, nil
+	}
+	return nil, fmt.Errorf("%w: the stream uses every PPS ID, leaving none for the skip slices of the frames a gap in frame_num infers", nal.ErrH264)
 }
 
 // fill lays out pic's picture info and the reference info of the DPB

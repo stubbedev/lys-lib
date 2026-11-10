@@ -360,18 +360,22 @@ func (c *h265Decoder) fill(pic *h265Pic, pps *nal.HEVCPPS) {
 // shape is the session s decodes in, and the profiles the device may
 // decode it as.
 func (c *h265Decoder) shape(s *nal.HEVCSPS) (decodeShape, error) {
-	if s.ChromaFormatIdc != 1 || s.BitDepthLumaMinus8 != 0 || s.BitDepthChromaMinus8 != 0 {
-		return decodeShape{}, fmt.Errorf("%w: SPS %d is chroma_format_idc %d at %d and %d bits; only 8-bit 4:2:0 is decoded", nal.ErrHEVC, s.ID, s.ChromaFormatIdc, 8+s.BitDepthLumaMinus8, 8+s.BitDepthChromaMinus8)
+	depth, ok := depthOf(8 + int(s.BitDepthLumaMinus8))
+	if s.ChromaFormatIdc != 1 || s.BitDepthChromaMinus8 != s.BitDepthLumaMinus8 || !ok {
+		return decodeShape{}, fmt.Errorf("%w: SPS %d is chroma_format_idc %d at %d and %d bits; only 4:2:0 at 8 or 10 bits is decoded", nal.ErrHEVC, s.ID, s.ChromaFormatIdc, 8+s.BitDepthLumaMinus8, 8+s.BitDepthChromaMinus8)
 	}
 	c.candidates = c.candidates[:0]
 	main := s.PTL.Compatibility&(1<<30) != 0
+	main10 := s.PTL.Compatibility&(1<<29) != 0
 	switch {
-	case s.PTL.ProfileIdc == 1 || main:
+	case depth == depth8 && (s.PTL.ProfileIdc == 1 || main):
 		c.candidates = append(c.candidates, vk.StdVideoH265ProfileIdcMain)
-	case s.PTL.ProfileIdc == 3:
+	case depth == depth8 && s.PTL.ProfileIdc == 3:
 		c.candidates = append(c.candidates, vk.StdVideoH265ProfileIdcMainStillPicture, vk.StdVideoH265ProfileIdcMain)
+	case s.PTL.ProfileIdc == 2 || main10:
+		c.candidates = append(c.candidates, vk.StdVideoH265ProfileIdcMain10)
 	default:
-		return decodeShape{}, fmt.Errorf("%w: SPS %d is general_profile_idc %d; Main is decoded", nal.ErrHEVC, s.ID, s.PTL.ProfileIdc)
+		return decodeShape{}, fmt.Errorf("%w: SPS %d is general_profile_idc %d at %d bits; Main and Main 10 are decoded", nal.ErrHEVC, s.ID, s.PTL.ProfileIdc, 8+s.BitDepthLumaMinus8)
 	}
 	_, y0, _, y1 := s.CropRect()
 	v := &s.VUI
@@ -387,7 +391,7 @@ func (c *h265Decoder) shape(s *nal.HEVCSPS) (decodeShape, error) {
 	refs := max(int(s.Ordering.MaxDecPicBufferingMinus1[top]), 1)
 	return decodeShape{
 		profile: int(s.PTL.ProfileIdc), coded: [2]int{s.Width, s.Height},
-		slots: refs + 1, refs: refs, reorder: int(s.Ordering.MaxNumReorderPics[top]), ycbcr: ycbcr,
+		slots: refs + 1, refs: refs, reorder: int(s.Ordering.MaxNumReorderPics[top]), depth: depth, ycbcr: ycbcr,
 	}, nil
 }
 

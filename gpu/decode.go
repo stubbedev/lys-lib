@@ -86,8 +86,8 @@ type decodeSlot struct {
 // decodeShape is what a video session is made for: the codec profile,
 // the coded size in luma samples, the DPB slots and the references a
 // picture may name, how many pictures presentation order holds back,
-// how many decoded pictures the codec keeps hidden to show later, and
-// the YCbCr conversion its pictures sample through.
+// how many decoded pictures the codec keeps hidden to show later, the
+// pictures' sample depth and the YCbCr conversion they sample through.
 type decodeShape struct {
 	profile int
 	coded   [2]int
@@ -95,7 +95,49 @@ type decodeShape struct {
 	refs    int
 	reorder int
 	hidden  int
+	depth   videoDepth
 	ycbcr   YCbCr
+}
+
+// videoDepth is the sample depth of a stream's 4:2:0 pictures, which
+// picks their format.
+type videoDepth uint8
+
+// The depths decoded.
+const (
+	depth8 videoDepth = iota
+	depth10
+)
+
+// depthOf is the depth of bits-bit samples; false for one not decoded.
+func depthOf(bits int) (videoDepth, bool) {
+	switch bits {
+	case 8:
+		return depth8, true
+	case 10:
+		return depth10, true
+	}
+	return 0, false
+}
+
+// format is the depth's picture format: NV12, or P010 with 10 bits in
+// the high bits of each 16.
+func (b videoDepth) format() fourcc.Format {
+	if b == depth10 {
+		return fourcc.P010
+	}
+	return fourcc.NV12
+}
+
+// vk is the depth's picture format in Vulkan.
+func (b videoDepth) vk() vk.Format { return pixelFormats[b.format()].vk }
+
+// component is the depth as a video profile names it.
+func (b videoDepth) component() vk.VideoComponentBitDepthFlagsKHR {
+	if b == depth10 {
+		return vk.VideoComponentBitDepthFlagsKHR(vk.VideoComponentBitDepth10BitKhr)
+	}
+	return vk.VideoComponentBitDepthFlagsKHR(vk.VideoComponentBitDepth8BitKhr)
 }
 
 // decodeCodec is what a decoder does differently per codec: it reads
@@ -112,7 +154,8 @@ type decodeCodec interface {
 	// refuses a stream the capabilities it filled in do not cover.
 	caps() unsafe.Pointer
 	checkCaps() error
-	// parameters is the session parameters' create chain.
+	// parameters is the session parameters' create chain, nil for a
+	// codec that has none (VP9).
 	parameters() unsafe.Pointer
 	// reset forgets every reference picture.
 	reset()
@@ -326,8 +369,7 @@ func (v *VideoDecoder) pickProfile() error {
 		p.info = vk.VideoProfileInfoKHR{
 			SType: vk.StructureTypeVideoProfileInfoKhr, PNext: (*uintptr)(v.codec.profile(i, nil)), VideoCodecOperation: v.op,
 			ChromaSubsampling: vk.VideoChromaSubsamplingFlagsKHR(vk.VideoChromaSubsampling420BitKhr),
-			LumaBitDepth:      vk.VideoComponentBitDepthFlagsKHR(vk.VideoComponentBitDepth8BitKhr),
-			ChromaBitDepth:    vk.VideoComponentBitDepthFlagsKHR(vk.VideoComponentBitDepth8BitKhr),
+			LumaBitDepth:      v.shape.depth.component(), ChromaBitDepth: v.shape.depth.component(),
 		}
 		p.list = vk.VideoProfileListInfoKHR{SType: vk.StructureTypeVideoProfileListInfoKhr, ProfileCount: 1, PProfiles: &p.info}
 		c := &decodeCaps{}
@@ -369,27 +411,27 @@ func (v *VideoDecoder) pickProfile() error {
 			vk.ImageUsageFlags(vk.ImageUsageTransferDstBit | vk.ImageUsageSampledBit | vk.ImageUsageTransferSrcBit),
 			vk.ImageUsageFlags(vk.ImageUsageVideoDecodeDpbBitKhr | vk.ImageUsageVideoDecodeDstBitKhr | vk.ImageUsageTransferSrcBit),
 		}
-		v.format[0] = vk.VideoFormatPropertiesKHR{Format: nv12, ImageType: vk.ImageType2d, ImageTiling: vk.ImageTilingOptimal}
+		v.format[0] = vk.VideoFormatPropertiesKHR{Format: v.shape.depth.vk(), ImageType: vk.ImageType2d, ImageTiling: vk.ImageTilingOptimal}
 		need := vk.FormatFeatureFlags(vk.FormatFeatureSampledImageBit | vk.FormatFeatureTransferDstBit)
 		if v.sampledFeatures()&need != need {
-			return fmt.Errorf("%w: %s neither samples nor copies into NV12 images", ErrNoVideoDecoder, d.name)
+			return fmt.Errorf("%w: %s neither samples nor copies into %s images", ErrNoVideoDecoder, d.name, v.shape.depth.format())
 		}
 	} else {
 		v.usage = [2]vk.ImageUsageFlags{
 			vk.ImageUsageFlags(vk.ImageUsageVideoDecodeDstBitKhr | vk.ImageUsageSampledBit | vk.ImageUsageTransferSrcBit),
 			vk.ImageUsageFlags(vk.ImageUsageVideoDecodeDpbBitKhr),
 		}
-		if v.format[0], err = d.videoFormat(&v.profile.list, v.usage[0]); err != nil {
+		if v.format[0], err = d.videoFormat(&v.profile.list, v.usage[0], v.shape.depth); err != nil {
 			return err
 		}
 	}
-	v.format[1], err = d.videoFormat(&v.profile.list, v.usage[1])
+	v.format[1], err = d.videoFormat(&v.profile.list, v.usage[1], v.shape.depth)
 	return err
 }
 
-// videoFormat finds NV12's properties among the formats the device
-// codes pictures of usage in, in the profiles list names.
-func (d *Device) videoFormat(list *vk.VideoProfileListInfoKHR, usage vk.ImageUsageFlags) (vk.VideoFormatPropertiesKHR, error) {
+// videoFormat finds the properties of depth's format among the formats
+// the device codes pictures of usage in, in the profiles list names.
+func (d *Device) videoFormat(list *vk.VideoProfileListInfoKHR, usage vk.ImageUsageFlags, depth videoDepth) (vk.VideoFormatPropertiesKHR, error) {
 	fi := vk.PhysicalDeviceVideoFormatInfoKHR{SType: vk.StructureTypePhysicalDeviceVideoFormatInfoKhr, PNext: (*uintptr)(unsafe.Pointer(list)), ImageUsage: usage}
 	var n uint32
 	if r := d.cmds.GetPhysicalDeviceVideoFormatPropertiesKHR(d.phys, &fi, &n, nil); r != vk.Success {
@@ -406,11 +448,11 @@ func (d *Device) videoFormat(list *vk.VideoProfileListInfoKHR, usage vk.ImageUsa
 	}
 	runtime.KeepAlive(list)
 	for _, p := range props[:n] {
-		if p.Format == nv12 && p.ImageType == vk.ImageType2d {
+		if p.Format == depth.vk() && p.ImageType == vk.ImageType2d {
 			return p, nil
 		}
 	}
-	return vk.VideoFormatPropertiesKHR{}, fmt.Errorf("%w: %s codes no NV12 pictures for usage %#x", ErrNoVideoDecoder, d.name, usage)
+	return vk.VideoFormatPropertiesKHR{}, fmt.Errorf("%w: %s codes no %s pictures for usage %#x", ErrNoVideoDecoder, d.name, depth.format(), usage)
 }
 
 // createSession makes the video session, binds its memory and makes
@@ -420,7 +462,7 @@ func (v *VideoDecoder) createSession() error {
 	extent := v.extent()
 	sci := vk.VideoSessionCreateInfoKHR{
 		SType: vk.StructureTypeVideoSessionCreateInfoKhr, QueueFamilyIndex: d.decode.family, PVideoProfile: &v.profile.info,
-		PictureFormat: nv12, MaxCodedExtent: extent2D(extent[0], extent[1]), ReferencePictureFormat: nv12,
+		PictureFormat: v.shape.depth.vk(), MaxCodedExtent: extent2D(extent[0], extent[1]), ReferencePictureFormat: v.shape.depth.vk(),
 		MaxDpbSlots: intconv.Must[uint32](v.shape.slots), MaxActiveReferencePictures: intconv.Must[uint32](v.shape.refs),
 		PStdHeaderVersion: &v.caps.video.StdHeaderVersion,
 	}
@@ -448,7 +490,11 @@ func (v *VideoDecoder) createParameters() error {
 		d.cmds.DestroyVideoSessionParametersKHR(d.device, v.params, nil)
 		v.params = 0
 	}
-	pci := vk.VideoSessionParametersCreateInfoKHR{SType: vk.StructureTypeVideoSessionParametersCreateInfoKhr, PNext: (*uintptr)(v.codec.parameters()), VideoSession: v.session}
+	next := v.codec.parameters()
+	if next == nil {
+		return nil
+	}
+	pci := vk.VideoSessionParametersCreateInfoKHR{SType: vk.StructureTypeVideoSessionParametersCreateInfoKhr, PNext: (*uintptr)(next), VideoSession: v.session}
 	r := d.cmds.CreateVideoSessionParametersKHR(d.device, &pci, nil, &v.params)
 	runtime.KeepAlive(v.codec)
 	if r != vk.Success {
@@ -517,7 +563,7 @@ func (v *VideoDecoder) createDPB() error {
 // decodeCoding are the usages of a picture the coding commands name.
 const decodeCoding = vk.ImageUsageFlags(vk.ImageUsageVideoDecodeDstBitKhr | vk.ImageUsageVideoDecodeDpbBitKhr)
 
-// newPicture makes an NV12 picture of the session's size with layers
+// newPicture makes a picture of the session's size and depth with layers
 // array layers, laid out as format says, shared with the graphics queue
 // when shared. A picture the coding commands name (usage has a video
 // decode usage) is made for the session's profile, with a view of each
@@ -527,7 +573,7 @@ func (v *VideoDecoder) newPicture(format vk.VideoFormatPropertiesKHR, usage vk.I
 	extent := v.extent()
 	ici := vk.ImageCreateInfo{
 		SType: vk.StructureTypeImageCreateInfo, Flags: format.ImageCreateFlags,
-		ImageType: vk.ImageType2d, Format: nv12, Extent: extent3D(extent[0], extent[1]),
+		ImageType: vk.ImageType2d, Format: v.shape.depth.vk(), Extent: extent3D(extent[0], extent[1]),
 		MipLevels: 1, ArrayLayers: intconv.Must[uint32](layers), Samples: vk.SampleCount1Bit, Tiling: format.ImageTiling,
 		Usage: usage, SharingMode: vk.SharingModeExclusive, InitialLayout: vk.ImageLayoutUndefined,
 	}
@@ -543,7 +589,7 @@ func (v *VideoDecoder) newPicture(format vk.VideoFormatPropertiesKHR, usage vk.I
 	runtime.KeepAlive(v.profile)
 	runtime.KeepAlive(&families)
 	if r != vk.Success {
-		return videoImage{}, fmt.Errorf("vkCreateImage NV12 %dx%d x%d: %w", extent[0], extent[1], layers, resultError(r))
+		return videoImage{}, fmt.Errorf("vkCreateImage %s %dx%d x%d: %w", v.shape.depth.format(), extent[0], extent[1], layers, resultError(r))
 	}
 	var req vk.MemoryRequirements
 	d.cmds.GetImageMemoryRequirements(d.device, vi.image, &req)
@@ -564,7 +610,7 @@ func (v *VideoDecoder) newPicture(format vk.VideoFormatPropertiesKHR, usage vk.I
 	viewUsage := vk.ImageViewUsageCreateInfo{SType: vk.StructureTypeImageViewUsageCreateInfo, Usage: codingUsage}
 	for l := range layers {
 		vci := vk.ImageViewCreateInfo{
-			SType: vk.StructureTypeImageViewCreateInfo, PNext: (*uintptr)(unsafe.Pointer(&viewUsage)), Image: vi.image, ViewType: vk.ImageViewType2d, Format: nv12,
+			SType: vk.StructureTypeImageViewCreateInfo, PNext: (*uintptr)(unsafe.Pointer(&viewUsage)), Image: vi.image, ViewType: vk.ImageViewType2d, Format: v.shape.depth.vk(),
 			SubresourceRange: vk.ImageSubresourceRange{AspectMask: vk.ImageAspectFlags(vk.ImageAspectColorBit), LevelCount: 1, BaseArrayLayer: uint32(l), LayerCount: 1},
 		}
 		var view vk.ImageView
@@ -572,7 +618,7 @@ func (v *VideoDecoder) newPicture(format vk.VideoFormatPropertiesKHR, usage vk.I
 		runtime.KeepAlive(&viewUsage)
 		if r != vk.Success {
 			vi.close(d)
-			return videoImage{}, fmt.Errorf("vkCreateImageView NV12 layer %d: %w", l, resultError(r))
+			return videoImage{}, fmt.Errorf("vkCreateImageView %s layer %d: %w", v.shape.depth.format(), l, resultError(r))
 		}
 		vi.views = append(vi.views, view)
 	}
@@ -669,7 +715,7 @@ func (v *VideoDecoder) frame() (*VideoFrame, error) {
 			if f.state != frameFree || f.after > d.completed {
 				continue
 			}
-			if f.extent == extent && f.ycbcr == v.shape.ycbcr {
+			if f.extent == extent && f.ycbcr == v.shape.ycbcr && f.tex.format == v.shape.depth.format() {
 				return f
 			}
 			f.destroy()
@@ -720,8 +766,9 @@ func (v *VideoDecoder) newFrame() (*VideoFrame, error) {
 		return nil, fmt.Errorf("gpu: %s frame: %w", v.name, err)
 	}
 	extent := v.extent()
-	pf := pixelFormats[fourcc.NV12]
-	t := &Texture{d: d, format: fourcc.NV12, pf: pf, w: extent[0], h: extent[1], image: pic.image, memory: []vk.DeviceMemory{pic.memory}, layout: vk.ImageLayoutShaderReadOnlyOptimal}
+	format := v.shape.depth.format()
+	pf := pixelFormats[format]
+	t := &Texture{d: d, format: format, pf: pf, w: extent[0], h: extent[1], image: pic.image, memory: []vk.DeviceMemory{pic.memory}, layout: vk.ImageLayoutShaderReadOnlyOptimal}
 	f := &VideoFrame{v: v, pic: videoImage{views: pic.views}, extent: extent, ycbcr: v.shape.ycbcr}
 	if t.ycbcr, err = d.ycbcrKindOf(pf, v.shape.ycbcr, v.sampledFeatures()); err == nil {
 		err = t.createView()
@@ -735,11 +782,11 @@ func (v *VideoDecoder) newFrame() (*VideoFrame, error) {
 	return f, nil
 }
 
-// sampledFeatures are what the device does with NV12 in the tiling the
-// decoder's output pictures have.
+// sampledFeatures are what the device does with the pictures' format in
+// the tiling the decoder's output pictures have.
 func (v *VideoDecoder) sampledFeatures() vk.FormatFeatureFlags {
 	var props vk.FormatProperties
-	v.d.cmds.GetPhysicalDeviceFormatProperties(v.d.phys, nv12, &props)
+	v.d.cmds.GetPhysicalDeviceFormatProperties(v.d.phys, v.shape.depth.vk(), &props)
 	if v.format[0].ImageTiling == vk.ImageTilingLinear {
 		return props.LinearTilingFeatures
 	}
@@ -1092,4 +1139,4 @@ var startCode = []byte{0, 0, 1}
 const sliceHeaderBytes = 256
 
 // maxDPBSlots are the DPB slots a stream of any codec can need.
-const maxDPBSlots = max(h264MaxSlots, h265MaxSlots, av1Slots)
+const maxDPBSlots = max(h264MaxSlots, h265MaxSlots, refSlotPictures)

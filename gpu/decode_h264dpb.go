@@ -39,6 +39,9 @@ type h264Pic struct {
 	frameNumOffset int32
 	slot           int
 	mmco5          bool
+	// nonExisting marks a frame a gap in frame_num leaves non-existing
+	// (8.2.5.2), which the decoder infers.
+	nonExisting bool
 }
 
 // order is the picture's position in output order among the pictures
@@ -61,6 +64,11 @@ type h264State struct {
 	prevPocLsb         int32
 	prevFrameNum       uint32
 	prevFrameNumOffset int32
+	// prevRefPoc is the previous reference frame's picture order count,
+	// which the frames a gap infers count on from.
+	prevRefPoc [2]int32
+	// gapHdr is the slice header of the frame a gap infers.
+	gapHdr nal.H264SliceHeader
 	// started is set once a picture that needs no earlier one (an IDR
 	// or an I picture) began decoding; leadFrom is the order before
 	// which pictures after a non-IDR start are dropped, for they may
@@ -75,22 +83,26 @@ func (s *h264State) reset() {
 	*s = h264State{slots: s.slots, maxLongIdx: -1}
 }
 
-// begin works out p's picture order count and DPB slot. It returns
-// errSkipPicture for a picture to drop: before the first picture decoding
-// can start at, or leading a non-IDR start, which may predict from
-// pictures before it. A leading picture still counts in frame_num and
-// picture order count.
-func (s *h264State) begin(p *h264Pic) error {
-	start := !s.started
-	if start {
+// begin starts p, returning how many frames a gap in frame_num before
+// it leaves non-existing, for the decoder to infer (infer) before it
+// places p. It returns errSkipPicture for a picture before the first
+// one decoding can start at.
+func (s *h264State) begin(p *h264Pic) (gap int, err error) {
+	if !s.started {
 		if !p.idr && !p.intra {
-			return errSkipPicture
+			return 0, errSkipPicture
 		}
 		s.prevRefFrameNum, s.prevFrameNum = p.hdr.FrameNum, p.hdr.FrameNum
 	}
-	if err := s.checkFrameNum(p); err != nil {
-		return err
-	}
+	return s.frameNumGap(p)
+}
+
+// place works out p's picture order count and DPB slot. It returns
+// errSkipPicture for a picture leading a non-IDR start, which may
+// predict from pictures before it; such a picture still counts in
+// frame_num and picture order count.
+func (s *h264State) place(p *h264Pic) error {
+	start := !s.started
 	s.pictureOrder(p)
 	switch {
 	case p.idr:
@@ -101,28 +113,62 @@ func (s *h264State) begin(p *h264Pic) error {
 		s.advance(p)
 		return errSkipPicture
 	}
+	if err := s.freeSlot(p); err != nil {
+		return err
+	}
+	s.started = true
+	return nil
+}
+
+// freeSlot gives p a DPB slot no reference frame holds.
+func (s *h264State) freeSlot(p *h264Pic) error {
 	for i := range s.slots {
 		if !s.refs[i].used() {
 			p.slot = i
-			s.started = true
 			return nil
 		}
 	}
 	return fmt.Errorf("gpu: H.264 frame %d finds all %d DPB slots holding reference frames", p.hdr.FrameNum, s.slots)
 }
 
-// checkFrameNum refuses a gap in frame_num (7.4.3): pictures lost on
-// the way, or one the encoder left (gaps_in_frame_num_value_allowed_flag),
-// whose non-existing frames the decoder does not make.
-func (s *h264State) checkFrameNum(p *h264Pic) error {
+// frameNumGap is how many of the frames a gap in frame_num before p
+// leaves non-existing (7.4.3, 8.2.5.2) the decoder infers: of a gap
+// longer than the reference frames, the ones before the last
+// max_num_ref_frames would slide out of the reference frames
+// unreferenced, and only count in frame_num. A gap in a sequence that
+// allows none is pictures lost on the way, an error.
+func (s *h264State) frameNumGap(p *h264Pic) (int, error) {
 	if p.idr {
-		return nil
+		return 0, nil
 	}
-	fn, max := p.hdr.FrameNum, uint32(1)<<p.sps.Log2MaxFrameNum
-	if fn == s.prevRefFrameNum || fn == (s.prevRefFrameNum+1)%max {
-		return nil
+	fn, maxFrameNum := p.hdr.FrameNum, uint32(1)<<p.sps.Log2MaxFrameNum
+	if fn == s.prevRefFrameNum || fn == (s.prevRefFrameNum+1)%maxFrameNum {
+		return 0, nil
 	}
-	return fmt.Errorf("gpu: H.264 frame_num jumps from %d to %d (gaps_in_frame_num_value_allowed_flag %v): frames are missing", s.prevRefFrameNum, fn, p.sps.GapsInFrameNumAllowed)
+	if !p.sps.GapsInFrameNumAllowed {
+		return 0, fmt.Errorf("gpu: H.264 frame_num jumps from %d to %d in SPS %d, which allows no gaps: frames are missing", s.prevRefFrameNum, fn, p.sps.ID)
+	}
+	gap := int((fn + maxFrameNum - s.prevRefFrameNum - 1) % maxFrameNum)
+	keep := min(gap, int(max(p.sps.MaxNumRefFrames, 1)))
+	s.prevRefFrameNum = (s.prevRefFrameNum + intconv.Must[uint32](gap-keep)) % maxFrameNum
+	return keep, nil
+}
+
+// infer sets q up as the next frame of a gap in frame_num, as 8.2.5.2
+// infers it: a short-term reference frame of the next frame_num, which
+// sliding window marking takes in when it finishes. Its picture order
+// count is the decoding process's where pic_order_cnt_type derives it
+// from frame_num, else (where the standard leaves it unspecified) the
+// previous reference frame's plus 2, as ffmpeg counts.
+func (s *h264State) infer(q *h264Pic, sps *nal.H264SPS) error {
+	s.gapHdr = nal.H264SliceHeader{SliceType: nal.H264SliceP, FrameNum: (s.prevRefFrameNum + 1) % (uint32(1) << sps.Log2MaxFrameNum)}
+	*q = h264Pic{hdr: &s.gapHdr, sps: sps, ref: true, nonExisting: true}
+	if sps.PicOrderCntType == 0 {
+		q.poc = [2]int32{s.prevRefPoc[0] + 2, s.prevRefPoc[1] + 2}
+	} else {
+		s.pictureOrder(q)
+	}
+	return s.freeSlot(q)
 }
 
 // pictureOrder derives p's picture order count (8.2.1) for a frame.
@@ -223,6 +269,9 @@ func (s *h264State) finish(p *h264Pic) {
 		p.poc[1] -= t
 		cur.poc, cur.frameNum = p.poc, 0
 	}
+	if p.ref {
+		s.prevRefPoc = p.poc
+	}
 	s.advance(p)
 }
 
@@ -236,6 +285,8 @@ func (s *h264State) advance(p *h264Pic) {
 	}
 	if p.ref {
 		s.prevRefFrameNum = frameNum
+	}
+	if p.ref && !p.nonExisting {
 		s.prevPocMsb, s.prevPocLsb = p.pocMsb, intconv.Must[int32](h.PicOrderCntLsb)
 		if p.mmco5 {
 			s.prevPocMsb, s.prevPocLsb = 0, p.poc[0]
