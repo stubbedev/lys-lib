@@ -54,7 +54,7 @@ func encodeVideo(t *testing.T, c codec) [][]byte {
 	stream := ffmpegOutput(t, append(src, videoEncoders[c]...)...)
 	aud := []byte{0, 0, 0, 1, 0x09}
 	if c == codecH265 {
-		aud = []byte{0, 0, 0, 1, nalH265AUD << 1}
+		aud = []byte{0, 0, 0, 1, nal.HEVCNALAUD << 1}
 	}
 	var units [][]byte
 	for len(stream) > 0 {

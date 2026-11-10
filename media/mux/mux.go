@@ -296,11 +296,6 @@ const (
 	nalParamSet
 )
 
-const (
-	nalH264AUD = 9
-	nalH265AUD = 35
-)
-
 func (t *track) classify(unit []byte) (role nalRole, drop bool) {
 	if t.codec == codecH264 {
 		switch nal.H264Type(unit) {
@@ -308,7 +303,7 @@ func (t *track) classify(unit []byte) (role nalRole, drop bool) {
 			return nalKey, false
 		case nal.H264NALSPS, nal.H264NALPPS:
 			return nalParamSet, true
-		case nalH264AUD:
+		case nal.H264NALAUD:
 			return nalPicture, true
 		}
 		return nalPicture, false
@@ -318,7 +313,7 @@ func (t *track) classify(unit []byte) (role nalRole, drop bool) {
 		return nalKey, false
 	case typ == nal.HEVCNALVPS || typ == nal.HEVCNALSPS || typ == nal.HEVCNALPPS:
 		return nalParamSet, true
-	case typ == nalH265AUD:
+	case typ == nal.HEVCNALAUD:
 		return nalPicture, true
 	}
 	return nalPicture, false

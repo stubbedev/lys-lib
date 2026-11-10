@@ -21,6 +21,7 @@ const (
 	HEVCNALVPS     = 32
 	HEVCNALSPS     = 33
 	HEVCNALPPS     = 34
+	HEVCNALAUD     = 35
 )
 
 // HEVCType is an H.265 NAL unit's nal_unit_type.

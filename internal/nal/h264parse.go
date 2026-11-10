@@ -13,6 +13,7 @@ const (
 	H264NALIDR   = 5
 	H264NALSPS   = 7
 	H264NALPPS   = 8
+	H264NALAUD   = 9
 )
 
 // H264Type is an H.264 NAL unit's nal_unit_type.
