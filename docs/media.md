@@ -224,10 +224,14 @@ func main() {
   coded at a superres-scaled width, AV1 and VP9 inter frames whose size
   differs from their references' (reference scaling), a frame showing a frame
   it already showed, and frames smaller than the device decodes (NVIDIA
-  decodes AV1 from 128x128, H.265 from 144x144). AV1 film grain is applied
-  where the device applies it into distinct output pictures; a frame applying
-  grain on a device that decodes only into its reference pictures (NVIDIA) is
-  an error that says so.
+  decodes AV1 from 128x128, H.265 from 144x144).
+- AV1 film grain comes out as dav1d synthesizes it, sample for sample. A
+  device with output pictures apart from its reference pictures applies it; on
+  one that decodes into its reference pictures alone (NVIDIA) the decoder
+  synthesizes it: the host makes the grain templates, scaling functions and
+  block offsets (`internal/av1`), and a compute pass of the graphics queue
+  adds the noise to the frame's picture after its decode, ahead of any pass
+  that draws it. Nothing waits for it, and `Decoded` covers it.
 - A stream in a format that is not decoded fails with `ErrNoVideoDecoder`,
   from `NewVideoDecoder` or the `Decode` that meets it, for every codec: the
   error says what the stream is and wraps what the parser read. A malformed

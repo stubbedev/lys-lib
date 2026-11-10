@@ -34,7 +34,13 @@ type av1Decoder struct {
 	// of its picture.
 	refs [refSlotPictures]vk.StdVideoDecodeAV1ReferenceInfo
 
+	// filmGrain is whether the stream codes film grain, which the
+	// profile then asks the device for; deviceGrain whether the device
+	// applies the frame's, into an output picture apart from its
+	// reference picture. A device that decodes into its reference
+	// pictures alone leaves the grain to the decoder's grain pass.
 	filmGrain   bool
+	deviceGrain bool
 	profileInfo vk.VideoDecodeAV1ProfileInfoKHR
 	capsInfo    vk.VideoDecodeAV1CapabilitiesKHR
 	seqStd      vk.StdVideoAV1SequenceHeader
@@ -220,9 +226,7 @@ func (c *av1Decoder) picture(v *VideoDecoder, p demux.Packet, data []byte) error
 		}
 		return err
 	}
-	if h.FilmGrain.ApplyGrain && v.copies {
-		return fmt.Errorf("%w: %s applies AV1 film grain only to output pictures apart from its reference pictures, and decodes into its reference pictures alone", ErrNoVideoDecoder, v.d.name)
-	}
+	c.deviceGrain = h.FilmGrain.ApplyGrain && !v.copies
 	if c.paramsChanged {
 		if err := v.createParameters(); err != nil {
 			return err
@@ -259,6 +263,13 @@ func (c *av1Decoder) picture(v *VideoDecoder, p demux.Packet, data []byte) error
 	c.req.refs, c.req.refInfo = c.active[:n], c.refPtrs[:n]
 	if err := v.submit(&c.req); err != nil {
 		return err
+	}
+	if h.FilmGrain.ApplyGrain && v.copies && (h.ShowFrame || h.ShowableFrame) {
+		col := &c.stream.Seq.Color
+		grain := grainFrame{params: &h.FilmGrain, w: h.FrameWidth, h: h.FrameHeight, bits: col.BitDepth, identity: col.MatrixCoefficients == 0}
+		if err := v.applyGrain(frame, grain); err != nil {
+			return err
+		}
 	}
 	c.started = true
 	pic := &c.pictures[setup]
@@ -489,7 +500,7 @@ func (c *av1Decoder) fill(setup int) {
 			flagBit{h.Seg.UpdateData, vk.StdVideoDecodeAV1PictureSegmentationUpdateData},
 			flagBit{h.LR.UsesLr, vk.StdVideoDecodeAV1PictureUsesLr},
 			flagBit{h.LR.UsesChromaLr, vk.StdVideoDecodeAV1PictureUsesChromaLr},
-			flagBit{h.FilmGrain.ApplyGrain, vk.StdVideoDecodeAV1PictureApplyGrain},
+			flagBit{c.deviceGrain, vk.StdVideoDecodeAV1PictureApplyGrain},
 		),
 		FrameType: int32(h.FrameType), CurrentFrameID: h.CurrentFrameID, OrderHint: h.OrderHint,
 		PrimaryRefFrame: h.PrimaryRefFrame, RefreshFrameFlags: h.RefreshFrameFlags,
@@ -500,7 +511,7 @@ func (c *av1Decoder) fill(setup int) {
 		PCDEF: &c.cdefStd, PLoopRestoration: &c.lrStd, PGlobalMotion: &c.gmStd,
 	}
 	copy(c.pic.ExpectedFrameID[:], h.ExpectedFrameID[:])
-	if h.FilmGrain.ApplyGrain {
+	if c.deviceGrain {
 		c.pic.PFilmGrain = &c.grainStd
 	}
 	c.offsets, c.sizes = c.offsets[:0], c.sizes[:0]

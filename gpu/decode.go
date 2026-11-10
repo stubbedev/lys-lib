@@ -86,6 +86,10 @@ type VideoDecoder struct {
 	ready   []*VideoFrame
 	closed  bool
 
+	// grain synthesizes AV1 film grain where the device applies none,
+	// made with the first frame that has any.
+	grain *grainPass
+
 	cmd decodeCommands
 }
 
@@ -286,6 +290,10 @@ func (v *VideoDecoder) Close() {
 // closeSession releases the session and what was made for its shape.
 func (v *VideoDecoder) closeSession() {
 	d := v.d
+	if v.grain != nil {
+		d.retire(v.grain)
+		v.grain = nil
+	}
 	v.dpb.close(d)
 	if v.params != 0 {
 		d.cmds.DestroyVideoSessionParametersKHR(d.device, v.params, nil)
@@ -514,16 +522,20 @@ type VideoFrame struct {
 	rect     image.Rectangle
 	pts      time.Duration
 	duration time.Duration
-	// seq is the decode submission that writes the picture; after the
-	// device submission after which the renderer no longer samples it.
+	// seq is the decode submission that writes the picture; post the
+	// device submission, if any, that then works it over on the graphics
+	// queue (film grain); after the device submission after which the
+	// renderer no longer samples it.
 	seq   uint64
+	post  uint64
 	after uint64
 	state frameState
 }
 
 // Decoded reports whether the frame's picture has finished decoding,
-// without waiting for it. A pass may draw the frame before it has: the
-// pass waits for the decode on the GPU. What then waits here for that
+// and the film grain pass of the graphics queue where the decoder
+// synthesizes the grain, without waiting for either. A pass may draw
+// the frame before it has: the pass waits for the decode on the GPU. What then waits here for that
 // pass (Finish, a CPU read, Publish on a device whose dmabufs carry no
 // fence) waits for the decode with it, so a caller that must not stall
 // there draws the frame once Decoded says so.
@@ -534,7 +546,10 @@ func (f *VideoFrame) Decoded() (bool, error) {
 	case f.v.closed:
 		return false, errors.New("gpu: Decoded of a frame whose decoder is closed")
 	}
-	return f.v.finished(f.seq)
+	if done, err := f.v.finished(f.seq); !done || err != nil {
+		return false, err
+	}
+	return f.v.d.reached(f.post)
 }
 
 // decoding is the point on the decoder's timeline a submission that
@@ -585,7 +600,7 @@ func (f *VideoFrame) Release() {
 }
 
 func (f *VideoFrame) free(after uint64) {
-	f.state, f.after = frameFree, after
+	f.state, f.after = frameFree, max(after, f.post)
 }
 
 // destroy releases the picture once the renderer is done with it.
@@ -858,7 +873,7 @@ func (v *VideoDecoder) submit(p *decodePicture) error {
 	}
 	v.submitted++
 	s.seq, v.next = v.submitted, (v.next+1)%len(v.slots)
-	p.frame.seq, p.frame.state = s.seq, frameQueued
+	p.frame.seq, p.frame.post, p.frame.state = s.seq, 0, frameQueued
 	return nil
 }
 

@@ -317,6 +317,14 @@ func (b videoDepth) format() fourcc.Format {
 	return fourcc.NV12
 }
 
+// bytes is how many bytes a sample of the depth takes.
+func (b videoDepth) bytes() int {
+	if b == depth10 {
+		return 2
+	}
+	return 1
+}
+
 // vk is the depth's picture format in Vulkan.
 func (b videoDepth) vk() vk.Format { return pixelFormats[b.format()].vk }
 

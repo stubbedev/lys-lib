@@ -157,12 +157,9 @@ func (t *Texture) Update(r image.Rectangle, stride int, pix []byte) error {
 			copy(dst[y*row:], pix[y*stride:y*stride+row])
 		}
 	}
-	cb, err := d.batchCommands()
+	cb, err := d.stagedCommands(row * r.Dy())
 	if err != nil {
 		return err
-	}
-	if d.batched == 0 {
-		d.uploads.pending++
 	}
 	fullBarrier(d, cb, t.image, vk.ImageLayoutShaderReadOnlyOptimal, vk.ImageLayoutTransferDstOptimal, vk.QueueFamilyIgnored, vk.QueueFamilyIgnored)
 	region := &d.args.region
@@ -175,13 +172,27 @@ func (t *Texture) Update(r image.Rectangle, stride int, pix []byte) error {
 	}
 	d.cmds.CmdCopyBufferToImage(cb, d.upload.buf, t.image, vk.ImageLayoutTransferDstOptimal, 1, region)
 	fullBarrier(d, cb, t.image, vk.ImageLayoutTransferDstOptimal, vk.ImageLayoutShaderReadOnlyOptimal, vk.QueueFamilyIgnored, vk.QueueFamilyIgnored)
-	d.batched++
-	d.batchEnd = d.uploads.head
-	d.batchBytes += row * r.Dy()
 	if d.batchBytes >= flushBatchBytes {
 		return d.flushBatch()
 	}
 	return d.endBatchOp()
+}
+
+// stagedCommands is the open batch's command buffer for a command that
+// reads the n bytes last reserved in the staging ring (reserveUpload):
+// the batch's submission holds them until it has finished.
+func (d *Device) stagedCommands(n int) (vk.CommandBuffer, error) {
+	cb, err := d.batchCommands()
+	if err != nil {
+		return 0, err
+	}
+	if d.batched == 0 {
+		d.uploads.pending++
+	}
+	d.batched++
+	d.batchEnd = d.uploads.head
+	d.batchBytes += n
+	return cb, nil
 }
 
 func (d *Device) batchCommands() (vk.CommandBuffer, error) {

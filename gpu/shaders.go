@@ -5,6 +5,7 @@ import _ "embed" // the compiled shaders below
 //go:generate glslangValidator -V --quiet -o shaders/prim.vert.spv shaders/prim.vert
 //go:generate glslangValidator -V --quiet -o shaders/prim.frag.spv shaders/prim.frag
 //go:generate glslangValidator -V --quiet -o shaders/nv12.comp.spv shaders/nv12.comp
+//go:generate glslangValidator -V --quiet -o shaders/grain.comp.spv shaders/grain.comp
 //go:generate glslangValidator -V --quiet -o shaders/comp.vert.spv shaders/comp.vert
 //go:generate glslangValidator -V --quiet -o shaders/comp.frag.spv shaders/comp.frag
 //go:generate glslangValidator -V --quiet -o shaders/fill.frag.spv shaders/fill.frag
@@ -34,6 +35,9 @@ var primFrag []byte
 
 //go:embed shaders/nv12.comp.spv
 var nv12Comp []byte
+
+//go:embed shaders/grain.comp.spv
+var grainComp []byte
 
 //go:embed shaders/comp.vert.spv
 var compVert []byte

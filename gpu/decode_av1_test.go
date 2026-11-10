@@ -1,13 +1,15 @@
 package gpu
 
 import (
-	"errors"
 	"image"
 	"slices"
+	"strconv"
 	"testing"
 	"time"
 
+	"github.com/stubbedev/lys-lib/fourcc"
 	"github.com/stubbedev/lys-lib/media/demux"
+	"github.com/stubbedev/lys-lib/testbuild"
 )
 
 // libaom is ffmpeg's arguments for libaom at speed 6 with params, if
@@ -57,24 +59,94 @@ func TestDecodeAV1MatchesFFmpeg(t *testing.T) {
 	}
 }
 
-// Film grain comes out as ffmpeg (dav1d) synthesizes it, where the
-// device applies it; where it does not, the decoder says so.
+// Film grain comes out as ffmpeg (dav1d) synthesizes it, sample for
+// sample, whether the device applies it into its output pictures or
+// decodes into its reference pictures alone and the decoder synthesizes
+// it in a pass of the graphics queue: the grain libaom estimates, on
+// hidden frames shown later too, and libaom's test vectors, which cover
+// grain in every plane, chroma scaled from luma, each autoregression
+// lag, overlapped and clipped noise, at 8 and 10 bits and at an odd
+// size.
 func TestDecodeAV1FilmGrain(t *testing.T) {
 	d := decodingDevice(t, demux.AV1)
-	cl := ffmpegClip(t, "a.mp4", 192, 128, 1, libaom("", "-g", "12", "-denoise-noise-level", "10")...)
+	type grained struct {
+		name   string
+		w, h   int
+		format fourcc.Format
+		args   []string
+	}
+	clips := []grained{
+		{"estimated, hidden frames", 192, 128, fourcc.NV12, libaom("", "-g", "12", "-lag-in-frames", "16", "-denoise-noise-level", "10")},
+		{"estimated, 10 bits, odd size", 271, 153, fourcc.P010, libaom("", "-g", "12", "-pix_fmt", "yuv420p10le", "-denoise-noise-level", "10")},
+	}
+	for n := 1; n <= 16; n++ {
+		c := grained{"test vector " + strconv.Itoa(n), 192, 128, fourcc.NV12, libaom("film-grain-test="+strconv.Itoa(n), "-g", "6")}
+		if n%2 == 0 {
+			c.format, c.args = fourcc.P010, append(c.args, "-pix_fmt", "yuv420p10le")
+		}
+		clips = append(clips, c)
+	}
+	for _, c := range clips {
+		t.Run(c.name, func(t *testing.T) {
+			secs := 0.4
+			if c.name == clips[0].name {
+				secs = 1
+			}
+			cl := encodeClip(t, "a.mp4", c.w, c.h, secs, c.format, c.args)
+			track, pkts := packets(t, cl.path)
+			v, err := d.NewVideoDecoder(track)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer v.Close()
+			checkFrames(t, cl, decodeAll(t, v, pkts), 0)
+			if v.copies != (v.grain != nil) {
+				t.Errorf("the device decodes into its reference pictures alone: %v; the decoder synthesized grain: %v", v.copies, v.grain != nil)
+			}
+		})
+	}
+}
+
+// Decoding a frame and synthesizing its film grain allocates nothing
+// once the decoder has its frames and its grain pass, and a frame has
+// not finished decoding before its grain is in it.
+func TestDecodeAV1FilmGrainDoesNotAllocate(t *testing.T) {
+	if testbuild.Race {
+		t.Skip("the race detector allocates on its own")
+	}
+	d := decodingDevice(t, demux.AV1)
+	cl := ffmpegClip(t, "a.mp4", 192, 128, 4, libaom("film-grain-test=1", "-g", "250", "-lag-in-frames", "0")...)
 	track, pkts := packets(t, cl.path)
 	v, err := d.NewVideoDecoder(track)
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer v.Close()
-	if err := v.Decode(pkts[0]); errors.Is(err, ErrNoVideoDecoder) {
-		t.Skipf("the device applies no film grain: %v", err)
+	i := 0
+	step := func() {
+		if err := v.Decode(pkts[i]); err != nil {
+			t.Fatal(err)
+		}
+		i++
+		for f := v.Next(); f != nil; f = v.Next() {
+			if done, err := f.Decoded(); err != nil || done && f.post > d.completed {
+				t.Fatalf("frame at %v: decoded %v, %v, with its grain pass %d past the device's %d", f.PTS(), done, err, f.post, d.completed)
+			}
+			f.Release()
+		}
+		if err := d.Finish(); err != nil {
+			t.Fatal(err)
+		}
 	}
-	if err := v.Reset(); err != nil {
-		t.Fatal(err)
+	for range 20 {
+		step()
 	}
-	checkFrames(t, cl, decodeAll(t, v, pkts), 0)
+	if v.copies && v.grain == nil {
+		t.Fatal("the clip has no film grain for the decoder to synthesize")
+	}
+	if n := testing.AllocsPerRun(len(pkts)-i-1, step); n != 0 {
+		t.Errorf("%.1f allocations a frame, want 0", n)
+	}
 }
 
 // After a seek, Reset and the packets from a keyframe decode the

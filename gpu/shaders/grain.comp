@@ -1,0 +1,187 @@
+#version 450
+
+// AV1 film grain synthesis (AV1 7.18.3.5, the add noise synthesis
+// process) over a decoded 4:2:0 picture's planes, as rows of words: one
+// invocation writes one word of the output, the samples of its plane
+// that the word holds (four 8-bit or two 16-bit luma samples, two 8-bit
+// or one 16-bit pair of chroma samples), each the input sample plus the
+// noise the process gives it. A 16-bit sample holds its bits in its high
+// bits, as P010 does. The picture is taken to an even size: the samples
+// past an odd one repeat its edge. The grain templates, the scaling
+// functions and each block's random offsets come from the host, which
+// the sequential parts of the process (7.18.3.2 to 7.18.3.4) run on.
+
+layout(local_size_x = 8, local_size_y = 8) in;
+
+layout(set = 0, binding = 0, std430) readonly buffer In { uint src[]; };
+layout(set = 0, binding = 1, std430) writeonly buffer Out { uint dst[]; };
+layout(set = 0, binding = 2, std430) readonly buffer Grain {
+    int luma[73 * 82];
+    int cb[38 * 44];
+    int cr[38 * 44];
+    int scaling[3 * 256];
+    int offsets[];
+} grain;
+
+layout(push_constant) uniform Frame {
+    ivec2 size;        // the frame, in luma samples
+    int stride;        // words in a row of either plane
+    int chromaAt;      // the word the chroma plane starts at
+    int plane;         // 0 for the luma dispatch, 1 for the chroma one
+    int depth;         // bits a sample
+    int blocks;        // blocks in a row of offsets
+    int scalingShift;
+    int flags;         // 1 overlap, 2 luma noise, 4 Cb noise, 8 Cr noise, 16 chroma scaled from luma
+    int lo;            // the least value a sample takes
+    int hiLuma;
+    int hiChroma;
+    ivec3 cbMult;      // cb_luma_mult - 128, cb_mult - 128, (cb_offset - 256) << (depth - 8)
+    ivec3 crMult;
+} f;
+
+const int OVERLAP = 1, LUMA = 2, CB = 4, CR = 8, FROM_LUMA = 16;
+
+int round2(int x, int n) { return n == 0 ? x : (x + (1 << (n - 1))) >> n; }
+
+int grainMin() { return -(128 << (f.depth - 8)); }
+int grainMax() { return (256 << (f.depth - 8)) - 1 + grainMin(); }
+
+int clipGrain(int g) { return clamp(g, grainMin(), grainMax()); }
+
+// The luma sample at p of the input.
+int lumaAt(ivec2 p) {
+    if (f.depth == 8) {
+        return int(src[p.y * f.stride + (p.x >> 2)] >> (8 * (p.x & 3))) & 0xff;
+    }
+    return int(src[p.y * f.stride + (p.x >> 1)] >> (16 * (p.x & 1) + 16 - f.depth)) & ((1 << f.depth) - 1);
+}
+
+// The scaling function of plane at value v (scale_lut).
+int scale(int plane, int v) {
+    int shift = f.depth - 8;
+    int x = v >> shift;
+    int start = grain.scaling[plane * 256 + x];
+    if (shift == 0 || x == 255) {
+        return start;
+    }
+    int rem = v - (x << shift);
+    return start + round2((grain.scaling[plane * 256 + x + 1] - start) * rem, shift);
+}
+
+// The luma noise stripe's value at row i of stripe, column x: the grain
+// of the block x is in, blended with the block before over the first
+// two columns.
+int lumaStripe(int stripe, int i, int x) {
+    int block = x >> 5, j = x & 31;
+    int rnd = grain.offsets[stripe * f.blocks + block];
+    int g = grain.luma[(9 + (rnd & 15) * 2 + i) * 82 + 9 + (rnd >> 4) * 2 + j];
+    if (j < 2 && block > 0 && (f.flags & OVERLAP) != 0) {
+        int before = grain.offsets[stripe * f.blocks + block - 1];
+        int old = grain.luma[(9 + (before & 15) * 2 + i) * 82 + 9 + (before >> 4) * 2 + 32 + j];
+        g = clipGrain(round2(j == 0 ? old * 27 + g * 17 : old * 17 + g * 27, 5));
+    }
+    return g;
+}
+
+// The luma noise at p: its stripe's, blended with the stripe above over
+// the first two rows.
+int lumaNoise(ivec2 p) {
+    int stripe = p.y >> 5, i = p.y & 31;
+    int g = lumaStripe(stripe, i, p.x);
+    if (i < 2 && stripe > 0 && (f.flags & OVERLAP) != 0) {
+        int old = lumaStripe(stripe - 1, i + 32, p.x);
+        g = clipGrain(round2(i == 0 ? old * 27 + g * 17 : old * 17 + g * 27, 5));
+    }
+    return g;
+}
+
+int chromaGrain(int c, int at) { return c == 1 ? grain.cb[at] : grain.cr[at]; }
+
+int chromaStripe(int c, int stripe, int i, int x) {
+    int block = x >> 4, j = x & 15;
+    int rnd = grain.offsets[stripe * f.blocks + block];
+    int g = chromaGrain(c, (6 + (rnd & 15) + i) * 44 + 6 + (rnd >> 4) + j);
+    if (j == 0 && block > 0 && (f.flags & OVERLAP) != 0) {
+        int before = grain.offsets[stripe * f.blocks + block - 1];
+        int old = chromaGrain(c, (6 + (before & 15) + i) * 44 + 6 + (before >> 4) + 16);
+        g = clipGrain(round2(old * 23 + g * 22, 5));
+    }
+    return g;
+}
+
+int chromaNoise(int c, ivec2 p) {
+    int stripe = p.y >> 4, i = p.y & 15;
+    int g = chromaStripe(c, stripe, i, p.x);
+    if (i == 0 && stripe > 0 && (f.flags & OVERLAP) != 0) {
+        int old = chromaStripe(c, stripe - 1, 16, p.x);
+        g = clipGrain(round2(old * 23 + g * 22, 5));
+    }
+    return g;
+}
+
+int lumaOut(ivec2 p) {
+    int orig = lumaAt(p);
+    if ((f.flags & LUMA) == 0) {
+        return orig;
+    }
+    return clamp(orig + round2(scale(0, orig) * lumaNoise(p), f.scalingShift), f.lo, f.hiLuma);
+}
+
+// The chroma sample c (1 Cb, 2 Cr) at p, orig, with its noise, scaled
+// by the luma beside it or by the two merged.
+int chromaOut(int c, ivec2 p, int orig) {
+    if ((f.flags & (c == 1 ? CB : CR)) == 0 && (f.flags & FROM_LUMA) == 0) {
+        return orig;
+    }
+    ivec2 l = p * 2;
+    int merged = round2(lumaAt(l) + lumaAt(ivec2(min(l.x + 1, f.size.x - 1), l.y)), 1);
+    if ((f.flags & FROM_LUMA) == 0) {
+        ivec3 m = c == 1 ? f.cbMult : f.crMult;
+        merged = clamp(((merged * m.x + orig * m.y) >> 6) + m.z, 0, (1 << f.depth) - 1);
+    }
+    return clamp(orig + round2(scale(c, merged) * chromaNoise(c, p), f.scalingShift), f.lo, f.hiChroma);
+}
+
+void main() {
+    ivec2 at = ivec2(gl_GlobalInvocationID.xy);
+    int pad = 16 - f.depth;
+    if (f.plane == 0) {
+        if (at.x >= f.stride || at.y >= ((f.size.y + 1) & ~1)) {
+            return;
+        }
+        int word = at.y * f.stride + at.x;
+        uint v = 0;
+        if (f.depth == 8) {
+            for (int k = 0; k < 4; k++) {
+                v |= uint(lumaOut(ivec2(min(at.x * 4 + k, f.size.x - 1), at.y))) << (8 * k);
+            }
+        } else {
+            for (int k = 0; k < 2; k++) {
+                v |= uint(lumaOut(ivec2(min(at.x * 2 + k, f.size.x - 1), at.y)) << pad) << (16 * k);
+            }
+        }
+        dst[word] = v;
+        return;
+    }
+    ivec2 chroma = (f.size + 1) >> 1;
+    if (at.x >= f.stride || at.y >= chroma.y) {
+        return;
+    }
+    int word = f.chromaAt + at.y * f.stride + at.x;
+    uint in0 = src[word];
+    uint v = 0;
+    if (f.depth == 8) {
+        for (int k = 0; k < 2; k++) {
+            ivec2 p = ivec2(min(at.x * 2 + k, chroma.x - 1), at.y);
+            uint pair = src[f.chromaAt + at.y * f.stride + (p.x >> 1)] >> (16 * (p.x & 1));
+            v |= uint(chromaOut(1, p, int(pair & 0xff))) << (16 * k);
+            v |= uint(chromaOut(2, p, int(pair >> 8 & 0xff))) << (16 * k + 8);
+        }
+    } else {
+        ivec2 p = ivec2(min(at.x, chroma.x - 1), at.y);
+        uint mask = (1u << f.depth) - 1u;
+        v = uint(chromaOut(1, p, int(in0 >> pad & mask)) << pad);
+        v |= uint(chromaOut(2, p, int(in0 >> (16 + pad) & mask)) << pad) << 16;
+    }
+    dst[word] = v;
+}

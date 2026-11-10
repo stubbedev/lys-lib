@@ -48,9 +48,30 @@ type stream struct {
 	frames [][]byte
 }
 
-// rawFormats are ffmpeg's names of the picture formats the decoder
-// decodes into.
-var rawFormats = map[fourcc.Format]string{fourcc.NV12: "nv12", fourcc.P010: "p010le"}
+// rawFormats are ffmpeg's names of the formats the frames it decodes
+// are asked for in, for each picture format the decoder decodes into:
+// NV12 itself, and for P010 the planar 10 bits the streams are coded
+// in, which planarToP010 lays out as P010. ffmpeg's own conversion to
+// P010 leaves the last chroma column of an odd width zero.
+var rawFormats = map[fourcc.Format]string{fourcc.NV12: "nv12", fourcc.P010: "yuv420p10le"}
+
+// planarToP010 lays a w x h yuv420p10le picture out as P010: each
+// sample in the high bits of its 16, the chroma planes interleaved.
+func planarToP010(planar []byte, w, h int) []byte {
+	luma, chroma := w*h, ((w+1)/2)*((h+1)/2)
+	out := make([]byte, len(planar))
+	put := func(at int, sample []byte) {
+		binary.LittleEndian.PutUint16(out[2*at:], binary.LittleEndian.Uint16(sample)<<6)
+	}
+	for i := range luma {
+		put(i, planar[2*i:])
+	}
+	for i := range chroma {
+		put(luma+2*i, planar[2*(luma+i):])
+		put(luma+2*i+1, planar[2*(luma+chroma+i):])
+	}
+	return out
+}
 
 // ffmpegClip encodes a moving test pattern of w x h (an odd size cropped
 // from the even size past it) at 25 frames a second for secs seconds
@@ -96,7 +117,11 @@ func ffmpegDecoded(t *testing.T, path string, w, h int, format fourcc.Format) st
 	}
 	c := stream{path: path, w: w, h: h}
 	for len(raw) > 0 {
-		c.frames, raw = append(c.frames, raw[:size]), raw[size:]
+		frame := raw[:size]
+		if format == fourcc.P010 {
+			frame = planarToP010(frame, w, h)
+		}
+		c.frames, raw = append(c.frames, frame), raw[size:]
 	}
 	return c
 }

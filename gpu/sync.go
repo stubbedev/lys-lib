@@ -893,6 +893,15 @@ func (d *Device) waitOldest() error {
 	return d.checkLost()
 }
 
+// reached reports, without waiting, whether the device's submission seq
+// has finished; an error for a device found lost.
+func (d *Device) reached(seq uint64) (bool, error) {
+	if seq > d.completed {
+		d.reap(false)
+	}
+	return seq <= d.completed, d.checkLost()
+}
+
 // finished is how many of the oldest submissions have finished. One
 // queue signals its fences in submission order, so the newest fence
 // answers for all of them and otherwise the first unsignalled one ends
