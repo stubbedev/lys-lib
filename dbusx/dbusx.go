@@ -3,7 +3,8 @@
 // well-known name the way zbus's object_server().at + request_name
 // does, serving zbus-style #[zbus(property)] getters (computed on every
 // read) and setters over org.freedesktop.DBus.Properties, introspection
-// built on demand, and watching a name for its owner.
+// built on demand, watching a name for its owner and a peer for its
+// signals, and dialing the system bus within a bound.
 package dbusx
 
 import (
@@ -35,9 +36,10 @@ const (
 var ErrNameTaken = errors.New("name already owned")
 
 // The interfaces Export serves itself at each path, for all of the
-// path's interfaces.
+// path's interfaces. PropertiesInterface is also where an object
+// announces its changed properties (PropertiesChanged).
 const (
-	propertiesIface     = "org.freedesktop.DBus.Properties"
+	PropertiesInterface = "org.freedesktop.DBus.Properties"
 	introspectableIface = "org.freedesktop.DBus.Introspectable"
 )
 
@@ -183,11 +185,11 @@ func objectsAt(path dbus.ObjectPath, ifaces []Interface) ([]exported, error) {
 	props := &properties{ifaces: make(map[string]Getters, len(ifaces)), setters: make(map[string]Setters, len(ifaces))}
 	node := introspect.Node{Name: string(path), Interfaces: []introspect.Interface{
 		introspect.IntrospectData,
-		{Name: propertiesIface, Methods: methodsOf(props)},
+		{Name: PropertiesInterface, Methods: methodsOf(props)},
 	}}
 	objects := make([]exported, 0, len(ifaces)+2)
 	for _, iface := range ifaces {
-		if iface.Name == propertiesIface || iface.Name == introspectableIface {
+		if iface.Name == PropertiesInterface || iface.Name == introspectableIface {
 			return nil, fmt.Errorf("export %s at %s: Export serves that interface itself", iface.Name, path)
 		}
 		if _, dup := props.ifaces[iface.Name]; dup {
@@ -208,7 +210,7 @@ func objectsAt(path dbus.ObjectPath, ifaces []Interface) ([]exported, error) {
 		objects = append(objects, exported{iface: iface.Name, methods: iface.Methods})
 	}
 	return append(objects,
-		exported{iface: propertiesIface, methods: props},
+		exported{iface: PropertiesInterface, methods: props},
 		exported{iface: introspectableIface, methods: lazyIntrospectable{node: node, ifaces: ifaces}},
 	), nil
 }

@@ -16,9 +16,9 @@ import (
 // The same Signal declares it on an Interface, emits it and decodes
 // it, so its name and signature exist once.
 type Signal[T any] struct {
-	iface, member string
-	fields        []int
-	args          []introspect.Arg
+	iface, member, name string
+	fields              []int
+	args                []introspect.Arg
 }
 
 // NewSignal declares the signal member of iface carrying a T. It
@@ -29,7 +29,7 @@ func NewSignal[T any](iface, member string) Signal[T] {
 	if t.Kind() != reflect.Struct {
 		panic(fmt.Sprintf("dbusx: signal %s.%s carries %s, which is not a struct", iface, member, t))
 	}
-	s := Signal[T]{iface: iface, member: member}
+	s := Signal[T]{iface: iface, member: member, name: iface + "." + member}
 	for i := range t.NumField() {
 		f := t.Field(i)
 		name := f.Tag.Get("dbus")
@@ -44,7 +44,7 @@ func NewSignal[T any](iface, member string) Signal[T] {
 
 // Name is the signal's full name, interface and member, as a received
 // dbus.Signal carries it.
-func (s Signal[T]) Name() string { return s.iface + "." + s.member }
+func (s Signal[T]) Name() string { return s.name }
 
 // Emit sends the signal from the object at path on conn, carrying v.
 func (s Signal[T]) Emit(conn *dbus.Conn, path dbus.ObjectPath, v T) error {

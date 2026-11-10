@@ -9,6 +9,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/stubbedev/lys-lib/dbusx"
 	dbus "github.com/stubbedev/lys-lib/third_party/godbus"
 )
 
@@ -21,7 +22,7 @@ const (
 func decodeAll(t *testing.T, sig *dbus.Signal) ([]Event, error) {
 	t.Helper()
 	var got []Event
-	err := decoder{owner: owner, session: watched}.decode(sig, func(e Event) { got = append(got, e) })
+	err := dbusx.Dispatch(sig, owner, Session{obj: object{path: watched}}.routes(func(e Event) { got = append(got, e) }))
 	return got, err
 }
 

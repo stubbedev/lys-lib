@@ -13,8 +13,7 @@ import (
 	"strings"
 	"time"
 
-	"golang.org/x/sys/unix"
-
+	"github.com/stubbedev/lys-lib/dbusx"
 	dbus "github.com/stubbedev/lys-lib/third_party/godbus"
 )
 
@@ -39,7 +38,7 @@ const (
 // context allows: a logind that does not answer never hangs its caller.
 const CallTimeout = 5 * time.Second
 
-const propertiesInterface = "org.freedesktop.DBus.Properties"
+const propertiesInterface = dbusx.PropertiesInterface
 
 // SessionID is a logind session id, as XDG_SESSION_ID and the Id
 // property carry it.
@@ -109,22 +108,10 @@ func (o object) call(ctx context.Context, iface, method string, out []any, args 
 	if err := c.Store(out...); err != nil {
 		return errors.Join(
 			fmt.Errorf("logind %s on %s: decode the reply: %w", describe(iface, method, args), o.path, err),
-			closeFDs(c.Body),
+			dbusx.CloseFDs(c.Body),
 		)
 	}
 	return nil
-}
-
-func closeFDs(body []any) error {
-	var errs []error
-	for _, v := range body {
-		if fd, ok := v.(dbus.UnixFD); ok && fd >= 0 {
-			if err := unix.Close(int(fd)); err != nil {
-				errs = append(errs, fmt.Errorf("close descriptor %d: %w", fd, err))
-			}
-		}
-	}
-	return errors.Join(errs...)
 }
 
 func (o object) property(ctx context.Context, iface, name string, dest any) error {

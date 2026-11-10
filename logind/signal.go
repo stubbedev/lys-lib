@@ -85,85 +85,41 @@ func PrepareForSleepMatch() []dbus.MatchOption {
 	return []dbus.MatchOption{dbus.WithMatchSender(BusName), dbus.WithMatchObjectPath(ManagerPath), dbus.WithMatchInterface(ManagerInterface), dbus.WithMatchMember("PrepareForSleep")}
 }
 
-func (s Session) matches() [][]dbus.MatchOption {
-	return [][]dbus.MatchOption{
-		{dbus.WithMatchSender(BusName), dbus.WithMatchObjectPath(s.obj.path), dbus.WithMatchInterface(SessionInterface)},
-		{dbus.WithMatchSender(BusName), dbus.WithMatchObjectPath(s.obj.path), dbus.WithMatchInterface(propertiesInterface), dbus.WithMatchMember("PropertiesChanged"), dbus.WithMatchArg(0, SessionInterface)},
-		PrepareForSleepMatch(),
+// routes are the signals a watch of the session reads, each decoded to
+// the Event emit gets: the session's own, its Active and LockedHint
+// changing, and the manager's PrepareForSleep.
+func (s Session) routes(emit func(Event)) []dbusx.Route {
+	path := s.obj.path
+	return []dbusx.Route{
+		dbusx.On(Lock, path, emitAs[Locked](emit)),
+		dbusx.On(Unlock, path, emitAs[Unlocked](emit)),
+		dbusx.On(PauseDevice, path, emitAs[DevicePaused](emit)),
+		dbusx.On(ResumeDevice, path, emitAs[DeviceResumed](emit)),
+		dbusx.On(dbusx.PropertiesChanged, path, func(c dbusx.ChangedProperties) error {
+			return emitChanged(path, c.Changed, emit)
+		}).WithArg0(SessionInterface),
+		dbusx.On(PrepareForSleep, ManagerPath, emitAs[Sleep](emit)),
 	}
 }
 
-// decoder reads the signals of one session from logind's current owner.
-type decoder struct {
-	owner   string
-	session dbus.ObjectPath
+func emitAs[T Event](emit func(Event)) func(T) error {
+	return func(v T) error {
+		emit(v)
+		return nil
+	}
 }
 
-func (d decoder) decode(sig *dbus.Signal, emit func(Event)) error {
-	if sig.Path == ManagerPath && sig.Name == PrepareForSleep.Name() {
-		if sig.Sender != d.owner {
-			return nil
-		}
-		return decodeAs(PrepareForSleep, sig, emit)
-	}
-	if sig.Path != d.session {
-		return nil
-	}
-	if sig.Sender != d.owner {
-		if sig.Name == ResumeDevice.Name() {
-			return closeFDs(sig.Body)
-		}
-		return nil
-	}
-	switch sig.Name {
-	case Lock.Name():
-		return decodeAs(Lock, sig, emit)
-	case Unlock.Name():
-		return decodeAs(Unlock, sig, emit)
-	case PauseDevice.Name():
-		return decodeAs(PauseDevice, sig, emit)
-	case ResumeDevice.Name():
-		if err := decodeAs(ResumeDevice, sig, emit); err != nil {
-			return errors.Join(err, closeFDs(sig.Body))
-		}
-		return nil
-	case propertiesInterface + ".PropertiesChanged":
-		return decodeProperties(sig, emit)
-	}
-	return nil
-}
-
-func decodeAs[T Event](s dbusx.Signal[T], sig *dbus.Signal, emit func(Event)) error {
-	v, err := s.Decode(sig)
-	if err != nil {
-		return fmt.Errorf("logind: %w", err)
-	}
-	emit(v)
-	return nil
-}
-
-func decodeProperties(sig *dbus.Signal, emit func(Event)) error {
-	var (
-		iface       string
-		changed     map[string]dbus.Variant
-		invalidated []string
-	)
-	if err := dbus.Store(sig.Body, &iface, &changed, &invalidated); err != nil {
-		return fmt.Errorf("logind: decode PropertiesChanged of %s: %w", sig.Path, err)
-	}
-	if iface != SessionInterface {
-		return nil
-	}
+func emitChanged(path dbus.ObjectPath, changed map[string]dbus.Variant, emit func(Event)) error {
 	var errs []error
 	if v, ok := changed["Active"]; ok {
-		active, err := changedBool(sig.Path, "Active", v)
+		active, err := changedBool(path, "Active", v)
 		if err == nil {
 			emit(ActiveChanged{Active: active})
 		}
 		errs = append(errs, err)
 	}
 	if v, ok := changed["LockedHint"]; ok {
-		locked, err := changedBool(sig.Path, "LockedHint", v)
+		locked, err := changedBool(path, "LockedHint", v)
 		if err == nil {
 			emit(LockedHintChanged{Locked: locked})
 		}
@@ -175,23 +131,20 @@ func decodeProperties(sig *dbus.Signal, emit func(Event)) error {
 func changedBool(path dbus.ObjectPath, name string, v dbus.Variant) (bool, error) {
 	b, ok := v.Value().(bool)
 	if !ok {
-		return false, fmt.Errorf("logind: %s of %s changed to a %s, want b", name, path, v.Signature())
+		return false, fmt.Errorf("%s of %s changed to a %s, want b", name, path, v.Signature())
 	}
 	return b, nil
 }
 
 // ErrDisconnected is what Watch.Stop reports when the watch ended
 // because its connection closed.
-var ErrDisconnected = errors.New("the bus connection closed")
-
-const signalBuffer = 32
+var ErrDisconnected = dbusx.ErrDisconnected
 
 // Watch follows one session's signals until its context ends, it is
 // stopped, or its connection closes.
 type Watch struct {
-	cancel context.CancelFunc
-	done   chan struct{}
-	err    error
+	signals *dbusx.Watch
+	session dbus.ObjectPath
 }
 
 // Watch runs handle, on the watch's goroutine and in arrival order, for
@@ -205,68 +158,20 @@ type Watch struct {
 // connection until it ends, and then removes them, leaving a shared
 // connection as it was.
 func (s Session) Watch(ctx context.Context, handle func(Event, error)) (*Watch, error) {
-	conn := s.obj.conn
-	if conn == nil {
+	if s.obj.conn == nil {
 		return nil, fmt.Errorf("logind: watch a session: %w", errZeroHandle)
 	}
-	setup, cancelSetup := context.WithTimeout(ctx, CallTimeout)
-	defer cancelSetup()
-	owner, err := dbusx.NameOwner(setup, conn, BusName)
+	signals, err := dbusx.WatchSignals(ctx, s.obj.conn, dbusx.FromOwner(BusName),
+		func(err error) { handle(nil, fmt.Errorf("logind: %w", err)) },
+		s.routes(func(e Event) { handle(e, nil) })...)
 	if err != nil {
 		return nil, fmt.Errorf("logind: watch session %s: %w", s.obj.path, err)
 	}
-	matches := s.matches()
-	for i, match := range matches {
-		if err := conn.AddMatchSignalContext(setup, match...); err != nil {
-			return nil, errors.Join(fmt.Errorf("logind: watch session %s: %w", s.obj.path, err), removeMatches(ctx, conn, matches[:i]))
-		}
-	}
-	signals := make(chan *dbus.Signal, signalBuffer)
-	conn.Signal(signals)
-	watch, cancel := context.WithCancel(ctx)
-	w := &Watch{cancel: cancel, done: make(chan struct{})}
-	d := decoder{owner: owner, session: s.obj.path}
-	emit := func(e Event) { handle(e, nil) }
-	go func() {
-		defer close(w.done)
-		defer func() {
-			conn.RemoveSignal(signals)
-			if err := removeMatches(ctx, conn, matches); err != nil {
-				w.err = errors.Join(w.err, fmt.Errorf("logind: stop watching session %s: %w", s.obj.path, err))
-			}
-		}()
-		for {
-			select {
-			case <-watch.Done():
-				return
-			case sig, ok := <-signals:
-				if !ok {
-					w.err = fmt.Errorf("logind: watch session %s: %w", s.obj.path, ErrDisconnected)
-					return
-				}
-				if err := d.decode(sig, emit); err != nil {
-					handle(nil, err)
-				}
-			}
-		}
-	}()
-	return w, nil
-}
-
-func removeMatches(ctx context.Context, conn *dbus.Conn, matches [][]dbus.MatchOption) error {
-	removing, cancel := context.WithTimeout(context.WithoutCancel(ctx), CallTimeout)
-	defer cancel()
-	var errs []error
-	for _, match := range matches {
-		if err := conn.RemoveMatchSignalContext(removing, match...); err != nil && !errors.Is(err, dbus.ErrClosed) && conn.Connected() {
-			errs = append(errs, err)
-		}
-	}
-	return errors.Join(errs...)
+	return &Watch{signals: signals, session: s.obj.path}, nil
 }
 
 // Done is closed once the watch has ended and removed what it held.
-func (w *Watch) Done() <-chan struct{} { return w.done }
+func (w *Watch) Done() <-chan struct{} { return w.signals.Done() }
 
 // Stop ends the watch and returns once it has removed what it held:
 // with ErrDisconnected when its connection had closed, with the error
@@ -274,9 +179,10 @@ func (w *Watch) Done() <-chan struct{} { return w.done }
 // same end and reports the same error. Stop must not be called from the
 // watch's handler.
 func (w *Watch) Stop() error {
-	w.cancel()
-	<-w.done
-	return w.err
+	if err := w.signals.Stop(); err != nil {
+		return fmt.Errorf("logind: session %s: %w", w.session, err)
+	}
+	return nil
 }
 
 // WaitLocked returns once the session's LockedHint is true, or with
