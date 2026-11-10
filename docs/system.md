@@ -227,6 +227,17 @@ such as a compositor.
 `i18n` reads GNU `.mo` and `.po` catalogs with plural forms and message
 contexts, and resolves locales from the environment.
 
+## glibclocale
+
+`glibclocale` reads glibc's compiled locale data, the locale-archive and
+per-locale `LC_*` directories, without libc. `System(env)` searches where glibc
+does (`LOCPATH`, NixOS's `LOCALE_ARCHIVE`, `/usr/lib/locale`); `List` replaces
+`locale -a`, and `Numeric`, `Monetary` and `Time` decode a locale's categories,
+with `Time.Format` covering the strftime conversions glibc's own formats use. A
+missing locale or category is an error naming where it looked, never C. musl
+has no compiled data, so only C and POSIX exist there. `glibclocaletest` holds
+real `localedef` output for tests.
+
 ## Small helpers
 
 | Package | Purpose |
