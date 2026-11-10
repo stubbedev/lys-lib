@@ -44,6 +44,7 @@ func (c Codec) operation() vk.VideoCodecOperationFlagBitsKHR { return codecs[c].
 var decodeCodecs = []decodeEntry{
 	{demux.H264, videoOp{"VK_KHR_video_decode_h264", vk.VideoCodecOperationDecodeH264BitKhr}, newH264Decoder},
 	{demux.H265, videoOp{"VK_KHR_video_decode_h265", vk.VideoCodecOperationDecodeH265BitKhr}, newH265Decoder},
+	{demux.AV1, videoOp{"VK_KHR_video_decode_av1", vk.VideoCodecOperationDecodeAv1BitKhr}, newAV1Decoder},
 }
 
 // decodeEntry is a codec the decoder reads.

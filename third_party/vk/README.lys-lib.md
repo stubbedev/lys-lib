@@ -219,3 +219,11 @@ eight bytes long with the layout where the driver reads padding;
 `const_decode_lysui.go`: the core 1.1
 `StructureTypeImageViewUsageCreateInfo`, which the decoder's coding views
 of sampled pictures need.
+
+`stdvideo_av1_lysui.go`: the AV1 sequence header, colour config, timing
+info, tile info, quantization, segmentation, loop filter, CDEF, loop
+restoration, global motion and film grain structures and the AV1 decode
+picture and reference structures, with their flag bits, laid out as
+`vulkan_video_codec_av1std.h` and `vulkan_video_codec_av1std_decode.h`
+lay them out, their opaque arrays dropped from `types_gen.go`;
+`TestStdVideoAV1Layouts` pins them.

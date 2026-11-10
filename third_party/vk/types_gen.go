@@ -326,17 +326,6 @@ type (
 	StdVideoH265PictureType                int32
 	StdVideoAV1Profile                     int32
 	StdVideoAV1Level                       int32
-	StdVideoAV1SequenceHeader              [256]byte
-	StdVideoDecodeAV1PictureInfo           [128]byte
-	StdVideoDecodeAV1ReferenceInfo         [64]byte
-	StdVideoAV1TileInfo                    [64]byte
-	StdVideoAV1Quantization                [32]byte
-	StdVideoAV1Segmentation                [64]byte
-	StdVideoAV1LoopFilter                  [32]byte
-	StdVideoAV1CDEF                        [32]byte
-	StdVideoAV1LoopRestoration             [16]byte
-	StdVideoAV1GlobalMotion                [64]byte
-	StdVideoAV1FilmGrain                   [128]byte
 	StdVideoVP9Profile                     int32
 	StdVideoVP9Level                       int32
 	StdVideoDecodeVP9PictureInfo           [128]byte

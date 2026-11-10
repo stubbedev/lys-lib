@@ -85,14 +85,16 @@ type decodeSlot struct {
 
 // decodeShape is what a video session is made for: the codec profile,
 // the coded size in luma samples, the DPB slots and the references a
-// picture may name, and how many pictures presentation order holds
-// back, and the YCbCr conversion its pictures sample through.
+// picture may name, how many pictures presentation order holds back,
+// how many decoded pictures the codec keeps hidden to show later, and
+// the YCbCr conversion its pictures sample through.
 type decodeShape struct {
 	profile int
 	coded   [2]int
 	slots   int
 	refs    int
 	reorder int
+	hidden  int
 	ycbcr   YCbCr
 }
 
@@ -683,7 +685,7 @@ func (v *VideoDecoder) frame() (*VideoFrame, error) {
 	if f := pick(); f != nil {
 		return f, nil
 	}
-	if len(v.frames) < v.shape.reorder+1+heldFrames {
+	if len(v.frames) < v.shape.reorder+v.shape.hidden+1+heldFrames {
 		return v.newFrame()
 	}
 	soonest := uint64(0)
@@ -939,7 +941,7 @@ func (v *VideoDecoder) barriersAfter(cb vk.CommandBuffer, p *decodePicture) {
 	src := intconv.Must[uint32](p.setup)
 	c.regions = [2]vk.ImageCopy{
 		{SrcSubresource: plane(vk.ImageAspectPlane0Bit, src), DstSubresource: plane(vk.ImageAspectPlane0Bit, 0), Extent: extent3D(w, h)},
-		{SrcSubresource: plane(vk.ImageAspectPlane1Bit, src), DstSubresource: plane(vk.ImageAspectPlane1Bit, 0), Extent: extent3D(w/2, h/2)},
+		{SrcSubresource: plane(vk.ImageAspectPlane1Bit, src), DstSubresource: plane(vk.ImageAspectPlane1Bit, 0), Extent: extent3D((w+1)/2, (h+1)/2)},
 	}
 	d.cmds.CmdCopyImage(cb, v.dpb.image, vk.ImageLayoutTransferSrcOptimal, frame, vk.ImageLayoutTransferDstOptimal, 2, &c.regions[0])
 	c.images[0] = imageBarrier(v.dpb.image, layer, vk.ImageLayoutTransferSrcOptimal, vk.ImageLayoutVideoDecodeDpbKhr)
@@ -1002,10 +1004,10 @@ func (r *reorder) pop(out func(*VideoFrame)) {
 	out(f)
 }
 
-// videoSignal is what an H.264 or H.265 VUI says of how its pictures
-// convert to RGB: the video signal type (typed), the colour
-// description (described) and the chroma location (sited), each with
-// its flag, and the picture's height in lines.
+// videoSignal is what an H.264 or H.265 VUI, or an AV1 colour config,
+// says of how its pictures convert to RGB: the video signal type
+// (typed), the colour description (described) and the chroma location
+// (sited), each with its flag, and the picture's height in lines.
 type videoSignal struct {
 	typed, fullRange bool
 	described        bool
@@ -1090,4 +1092,4 @@ var startCode = []byte{0, 0, 1}
 const sliceHeaderBytes = 256
 
 // maxDPBSlots are the DPB slots a stream of any codec can need.
-const maxDPBSlots = max(h264MaxSlots, h265MaxSlots)
+const maxDPBSlots = max(h264MaxSlots, h265MaxSlots, av1Slots)
