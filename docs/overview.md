@@ -59,7 +59,8 @@ Test helpers load `libpipewire-0.3.so.0` (`pipewire/pwtest`) and `libei.so.1`
 | [`gpu.Encoder`](/media#video-encoding) | H.264 and H.265 hardware encoding |
 | [`media/mux`](/media#media-mux) | Fragmented MP4 and Matroska muxing |
 | [`media/demux`](/media#media-demux) | MP4 and Matroska demuxing with keyframe seeking |
-| [`media/opus`](/media#media-opus) | Opus encoder and CELT decoder |
+| [`media/opus`](/media#media-opus) | Opus encoder and decoder (CELT, SILK, hybrid, multistream) |
+| [`media/aac`](/media#media-aac) | AAC-LC decoder |
 | [`media/vorbis`](/media#media-vorbis) | Vorbis decoder, Ogg files or packets |
 | [`audiomix`](/media#audiomix) | 16-bit PCM mixer |
 | [`v4l2`](/media#v4l2) | Webcam capture |

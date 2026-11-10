@@ -199,6 +199,35 @@ if err != nil {
 fmt.Println(sound.SampleRate, sound.Channels, sound.Frames())
 ```
 
+## media/aac
+
+`aac` is a pure-Go MPEG-4 AAC-LC decoder (ISO/IEC 14496-3, audio object type
+2). `NewDecoder` takes the AudioSpecificConfig that `demux` reports as the
+track's `Config`; `Decode` turns one raw data block into 1024 interleaved
+signed 16-bit samples per channel.
+
+- Channel configurations 1 to 7 (mono to 7.1), output in the configuration's
+  order: centre first, then the front pair, the surround pairs and LFE.
+- Every LC tool: all window sequences and both window shapes, mid/side and
+  intensity stereo, TNS, pulses and perceptual noise substitution, with the
+  standard's correlated noise in mid/side bands. Within an LSB of ffmpeg's
+  decoder (except the PNS noise itself); no allocation per frame.
+- `ErrUnsupported` names what a stream needs beyond LC: another object type
+  (HE-AAC's SBR and PS, Main, LTP, ER and USAC), 960-sample frames, a program
+  config element instead of a channel configuration, or a coupling channel
+  element. Implicitly signalled SBR decodes as its LC core at the core rate.
+  Dynamic range control data is ignored. Malformed input wraps `ErrInvalid`.
+- An MP4 edit list's encoder priming is in the first packet's negative
+  timestamp: drop that many samples from the start.
+
+```go
+dec, err := aac.NewDecoder(track.Config)
+if err != nil {
+	return err
+}
+pcm, err := dec.Decode(nil, packet.Data)
+```
+
 ## audiomix
 
 `audiomix.Mixer` sums sources of interleaved 16-bit PCM with clipping.
