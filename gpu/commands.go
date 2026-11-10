@@ -84,7 +84,7 @@ func barrier2(d *Device, cb vk.CommandBuffer, mem *vk.MemoryBarrier2, images ...
 }
 
 // submit2 submits cb to queue after wait and before signal (each nil
-// for none), signalling done when it finishes. Like
+// for none), signalling done (0 for none) when it finishes. Like
 // barrier2 it copies what it is handed into the device's arguments.
 func submit2(d *Device, queue vk.Queue, cb vk.CommandBuffer, wait, signal *vk.SemaphoreSubmitInfo, done vk.Fence) error {
 	a := &d.args
@@ -98,8 +98,12 @@ func submit2(d *Device, queue vk.Queue, cb vk.CommandBuffer, wait, signal *vk.Se
 		a.signal2 = *signal
 		a.submit2.SignalSemaphoreInfoCount, a.submit2.PSignalSemaphoreInfos = 1, &a.signal2
 	}
-	if r := d.cmds.QueueSubmit2(queue, 1, &a.submit2, done); r != vk.Success {
-		return fmt.Errorf("gpu: vkQueueSubmit2: %w", resultError(r))
+	if err := d.checkLost(); err != nil {
+		return err
 	}
-	return nil
+	r := d.takeFault()
+	if r == vk.Success {
+		r = d.cmds.QueueSubmit2(queue, 1, &a.submit2, done)
+	}
+	return d.submitResult("vkQueueSubmit2", r)
 }

@@ -72,8 +72,9 @@ type timing struct {
 	// points it signals for them (signalTimeline).
 	timelineWaits   []timelineWait
 	timelineSignals []timelineWait
-	// fault is a result a test makes the next vkQueueSubmit return in
-	// place of submitting; VK_SUCCESS, the zero value, for none.
+	// fault is a result a test makes the device's next submission, on
+	// any of its queues, return in place of submitting (LoseForTesting);
+	// VK_SUCCESS, the zero value, for none.
 	fault vk.Result
 	// spareFences, spareBuffers and spareSemaphores are the objects of
 	// finished submissions, for the next ones.
@@ -510,6 +511,9 @@ func (r *retiredSemaphore) destroy() { r.d.cmds.DestroySemaphore(r.d.device, r.s
 
 // timelineValue is the value s has reached, without waiting.
 func (d *Device) timelineValue(s vk.Semaphore) (uint64, error) {
+	if err := d.checkLost(); err != nil {
+		return 0, err
+	}
 	a := &d.args
 	if r := d.cmds.GetSemaphoreCounterValue(d.device, s, &a.timelineValue); r != vk.Success {
 		if r == vk.ErrorDeviceLost {
@@ -523,6 +527,9 @@ func (d *Device) timelineValue(s vk.Semaphore) (uint64, error) {
 // waitTimeline waits here until s reaches value, the device's wait
 // limit at most.
 func (d *Device) waitTimeline(s vk.Semaphore, value uint64) error {
+	if err := d.checkLost(); err != nil {
+		return err
+	}
 	d.blockingWaits++
 	a := &d.args
 	a.timelineSemaphore, a.timelineValue = s, value
@@ -560,13 +567,36 @@ func (d *Device) dropWaits() {
 	d.waits, d.timelineWaits, d.timelineSignals = d.waits[:0], d.timelineWaits[:0], d.timelineSignals[:0]
 }
 
-// takeFault is the result a test set for the next vkQueueSubmit, which
-// it then is no more: VK_SUCCESS for none.
+// takeFault is the result a test set for the next submission, which it
+// then is no more: VK_SUCCESS for none.
 func (d *Device) takeFault() vk.Result {
 	r := d.fault
 	d.fault = vk.Success
 	return r
 }
+
+// submitResult is the result r of a submission as an error naming call,
+// nil for VK_SUCCESS. A device the driver reports lost is remembered:
+// nothing submitted to it after runs.
+func (d *Device) submitResult(call string, r vk.Result) error {
+	if r == vk.Success {
+		return nil
+	}
+	if r == vk.ErrorDeviceLost {
+		d.lost = true
+	}
+	return fmt.Errorf("gpu: %s: %w", call, resultError(r))
+}
+
+// LoseForTesting arms a device loss, for tests of what handles one: the
+// device's next submission on any of its queues (a pass's, an upload's,
+// a video decode's or encode's) fails with ErrDeviceLost as if the
+// driver had answered VK_ERROR_DEVICE_LOST, and so does everything
+// after it that submits or waits for the GPU, a VideoDecoder's and an
+// Encoder's calls too, until the device is closed. The GPU itself is
+// untouched: the next device opened on it works. A device nobody armed
+// never takes this path.
+func (d *Device) LoseForTesting() { d.fault = vk.ErrorDeviceLost }
 
 func (d *Device) submit1(cb vk.CommandBuffer, signal vk.Semaphore, sub submission) error {
 	if err := d.retireSyncFile(); err != nil {
@@ -637,12 +667,12 @@ func (d *Device) submit1(cb vk.CommandBuffer, signal vk.Semaphore, sub submissio
 	if r == vk.Success {
 		r = d.cmds.QueueSubmit(d.queue, 1, si, fence)
 	}
-	if r != vk.Success {
+	if err := d.submitResult("vkQueueSubmit", r); err != nil {
 		d.cmds.DestroyFence(d.device, fence, nil)
 		if frame {
 			d.spareSemaphores = append(d.spareSemaphores, signal)
 		}
-		return fmt.Errorf("gpu: vkQueueSubmit: %w", resultError(r))
+		return err
 	}
 	d.submitted++
 	f := inflight{seq: d.submitted, fence: fence, cb: cb, sems: len(d.waits), query: -1}
@@ -841,6 +871,9 @@ func (d *Device) ensureQueries() error {
 }
 
 func (d *Device) waitFence(f vk.Fence) error {
+	if err := d.checkLost(); err != nil {
+		return err
+	}
 	d.blockingWaits++
 	d.args.fence = f
 	if r := d.cmds.WaitForFences(d.device, 1, &d.args.fence, vk.True, intconv.Must[uint64](d.waitLimit.Nanoseconds())); r != vk.Success {
@@ -887,11 +920,11 @@ func (d *Device) fenceFinished(f vk.Fence) bool {
 	return r == vk.Success
 }
 
-// checkLost reports a device an earlier fence poll found lost: a driver
-// may go on accepting submissions that never run.
+// checkLost reports a device an earlier submission or fence poll found
+// lost: a driver may go on accepting submissions that never run.
 func (d *Device) checkLost() error {
 	if d.lost {
-		return fmt.Errorf("gpu: a submission's fence: %w", resultError(vk.ErrorDeviceLost))
+		return fmt.Errorf("gpu: the device was lost: %w", resultError(vk.ErrorDeviceLost))
 	}
 	return nil
 }
@@ -950,7 +983,7 @@ func (d *Device) idle() error {
 	}
 	d.reap(true)
 	d.buryAll()
-	return nil
+	return d.checkLost()
 }
 
 func (d *Device) frameTime(query int) (time.Duration, error) {

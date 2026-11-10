@@ -163,7 +163,7 @@ func main() {
 | `ErrNoFrameTime` | No calibrated timestamps |
 | `ErrNoVideoEncoder` | See [video encoding](/media#video-encoding) |
 | `ErrBusy` | `Render` refused a frame because too many are in flight; retry later |
-| `ErrDeviceLost` | Device lost; close it and open a new one. `LossLimit` losses within `LossWindow` is the recovery bound |
+| `ErrDeviceLost` | Device lost; close it and open a new one. `LossLimit` losses within `LossWindow` is the recovery bound. A test arms one with `Device.LoseForTesting`: the device's next submission, a video decoder's or encoder's too, and everything after it fail with it, the GPU untouched |
 | `ErrDeviceClosed` | The device is closed |
 
 Image kinds are distinct types:
