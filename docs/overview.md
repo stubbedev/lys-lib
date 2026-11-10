@@ -70,6 +70,7 @@ Test helpers load `libpipewire-0.3.so.0` (`pipewire/pwtest`) and `libei.so.1`
 | [`pipewire`](/system#pipewire) | ScreenCast video producer over PipeWire's native protocol |
 | [`eis`](/system#eis) | EIS server (the receiving end of libei) |
 | [`dbusx`](/system#dbusx) | D-Bus services on [patched godbus](/third-party/godbus) |
+| [`logind`](/system#logind) | systemd-logind client: sessions, power, inhibitors, devices, lock signals |
 | [`portaldialogs`](/system#portaldialogs) | The `dev.stubbe.lys.PortalDialogs1` contract |
 | [`wmipc`](/system#wmipc) | The wire contract of lys-wm's IPC socket |
 | [`pam`](/system#pam) | libpam transactions |
@@ -81,7 +82,7 @@ Test helpers load `libpipewire-0.3.so.0` (`pipewire/pwtest`) and `libei.so.1`
 
 ### Test support
 
-[`golden`, `gputest`, `wltest`, `pipewire/pwtest`, `eis/eistest`, `dbustest`, `sockdir`](/development#test-support)
+[`golden`, `gputest`, `wltest`, `pipewire/pwtest`, `eis/eistest`, `dbustest`, `logind/logindtest`, `sockdir`](/development#test-support)
 can be imported from other modules' tests.
 
 ### Third party

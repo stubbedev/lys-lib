@@ -66,4 +66,5 @@ Importable by tests here and in other family members.
 | `pipewire/pwtest` | Private PipeWire daemon and libpipewire reference consumers |
 | `eis/eistest` | libei reference client for EIS servers |
 | `dbustest` | Private `dbus-daemon`s configured from a generated file; needs only `dbus-daemon` on `PATH` |
+| `logind/logindtest` | A fake systemd-logind on a `dbustest` bus that records every call and emits logind's signals |
 | `sockdir` | A directory short enough for Unix socket paths (`sun_path` is 108 bytes) |

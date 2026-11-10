@@ -152,6 +152,25 @@ A D-Bus method is an exported method whose last result is `*dbus.Error`;
 `Failed` and `InvalidArgs` build common errors. Introspection is generated on
 demand.
 
+## logind
+
+`logind` is the one client for `org.freedesktop.login1`. Every call is bounded
+by the caller's context and by `CallTimeout`, and its error names the method and
+the object.
+
+| Need | Use |
+| --- | --- |
+| The caller's session | `NewManager(conn).GetSession(ctx, logind.AutoSession)` |
+| The session of a process | `Manager.GetSessionByPID` |
+| Suspend, reboot, power off | `Manager.Power` with a `PowerAction` |
+| Delay or block sleep, idle, shutdown, lid | `Manager.Inhibit` with an `InhibitWhat` set and an `InhibitMode` |
+| Lock state | `Session.Lock`, `LockedHint`, `SetLockedHint`, `WaitLocked` |
+| Device access for a compositor | `Session.TakeControl`, `TakeDevice`, `PauseDeviceComplete`, `ReleaseDevice` |
+| Backlight through logind | `Session.SetBrightness` |
+| Sleep, lock, device and property signals | `Session.Watch`, which takes signals only from logind's owner |
+
+`logind/logindtest` is a fake logind on a private bus that records every call.
+
 ## portaldialogs
 
 `portaldialogs` is the `dev.stubbe.lys.PortalDialogs1` contract: native dialogs
