@@ -61,10 +61,11 @@ const (
 // functions, which its offsets follow.
 const grainTables = av1.GrainLumaHeight*av1.GrainLumaWidth + 2*av1.GrainChromaHeight*av1.GrainChromaWidth + 3*256
 
-// newGrainPass makes the pass for pictures of extent at depth.
-func (d *Device) newGrainPass(extent [2]int, depth videoDepth) (*grainPass, error) {
+// newGrainPass makes the pass for 4:2:0 pictures of extent with samples
+// of bytes bytes.
+func (d *Device) newGrainPass(extent [2]int, bytes int) (*grainPass, error) {
 	g := &grainPass{d: d}
-	g.stride = alignUp((extent[0]+extent[0]%2)*depth.bytes(), 4) / 4
+	g.stride = alignUp((extent[0]+extent[0]%2)*bytes, 4) / 4
 	rows := extent[1] + (extent[1]+1)/2
 	blocks := ((extent[0]+1)/2 + 15) / 16 * (((extent[1]+1)/2 + 15) / 16)
 	var err error
@@ -186,7 +187,7 @@ type grainFrame struct {
 func (v *VideoDecoder) applyGrain(f *VideoFrame, g grainFrame) error {
 	d := v.d
 	if v.grain == nil {
-		pass, err := d.newGrainPass(v.extent(), v.shape.depth)
+		pass, err := d.newGrainPass(v.extent(), v.shape.samples.bytes())
 		if err != nil {
 			return err
 		}
@@ -214,7 +215,7 @@ func (v *VideoDecoder) applyGrain(f *VideoFrame, g grainFrame) error {
 		return err
 	}
 	d.awaitTimeline(f.decoding())
-	p.record(cb, f.tex.image, at, 4*words, g, v.shape.depth.bytes())
+	p.record(cb, f.tex.image, at, 4*words, g, v.shape.samples.bytes())
 	if err := d.flushBatch(); err != nil {
 		return err
 	}

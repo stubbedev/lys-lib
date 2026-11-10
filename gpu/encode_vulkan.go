@@ -264,8 +264,8 @@ func newVideoProfile(c Codec, codec videoCodec, i int) *videoProfile {
 	p.info = vk.VideoProfileInfoKHR{
 		SType: vk.StructureTypeVideoProfileInfoKhr, PNext: (*uintptr)(codec.profile(i, unsafe.Pointer(&p.usage))), VideoCodecOperation: c.operation(),
 		ChromaSubsampling: vk.VideoChromaSubsamplingFlagsKHR(vk.VideoChromaSubsampling420BitKhr),
-		LumaBitDepth:      depth8.component(),
-		ChromaBitDepth:    depth8.component(),
+		LumaBitDepth:      nv12Samples.component(),
+		ChromaBitDepth:    nv12Samples.component(),
 	}
 	p.list = vk.VideoProfileListInfoKHR{SType: vk.StructureTypeVideoProfileListInfoKhr, ProfileCount: 1, PProfiles: &p.info}
 	return p
@@ -386,14 +386,14 @@ func (vb *vulkanBackend) createParameters() error {
 func (vb *vulkanBackend) createImages() error {
 	d := vb.d
 	src := pictureSpec{
-		extent: vb.coded, depth: depth8, profiles: &vb.profile.list, layers: 1,
+		extent: vb.coded, samples: nv12Samples, profiles: &vb.profile.list, layers: 1,
 		usage:  vk.ImageUsageFlags(vk.ImageUsageVideoEncodeSrcBitKhr | vk.ImageUsageTransferDstBit),
 		family: d.video.family, shared: true,
 	}
 	dpb := src
 	dpb.usage, dpb.layers, dpb.shared = vk.ImageUsageFlags(vk.ImageUsageVideoEncodeDpbBitKhr), dpbSlots, false
 	for _, spec := range []*pictureSpec{&src, &dpb} {
-		format, err := d.videoFormat(spec.profiles, spec.usage, spec.depth, ErrNoVideoEncoder)
+		format, err := d.videoFormat(spec.profiles, spec.usage, spec.samples, ErrNoVideoEncoder)
 		if err != nil {
 			return err
 		}

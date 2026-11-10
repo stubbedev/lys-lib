@@ -11,10 +11,11 @@ import (
 	"os/exec"
 	"path/filepath"
 	"slices"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
-	"github.com/stubbedev/lys-lib/fourcc"
 	"github.com/stubbedev/lys-lib/media/demux"
 	"github.com/stubbedev/lys-lib/third_party/vk"
 )
@@ -48,27 +49,46 @@ type stream struct {
 	frames [][]byte
 }
 
-// rawFormats are ffmpeg's names of the formats the frames it decodes
-// are asked for in, for each picture format the decoder decodes into:
-// NV12 itself, and for P010 the planar 10 bits the streams are coded
-// in, which planarToP010 lays out as P010. ffmpeg's own conversion to
-// P010 leaves the last chroma column of an odd width zero.
-var rawFormats = map[fourcc.Format]string{fourcc.NV12: "nv12", fourcc.P010: "yuv420p10le"}
+// p010Samples are 10-bit 4:2:0 pictures.
+var p010Samples = videoSamples{bits: 10, chroma: chroma420}
 
-// planarToP010 lays a w x h yuv420p10le picture out as P010: each
-// sample in the high bits of its 16, the chroma planes interleaved.
-func planarToP010(planar []byte, w, h int) []byte {
-	luma, chroma := w*h, ((w+1)/2)*((h+1)/2)
+// rawFormat is ffmpeg's name of the format the frames it decodes are
+// asked for in, for pictures of samples: NV12 itself, and for every
+// other kind the planar format the streams are coded in, which
+// interleaved lays out as the decoder's pictures. ffmpeg's own
+// conversion to P010 leaves the last chroma column of an odd width
+// zero.
+func rawFormat(s videoSamples) string {
+	if s == nv12Samples {
+		return "nv12"
+	}
+	name := "yuv" + strings.ReplaceAll(s.chroma.String(), ":", "") + "p"
+	if s.bits > 8 {
+		name += strconv.Itoa(int(s.bits)) + "le"
+	}
+	return name
+}
+
+// interleaved lays a w x h planar picture of samples out as the
+// decoder's pictures are: luma, then the chroma planes interleaved,
+// each sample of more than 8 bits in the high bits of its 16.
+func interleaved(planar []byte, w, h int, s videoSamples) []byte {
+	cw, ch := s.chromaSize(w, h)
+	luma, chroma, bytes := w*h, cw*ch, s.bytes()
 	out := make([]byte, len(planar))
-	put := func(at int, sample []byte) {
-		binary.LittleEndian.PutUint16(out[2*at:], binary.LittleEndian.Uint16(sample)<<6)
+	put := func(at, from int) {
+		if bytes == 1 {
+			out[at] = planar[from]
+			return
+		}
+		binary.LittleEndian.PutUint16(out[2*at:], binary.LittleEndian.Uint16(planar[2*from:])<<(16-s.bits))
 	}
 	for i := range luma {
-		put(i, planar[2*i:])
+		put(i, i)
 	}
 	for i := range chroma {
-		put(luma+2*i, planar[2*(luma+i):])
-		put(luma+2*i+1, planar[2*(luma+chroma+i):])
+		put(luma+2*i, luma+i)
+		put(luma+2*i+1, luma+chroma+i)
 	}
 	return out
 }
@@ -85,11 +105,11 @@ func ffmpegClip(t *testing.T, name string, w, h int, secs float64, args ...strin
 // arguments in turn; the last pass writes the file.
 func ffmpegPasses(t *testing.T, name string, w, h int, secs float64, passes ...[]string) stream {
 	t.Helper()
-	return encodeClip(t, name, w, h, secs, fourcc.NV12, passes...)
+	return encodeClip(t, name, w, h, secs, nv12Samples, passes...)
 }
 
 // encodeClip is ffmpegPasses with the frames decoded back as format.
-func encodeClip(t *testing.T, name string, w, h int, secs float64, format fourcc.Format, passes ...[]string) stream {
+func encodeClip(t *testing.T, name string, w, h int, secs float64, format videoSamples, passes ...[]string) stream {
 	t.Helper()
 	dir := t.TempDir()
 	path := filepath.Join(dir, name)
@@ -108,9 +128,9 @@ func encodeClip(t *testing.T, name string, w, h int, secs float64, format fourcc
 
 // ffmpegDecoded is the w x h stream at path with the frames ffmpeg
 // decodes from it as format.
-func ffmpegDecoded(t *testing.T, path string, w, h int, format fourcc.Format) stream {
+func ffmpegDecoded(t *testing.T, path string, w, h int, format videoSamples) stream {
 	t.Helper()
-	raw := runFFmpeg(t, "-v", "error", "-i", path, "-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", rawFormats[format], "-")
+	raw := runFFmpeg(t, "-v", "error", "-i", path, "-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", rawFormat(format), "-")
 	size := pictureSize(w, h, format)
 	if len(raw)%size != 0 || len(raw) == 0 {
 		t.Fatalf("ffmpeg decoded %d bytes of %dx%d %s frames", len(raw), w, h, format)
@@ -118,8 +138,8 @@ func ffmpegDecoded(t *testing.T, path string, w, h int, format fourcc.Format) st
 	c := stream{path: path, w: w, h: h}
 	for len(raw) > 0 {
 		frame := raw[:size]
-		if format == fourcc.P010 {
-			frame = planarToP010(frame, w, h)
+		if format != nv12Samples {
+			frame = interleaved(frame, w, h, format)
 		}
 		c.frames, raw = append(c.frames, frame), raw[size:]
 	}
@@ -216,14 +236,15 @@ func takeFrames(t *testing.T, v *VideoDecoder, out []decoded) []decoded {
 }
 
 // readPicture copies f's picture back to the CPU through the graphics
-// queue, which waits for its decode, as NV12 or P010 (its texture's
-// format) of its picture.
+// queue, which waits for its decode: its luma, then its interleaved
+// chroma, as the frame's format holds its samples.
 func readPicture(t *testing.T, f *VideoFrame) []byte {
 	t.Helper()
 	d := f.v.d
 	w, h := f.extent[0], f.extent[1]
-	bps := sampleBytes(f.tex.format)
-	buf, err := d.newReadBuffer(pictureSize(w, h, f.tex.format), vk.BufferUsageTransferDstBit, nil)
+	bps := f.samples.bytes()
+	cw, ch := f.samples.chromaSize(w, h)
+	buf, err := d.newReadBuffer(pictureSize(w, h, f.samples), vk.BufferUsageTransferDstBit, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -234,7 +255,7 @@ func readPicture(t *testing.T, f *VideoFrame) []byte {
 		fullBarrier(d, cb, img, vk.ImageLayoutShaderReadOnlyOptimal, vk.ImageLayoutTransferSrcOptimal, vk.QueueFamilyIgnored, vk.QueueFamilyIgnored)
 		regions := [2]vk.BufferImageCopy{
 			{ImageSubresource: vk.ImageSubresourceLayers{AspectMask: vk.ImageAspectFlags(vk.ImageAspectPlane0Bit), LayerCount: 1}, ImageExtent: extent3D(w, h)},
-			{BufferOffset: vk.DeviceSize(w * h * bps), ImageSubresource: vk.ImageSubresourceLayers{AspectMask: vk.ImageAspectFlags(vk.ImageAspectPlane1Bit), LayerCount: 1}, ImageExtent: extent3D(w/2, h/2)},
+			{BufferOffset: vk.DeviceSize(w * h * bps), ImageSubresource: vk.ImageSubresourceLayers{AspectMask: vk.ImageAspectFlags(vk.ImageAspectPlane1Bit), LayerCount: 1}, ImageExtent: extent3D(cw, ch)},
 		}
 		d.cmds.CmdCopyImageToBuffer(cb, img, vk.ImageLayoutTransferSrcOptimal, buf.buf, 2, &regions[0])
 		fullBarrier(d, cb, img, vk.ImageLayoutTransferSrcOptimal, vk.ImageLayoutShaderReadOnlyOptimal, vk.QueueFamilyIgnored, vk.QueueFamilyIgnored)
@@ -250,16 +271,18 @@ func readPicture(t *testing.T, f *VideoFrame) []byte {
 	if r.Min.X%2 != 0 || r.Min.Y%2 != 0 {
 		t.Fatalf("rect %v starts within a chroma sample", r)
 	}
-	out := make([]byte, 0, pictureSize(r.Dx(), r.Dy(), f.tex.format))
+	out := make([]byte, 0, pictureSize(r.Dx(), r.Dy(), f.samples))
 	stride := w * bps
 	for y := r.Min.Y; y < r.Max.Y; y++ {
 		at := y*stride + r.Min.X*bps
 		out = append(out, buf.mapped[at:at+r.Dx()*bps]...)
 	}
-	chromaW := 2 * ((r.Dx() + 1) / 2) * bps
-	for y := r.Min.Y / 2; y < (r.Max.Y+1)/2; y++ {
-		at := h*stride + y*stride + r.Min.X*bps
-		out = append(out, buf.mapped[at:at+chromaW]...)
+	sx, sy := w/cw, h/ch
+	chromaStride := 2 * cw * bps
+	chromaW, chromaH := f.samples.chromaSize(r.Dx(), r.Dy())
+	for y := range chromaH {
+		at := h*stride + (r.Min.Y/sy+y)*chromaStride + 2*(r.Min.X/sx)*bps
+		out = append(out, buf.mapped[at:at+2*chromaW*bps]...)
 	}
 	return out
 }
@@ -433,21 +456,25 @@ func TestDecodeH264ResetsAtAKeyframe(t *testing.T) {
 // and range its VUI names (BT.601 limited range unnamed, at this
 // size), chroma reconstructed linearly between samples sited as H.264
 // and H.265 site them: with the even luma columns, between the rows. A
-// 10-bit picture draws from its P010 texture at its 10 bits. Only its
-// picture draws, not the padding the codec adds around it.
+// 10-bit or 12-bit picture draws at its depth, and a 4:4:4 one with
+// the chroma of each pixel its own. Only its picture draws, not the
+// padding the codec adds around it.
 func TestDecodedFrameDraws(t *testing.T) {
 	for _, c := range []struct {
 		name   string
 		codec  demux.Codec
 		w, h   int
 		args   []string
-		format fourcc.Format
+		format videoSamples
 		matrix YCbCrMatrix
 		rng    YCbCrRange
 	}{
-		{"unnamed", demux.H264, 174, 98, []string{"-c:v", "libx264"}, fourcc.NV12, BT601, LimitedRange},
-		{"BT.709 full range", demux.H264, 174, 98, []string{"-c:v", "libx264", "-colorspace", "bt709", "-color_range", "pc"}, fourcc.NV12, BT709, FullRange},
-		{"10-bit BT.2020", demux.H265, 174, 144, []string{"-c:v", "libx265", "-pix_fmt", "yuv420p10le", "-colorspace", "bt2020nc", "-x265-params", "log-level=none"}, fourcc.P010, BT2020, LimitedRange},
+		{"unnamed", demux.H264, 174, 98, []string{"-c:v", "libx264"}, nv12Samples, BT601, LimitedRange},
+		{"BT.709 full range", demux.H264, 174, 98, []string{"-c:v", "libx264", "-colorspace", "bt709", "-color_range", "pc"}, nv12Samples, BT709, FullRange},
+		{"10-bit BT.2020", demux.H265, 174, 144, []string{"-c:v", "libx265", "-pix_fmt", "yuv420p10le", "-colorspace", "bt2020nc", "-x265-params", "log-level=none"}, p010Samples, BT2020, LimitedRange},
+		{"12-bit", demux.H265, 174, 144, []string{"-c:v", "libx265", "-pix_fmt", "yuv420p12le", "-colorspace", "bt709", "-x265-params", "log-level=none"}, videoSamples{12, chroma420}, BT709, LimitedRange},
+		{"4:4:4", demux.H265, 174, 144, []string{"-c:v", "libx265", "-pix_fmt", "yuv444p", "-colorspace", "bt709", "-x265-params", "log-level=none"}, videoSamples{8, chroma444}, BT709, LimitedRange},
+		{"10-bit 4:4:4 full range", demux.H265, 174, 144, []string{"-c:v", "libx265", "-pix_fmt", "yuv444p10le", "-colorspace", "bt709", "-color_range", "pc", "-x265-params", "log-level=none"}, videoSamples{10, chroma444}, BT709, FullRange},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			d := decodingDevice(t, c.codec)
@@ -467,8 +494,8 @@ func TestDecodedFrameDraws(t *testing.T) {
 				t.Fatal("the first packet completed no frame")
 			}
 			defer f.Release()
-			if got := f.tex.format; got != c.format {
-				t.Errorf("texture in %s, want %s", got, c.format)
+			if f.samples != c.format {
+				t.Errorf("a frame of %s samples, want %s", f.samples, c.format)
 			}
 			size := f.Size()
 			if size != image.Pt(c.w, c.h) {
@@ -486,9 +513,14 @@ func TestDecodedFrameDraws(t *testing.T) {
 			pic := newSamples(cl.frames[0], c.format)
 			w, h := size.X, size.Y
 			want := make([]byte, 0, w*h*3)
+			cw, ch := c.format.chromaSize(w, h)
 			for y := range h {
 				for x := range w {
-					u, v := chromaAt(pic, w*h, w/2, h/2, float64(x)/2, (float64(y)-0.5)/2)
+					cx, cy := float64(x), float64(y)
+					if c.format.chroma == chroma420 {
+						cx, cy = cx/2, (cy-0.5)/2
+					}
+					u, v := chromaAt(pic, w*h, cw, ch, cx, cy)
 					px := expectRGB(pic.at(y*w+x), u, v, pic.bits, c.matrix, c.rng)
 					want = append(want, px.R, px.G, px.B)
 				}
@@ -502,25 +534,21 @@ func TestDecodedFrameDraws(t *testing.T) {
 	}
 }
 
-// samples reads the samples of an NV12 or P010 picture by index, at
-// their depth.
+// samples reads the samples of a picture by index, at their depth.
 type samples struct {
 	b     []byte
 	bytes int
 	bits  int
 }
 
-func newSamples(b []byte, format fourcc.Format) samples {
-	if format == fourcc.P010 {
-		return samples{b, 2, 10}
-	}
-	return samples{b, 1, 8}
+func newSamples(b []byte, format videoSamples) samples {
+	return samples{b, format.bytes(), int(format.bits)}
 }
 
 // at is sample i.
 func (s samples) at(i int) float64 {
 	if s.bytes == 2 {
-		return float64(binary.LittleEndian.Uint16(s.b[2*i:]) >> 6)
+		return float64(binary.LittleEndian.Uint16(s.b[2*i:]) >> (16 - s.bits))
 	}
 	return float64(s.b[i])
 }
@@ -585,17 +613,10 @@ func TestDecodeDoesNotAllocate(t *testing.T) {
 	}
 }
 
-// pictureSize is the bytes of a w x h NV12 or P010 picture: a chroma
-// sample pair for each 2x2 luma block, the odd last column and row
-// included.
-func pictureSize(w, h int, format fourcc.Format) int {
-	return (w*h + 2*((w+1)/2)*((h+1)/2)) * sampleBytes(format)
-}
-
-// sampleBytes is the bytes of an NV12 or P010 sample.
-func sampleBytes(format fourcc.Format) int {
-	if format == fourcc.P010 {
-		return 2
-	}
-	return 1
+// pictureSize is the bytes of a w x h picture of format: its luma and a
+// pair of samples for each chroma sample, the odd last column and row
+// of subsampled chroma included.
+func pictureSize(w, h int, format videoSamples) int {
+	cw, ch := format.chromaSize(w, h)
+	return (w*h + 2*cw*ch) * format.bytes()
 }

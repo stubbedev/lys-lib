@@ -105,16 +105,21 @@ type decodeSlot struct {
 // the coded size in luma samples, the DPB slots and the references a
 // picture may name, how many pictures presentation order holds back,
 // how many decoded pictures the codec keeps hidden to show later, the
-// pictures' sample depth and the YCbCr conversion they sample through.
+// pictures' samples and the YCbCr conversion they sample through.
+// unverified, when not empty, is what about the stream no device has
+// been seen to decode right: a device that says it decodes the profile
+// is refused it all the same, rather than trusted with pictures nothing
+// has checked.
 type decodeShape struct {
-	profile int
-	coded   [2]int
-	slots   int
-	refs    int
-	reorder int
-	hidden  int
-	depth   videoDepth
-	ycbcr   YCbCr
+	profile    int
+	coded      [2]int
+	slots      int
+	refs       int
+	reorder    int
+	hidden     int
+	samples    videoSamples
+	ycbcr      YCbCr
+	unverified string
 }
 
 // decodeCodec is what a decoder does differently per codec: it reads
@@ -372,8 +377,8 @@ func (v *VideoDecoder) pickProfile() error {
 		p := &decodeProfile{}
 		p.info = vk.VideoProfileInfoKHR{
 			SType: vk.StructureTypeVideoProfileInfoKhr, PNext: (*uintptr)(v.codec.profile(i, nil)), VideoCodecOperation: v.op,
-			ChromaSubsampling: vk.VideoChromaSubsamplingFlagsKHR(vk.VideoChromaSubsampling420BitKhr),
-			LumaBitDepth:      v.shape.depth.component(), ChromaBitDepth: v.shape.depth.component(),
+			ChromaSubsampling: v.shape.samples.subsampling(),
+			LumaBitDepth:      v.shape.samples.component(), ChromaBitDepth: v.shape.samples.component(),
 		}
 		p.list = vk.VideoProfileListInfoKHR{SType: vk.StructureTypeVideoProfileListInfoKhr, ProfileCount: 1, PProfiles: &p.info}
 		c := &decodeCaps{}
@@ -390,7 +395,10 @@ func (v *VideoDecoder) pickProfile() error {
 		break
 	}
 	if v.profile == nil {
-		return fmt.Errorf("%w: %s decodes none of the %s profiles for profile %d: %w", ErrNoVideoDecoder, d.name, v.name, v.shape.profile, resultError(last))
+		return fmt.Errorf("%w: %s decodes no %s profile %d at %s: vkGetPhysicalDeviceVideoCapabilitiesKHR answers %w", ErrNoVideoDecoder, d.name, v.name, v.shape.profile, v.shape.samples, resultError(last))
+	}
+	if what := v.shape.unverified; what != "" {
+		return fmt.Errorf("%w: %s says it decodes %s profile %d at %s (vkGetPhysicalDeviceVideoCapabilitiesKHR succeeds), but %s is verified on no device and refused rather than decoded unchecked", ErrNoVideoDecoder, d.name, v.name, v.shape.profile, v.shape.samples, what)
 	}
 	if err := v.codec.checkCaps(); err != nil {
 		return fmt.Errorf("%w: %s: %w", ErrNoVideoDecoder, d.name, err)
@@ -415,21 +423,21 @@ func (v *VideoDecoder) pickProfile() error {
 			vk.ImageUsageFlags(vk.ImageUsageTransferDstBit | vk.ImageUsageSampledBit | vk.ImageUsageTransferSrcBit),
 			vk.ImageUsageFlags(vk.ImageUsageVideoDecodeDpbBitKhr | vk.ImageUsageVideoDecodeDstBitKhr | vk.ImageUsageTransferSrcBit),
 		}
-		v.format[0] = vk.VideoFormatPropertiesKHR{Format: v.shape.depth.vk(), ImageType: vk.ImageType2d, ImageTiling: vk.ImageTilingOptimal}
+		v.format[0] = vk.VideoFormatPropertiesKHR{Format: v.shape.samples.vk(), ImageType: vk.ImageType2d, ImageTiling: vk.ImageTilingOptimal}
 		need := vk.FormatFeatureFlags(vk.FormatFeatureSampledImageBit | vk.FormatFeatureTransferDstBit)
 		if v.sampledFeatures()&need != need {
-			return fmt.Errorf("%w: %s neither samples nor copies into %s images", ErrNoVideoDecoder, d.name, v.shape.depth.format())
+			return fmt.Errorf("%w: %s neither samples nor copies into %s images (VkFormat %d)", ErrNoVideoDecoder, d.name, v.shape.samples, v.shape.samples.vk())
 		}
 	} else {
 		v.usage = [2]vk.ImageUsageFlags{
 			vk.ImageUsageFlags(vk.ImageUsageVideoDecodeDstBitKhr | vk.ImageUsageSampledBit | vk.ImageUsageTransferSrcBit),
 			vk.ImageUsageFlags(vk.ImageUsageVideoDecodeDpbBitKhr),
 		}
-		if v.format[0], err = d.videoFormat(&v.profile.list, v.usage[0], v.shape.depth, ErrNoVideoDecoder); err != nil {
+		if v.format[0], err = d.videoFormat(&v.profile.list, v.usage[0], v.shape.samples, ErrNoVideoDecoder); err != nil {
 			return err
 		}
 	}
-	v.format[1], err = d.videoFormat(&v.profile.list, v.usage[1], v.shape.depth, ErrNoVideoDecoder)
+	v.format[1], err = d.videoFormat(&v.profile.list, v.usage[1], v.shape.samples, ErrNoVideoDecoder)
 	return err
 }
 
@@ -440,7 +448,7 @@ func (v *VideoDecoder) createSession() error {
 	extent := v.extent()
 	sci := vk.VideoSessionCreateInfoKHR{
 		SType: vk.StructureTypeVideoSessionCreateInfoKhr, QueueFamilyIndex: d.decode.family, PVideoProfile: &v.profile.info,
-		PictureFormat: v.shape.depth.vk(), MaxCodedExtent: extent2D(extent[0], extent[1]), ReferencePictureFormat: v.shape.depth.vk(),
+		PictureFormat: v.shape.samples.vk(), MaxCodedExtent: extent2D(extent[0], extent[1]), ReferencePictureFormat: v.shape.samples.vk(),
 		MaxDpbSlots: intconv.Must[uint32](v.shape.slots), MaxActiveReferencePictures: intconv.Must[uint32](v.shape.refs),
 		PStdHeaderVersion: &v.caps.video.StdHeaderVersion,
 	}
@@ -493,7 +501,7 @@ func (v *VideoDecoder) extent() [2]int {
 // when shared.
 func (v *VideoDecoder) newPicture(format vk.VideoFormatPropertiesKHR, usage vk.ImageUsageFlags, layers int, shared bool) (videoImage, error) {
 	return v.d.newPicture(pictureSpec{
-		extent: v.extent(), depth: v.shape.depth, profiles: &v.profile.list, format: format, usage: usage, layers: layers,
+		extent: v.extent(), samples: v.shape.samples, profiles: &v.profile.list, format: format, usage: usage, layers: layers,
 		family: v.d.decode.family, shared: shared,
 	})
 }
@@ -518,6 +526,7 @@ type VideoFrame struct {
 	tex      *Texture
 	pic      videoImage
 	extent   [2]int
+	samples  videoSamples
 	ycbcr    YCbCr
 	rect     image.Rectangle
 	pts      time.Duration
@@ -660,7 +669,7 @@ func (v *VideoDecoder) frame() (*VideoFrame, error) {
 			if f.state != frameFree || f.after > d.completed {
 				continue
 			}
-			if f.extent == extent && f.ycbcr == v.shape.ycbcr && f.tex.format == v.shape.depth.format() {
+			if f.extent == extent && f.ycbcr == v.shape.ycbcr && f.samples == v.shape.samples {
 				return f
 			}
 			f.destroy()
@@ -711,10 +720,9 @@ func (v *VideoDecoder) newFrame() (*VideoFrame, error) {
 		return nil, fmt.Errorf("gpu: %s frame: %w", v.name, err)
 	}
 	extent := v.extent()
-	format := v.shape.depth.format()
-	pf := pixelFormats[format]
-	t := &Texture{d: d, format: format, pf: pf, w: extent[0], h: extent[1], image: pic.image, memory: []vk.DeviceMemory{pic.memory}, layout: vk.ImageLayoutShaderReadOnlyOptimal}
-	f := &VideoFrame{v: v, pic: videoImage{views: pic.views}, extent: extent, ycbcr: v.shape.ycbcr}
+	pf := v.shape.samples.pixel()
+	t := &Texture{d: d, pf: pf, w: extent[0], h: extent[1], image: pic.image, memory: []vk.DeviceMemory{pic.memory}, layout: vk.ImageLayoutShaderReadOnlyOptimal}
+	f := &VideoFrame{v: v, pic: videoImage{views: pic.views}, extent: extent, samples: v.shape.samples, ycbcr: v.shape.ycbcr}
 	if t.ycbcr, err = d.ycbcrKindOf(pf, v.shape.ycbcr, v.sampledFeatures()); err == nil {
 		err = t.createView()
 	}
@@ -731,7 +739,7 @@ func (v *VideoDecoder) newFrame() (*VideoFrame, error) {
 // the tiling the decoder's output pictures have.
 func (v *VideoDecoder) sampledFeatures() vk.FormatFeatureFlags {
 	var props vk.FormatProperties
-	v.d.cmds.GetPhysicalDeviceFormatProperties(v.d.phys, v.shape.depth.vk(), &props)
+	v.d.cmds.GetPhysicalDeviceFormatProperties(v.d.phys, v.shape.samples.vk(), &props)
 	if v.format[0].ImageTiling == vk.ImageTilingLinear {
 		return props.LinearTilingFeatures
 	}
@@ -942,13 +950,14 @@ func (v *VideoDecoder) barriersAfter(cb vk.CommandBuffer, p *decodePicture) {
 	to.DstStageMask, to.DstAccessMask = copying, vk.AccessFlags2(vk.Access2TransferWriteBit)
 	barrier2(d, cb, nil, from, to)
 	w, h := v.shape.coded[0], v.shape.coded[1]
+	cw, ch := v.shape.samples.chromaSize(w, h)
 	plane := func(aspect vk.ImageAspectFlagBits, layer uint32) vk.ImageSubresourceLayers {
 		return vk.ImageSubresourceLayers{AspectMask: flags[vk.ImageAspectFlags](aspect), BaseArrayLayer: layer, LayerCount: 1}
 	}
 	src := intconv.Must[uint32](p.setup)
 	c.regions = [2]vk.ImageCopy{
 		{SrcSubresource: plane(vk.ImageAspectPlane0Bit, src), DstSubresource: plane(vk.ImageAspectPlane0Bit, 0), Extent: extent3D(w, h)},
-		{SrcSubresource: plane(vk.ImageAspectPlane1Bit, src), DstSubresource: plane(vk.ImageAspectPlane1Bit, 0), Extent: extent3D((w+1)/2, (h+1)/2)},
+		{SrcSubresource: plane(vk.ImageAspectPlane1Bit, src), DstSubresource: plane(vk.ImageAspectPlane1Bit, 0), Extent: extent3D(cw, ch)},
 	}
 	d.cmds.CmdCopyImage(cb, v.dpb.image, vk.ImageLayoutTransferSrcOptimal, frame, vk.ImageLayoutTransferDstOptimal, 2, &c.regions[0])
 	from = imageBarrier(v.dpb.image, layer, vk.ImageLayoutTransferSrcOptimal, vk.ImageLayoutVideoDecodeDpbKhr)

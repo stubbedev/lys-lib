@@ -7,7 +7,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/stubbedev/lys-lib/fourcc"
 	"github.com/stubbedev/lys-lib/media/demux"
 	"github.com/stubbedev/lys-lib/testbuild"
 )
@@ -72,17 +71,17 @@ func TestDecodeAV1FilmGrain(t *testing.T) {
 	type grained struct {
 		name   string
 		w, h   int
-		format fourcc.Format
+		format videoSamples
 		args   []string
 	}
 	clips := []grained{
-		{"estimated, hidden frames", 192, 128, fourcc.NV12, libaom("", "-g", "12", "-lag-in-frames", "16", "-denoise-noise-level", "10")},
-		{"estimated, 10 bits, odd size", 271, 153, fourcc.P010, libaom("", "-g", "12", "-pix_fmt", "yuv420p10le", "-denoise-noise-level", "10")},
+		{"estimated, hidden frames", 192, 128, nv12Samples, libaom("", "-g", "12", "-lag-in-frames", "16", "-denoise-noise-level", "10")},
+		{"estimated, 10 bits, odd size", 271, 153, p010Samples, libaom("", "-g", "12", "-pix_fmt", "yuv420p10le", "-denoise-noise-level", "10")},
 	}
 	for n := 1; n <= 16; n++ {
-		c := grained{"test vector " + strconv.Itoa(n), 192, 128, fourcc.NV12, libaom("film-grain-test="+strconv.Itoa(n), "-g", "6")}
+		c := grained{"test vector " + strconv.Itoa(n), 192, 128, nv12Samples, libaom("film-grain-test="+strconv.Itoa(n), "-g", "6")}
 		if n%2 == 0 {
-			c.format, c.args = fourcc.P010, append(c.args, "-pix_fmt", "yuv420p10le")
+			c.format, c.args = p010Samples, append(c.args, "-pix_fmt", "yuv420p10le")
 		}
 		clips = append(clips, c)
 	}

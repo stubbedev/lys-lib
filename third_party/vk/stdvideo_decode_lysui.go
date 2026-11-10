@@ -176,6 +176,8 @@ const (
 	StdVideoH265StrpsInterRefPicSetPrediction         uint32 = 1 << 0
 	StdVideoH265StrpsDeltaRpsSign                     uint32 = 1 << 1
 
-	StdVideoH265ProfileIdcMain10           StdVideoH265ProfileIdc = 2
-	StdVideoH265ProfileIdcMainStillPicture StdVideoH265ProfileIdc = 3
+	StdVideoH265ProfileIdcMain10                StdVideoH265ProfileIdc = 2
+	StdVideoH265ProfileIdcMainStillPicture      StdVideoH265ProfileIdc = 3
+	StdVideoH265ProfileIdcFormatRangeExtensions StdVideoH265ProfileIdc = 4
+	StdVideoH264ProfileIdcHigh444Predictive     StdVideoH264ProfileIdc = 244
 )

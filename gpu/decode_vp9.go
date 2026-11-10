@@ -148,9 +148,14 @@ func (c *vp9Decoder) frame(v *VideoDecoder, p demux.Packet, b []byte) error {
 func (c *vp9Decoder) shape() (decodeShape, error) {
 	h := &c.hdr
 	col := &h.Color
-	depth, ok := depthOf(col.BitDepth)
-	if h.Profile&1 != 0 || !ok || !col.SubsamplingX || !col.SubsamplingY {
-		return decodeShape{}, fmt.Errorf("%w: the stream is VP9 profile %d at %d bits, subsampled %v by %v; only 4:2:0 profiles 0 and 2 at 8 or 10 bits are decoded", ErrNoVideoDecoder, h.Profile, col.BitDepth, col.SubsamplingX, col.SubsamplingY)
+	chroma, coloured := chromaOfSubsampling(col.SubsamplingX, col.SubsamplingY)
+	samples, ok := samplesOf(col.BitDepth, chroma)
+	if !coloured || !ok {
+		return decodeShape{}, fmt.Errorf("%w: the stream is VP9 profile %d at %d bits, subsampled %v by %v, which pictures have no format for", ErrNoVideoDecoder, h.Profile, col.BitDepth, col.SubsamplingX, col.SubsamplingY)
+	}
+	unverified := ""
+	if chroma != chroma420 {
+		unverified = "decoding VP9 beyond 4:2:0 (profiles 1 and 3)"
 	}
 	signal := videoSignal{typed: true, fullRange: col.FullRange, described: true, lines: h.FrameHeight}
 	switch col.ColorSpace {
@@ -171,7 +176,7 @@ func (c *vp9Decoder) shape() (decodeShape, error) {
 	}
 	return decodeShape{
 		profile: int(h.Profile), coded: [2]int{h.FrameWidth, h.FrameHeight},
-		slots: refSlotPictures, refs: vp9.RefsPerFrame, hidden: vp9.NumRefFrames, depth: depth, ycbcr: ycbcr,
+		slots: refSlotPictures, refs: vp9.RefsPerFrame, hidden: vp9.NumRefFrames, samples: samples, ycbcr: ycbcr, unverified: unverified,
 	}, nil
 }
 

@@ -192,10 +192,11 @@ func main() {
   YCbCr matrix, range and chroma siting come from the stream's VUI, AV1 colour
   config or VP9 colour space (an unnamed matrix is BT.709 from 720 lines up,
   BT.601 below). An AV1 frame's `Size` is its render size where that crops the
-  frame, else the frame's; a VP9 frame's is the frame's. An 8-bit stream
-  decodes into NV12 pictures, a 10-bit one into P010
-  (`G10X6_B10X6R10X6_2PLANE_420`), both drawn through the sampler's YCbCr
-  conversion.
+  frame, else the frame's; a VP9 frame's is the frame's. Pictures are luma and
+  a plane of interleaved chroma in the stream's depth and chroma format: NV12
+  for 8-bit 4:2:0, P010 (`G10X6_B10X6R10X6_2PLANE_420`) for 10-bit, and the
+  12-bit and 4:4:4 formats of the same family, all drawn through the sampler's
+  YCbCr conversion.
 - A frame's texture belongs to the decoder and is never handed out, so nothing
   can update or close it: `Release` hands the frame back, and the decoder
   decodes into it again once the passes that drew it, the open one too, have
@@ -219,8 +220,10 @@ func main() {
   bits (hidden alternate reference frames in superframes, all three
   references, segmentation with temporal prediction and cyclic refresh, tile
   columns, error resilient and lossless frames, odd sizes; libvpx streams in
-  WebM and MP4), 4:2:0 progressive only. Interlaced H.264, 10-bit H.264,
-  12-bit and 4:2:2/4:4:4 streams are errors that say so, as are AV1 frames
+  WebM and MP4), and, where the device decodes them (NVIDIA does), 12-bit
+  H.265 and VP9 profile 2 and 4:4:4 H.265 at 8, 10 and 12 bits (the format
+  range extensions). Progressive only: interlaced H.264 is an error that says
+  so, as are AV1 frames
   coded at a superres-scaled width, AV1 and VP9 inter frames whose size
   differs from their references' (reference scaling), a frame showing a frame
   it already showed, and frames smaller than the device decodes (NVIDIA
@@ -232,6 +235,15 @@ func main() {
   block offsets (`internal/av1`), and a compute pass of the graphics queue
   adds the noise to the frame's picture after its decode, ahead of any pass
   that draws it. Nothing waits for it, and `Decoded` covers it.
+- Every other depth and chroma format is put to the device: a stream it
+  refuses fails with `ErrNoVideoDecoder` naming the profile, the samples and
+  the answer of `vkGetPhysicalDeviceVideoCapabilitiesKHR`
+  (`VK_ERROR_VIDEO_PROFILE_FORMAT_NOT_SUPPORTED_KHR` from NVIDIA for H.264
+  High 10, High 4:2:2 and High 4:4:4, 4:2:2 H.265, AV1 High and Professional
+  and VP9 profiles 1 and 3). Those formats are verified on no device, so one
+  that accepts the query is refused them too, saying so, rather than trusted
+  with pictures nothing has checked. Monochrome streams have no picture format
+  and are refused when parsed.
 - A stream in a format that is not decoded fails with `ErrNoVideoDecoder`,
   from `NewVideoDecoder` or the `Decode` that meets it, for every codec: the
   error says what the stream is and wraps what the parser read. A malformed

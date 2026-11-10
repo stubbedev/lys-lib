@@ -2,44 +2,11 @@ package gpu
 
 import (
 	"errors"
-	"strings"
 	"testing"
 
 	"github.com/stubbedev/lys-lib/internal/nal"
 	"github.com/stubbedev/lys-lib/media/demux"
 )
-
-// A stream in a format the decoder does not decode is ErrNoVideoDecoder,
-// from NewVideoDecoder or the first Decode, with what the parser read
-// of it: a caller tells it from a malformed stream, which is not, with
-// errors.Is.
-func TestUnsupportedFormatsAreNoVideoDecoder(t *testing.T) {
-	for _, c := range []struct {
-		name  string
-		codec demux.Codec
-		args  []string
-		read  error
-		says  string
-	}{
-		{"H.264 High 10", demux.H264, []string{"-c:v", "libx264", "-pix_fmt", "yuv420p10le"}, nal.ErrH264, "10 and 10 bits"},
-		{"H.264 4:2:2", demux.H264, []string{"-c:v", "libx264", "-pix_fmt", "yuv422p"}, nal.ErrH264, "chroma_format_idc 2"},
-		{"H.265 4:2:2 10-bit", demux.H265, []string{"-c:v", "libx265", "-pix_fmt", "yuv422p10le", "-x265-params", "log-level=none"}, nal.ErrHEVC, "chroma_format_idc 2"},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			d := decodingDevice(t, c.codec)
-			cl := ffmpegClip(t, "a.mp4", 160, 144, 0.2, c.args...)
-			track, pkts := packets(t, cl.path)
-			v, err := d.NewVideoDecoder(track)
-			if err == nil {
-				defer v.Close()
-				err = v.Decode(pkts[0])
-			}
-			if !errors.Is(err, ErrNoVideoDecoder) || !errors.Is(err, c.read) || !strings.Contains(err.Error(), c.says) {
-				t.Errorf("%v, want ErrNoVideoDecoder wrapping %v and saying %q", err, c.read, c.says)
-			}
-		})
-	}
-}
 
 // A malformed packet is an error that is not ErrNoVideoDecoder: the
 // decoder decodes the format, and the stream is broken.

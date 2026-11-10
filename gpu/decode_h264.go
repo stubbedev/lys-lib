@@ -414,16 +414,29 @@ func h264LongTerm(pic *h264Pic) (uint32, bool) {
 	return 0, false
 }
 
-// h264Decodes refuses a sequence outside what the decoder decodes:
-// interlaced coding, and anything but 8-bit 4:2:0.
+// h264Decodes refuses a sequence no device is asked to decode:
+// interlaced coding, and pictures there is no format for (monochrome,
+// colour planes coded apart, luma and chroma of different depths, a
+// depth past 12 bits).
 func h264Decodes(s *nal.H264SPS) error {
 	if !s.FrameMbsOnly {
 		return fmt.Errorf("%w: SPS %d codes interlaced fields or field-pair frames: %w", nal.ErrH264, s.ID, nal.ErrUnsupported)
 	}
-	if s.ChromaFormatIdc != 1 || s.BitDepthLumaMinus8 != 0 || s.BitDepthChromaMinus8 != 0 {
-		return fmt.Errorf("%w: SPS %d is chroma_format_idc %d at %d and %d bits, and only 8-bit 4:2:0 is decoded: %w", nal.ErrH264, s.ID, s.ChromaFormatIdc, 8+s.BitDepthLumaMinus8, 8+s.BitDepthChromaMinus8, nal.ErrUnsupported)
+	if _, err := h264Samples(s); err != nil {
+		return err
 	}
 	return nil
+}
+
+// h264Samples are the samples of s's pictures.
+func h264Samples(s *nal.H264SPS) (videoSamples, error) {
+	chroma, coloured := chromaOfIdc(s.ChromaFormatIdc)
+	samples, ok := samplesOf(8+int(s.BitDepthLumaMinus8), chroma)
+	if !coloured || !ok || s.SeparateColourPlane || s.BitDepthChromaMinus8 != s.BitDepthLumaMinus8 {
+		return videoSamples{}, fmt.Errorf("%w: SPS %d is chroma_format_idc %d (colour planes coded apart: %v) at %d and %d bits, which pictures have no format for: %w",
+			nal.ErrH264, s.ID, s.ChromaFormatIdc, s.SeparateColourPlane, 8+s.BitDepthLumaMinus8, 8+s.BitDepthChromaMinus8, nal.ErrUnsupported)
+	}
+	return samples, nil
 }
 
 // h264MaxDpbMbs is MaxDpbMbs (Table A-1) of each level of h264Levels.
@@ -455,19 +468,27 @@ func (c *h264Decoder) shape(s *nal.H264SPS) (decodeShape, error) {
 	if err != nil {
 		return decodeShape{}, err
 	}
+	samples, err := h264Samples(s)
+	if err != nil {
+		return decodeShape{}, err
+	}
 	c.candidates = c.candidates[:0]
-	switch s.ProfileIdc {
-	case 66:
+	unverified := ""
+	switch {
+	case s.ProfileIdc == 66 && samples == nv12Samples:
 		c.candidates = append(c.candidates, vk.StdVideoH264ProfileIdcBaseline)
 		if s.Constraints&0x40 != 0 {
 			c.candidates = append(c.candidates, vk.StdVideoH264ProfileIdcMain, vk.StdVideoH264ProfileIdcHigh)
 		}
-	case 77:
+	case s.ProfileIdc == 77 && samples == nv12Samples:
 		c.candidates = append(c.candidates, vk.StdVideoH264ProfileIdcMain, vk.StdVideoH264ProfileIdcHigh)
-	case 100:
+	case s.ProfileIdc == 100 && samples == nv12Samples:
 		c.candidates = append(c.candidates, vk.StdVideoH264ProfileIdcHigh)
+	case s.ProfileIdc == h264High10 || s.ProfileIdc == h264High422 || s.ProfileIdc == h264High444:
+		c.candidates = append(c.candidates, vk.StdVideoH264ProfileIdc(s.ProfileIdc))
+		unverified = "decoding H.264 beyond 8-bit 4:2:0 (the High 10, High 4:2:2 and High 4:4:4 Predictive profiles)"
 	default:
-		return decodeShape{}, fmt.Errorf("%w: SPS %d is profile_idc %d, and Baseline, Main and High are decoded: %w", nal.ErrH264, s.ID, s.ProfileIdc, nal.ErrUnsupported)
+		return decodeShape{}, fmt.Errorf("%w: SPS %d is profile_idc %d at %s, none of Baseline, Main, High, High 10, High 4:2:2 and High 4:4:4 Predictive: %w", nal.ErrH264, s.ID, s.ProfileIdc, samples, nal.ErrUnsupported)
 	}
 	refs := max(int(s.MaxNumRefFrames), 1)
 	mbs := s.WidthMbs * s.FrameHeightMbs()
@@ -482,9 +503,18 @@ func (c *h264Decoder) shape(s *nal.H264SPS) (decodeShape, error) {
 	}
 	return decodeShape{
 		profile: int(s.ProfileIdc), coded: [2]int{16 * s.WidthMbs, 16 * s.FrameHeightMbs()},
-		slots: refs + 1, refs: refs, reorder: reorder, ycbcr: ycbcr,
+		slots: refs + 1, refs: refs, reorder: reorder, samples: samples, ycbcr: ycbcr, unverified: unverified,
 	}, nil
 }
+
+// The H.264 profiles past High, which the Vulkan headers have no
+// enumerant for but High 4:4:4 Predictive: a device is asked for them
+// by their profile_idc.
+const (
+	h264High10  = 110
+	h264High422 = 122
+	h264High444 = 244
+)
 
 // h264YCbCr is how s's pictures convert to RGB, as its VUI says.
 func h264YCbCr(s *nal.H264SPS) (YCbCr, error) {

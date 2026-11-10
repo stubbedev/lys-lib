@@ -6,7 +6,6 @@ import (
 	"path/filepath"
 	"testing"
 
-	"github.com/stubbedev/lys-lib/fourcc"
 	"github.com/stubbedev/lys-lib/internal/nal"
 	"github.com/stubbedev/lys-lib/media/demux"
 )
@@ -95,7 +94,7 @@ func TestDecodeH264FrameNumGap(t *testing.T) {
 	}
 	path := filepath.Join(dir, "gapped.mp4")
 	runFFmpeg(t, "-v", "error", "-y", "-framerate", "25", "-i", gapped, "-c", "copy", path)
-	cl := ffmpegDecoded(t, path, 160, 96, fourcc.NV12)
+	cl := ffmpegDecoded(t, path, 160, 96, nv12Samples)
 	if want := pictures - len(drop); len(cl.frames) != want {
 		t.Fatalf("ffmpeg decodes %d frames, want the %d left", len(cl.frames), want)
 	}

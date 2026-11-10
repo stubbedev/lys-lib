@@ -8,7 +8,6 @@ import (
 	"strings"
 	"unsafe"
 
-	"github.com/stubbedev/lys-lib/fourcc"
 	"github.com/stubbedev/lys-lib/intconv"
 	"github.com/stubbedev/lys-lib/media/demux"
 	"github.com/stubbedev/lys-lib/third_party/vk"
@@ -287,60 +286,130 @@ func (d *Device) probeVP9(p vk.PhysicalDevice) bool {
 	return vp9.VideoDecodeVP9 != 0
 }
 
-// videoDepth is the sample depth of a stream's 4:2:0 pictures, which
-// picks their format.
-type videoDepth uint8
+// chromaFormat is how a stream's pictures subsample their chroma.
+type chromaFormat uint8
 
-// The depths decoded.
+// The chroma formats: half the luma's resolution both ways, half across
+// alone, or the luma's.
 const (
-	depth8 videoDepth = iota
-	depth10
+	chroma420 chromaFormat = iota
+	chroma422
+	chroma444
 )
 
-// depthOf is the depth of bits-bit samples; false for one not decoded.
-func depthOf(bits int) (videoDepth, bool) {
-	switch bits {
-	case 8:
-		return depth8, true
-	case 10:
-		return depth10, true
+func (c chromaFormat) String() string { return [...]string{"4:2:0", "4:2:2", "4:4:4"}[c] }
+
+// videoSamples is how a stream's pictures hold their samples: their
+// depth in bits and their chroma format, which pick the pictures'
+// format.
+type videoSamples struct {
+	bits   uint8
+	chroma chromaFormat
+}
+
+// nv12Samples are 8-bit 4:2:0 pictures: what the encoder codes.
+var nv12Samples = videoSamples{bits: 8, chroma: chroma420}
+
+// videoPictures are the formats pictures of each kind of samples are
+// coded in: luma, then a plane of interleaved chroma, a sample of more
+// than 8 bits in the high bits of its 16.
+var videoPictures = map[videoSamples]vk.Format{
+	{8, chroma420}:  nv12,
+	{10, chroma420}: vk.FormatG10x6B10x6r10x62plane420Unorm3pack16,
+	{12, chroma420}: vk.FormatG12x4B12x4r12x42plane420Unorm3pack16,
+	{8, chroma422}:  vk.FormatG8B8r82plane422Unorm,
+	{10, chroma422}: vk.FormatG10x6B10x6r10x62plane422Unorm3pack16,
+	{12, chroma422}: vk.FormatG12x4B12x4r12x42plane422Unorm3pack16,
+	{8, chroma444}:  vk.FormatG8B8r82plane444Unorm,
+	{10, chroma444}: vk.FormatG10x6B10x6r10x62plane444Unorm3pack16,
+	{12, chroma444}: vk.FormatG12x4B12x4r12x42plane444Unorm3pack16,
+}
+
+// chromaOfIdc is the chroma format an H.264 or H.265 chroma_format_idc
+// names; false for monochrome, which pictures have no format in.
+func chromaOfIdc(idc uint8) (chromaFormat, bool) {
+	if idc < 1 || idc > 3 {
+		return 0, false
+	}
+	return chromaFormat(idc - 1), true
+}
+
+// chromaOfSubsampling is the chroma format an AV1 or VP9 stream's
+// subsampling flags name; false for 4:4:0, chroma halved down alone,
+// which pictures have no format in.
+func chromaOfSubsampling(x, y bool) (chromaFormat, bool) {
+	switch {
+	case x && y:
+		return chroma420, true
+	case x:
+		return chroma422, true
+	case !y:
+		return chroma444, true
 	}
 	return 0, false
 }
 
-// format is the depth's picture format: NV12, or P010 with 10 bits in
-// the high bits of each 16.
-func (b videoDepth) format() fourcc.Format {
-	if b == depth10 {
-		return fourcc.P010
+// samplesOf are bits-bit samples in chroma; false for a depth pictures
+// have no format in.
+func samplesOf(bits int, chroma chromaFormat) (videoSamples, bool) {
+	if bits < 0 || bits > 255 {
+		return videoSamples{}, false
 	}
-	return fourcc.NV12
+	s := videoSamples{bits: uint8(bits), chroma: chroma}
+	_, ok := videoPictures[s]
+	return s, ok
 }
 
-// bytes is how many bytes a sample of the depth takes.
-func (b videoDepth) bytes() int {
-	if b == depth10 {
-		return 2
-	}
-	return 1
-}
+func (s videoSamples) String() string { return fmt.Sprintf("%d-bit %s", s.bits, s.chroma) }
 
-// vk is the depth's picture format in Vulkan.
-func (b videoDepth) vk() vk.Format { return pixelFormats[b.format()].vk }
+// bytes is how many bytes a sample takes.
+func (s videoSamples) bytes() int { return (int(s.bits) + 7) / 8 }
+
+// vk is the samples' picture format in Vulkan.
+func (s videoSamples) vk() vk.Format { return videoPictures[s] }
+
+// pixel is the samples' picture format as the renderer samples it,
+// through a YCbCr conversion.
+func (s videoSamples) pixel() pixelFormat { return pixelFormat{vk: s.vk(), planes: 2, ycbcr: true} }
+
+// chromaSize is the size of the chroma plane of a w x h picture.
+func (s videoSamples) chromaSize(w, h int) (int, int) {
+	switch s.chroma {
+	case chroma420:
+		return (w + 1) / 2, (h + 1) / 2
+	case chroma422:
+		return (w + 1) / 2, h
+	}
+	return w, h
+}
 
 // component is the depth as a video profile names it.
-func (b videoDepth) component() vk.VideoComponentBitDepthFlagsKHR {
-	if b == depth10 {
+func (s videoSamples) component() vk.VideoComponentBitDepthFlagsKHR {
+	switch s.bits {
+	case 10:
 		return vk.VideoComponentBitDepthFlagsKHR(vk.VideoComponentBitDepth10BitKhr)
+	case 12:
+		return vk.VideoComponentBitDepthFlagsKHR(vk.VideoComponentBitDepth12BitKhr)
 	}
 	return vk.VideoComponentBitDepthFlagsKHR(vk.VideoComponentBitDepth8BitKhr)
 }
 
-// videoFormat finds the properties of depth's format among the formats
+// subsampling is the chroma format as a video profile names it.
+func (s videoSamples) subsampling() vk.VideoChromaSubsamplingFlagsKHR {
+	switch s.chroma {
+	case chroma422:
+		return vk.VideoChromaSubsamplingFlagsKHR(vk.VideoChromaSubsampling422BitKhr)
+	case chroma444:
+		return vk.VideoChromaSubsamplingFlagsKHR(vk.VideoChromaSubsampling444BitKhr)
+	}
+	return vk.VideoChromaSubsamplingFlagsKHR(vk.VideoChromaSubsampling420BitKhr)
+}
+
+// videoFormat finds the properties of samples' format among the formats
 // the device codes pictures of usage in, in the profiles list names.
 // none is what the device lacks when there is no such format:
 // ErrNoVideoDecoder or ErrNoVideoEncoder.
-func (d *Device) videoFormat(list *vk.VideoProfileListInfoKHR, usage vk.ImageUsageFlags, depth videoDepth, none error) (vk.VideoFormatPropertiesKHR, error) {
+func (d *Device) videoFormat(list *vk.VideoProfileListInfoKHR, usage vk.ImageUsageFlags, samples videoSamples, none error) (vk.VideoFormatPropertiesKHR, error) {
 	fi := vk.PhysicalDeviceVideoFormatInfoKHR{SType: vk.StructureTypePhysicalDeviceVideoFormatInfoKhr, PNext: (*uintptr)(unsafe.Pointer(list)), ImageUsage: usage}
 	var n uint32
 	if r := d.cmds.GetPhysicalDeviceVideoFormatPropertiesKHR(d.phys, &fi, &n, nil); r != vk.Success {
@@ -357,11 +426,11 @@ func (d *Device) videoFormat(list *vk.VideoProfileListInfoKHR, usage vk.ImageUsa
 	}
 	runtime.KeepAlive(list)
 	for _, p := range props[:n] {
-		if p.Format == depth.vk() && p.ImageType == vk.ImageType2d {
+		if p.Format == samples.vk() && p.ImageType == vk.ImageType2d {
 			return p, nil
 		}
 	}
-	return vk.VideoFormatPropertiesKHR{}, fmt.Errorf("%w: %s codes no %s pictures for usage %#x", none, d.name, depth.format(), usage)
+	return vk.VideoFormatPropertiesKHR{}, fmt.Errorf("%w: %s codes no %s pictures for usage %#x (vkGetPhysicalDeviceVideoFormatPropertiesKHR lists %d formats, none of them VkFormat %d)", none, d.name, samples, usage, n, samples.vk())
 }
 
 // bindVideoSession allocates and binds the memory session needs.
@@ -431,13 +500,13 @@ func (vi *videoImage) close(d *Device) {
 const codingUsage = vk.ImageUsageFlags(vk.ImageUsageVideoDecodeDstBitKhr | vk.ImageUsageVideoDecodeDpbBitKhr | vk.ImageUsageVideoEncodeSrcBitKhr | vk.ImageUsageVideoEncodeDpbBitKhr)
 
 // pictureSpec is a picture newPicture makes: its size in luma samples,
-// its depth, the profiles of the session that codes it, its layout as
+// its samples, the profiles of the session that codes it, its layout as
 // videoFormat found it for usage, its array layers, and the video queue
 // family that codes it, which shares it with the graphics queue when
 // shared.
 type pictureSpec struct {
 	extent   [2]int
-	depth    videoDepth
+	samples  videoSamples
 	profiles *vk.VideoProfileListInfoKHR
 	format   vk.VideoFormatPropertiesKHR
 	usage    vk.ImageUsageFlags
@@ -452,7 +521,7 @@ type pictureSpec struct {
 func (d *Device) newPicture(s pictureSpec) (videoImage, error) {
 	ici := vk.ImageCreateInfo{
 		SType: vk.StructureTypeImageCreateInfo, Flags: s.format.ImageCreateFlags,
-		ImageType: vk.ImageType2d, Format: s.depth.vk(), Extent: extent3D(s.extent[0], s.extent[1]),
+		ImageType: vk.ImageType2d, Format: s.samples.vk(), Extent: extent3D(s.extent[0], s.extent[1]),
 		MipLevels: 1, ArrayLayers: intconv.Must[uint32](s.layers), Samples: vk.SampleCount1Bit, Tiling: s.format.ImageTiling,
 		Usage: s.usage, SharingMode: vk.SharingModeExclusive, InitialLayout: vk.ImageLayoutUndefined,
 	}
@@ -469,7 +538,7 @@ func (d *Device) newPicture(s pictureSpec) (videoImage, error) {
 	runtime.KeepAlive(s.profiles)
 	runtime.KeepAlive(&families)
 	if r != vk.Success {
-		return videoImage{}, fmt.Errorf("vkCreateImage %s %dx%d x%d: %w", s.depth.format(), s.extent[0], s.extent[1], s.layers, resultError(r))
+		return videoImage{}, fmt.Errorf("vkCreateImage %s %dx%d x%d: %w", s.samples, s.extent[0], s.extent[1], s.layers, resultError(r))
 	}
 	var req vk.MemoryRequirements
 	d.cmds.GetImageMemoryRequirements(d.device, vi.image, &req)
@@ -489,7 +558,7 @@ func (d *Device) newPicture(s pictureSpec) (videoImage, error) {
 	viewUsage := vk.ImageViewUsageCreateInfo{SType: vk.StructureTypeImageViewUsageCreateInfo, Usage: coding}
 	for l := range s.layers {
 		vci := vk.ImageViewCreateInfo{
-			SType: vk.StructureTypeImageViewCreateInfo, PNext: (*uintptr)(unsafe.Pointer(&viewUsage)), Image: vi.image, ViewType: vk.ImageViewType2d, Format: s.depth.vk(),
+			SType: vk.StructureTypeImageViewCreateInfo, PNext: (*uintptr)(unsafe.Pointer(&viewUsage)), Image: vi.image, ViewType: vk.ImageViewType2d, Format: s.samples.vk(),
 			SubresourceRange: vk.ImageSubresourceRange{AspectMask: vk.ImageAspectFlags(vk.ImageAspectColorBit), LevelCount: 1, BaseArrayLayer: uint32(l), LayerCount: 1},
 		}
 		var view vk.ImageView
@@ -497,7 +566,7 @@ func (d *Device) newPicture(s pictureSpec) (videoImage, error) {
 		runtime.KeepAlive(&viewUsage)
 		if r != vk.Success {
 			vi.close(d)
-			return videoImage{}, fmt.Errorf("vkCreateImageView %s layer %d: %w", s.depth.format(), l, resultError(r))
+			return videoImage{}, fmt.Errorf("vkCreateImageView %s layer %d: %w", s.samples, l, resultError(r))
 		}
 		vi.views = append(vi.views, view)
 	}

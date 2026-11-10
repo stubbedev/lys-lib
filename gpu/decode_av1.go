@@ -313,9 +313,14 @@ func (c *av1Decoder) rect() image.Rectangle {
 func (c *av1Decoder) shape() (decodeShape, error) {
 	q := &c.stream.Seq
 	col := &q.Color
-	depth, ok := depthOf(col.BitDepth)
-	if q.Profile != 0 || !ok || col.MonoChrome || !col.SubsamplingX || !col.SubsamplingY {
-		return decodeShape{}, fmt.Errorf("%w: the sequence is profile %d at %d bits, monochrome %v, subsampled %v by %v; only 4:2:0 Main at 8 or 10 bits is decoded", ErrNoVideoDecoder, q.Profile, col.BitDepth, col.MonoChrome, col.SubsamplingX, col.SubsamplingY)
+	chroma, coloured := chromaOfSubsampling(col.SubsamplingX, col.SubsamplingY)
+	samples, ok := samplesOf(col.BitDepth, chroma)
+	if !coloured || !ok || col.MonoChrome || q.Profile > 2 {
+		return decodeShape{}, fmt.Errorf("%w: the sequence is profile %d at %d bits, monochrome %v, subsampled %v by %v, which pictures have no format for", ErrNoVideoDecoder, q.Profile, col.BitDepth, col.MonoChrome, col.SubsamplingX, col.SubsamplingY)
+	}
+	unverified := ""
+	if q.Profile != 0 {
+		unverified = "decoding AV1 beyond Main (the High and Professional profiles: 4:4:4, 4:2:2 and 12 bits)"
 	}
 	signal := videoSignal{typed: true, fullRange: col.ColorRange, described: col.ColorDescriptionPresent, matrix: col.MatrixCoefficients, lines: c.hdr.FrameHeight}
 	switch col.ChromaSamplePosition {
@@ -334,14 +339,14 @@ func (c *av1Decoder) shape() (decodeShape, error) {
 	c.filmGrain = q.FilmGrainPresent
 	return decodeShape{
 		profile: int(q.Profile), coded: [2]int{c.hdr.FrameWidth, c.hdr.FrameHeight},
-		slots: refSlotPictures, refs: av1.RefsPerFrame, hidden: av1.NumRefFrames, depth: depth, ycbcr: ycbcr,
+		slots: refSlotPictures, refs: av1.RefsPerFrame, hidden: av1.NumRefFrames, samples: samples, ycbcr: ycbcr, unverified: unverified,
 	}, nil
 }
 
 func (c *av1Decoder) profiles() int { return 1 }
 
 func (c *av1Decoder) profile(_ int, next unsafe.Pointer) unsafe.Pointer {
-	c.profileInfo = vk.VideoDecodeAV1ProfileInfoKHR{SType: vk.StructureTypeVideoDecodeAv1ProfileInfoKhr, PNext: (*uintptr)(next), StdProfile: vk.StdVideoAV1ProfileMain}
+	c.profileInfo = vk.VideoDecodeAV1ProfileInfoKHR{SType: vk.StructureTypeVideoDecodeAv1ProfileInfoKhr, PNext: (*uintptr)(next), StdProfile: vk.StdVideoAV1Profile(c.stream.Seq.Profile)}
 	if c.filmGrain {
 		c.profileInfo.FilmGrainSupport = vk.True
 	}

@@ -87,9 +87,12 @@ const (
 	FormatG10x6B10x6R10x63plane444Unorm3pack16 Format = 1000156016
 	FormatG12x4b12x4g12x4r12x4422Unorm4pack16  Format = 1000156020
 	FormatG12x4B12x4r12x42plane420Unorm3pack16 Format = 1000156023
+	FormatG12x4B12x4r12x42plane422Unorm3pack16 Format = 1000156025
 	FormatG16b16g16r16422Unorm                 Format = 1000156027
 	FormatG16B16r162plane420Unorm              Format = 1000156030
 	FormatG8B8r82plane444Unorm                 Format = 1000330000
+	FormatG10x6B10x6r10x62plane444Unorm3pack16 Format = 1000330001
+	FormatG12x4B12x4r12x42plane444Unorm3pack16 Format = 1000330002
 
 	FormatFeatureMidpointChromaSamplesBit                   FormatFeatureFlagBits = 1 << 17
 	FormatFeatureSampledImageYcbcrConversionLinearFilterBit FormatFeatureFlagBits = 1 << 18

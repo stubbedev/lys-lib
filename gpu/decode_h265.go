@@ -360,22 +360,31 @@ func (c *h265Decoder) fill(pic *h265Pic, pps *nal.HEVCPPS) {
 // shape is the session s decodes in, and the profiles the device may
 // decode it as.
 func (c *h265Decoder) shape(s *nal.HEVCSPS) (decodeShape, error) {
-	depth, ok := depthOf(8 + int(s.BitDepthLumaMinus8))
-	if s.ChromaFormatIdc != 1 || s.BitDepthChromaMinus8 != s.BitDepthLumaMinus8 || !ok {
-		return decodeShape{}, fmt.Errorf("%w: SPS %d is chroma_format_idc %d at %d and %d bits, and only 4:2:0 at 8 or 10 bits is decoded: %w", nal.ErrHEVC, s.ID, s.ChromaFormatIdc, 8+s.BitDepthLumaMinus8, 8+s.BitDepthChromaMinus8, nal.ErrUnsupported)
+	chroma, coloured := chromaOfIdc(s.ChromaFormatIdc)
+	samples, ok := samplesOf(8+int(s.BitDepthLumaMinus8), chroma)
+	if !coloured || !ok || s.SeparateColourPlane || s.BitDepthChromaMinus8 != s.BitDepthLumaMinus8 {
+		return decodeShape{}, fmt.Errorf("%w: SPS %d is chroma_format_idc %d (colour planes coded apart: %v) at %d and %d bits, which pictures have no format for: %w",
+			nal.ErrHEVC, s.ID, s.ChromaFormatIdc, s.SeparateColourPlane, 8+s.BitDepthLumaMinus8, 8+s.BitDepthChromaMinus8, nal.ErrUnsupported)
 	}
 	c.candidates = c.candidates[:0]
 	main := s.PTL.Compatibility&(1<<30) != 0
 	main10 := s.PTL.Compatibility&(1<<29) != 0
+	rext := s.PTL.Compatibility&(1<<27) != 0
+	unverified := ""
 	switch {
-	case depth == depth8 && (s.PTL.ProfileIdc == 1 || main):
+	case samples == nv12Samples && (s.PTL.ProfileIdc == 1 || main):
 		c.candidates = append(c.candidates, vk.StdVideoH265ProfileIdcMain)
-	case depth == depth8 && s.PTL.ProfileIdc == 3:
+	case samples == nv12Samples && s.PTL.ProfileIdc == 3:
 		c.candidates = append(c.candidates, vk.StdVideoH265ProfileIdcMainStillPicture, vk.StdVideoH265ProfileIdcMain)
-	case s.PTL.ProfileIdc == 2 || main10:
+	case samples.chroma == chroma420 && samples.bits <= 10 && (s.PTL.ProfileIdc == 2 || main10):
 		c.candidates = append(c.candidates, vk.StdVideoH265ProfileIdcMain10)
+	case s.PTL.ProfileIdc == 4 || rext:
+		c.candidates = append(c.candidates, vk.StdVideoH265ProfileIdcFormatRangeExtensions)
+		if samples.chroma == chroma422 {
+			unverified = "decoding 4:2:2 H.265"
+		}
 	default:
-		return decodeShape{}, fmt.Errorf("%w: SPS %d is general_profile_idc %d at %d bits, and Main and Main 10 are decoded: %w", nal.ErrHEVC, s.ID, s.PTL.ProfileIdc, 8+s.BitDepthLumaMinus8, nal.ErrUnsupported)
+		return decodeShape{}, fmt.Errorf("%w: SPS %d is general_profile_idc %d at %s, none of Main, Main 10 and the format range extensions: %w", nal.ErrHEVC, s.ID, s.PTL.ProfileIdc, samples, nal.ErrUnsupported)
 	}
 	_, y0, _, y1 := s.CropRect()
 	v := &s.VUI
@@ -391,7 +400,7 @@ func (c *h265Decoder) shape(s *nal.HEVCSPS) (decodeShape, error) {
 	refs := max(int(s.Ordering.MaxDecPicBufferingMinus1[top]), 1)
 	return decodeShape{
 		profile: int(s.PTL.ProfileIdc), coded: [2]int{s.Width, s.Height},
-		slots: refs + 1, refs: refs, reorder: int(s.Ordering.MaxNumReorderPics[top]), depth: depth, ycbcr: ycbcr,
+		slots: refs + 1, refs: refs, reorder: int(s.Ordering.MaxNumReorderPics[top]), samples: samples, ycbcr: ycbcr, unverified: unverified,
 	}, nil
 }
 

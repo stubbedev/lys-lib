@@ -7,7 +7,9 @@ package vk
 
 // StdVideoAV1 enumerants the decoder names.
 const (
-	StdVideoAV1ProfileMain StdVideoAV1Profile = 0
+	StdVideoAV1ProfileMain         StdVideoAV1Profile = 0
+	StdVideoAV1ProfileHigh         StdVideoAV1Profile = 1
+	StdVideoAV1ProfileProfessional StdVideoAV1Profile = 2
 )
 
 // StdVideoAV1ColorConfigFlags bits.
