@@ -172,7 +172,7 @@ Image kinds are distinct types:
 | --- | --- | --- |
 | `Target` | `NewTarget`, `NewOffscreen`, `NewOffscreenFloat`, `ImportTarget` | Rendered into: a window frame, a scanout buffer, offscreen pixels |
 | `Texture` | `NewTexture`, `ImportTexture`, `ImportTextureYCbCr` | Sampled across frames; CPU-uploaded or imported from a dmabuf |
-| `Buffer` | `NewBuffer` | A dmabuf others write, such as a screencast frame; never drawn into, so non-renderable layouts are allowed |
+| `Buffer` | `NewBuffer` | A dmabuf others write, such as a screencast frame or the linear copy of a frame another card scans out; never drawn into, so non-renderable layouts are allowed. In any of `TextureFormats`, the 10-bit ones too |
 | `Linear` | `ImportLinear` | An imported linear dmabuf; `CopyToLinear` copies a target into it |
 
 Drawing:

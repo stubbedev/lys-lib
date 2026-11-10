@@ -65,16 +65,6 @@ func (d *Device) NewOffscreenFloat(width, height int) (*Target, error) {
 	return t, nil
 }
 
-// vkFormatOf maps a DRM format to the Vulkan format with the same byte
-// order in memory.
-func vkFormatOf(format fourcc.Format) (vk.Format, error) {
-	if format != fourcc.ARGB8888 && format != fourcc.XRGB8888 {
-		return 0, fmt.Errorf("gpu: a Buffer is ARGB8888 or XRGB8888, not DRM format %s", format)
-	}
-	vf, _, err := exportFormatOf(format)
-	return vf, err
-}
-
 // exportFormatOf is the Vulkan format of an image exported in format,
 // and how many memory planes it has: the targets' formats and the
 // encoder's NV12.

@@ -271,9 +271,11 @@ func (e *exported) close(d *Device) {
 
 // Buffer is an image whose memory is a dmabuf this device allocates
 // for others to write and read, a screencast frame a compositor copies
-// into, and never draws into itself: it asks only for transfer and
-// sampling, so layouts a device cannot render to (NVIDIA's linear) are
-// on offer (ExportModifiers).
+// into or the linear copy of a frame another card scans out, and never
+// draws into itself: it asks only for transfer and sampling, so layouts
+// a device cannot render to (NVIDIA's linear) are on offer
+// (ExportModifiers). It comes in the formats a Target does, the 10-bit
+// ones too, so a copy of any target has a Buffer to land in.
 type Buffer struct {
 	d *Device
 	e exported
@@ -283,23 +285,33 @@ type Buffer struct {
 	closed  bool
 }
 
+// checkBufferFormat refuses a format no Buffer comes in: any but
+// TextureFormats.
+func checkBufferFormat(format fourcc.Format) error {
+	if !slices.Contains(textureFormats, format) {
+		return fmt.Errorf("gpu: no buffer in DRM format %s (%v)", format, textureFormats)
+	}
+	return nil
+}
+
 // ExportModifiers are the single-plane DRM modifiers the device
-// allocates format in for a Buffer: what to intersect with the ones a
-// consumer imports before NewBuffer.
+// allocates format, one of TextureFormats, in for a Buffer: what to
+// intersect with the ones a consumer imports before NewBuffer. A device
+// may export a format in none.
 func (d *Device) ExportModifiers(format fourcc.Format) ([]fourcc.Modifier, error) {
-	if _, err := vkFormatOf(format); err != nil {
+	if err := checkBufferFormat(format); err != nil {
 		return nil, err
 	}
 	return d.modifiers(format, shareUse)
 }
 
-// NewBuffer allocates a width x height Buffer in format
-// (fourcc.ARGB8888 or XRGB8888) whose layout the driver picks among
-// offered, the modifiers the consumer imports, that the device exports
-// format in (ExportModifiers). None in common, as with only the
-// implicit fourcc.Invalid on offer, is an error naming both lists.
+// NewBuffer allocates a width x height Buffer in format, one of
+// TextureFormats, whose layout the driver picks among offered, the
+// modifiers the consumer imports, that the device exports format in
+// (ExportModifiers). None in common, as with only the implicit
+// fourcc.Invalid on offer, is an error naming both lists.
 func (d *Device) NewBuffer(width, height int, format fourcc.Format, offered []fourcc.Modifier) (*Buffer, error) {
-	if _, err := vkFormatOf(format); err != nil {
+	if err := checkBufferFormat(format); err != nil {
 		return nil, err
 	}
 	e, err := d.export(width, height, format, offered, shareUse)
@@ -316,15 +328,17 @@ func (d *Device) NewBuffer(width, height int, format fourcc.Format, offered []fo
 func (b *Buffer) Dmabuf() dmabuf.Buffer { return b.e.buf }
 
 // ReadPixels copies what the buffer holds (the frame a compositor last
-// copied into it) back into memory as RGBA, opaque when its format
-// has no alpha: screenshots and tests.
+// copied into it) back into memory as RGBA, a 10-bit format's rounded
+// to eight bits, opaque when its format has no alpha: screenshots and
+// tests.
 func (b *Buffer) ReadPixels() (*image.RGBA, error) {
 	if b.closed {
 		return nil, errors.New("gpu: read back a closed buffer")
 	}
 	d := b.d
 	w, h := b.e.buf.Width, b.e.buf.Height
-	return d.readPixels(image.Rect(0, 0, w, h), vk.FormatB8g8r8a8Unorm, b.e.buf.Format == fourcc.XRGB8888, func(cb vk.CommandBuffer, staging *buffer) {
+	pf := pixelFormats[b.e.buf.Format]
+	return d.readPixels(image.Rect(0, 0, w, h), pf.vk, pf.opaque, func(cb vk.CommandBuffer, staging *buffer) {
 		fullBarrier(d, cb, b.e.image, vk.ImageLayoutGeneral, vk.ImageLayoutTransferSrcOptimal, vk.QueueFamilyForeignExt, d.family)
 		region := vk.BufferImageCopy{
 			ImageSubresource: vk.ImageSubresourceLayers{AspectMask: vk.ImageAspectFlags(vk.ImageAspectColorBit), LayerCount: 1},
@@ -340,11 +354,7 @@ func (b *Buffer) view() (vk.ImageView, error) {
 	if b.sampled != 0 {
 		return b.sampled, nil
 	}
-	vf, err := vkFormatOf(b.e.buf.Format)
-	if err != nil {
-		return 0, err
-	}
-	vci := vk.ImageViewCreateInfo{SType: vk.StructureTypeImageViewCreateInfo, Image: b.e.image, ViewType: vk.ImageViewType2d, Format: vf, SubresourceRange: colorRange}
+	vci := vk.ImageViewCreateInfo{SType: vk.StructureTypeImageViewCreateInfo, Image: b.e.image, ViewType: vk.ImageViewType2d, Format: pixelFormats[b.e.buf.Format].vk, SubresourceRange: colorRange}
 	if r := b.d.cmds.CreateImageView(b.d.device, &vci, nil, &b.sampled); r != vk.Success {
 		return 0, fmt.Errorf("gpu: vkCreateImageView (buffer): %w", resultError(r))
 	}
