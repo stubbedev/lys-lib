@@ -147,10 +147,23 @@ func main() {
 | A signal declared once | `NewSignal`; `Signal[T]` declares, emits and decodes it |
 | Methods run one at a time in arrival order | `Interface.Ordered` |
 | Following a service that starts or restarts | `WatchOwner`, `NameOwner` |
+| One peer's signals, decoded | `WatchSignals` with an `On` route per signal, from `FromOwner(name)` or `FromBus()` |
+| The system bus, without hanging on a silent one | `DialSystem` with a timeout |
 
 A D-Bus method is an exported method whose last result is `*dbus.Error`;
 `Failed` and `InvalidArgs` build common errors. Introspection is generated on
 demand.
+
+`WatchSignals` runs each route's handler in arrival order on one goroutine and
+tells `failed` of a signal that does not decode. It takes signals only from the
+sender it resolved when it started; one from any other peer is dropped, and a
+signal a handler does not get has the descriptors it carries closed
+(`CloseFDs`). The watch holds one match rule per signal, or one for the whole
+interface where several signals of an object share it, and removes them when its
+context ends, `Watch.Stop` is called, or the connection closes
+(`ErrDisconnected`). `Route.WithArg0` narrows a route to one first argument, as
+for `PropertiesChanged` of one interface. `Dispatch` is the watch without the
+bus: it routes one signal, for a caller that reads its own signal channel.
 
 ## pulse/native
 
@@ -160,11 +173,15 @@ volume and mute, subscriptions, record streams, the sample cache, and playback
 streams. A playback `Write` blocks until the server asks for audio, never
 allocates, and `Cork` pauses it; each stream gets its own sync group.
 
+`pulse/pulsetest` is a fake server speaking the same protocol. Like a real one
+it drops a client's record and playback streams when the client disconnects:
+they leave the stream listings and subscribers are told of the removals.
+
 ## logind
 
 `logind` is the one client for `org.freedesktop.login1`. Every call is bounded
 by the caller's context and by `CallTimeout`, and its error names the method and
-the object.
+the object. `Dial`, which connects to the system bus, is bounded the same way.
 
 | Need | Use |
 | --- | --- |
@@ -178,6 +195,60 @@ the object.
 | Sleep, lock, device and property signals | `Session.Watch`, which takes signals only from logind's owner |
 
 `logind/logindtest` is a fake logind on a private bus that records every call.
+The methods that have it announce something (`SetLockedHint`, `Lock`,
+`PrepareForSleep`, …) report a failure with `t.Errorf` and return false, so they
+are safe on any goroutine of the test, an `OnLock` hook included; the fake waits
+for hooks still running before its connection closes.
+
+## polkit
+
+`polkit` is the one client for polkitd's Authority
+(`org.freedesktop.PolicyKit1`). Every call but `CheckAuthorization` is bounded
+by the caller's context and by `CallTimeout`; a check may wait for a person to
+authenticate, so its context alone bounds it. Errors name the action and the
+subject.
+
+```go
+func mayApply(ctx context.Context, conn *net.UnixConn) (polkit.Verdict, error) {
+	pidfd, err := peercred.PIDFDOf(conn)
+	if err != nil {
+		return 0, err
+	}
+	defer pidfd.Close()
+	subject, err := polkit.ProcessOfPIDFD(pidfd)
+	if err != nil {
+		return 0, err
+	}
+	system, err := polkit.Dial(ctx)
+	if err != nil {
+		return 0, err
+	}
+	defer system.Close()
+	r, err := polkit.NewAuthority(system).CheckAuthorization(ctx, subject, "org.example.apply", polkit.AllowUserInteraction)
+	return r.Verdict(), err
+}
+```
+
+| Need | Use |
+| --- | --- |
+| The subject for a socket peer | `ProcessOfPIDFD` with its `peercred.PIDFD`; `ProcessOf` with its `peercred.Credentials` where the kernel has no `SO_PEERPIDFD` |
+| The subject for a logind session | `UnixSession` |
+| Whether a subject may do something | `Authority.CheckAuthorization`, then `AuthorizationResult.Verdict`: `Authorized`, `Denied`, `Dismissed` or `Challenge` |
+| An authentication agent's registration | `Authority.RegisterAuthenticationAgent`, `UnregisterAuthenticationAgent`, with `AgentInterface` |
+| The registered actions | `Authority.EnumerateActions` |
+| Retained authorizations | `Authority.EnumerateTemporaryAuthorizations`, `RevokeTemporaryAuthorizations`, `RevokeTemporaryAuthorizationByID` |
+| polkitd's `Changed` signal | `Changed`, `ChangedMatch` |
+
+A `UnixProcess` always carries pid, start time and uid; with a pidfd, polkit 124
+and later decide about that very process, and an older polkitd ignores it.
+`ProcessOfPIDFD` reads the start time and then checks that the process is still
+running, so the start time cannot be a later process's with the same pid. When
+a check's context ends first, the check is cancelled at polkitd
+(`CancelCheckAuthorization`), which takes the dialog down.
+
+`polkit/polkittest` is a fake Authority: it answers checks with the result the
+test sets, or holds them until they are cancelled, and records registrations,
+checks (with the process a pidfd names) and cancels.
 
 ## portaldialogs
 
@@ -255,7 +326,7 @@ real `localedef` output for tests.
 | `atomicfile` | `Write`, `WriteFile`, `WriteSeekable` replace a file whole and durably: synced temporary, rename, directory sync |
 | `assetfile` | `Open` opens an asset without blocking and rejects anything but a regular file within a size limit |
 | `xdg` | `Env` resolves base directories (`ConfigHome`, `StateDir`, …), an app's directory under each, and `user-dirs.dirs` via `UserDir`. `xdg.OS` reads the process environment |
-| `peercred` | `UID` of the process at a Unix socket's other end (`SO_PEERCRED`) |
+| `peercred` | Who is at a Unix socket's other end: `Of` reads its `Credentials` (uid, gid, pid, from `SO_PEERCRED`), `PIDFDOf` opens a `PIDFD` of that process (`SO_PEERPIDFD`), which keeps naming it after its pid is reused and tells whether it has `Exited`. A kernel before Linux 6.5 has none: `ErrNoPIDFD` |
 | `debug` | `Log` traces only in builds with the `lysdebug` tag; otherwise it compiles out with its arguments. `LYS_DEBUG` selects categories: unset, empty or `*` for all, a comma-separated list for those, `-name` to exclude one |
 | `logutil` | The injectable `*slog.Logger` the libraries emit through; a discarding sink until `Set` |
 | `testbuild` | `Race`, `AllocBudgetsHold`, `SkipAllocBudget` and `GoroutineID`, for tests that depend on how the binary was built or which goroutine runs |

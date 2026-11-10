@@ -66,6 +66,8 @@ Importable by tests here and in other family members.
 | `pipewire/pwtest` | Private PipeWire daemon and libpipewire reference consumers |
 | `eis/eistest` | libei reference client for EIS servers |
 | `dbustest` | Private `dbus-daemon`s configured from a generated file; needs only `dbus-daemon` on `PATH` |
-| `pulse/pulsetest` | A fake PulseAudio server speaking the native protocol, with scriptable devices, streams and failures |
-| `logind/logindtest` | A fake systemd-logind on a `dbustest` bus that records every call and emits logind's signals |
+| `pulse/pulsetest` | A fake PulseAudio server speaking the native protocol, with scriptable devices, streams and failures; a client's own streams go with its connection |
+| `logind/logindtest` | A fake systemd-logind on a `dbustest` bus that records every call and emits logind's signals; its helpers report with `t.Errorf`, so hooks on other goroutines may call them |
+| `polkit/polkittest` | A fake polkitd Authority on a `dbustest` bus: scripted or held authorization checks, agent registrations, actions and temporary authorizations, every check and cancel recorded |
+| `peercred/peercredtest` | A socket peer that is another process, with its own pid and lifetime: the test binary run again through `Main` in the package's `TestMain` |
 | `sockdir` | A directory short enough for Unix socket paths (`sun_path` is 108 bytes) |
