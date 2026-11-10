@@ -8,13 +8,13 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"slices"
 	"sort"
 	"strings"
 	"time"
 
 	"github.com/stubbedev/lys-lib/intconv"
 	"github.com/stubbedev/lys-lib/internal/matroska"
+	"github.com/stubbedev/lys-lib/media/internal/mp4audio"
 )
 
 const (
@@ -523,10 +523,6 @@ func (m *mkvFile) parseTrackEntry(b []byte) (*mkvTrack, error) {
 	return t, nil
 }
 
-var aacSampleRates = [...]int{96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350}
-
-const aacExplicitRate = 15
-
 var legacyAACObjectTypes = map[string]uint64{
 	"MAIN":   1,
 	"LC":     2,
@@ -552,10 +548,10 @@ func legacyAACConfig(codecID string, rate, channels int) []byte {
 		channelConfig = 7
 	}
 	v, n := objectType, 5
-	if i := slices.Index(aacSampleRates[:], rate); i >= 0 {
-		v, n = v<<4|uint64(i), n+4
+	if i, ok := mp4audio.SampleRateIndex(rate); ok {
+		v, n = v<<4|intconv.Must[uint64](i), n+4
 	} else {
-		v, n = v<<28|aacExplicitRate<<24|intconv.Clamp[uint64](rate)&0xffffff, n+28
+		v, n = v<<28|mp4audio.ExplicitRate<<24|intconv.Clamp[uint64](rate)&0xffffff, n+28
 	}
 	v, n = v<<7|channelConfig<<3, n+7
 	return binary.BigEndian.AppendUint64(nil, v)[8-n/8:]

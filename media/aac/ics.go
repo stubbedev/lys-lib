@@ -53,8 +53,8 @@ type bandLayout struct {
 func (b *bandLayout) numBands() int { return len(b.offsets) - 1 }
 
 var (
-	longLayouts = func() (l [13]bandLayout) {
-		offsets := [13][]uint16{
+	longLayouts = func() (l [rateIndices]bandLayout) {
+		offsets := [rateIndices][]uint16{
 			swbOffsetLong96[:], swbOffsetLong96[:], swbOffsetLong64[:], swbOffsetLong48[:], swbOffsetLong48[:],
 			swbOffsetLong32[:], swbOffsetLong24[:], swbOffsetLong24[:], swbOffsetLong16[:], swbOffsetLong16[:],
 			swbOffsetLong16[:], swbOffsetLong8[:], swbOffsetLong8[:],
@@ -64,8 +64,8 @@ var (
 		}
 		return l
 	}()
-	shortLayouts = func() (l [13]bandLayout) {
-		offsets := [13][]uint16{
+	shortLayouts = func() (l [rateIndices]bandLayout) {
+		offsets := [rateIndices][]uint16{
 			swbOffsetShort96[:], swbOffsetShort96[:], swbOffsetShort96[:], swbOffsetShort48[:], swbOffsetShort48[:],
 			swbOffsetShort48[:], swbOffsetShort24[:], swbOffsetShort24[:], swbOffsetShort16[:], swbOffsetShort16[:],
 			swbOffsetShort16[:], swbOffsetShort8[:], swbOffsetShort8[:],

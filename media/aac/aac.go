@@ -9,6 +9,8 @@ import (
 	"fmt"
 	"math"
 	"slices"
+
+	"github.com/stubbedev/lys-lib/media/internal/mp4audio"
 )
 
 // Decoding fails with these, wrapped with what was being decoded.
@@ -33,8 +35,9 @@ var objectTypeNames = map[int]string{
 	23: "ER AAC LD", 29: "PS (HE-AAC v2)", 39: "ER AAC ELD", 42: "USAC (xHE-AAC)",
 }
 
-// sampleRates are the rates of the sampling frequency indices.
-var sampleRates = [13]int{96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350}
+// rateIndices is the number of sampling frequency indices, each with
+// its own scale factor band layout.
+const rateIndices = mp4audio.SampleRateIndices
 
 // elementKind is a syntactic element of a raw_data_block (4.4.2.1).
 type elementKind uint8
@@ -82,7 +85,7 @@ func ParseConfig(asc []byte) (Config, error) {
 		aot = 32 + r.readInt(6)
 	}
 	rateIndex := r.readInt(4)
-	if rateIndex == 15 {
+	if rateIndex == mp4audio.ExplicitRate {
 		r.skip(24)
 	}
 	channelConfig := r.readInt(4)
@@ -96,7 +99,8 @@ func ParseConfig(asc []byte) (Config, error) {
 		}
 		return Config{}, fmt.Errorf("aac: audio object type %d (%s): %w", aot, name, ErrUnsupported)
 	}
-	if rateIndex >= len(sampleRates) {
+	rate, ok := mp4audio.SampleRate(rateIndex)
+	if !ok {
 		return Config{}, fmt.Errorf("aac: sampling frequency index %d: %w", rateIndex, ErrUnsupported)
 	}
 	if r.bit() {
@@ -131,7 +135,7 @@ func ParseConfig(asc []byte) (Config, error) {
 			channels++
 		}
 	}
-	return Config{SampleRate: sampleRates[rateIndex], Channels: channels, rateIndex: rateIndex, elements: elements}, nil
+	return Config{SampleRate: rate, Channels: channels, rateIndex: rateIndex, elements: elements}, nil
 }
 
 // Decoder decodes an AAC-LC stream's raw data blocks, one 1024-sample

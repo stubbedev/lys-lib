@@ -358,11 +358,11 @@ var swbOffsetShort8 = [16]uint16{
 	0, 4, 8, 12, 16, 20, 24, 28, 36, 44, 52, 60, 72, 88, 108, 128,
 }
 
-var tnsMaxBandsLong = [13]uint8{
+var tnsMaxBandsLong = [rateIndices]uint8{
 	31, 31, 34, 40, 42, 51, 46, 46, 42, 42, 42, 39, 39,
 }
 
-var tnsMaxBandsShort = [13]uint8{
+var tnsMaxBandsShort = [rateIndices]uint8{
 	9, 9, 10, 14, 14, 14, 14, 14, 14, 14, 14, 14, 14,
 }
 
