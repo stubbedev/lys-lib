@@ -152,6 +152,14 @@ A D-Bus method is an exported method whose last result is `*dbus.Error`;
 `Failed` and `InvalidArgs` build common errors. Introspection is generated on
 demand.
 
+## pulse/native
+
+`pulse/native` is a pure-Go client for PulseAudio's native protocol, served by
+PulseAudio and by `pipewire-pulse`: server, card, sink and source introspection,
+volume and mute, subscriptions, record streams, the sample cache, and playback
+streams. A playback `Write` blocks until the server asks for audio, never
+allocates, and `Cork` pauses it; each stream gets its own sync group.
+
 ## logind
 
 `logind` is the one client for `org.freedesktop.login1`. Every call is bounded
