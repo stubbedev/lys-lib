@@ -6,12 +6,15 @@ import (
 	"encoding/hex"
 	"errors"
 	"io"
+	"math"
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"testing"
 	"time"
 
+	"github.com/stubbedev/lys-lib/internal/matroska"
 	"github.com/stubbedev/lys-lib/media/mux"
 )
 
@@ -383,5 +386,54 @@ func TestHugeCountsFailWithoutAllocating(t *testing.T) {
 		if n := after.TotalAlloc - before.TotalAlloc; n > 1<<20 {
 			t.Errorf("%s: %d bytes allocated before failing", c.ext, n)
 		}
+	}
+}
+
+func ebmlElement(id matroska.ID, payload []byte) []byte {
+	var b []byte
+	for shift := 24; shift >= 0; shift -= 8 {
+		if v := byte(id >> shift); v != 0 || len(b) > 0 {
+			b = append(b, v)
+		}
+	}
+	var size [8]byte
+	binary.BigEndian.PutUint64(size[:], uint64(len(payload)))
+	b = append(append(b, 0x01), size[1:]...)
+	return append(b, payload...)
+}
+
+func TestLegacyMatroskaAACGetsAnAudioSpecificConfig(t *testing.T) {
+	for _, c := range []struct {
+		codecID  string
+		rate     float64
+		channels uint8
+		want     []byte
+	}{
+		{"A_AAC/MPEG4/LC", 44100, 2, []byte{0x12, 0x10}},
+		{"A_AAC/MPEG2/LC", 48000, 1, []byte{0x11, 0x88}},
+		{"A_AAC/MPEG4/LC/SBR", 24000, 2, []byte{0x13, 0x10}},
+		{"A_AAC/MPEG4/MAIN", 48000, 6, []byte{0x09, 0xb0}},
+		{"A_AAC/MPEG4/LC", 8, 8, []byte{0x17, 0x80, 0x00, 0x04, 0x38}},
+		{"A_AAC/MPEG4/WHAT", 48000, 2, nil},
+	} {
+		t.Run(c.codecID, func(t *testing.T) {
+			audio := slices.Concat(
+				ebmlElement(matroska.SamplingFrequency, binary.BigEndian.AppendUint64(nil, math.Float64bits(c.rate))),
+				ebmlElement(matroska.Channels, []byte{c.channels}),
+			)
+			entry := slices.Concat(
+				ebmlElement(matroska.TrackNumber, []byte{1}),
+				ebmlElement(matroska.TrackType, []byte{matroska.TrackAudio}),
+				ebmlElement(matroska.CodecID, []byte(c.codecID)),
+				ebmlElement(matroska.Audio, audio),
+			)
+			tr, err := (&mkvFile{}).parseTrackEntry(entry)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if tr.info.Codec != AAC || !bytes.Equal(tr.info.Config, c.want) {
+				t.Errorf("codec %v config % x, want AAC with % x", tr.info.Codec, tr.info.Config, c.want)
+			}
+		})
 	}
 }

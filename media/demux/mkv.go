@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"slices"
 	"sort"
 	"strings"
 	"time"
@@ -516,7 +517,48 @@ func (m *mkvFile) parseTrackEntry(b []byte) (*mkvTrack, error) {
 			return nil, err
 		}
 	}
+	if t.info.Codec == AAC && len(t.info.Config) == 0 {
+		t.info.Config = legacyAACConfig(t.info.CodecName, t.info.SampleRate, t.info.Channels)
+	}
 	return t, nil
+}
+
+var aacSampleRates = [...]int{96000, 88200, 64000, 48000, 44100, 32000, 24000, 22050, 16000, 12000, 11025, 8000, 7350}
+
+const aacExplicitRate = 15
+
+var legacyAACObjectTypes = map[string]uint64{
+	"MAIN":   1,
+	"LC":     2,
+	"LC/SBR": 2,
+	"SSR":    3,
+	"LTP":    4,
+}
+
+func legacyAACConfig(codecID string, rate, channels int) []byte {
+	profile, ok := strings.CutPrefix(codecID, matroska.CodecAAC+"/MPEG4/")
+	if !ok {
+		profile, ok = strings.CutPrefix(codecID, matroska.CodecAAC+"/MPEG2/")
+	}
+	objectType, known := legacyAACObjectTypes[profile]
+	if !ok || !known {
+		return nil
+	}
+	var channelConfig uint64
+	switch {
+	case channels >= 1 && channels <= 6:
+		channelConfig = uint64(channels)
+	case channels == 8:
+		channelConfig = 7
+	}
+	v, n := objectType, 5
+	if i := slices.Index(aacSampleRates[:], rate); i >= 0 {
+		v, n = v<<4|uint64(i), n+4
+	} else {
+		v, n = v<<28|aacExplicitRate<<24|intconv.Clamp[uint64](rate)&0xffffff, n+28
+	}
+	v, n = v<<7|channelConfig<<3, n+7
+	return binary.BigEndian.AppendUint64(nil, v)[8-n/8:]
 }
 
 const (
