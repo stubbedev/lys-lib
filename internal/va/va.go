@@ -6,11 +6,13 @@
 package va
 
 import (
+	"encoding/binary"
 	"errors"
 	"fmt"
 	"math"
 	"runtime"
 	"sync"
+	"time"
 	"unsafe"
 
 	"github.com/ebitengine/purego"
@@ -21,6 +23,10 @@ import (
 
 // ErrNoLibrary reports that libva or libva-drm is not installed.
 var ErrNoLibrary = errors.New("va: no libva")
+
+// ErrTimeout reports work the driver had not finished within the limit
+// a wait gave it.
+var ErrTimeout = errors.New("va: the driver did not finish in time")
 
 // lib is libva's entry points, loaded once.
 var lib struct {
@@ -48,7 +54,7 @@ var lib struct {
 	beginPicture      func(dpy uintptr, context, target uint32) int32
 	renderPicture     func(dpy uintptr, context uint32, bufs *uint32, num int32) int32
 	endPicture        func(dpy uintptr, context uint32) int32
-	syncSurface       func(dpy uintptr, surface uint32) int32
+	syncSurface2      func(dpy uintptr, surface uint32, timeoutNS uint64) int32
 	querySurfAttribs  func(dpy uintptr, config uint32, attribs *SurfaceAttrib, num *uint32) int32
 	createImage       func(dpy uintptr, format *ImageFormat, width, height int32, image *Image) int32
 	getImage          func(dpy uintptr, surface uint32, x, y int32, width, height uint32, image uint32) int32
@@ -96,7 +102,7 @@ func load() error {
 			{va, "vaBeginPicture", &lib.beginPicture},
 			{va, "vaRenderPicture", &lib.renderPicture},
 			{va, "vaEndPicture", &lib.endPicture},
-			{va, "vaSyncSurface", &lib.syncSurface},
+			{va, "vaSyncSurface2", &lib.syncSurface2},
 			{va, "vaQuerySurfaceAttributes", &lib.querySurfAttribs},
 			{va, "vaCreateImage", &lib.createImage},
 			{va, "vaGetImage", &lib.getImage},
@@ -138,6 +144,9 @@ type Display struct {
 	dpy    uintptr
 	fd     int
 	vendor string
+	// misc is the miscellaneous parameter buffer being made, kept
+	// between calls so that making one allocates nothing.
+	misc []byte
 }
 
 // Open opens a VA display on the DRM node at path: ErrNoLibrary
@@ -406,10 +415,15 @@ func (d *Display) CreateBuffer(context uint32, typ int32, size int, data unsafe.
 // CreateMiscBuffer makes a miscellaneous encode parameter buffer for
 // context: typ's header, then the size bytes of param.
 func (d *Display) CreateMiscBuffer(context uint32, typ int32, param unsafe.Pointer, size int) (uint32, error) {
-	data := make([]byte, 4+size)
-	*(*int32)(unsafe.Pointer(&data[0])) = typ
-	copy(data[4:], unsafe.Slice((*byte)(param), size))
-	return d.CreateBuffer(context, EncMiscParameterBufferType, len(data), unsafe.Pointer(&data[0]))
+	d.misc = appendMisc(d.misc[:0], typ, unsafe.Slice((*byte)(param), size))
+	return d.CreateBuffer(context, EncMiscParameterBufferType, len(d.misc), unsafe.Pointer(&d.misc[0]))
+}
+
+// appendMisc appends a VAEncMiscParameterBuffer to dst: its type, in
+// the machine's byte order, then param.
+func appendMisc(dst []byte, typ int32, param []byte) []byte {
+	dst = binary.NativeEndian.AppendUint32(dst, uint32(typ)) //nolint:gosec // the type's bits, whatever its sign
+	return append(dst, param...)
 }
 
 // DestroyBuffer releases a buffer.
@@ -426,24 +440,35 @@ func (d *Display) UnmapBuffer(id uint32) error {
 	return check("vaUnmapBuffer", lib.unmapBuffer(d.dpy, id))
 }
 
-// ReadCoded copies out what a coded buffer holds once its picture is
-// done: its segments joined, an error when the picture overflowed it.
-func (d *Display) ReadCoded(id uint32) ([]byte, error) {
+// ReadCoded appends to dst what a coded buffer holds once its picture
+// is done: its segments joined, an error when the picture overflowed
+// it. With room in dst it allocates nothing.
+func (d *Display) ReadCoded(dst []byte, id uint32) ([]byte, error) {
 	p, err := d.MapBuffer(id)
 	if err != nil {
-		return nil, err
+		return dst, err
 	}
-	var out []byte
-	for seg := (*CodedBufferSegment)(p); seg != nil; seg = (*CodedBufferSegment)(seg.Next) {
+	out, err := appendCoded(dst, (*CodedBufferSegment)(p))
+	if err != nil {
+		_ = d.UnmapBuffer(id)
+		return dst, err
+	}
+	return out, d.UnmapBuffer(id)
+}
+
+// appendCoded appends the bytes of the coded buffer segments from seg
+// on to dst, which an error returns as it was.
+func appendCoded(dst []byte, seg *CodedBufferSegment) ([]byte, error) {
+	out := dst
+	for ; seg != nil; seg = (*CodedBufferSegment)(seg.Next) {
 		if seg.Status&CodedBufStatusSliceOverflowMask != 0 {
-			_ = d.UnmapBuffer(id)
-			return nil, fmt.Errorf("va: the picture overflowed its %d-byte coded buffer segment", seg.Size)
+			return dst, fmt.Errorf("va: the picture overflowed its %d-byte coded buffer segment", seg.Size)
 		}
 		if seg.Size > 0 {
 			out = append(out, unsafe.Slice((*byte)(seg.Buf), seg.Size)...)
 		}
 	}
-	return out, d.UnmapBuffer(id)
+	return out, nil
 }
 
 // Encode renders bufs into a picture of target in context: the
@@ -462,9 +487,14 @@ func (d *Display) Encode(context, target uint32, bufs []uint32) error {
 	return check("vaEndPicture", lib.endPicture(d.dpy, context))
 }
 
-// SyncSurface waits until the work on surface is done.
-func (d *Display) SyncSurface(id uint32) error {
-	return check("vaSyncSurface", lib.syncSurface(d.dpy, id))
+// SyncSurface waits until the work on surface is done, limit at most:
+// past it the wait is ErrTimeout instead of a frozen caller.
+func (d *Display) SyncSurface(id uint32, limit time.Duration) error {
+	status := lib.syncSurface2(d.dpy, id, intconv.Must[uint64](limit.Nanoseconds()))
+	if status == StatusErrorTimedOut {
+		return fmt.Errorf("%w: surface %d, %v at most", ErrTimeout, id, limit)
+	}
+	return check("vaSyncSurface2", status)
 }
 
 // size is a width x height size in the integer type a libva call takes

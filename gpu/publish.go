@@ -18,17 +18,25 @@ func (d *Device) publishes(t *Target) bool {
 	return !t.offscreen && d.implicitFences
 }
 
-// publish tells t's consumer when the submission just made is done: a
-// fence on t's dmabuf, which linux-dmabuf's implicit synchronization has
-// every consumer wait on, or else by waiting here until it is. NVIDIA's
-// driver does not wait on such a fence when a compositor samples a
-// buffer, so there the frame finishes first. An offscreen target has no
-// consumer outside the device's own queue, which runs in order.
-// signalled is what publishes said before that submission.
+// publish tells t's consumer when the submission just made is done
+// (fenceDmabuf). An offscreen target has no consumer outside the device's
+// own queue, which runs in order. signalled is what publishes said
+// before that submission.
 func (d *Device) publish(t *Target, signalled bool) error {
 	if t.offscreen {
 		return nil
 	}
+	return d.fenceDmabuf(t.buf.Planes[0].FD, signalled)
+}
+
+// fenceDmabuf tells whoever uses the dmabuf dmabufFD next, in this process or
+// another, when the submission just made is done with it: a fence on the
+// dmabuf, which linux-dmabuf's implicit synchronization has every user
+// wait on, or else by waiting here until it is. NVIDIA's driver waits on
+// no such fence, so there the submission finishes first. signalled is
+// whether that submission signals the frame semaphore, as the device's
+// implicitFences said before it.
+func (d *Device) fenceDmabuf(dmabufFD int, signalled bool) error {
 	if !signalled {
 		return d.idle()
 	}
@@ -39,7 +47,7 @@ func (d *Device) publish(t *Target, signalled bool) error {
 	if fd < 0 {
 		return d.idle()
 	}
-	err = dmabuf.ImportSyncFile(t.buf.Planes[0].FD, fd)
+	err = dmabuf.ImportSyncFile(dmabufFD, fd)
 	if cerr := unix.Close(fd); cerr != nil && err == nil {
 		err = fmt.Errorf("gpu: close the frame's sync_file: %w", cerr)
 	}

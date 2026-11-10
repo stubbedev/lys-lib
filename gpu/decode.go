@@ -26,8 +26,14 @@ func (d *Device) DecodeCodecs() []demux.Codec {
 	return slices.Clone(d.decode.codecs)
 }
 
-// decodeSlots are the pictures in flight on the decode queue at once.
-const decodeSlots = 4
+// decodeSlots are the pictures in flight on the decode queue a decoder
+// starts with room for, and from which on it says it is Busy;
+// decodeSlotLimit are the ones it makes room for, a slot at a time,
+// before Decode waits for the GPU.
+const (
+	decodeSlots     = 4
+	decodeSlotLimit = 16
+)
 
 // heldFrames are the frames a caller may hold at once, beside the ones
 // the decoder holds back to put them in presentation order.
@@ -60,8 +66,12 @@ type VideoDecoder struct {
 	dpbFresh   bool
 	reset      bool
 
+	// slots are the pictures in flight and the room for more: from next
+	// on, round, in the order their decodes were submitted, so next is
+	// the one whose decode finishes first.
 	pool  vk.CommandPool
-	slots [decodeSlots]decodeSlot
+	slots []decodeSlot
+	next  int
 	// done is the timeline semaphore decode submission n signals with n:
 	// what a pass that draws a frame waits for on the graphics queue, and
 	// the decoder here before it reuses what a decode reads. submitted is
@@ -165,6 +175,7 @@ func (d *Device) NewVideoDecoder(track demux.Track) (*VideoDecoder, error) {
 		v.Close()
 		return nil, err
 	}
+	v.slots = make([]decodeSlot, decodeSlots, decodeSlotLimit)
 	for i := range v.slots {
 		if v.slots[i].cb, err = d.commandBuffer(v.pool); err != nil {
 			v.Close()
@@ -176,9 +187,11 @@ func (d *Device) NewVideoDecoder(track demux.Track) (*VideoDecoder, error) {
 }
 
 // Decode decodes p, the track's next packet in decode order; the
-// frames it completes come out of Next. A picture that predicts from
-// pictures before the one decoding started at (after Reset, at a
-// keyframe that is not an IDR) is dropped.
+// frames it completes come out of Next. It submits the packet's
+// pictures and waits for the GPU only when that is far behind (Busy).
+// A picture that predicts from pictures before the one decoding
+// started at (after Reset, at a keyframe that is not an IDR) is
+// dropped.
 func (v *VideoDecoder) Decode(p demux.Packet) error {
 	if v.closed {
 		return fmt.Errorf("gpu: %s decode of a closed decoder", v.name)
@@ -696,11 +709,47 @@ func (v *VideoDecoder) sampledFeatures() vk.FormatFeatureFlags {
 	return props.OptimalTilingFeatures
 }
 
+// slot is the slot of the next decode submission, done with its last:
+// the one submitted longest ago once that decode has finished, else a
+// new one, else, with as many as a decoder makes, that one once the GPU
+// has finished it, which is the only wait.
+func (v *VideoDecoder) slot() (*decodeSlot, error) {
+	s := &v.slots[v.next]
+	done, err := v.finished(s.seq)
+	if done || err != nil {
+		return s, err
+	}
+	if len(v.slots) == decodeSlotLimit {
+		return s, v.wait(s.seq)
+	}
+	cb, err := v.d.commandBuffer(v.pool)
+	if err != nil {
+		return nil, err
+	}
+	v.slots = slices.Insert(v.slots, v.next, decodeSlot{cb: cb})
+	return &v.slots[v.next], nil
+}
+
+// Busy reports, without waiting, whether the GPU is decodeSlots
+// pictures or more behind the packets decoded. Decode takes a packet
+// either way, and waits for the GPU only with decodeSlotLimit pictures
+// in flight: a caller that holds its next packet back while Busy, as a
+// player does until its loop's next turn, never has Decode wait.
+func (v *VideoDecoder) Busy() (bool, error) {
+	if v.closed {
+		return false, fmt.Errorf("gpu: Busy of a closed %s decoder", v.name)
+	}
+	if _, err := v.finished(v.submitted); err != nil {
+		return false, err
+	}
+	return v.submitted-v.completed >= decodeSlots, nil
+}
+
 // stream is the bitstream buffer of the next decode submission, n
-// bytes of it ready to write: it waits for the slot's last decode.
+// bytes of it ready to write.
 func (v *VideoDecoder) stream(n int) ([]byte, error) {
-	s := &v.slots[v.submitted%decodeSlots]
-	if err := v.wait(s.seq); err != nil {
+	s, err := v.slot()
+	if err != nil {
 		return nil, err
 	}
 	size := alignUp(n, v.streamAlign())
@@ -743,7 +792,7 @@ type decodePicture struct {
 // stream buffer stream returned.
 func (v *VideoDecoder) submit(p *decodePicture) error {
 	d, c := v.d, &v.cmd
-	s := &v.slots[v.submitted%decodeSlots]
+	s := &v.slots[v.next]
 	cb := s.cb
 	if err := begin(d, cb); err != nil {
 		return err
@@ -794,7 +843,7 @@ func (v *VideoDecoder) submit(p *decodePicture) error {
 		return err
 	}
 	v.submitted++
-	s.seq = v.submitted
+	s.seq, v.next = v.submitted, (v.next+1)%len(v.slots)
 	p.frame.seq, p.frame.state = s.seq, frameQueued
 	return nil
 }

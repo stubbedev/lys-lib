@@ -227,11 +227,13 @@ type vaBackend struct {
 // vaFrame is what the frame being handed to the driver points it at,
 // kept between frames so that a frame allocates none of it: the ids of
 // its parameter buffers, its slice header alone and behind a start
-// code, and the parameters a pointer crosses to the driver with.
+// code, the parameters a pointer crosses to the driver with, and what
+// the driver coded of the frame collected last.
 type vaFrame struct {
 	bufs        []uint32
 	unit        []byte
 	sliceHeader []byte
+	coded       []byte
 	packed      va.EncPackedHeaderParameterBuffer
 	frameRate   va.EncMiscParameterFrameRate
 	rate        va.EncMiscParameterRateControl
@@ -547,15 +549,16 @@ func (vb *vaBackend) rateControl() error {
 	return vb.misc(va.EncMiscParameterTypeHRD, unsafe.Pointer(&f.hrd), int(unsafe.Sizeof(f.hrd)))
 }
 
-// collect waits for slot's picture and reads its access unit, without
-// the packed parameter sets the driver repeats at an IDR, which
-// ParameterSets gives.
+// collect waits for slot's picture, the device's wait limit at most,
+// and reads its access unit, without the packed parameter sets the
+// driver repeats at an IDR, which ParameterSets gives.
 func (vb *vaBackend) collect(slot int) ([]byte, error) {
-	s := &vb.slots[slot]
-	if err := vb.dpy.SyncSurface(s.surface); err != nil {
+	s, f := &vb.slots[slot], &vb.frame
+	if err := vb.dpy.SyncSurface(s.surface, vb.d.waitLimit); err != nil {
 		return nil, err
 	}
-	data, err := vb.dpy.ReadCoded(s.coded)
+	data, err := vb.dpy.ReadCoded(f.coded[:0], s.coded)
+	f.coded = data
 	if err != nil {
 		return nil, err
 	}

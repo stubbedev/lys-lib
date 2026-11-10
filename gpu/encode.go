@@ -184,6 +184,9 @@ type Encoder struct {
 	frames int
 	idrs   uint16
 	closed bool
+	// collected are the packets of finished frames no call has returned
+	// yet: a call that fails after collecting one leaves it here.
+	collected []Packet
 
 	cmd convertCommands
 }
@@ -448,13 +451,17 @@ var nv12Range = vk.ImageSubresourceRange{AspectMask: vk.ImageAspectFlags(vk.Imag
 
 // Encode queues src's pixels (a Buffer the size the encoder was made
 // for) for conversion and encoding, presented at pts; it returns the
-// packets of the frames that finished meanwhile, oldest first. It
-// waits for neither: the Vulkan video queue encodes after the
-// conversion on the GPU. The conversion reads src, as a pass reads a
-// texture, until the device has finished it: Finish waits for that and
-// SyncFile signals it, and src takes its next frame only then. The
-// VA-API driver has no such handoff, so on it Encode waits for the
-// conversion, the device's wait limit at most.
+// packets of the frames that finished meanwhile, oldest first. src is
+// its writer's again when Encode returns: the conversion that reads it
+// has put its fence on src's dmabuf, which whoever writes the next
+// frame into it under linux-dmabuf's implicit synchronization waits
+// for, so nothing waits here and the Vulkan video queue encodes after
+// the conversion on the GPU. Where no fence tells the writer (NVIDIA's
+// driver, a device without sync_files) Encode waits for the conversion
+// instead, as it does for the VA-API driver, which takes no semaphore:
+// the device's wait limit at most. A packet collected before a
+// conversion or an encode that then fails is not lost: the next Encode
+// or Flush returns it.
 func (e *Encoder) Encode(src *Buffer, pts time.Duration) ([]Packet, error) {
 	if e.closed {
 		return nil, errors.New("gpu: encode on a closed encoder")
@@ -471,13 +478,12 @@ func (e *Encoder) Encode(src *Buffer, pts time.Duration) ([]Packet, error) {
 	}
 	i := e.frames % encodeSlots
 	slot := &e.slots[i]
-	var out []Packet
 	if slot.busy {
 		p, err := e.collect(i)
 		if err != nil {
 			return nil, err
 		}
-		out = append(out, p)
+		e.collected = append(e.collected, p)
 	}
 	if err := e.convert(src, region.Min, i); err != nil {
 		return nil, err
@@ -491,7 +497,15 @@ func (e *Encoder) Encode(src *Buffer, pts time.Duration) ([]Packet, error) {
 		e.idrs++
 	}
 	e.frames++
-	return out, nil
+	return e.takeCollected(), nil
+}
+
+// takeCollected hands the caller the packets collected since the last
+// call that returned any.
+func (e *Encoder) takeCollected() []Packet {
+	out := e.collected
+	e.collected = nil
+	return out
 }
 
 // maxOverlayCoord bounds an overlay rectangle's coordinates, which the
@@ -582,9 +596,10 @@ func (e *Encoder) uploadOverlay(img *image.RGBA) error {
 }
 
 // Flush waits for the frames in flight and returns their packets,
-// oldest first.
+// oldest first, behind any an Encode that failed had collected. When
+// collecting a frame fails, the packets before it come out of the next
+// Flush.
 func (e *Encoder) Flush() ([]Packet, error) {
-	var out []Packet
 	for i := range encodeSlots {
 		i := (e.frames + i) % encodeSlots
 		if !e.slots[i].busy {
@@ -592,11 +607,11 @@ func (e *Encoder) Flush() ([]Packet, error) {
 		}
 		p, err := e.collect(i)
 		if err != nil {
-			return out, err
+			return nil, err
 		}
-		out = append(out, p)
+		e.collected = append(e.collected, p)
 	}
-	return out, nil
+	return e.takeCollected(), nil
 }
 
 // collect waits for slot i's frame and takes its packet.
@@ -611,8 +626,9 @@ func (e *Encoder) collect(i int) (Packet, error) {
 }
 
 // convert submits the NV12 conversion of src into slot's planes, and
-// what the backend does with them on the graphics queue, without
-// waiting for it.
+// what the backend does with them on the graphics queue, and hands src
+// back to its writer: behind the conversion's fence, or the conversion
+// finished.
 func (e *Encoder) convert(src *Buffer, origin image.Point, slot int) error {
 	view, err := src.view()
 	if err != nil {
@@ -638,7 +654,11 @@ func (e *Encoder) convert(src *Buffer, origin image.Point, slot int) error {
 		frameW: intconv.Must[int32](e.cfg.Width), frameH: intconv.Must[int32](e.cfg.Height), codedW: intconv.Must[int32](e.coded[0]), codedH: intconv.Must[int32](e.coded[1]), overlay: over,
 		originX: intconv.Must[int32](origin.X), originY: intconv.Must[int32](origin.Y), transform: intconv.Must[int32](e.cfg.Transform),
 	}
-	return d.submitAsync(func(cb vk.CommandBuffer) { e.recordConvert(cb, src.e.image, slot) }, submission{})
+	fenced := d.implicitFences
+	if err := d.submitAsync(func(cb vk.CommandBuffer) { e.recordConvert(cb, src.e.image, slot) }, submission{signals: fenced}); err != nil {
+		return err
+	}
+	return d.fenceDmabuf(src.e.buf.Planes[0].FD, fenced)
 }
 
 // recordConvert records slot's conversion of src, the caller's buffer:

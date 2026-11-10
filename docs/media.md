@@ -79,15 +79,19 @@ func main() {
 - The source is a `Buffer`; pass `frame.Dmabuf()` to [`capture`](/wayland#capture)
   to fill it.
 - A compute pass crops, rotates, draws the overlay (`SetOverlay`) and converts
-  to NV12. It is a submission of the device like a pass, and `Encode` waits for
-  neither it nor the encode: the Vulkan video queue encodes after the
-  conversion on the GPU, by a timeline semaphore. The conversion reads the
-  buffer until the device has finished it, so fill the buffer again only after
-  `Device.Finish` (or once `Device.SyncFile` has signalled). The VA-API driver
-  has no such handoff: there `Encode` waits for the conversion.
-- Every wait on the Vulkan device is bounded by its wait limit, a hung GPU an
-  error instead of a frozen caller. The VA-API driver's own wait for a picture
-  (`vaSyncSurface`) has no bound.
+  to NV12. It is a submission of the device like a pass, and the Vulkan video
+  queue encodes after it on the GPU, by a timeline semaphore.
+- The buffer is its writer's again when `Encode` returns. The conversion that
+  reads it leaves its fence on the buffer's dmabuf, which whoever writes the
+  next frame into it under linux-dmabuf's implicit synchronization (a
+  compositor's screencopy) waits for, so `Encode` waits for nothing. Where no
+  fence tells the writer (NVIDIA's driver, a device without `sync_file`
+  semaphores) `Encode` waits for the conversion instead, as it does for the
+  VA-API driver, which takes no semaphore.
+- A packet collected before a conversion or an encode that then fails comes
+  out of the next `Encode` or `Flush`.
+- Every wait is bounded by the device's wait limit, the VA-API driver's for a
+  picture too: a hung GPU is an error instead of a frozen caller.
 - An `Encoder` belongs to one goroutine.
 - `NewEncoder` fails with `ErrNoVideoEncoder`, carrying both backends' reasons,
   when neither encodes the codec.
@@ -169,6 +173,10 @@ func main() {
   superframe, whose hidden frames it decodes too). `Next` returns the next frame in presentation order,
   or nil until more packets complete one. `Flush` at the end of the track hands
   out the frames held back for reordering.
+- `Decode` submits a packet's pictures and makes room for more in flight (up
+  to 16) instead of waiting for the GPU. `Busy` says, without waiting, whether
+  the GPU is four pictures or more behind: a player that holds its next packet
+  back until its loop's next turn while `Busy` never has `Decode` wait.
 - Nothing waits on the CPU for a decode. `Next` hands a frame out while its
   picture may still be decoding, and the pass that draws it waits for the
   decode on the GPU: the decode queue signals a timeline semaphore the pass's

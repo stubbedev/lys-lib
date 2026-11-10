@@ -58,6 +58,7 @@ const (
 	PictureHEVCRPSStCurrBefore            uint32 = 16
 	CodedBufStatusSliceOverflowMask       uint32 = 512
 	StatusSuccess                         int32  = 0
+	StatusErrorTimedOut                   int32  = 38
 )
 
 // Bits is a bitfield inside one of libva's unions: its first bit and
