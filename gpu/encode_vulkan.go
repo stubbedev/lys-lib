@@ -188,9 +188,7 @@ func (vb *vulkanBackend) close() {
 	if vb.session != 0 {
 		d.cmds.DestroyVideoSessionKHR(d.device, vb.session, nil)
 	}
-	for _, m := range vb.sessionMem {
-		d.cmds.FreeMemory(d.device, m, nil)
-	}
+	d.freeMemory(vb.sessionMem)
 }
 
 // dpbSlots are the reference pictures: the one being reconstructed and
@@ -262,8 +260,8 @@ func newVideoProfile(c Codec, codec videoCodec, i int) *videoProfile {
 	p.info = vk.VideoProfileInfoKHR{
 		SType: vk.StructureTypeVideoProfileInfoKhr, PNext: (*uintptr)(codec.profile(i, unsafe.Pointer(&p.usage))), VideoCodecOperation: c.operation(),
 		ChromaSubsampling: vk.VideoChromaSubsamplingFlagsKHR(vk.VideoChromaSubsampling420BitKhr),
-		LumaBitDepth:      vk.VideoComponentBitDepthFlagsKHR(vk.VideoComponentBitDepth8BitKhr),
-		ChromaBitDepth:    vk.VideoComponentBitDepthFlagsKHR(vk.VideoComponentBitDepth8BitKhr),
+		LumaBitDepth:      depth8.component(),
+		ChromaBitDepth:    depth8.component(),
 	}
 	p.list = vk.VideoProfileListInfoKHR{SType: vk.StructureTypeVideoProfileListInfoKhr, ProfileCount: 1, PProfiles: &p.info}
 	return p
@@ -284,14 +282,6 @@ func (d *Device) videoCaps(p *videoProfile, codec videoCodec) (*videoCaps, vk.Re
 	runtime.KeepAlive(p)
 	runtime.KeepAlive(codec)
 	return c, r
-}
-
-// videoImage is an NV12 picture: its image, memory and the views the
-// coding commands name it by (one per array layer).
-type videoImage struct {
-	image  vk.Image
-	memory vk.DeviceMemory
-	views  []vk.ImageView
 }
 
 // pickProfile takes the codec's best profile the device encodes, with
@@ -349,39 +339,9 @@ func (vb *vulkanBackend) createSession() error {
 	if r != vk.Success {
 		return fmt.Errorf("gpu: vkCreateVideoSessionKHR %dx%d: %w", vb.coded[0], vb.coded[1], resultError(r))
 	}
-	var n uint32
-	if r := d.cmds.GetVideoSessionMemoryRequirementsKHR(d.device, vb.session, &n, nil); r != vk.Success {
-		return fmt.Errorf("gpu: vkGetVideoSessionMemoryRequirementsKHR: %w", resultError(r))
-	}
-	reqs := make([]vk.VideoSessionMemoryRequirementsKHR, n)
-	for i := range reqs {
-		reqs[i].SType = vk.StructureTypeVideoSessionMemoryRequirementsKhr
-	}
-	if n > 0 {
-		if r := d.cmds.GetVideoSessionMemoryRequirementsKHR(d.device, vb.session, &n, &reqs[0]); r != vk.Success {
-			return fmt.Errorf("gpu: vkGetVideoSessionMemoryRequirementsKHR: %w", resultError(r))
-		}
-	}
-	binds := make([]vk.BindVideoSessionMemoryInfoKHR, 0, n)
-	for _, req := range reqs[:n] {
-		mem, err := d.allocate(req.MemoryRequirements, vk.MemoryPropertyDeviceLocalBit, nil)
-		if errors.Is(err, errNoMemoryType) {
-			mem, err = d.allocate(req.MemoryRequirements, 0, nil)
-		}
-		if err != nil {
-			return fmt.Errorf("gpu: video session memory %d: %w", req.MemoryBindIndex, err)
-		}
-		vb.sessionMem = append(vb.sessionMem, mem)
-		binds = append(binds, vk.BindVideoSessionMemoryInfoKHR{
-			SType: vk.StructureTypeBindVideoSessionMemoryInfoKhr, MemoryBindIndex: req.MemoryBindIndex, Memory: mem, MemorySize: req.MemoryRequirements.Size,
-		})
-	}
-	if len(binds) > 0 {
-		if r := d.cmds.BindVideoSessionMemoryKHR(d.device, vb.session, count(binds), &binds[0]); r != vk.Success {
-			return fmt.Errorf("gpu: vkBindVideoSessionMemoryKHR: %w", resultError(r))
-		}
-	}
-	return nil
+	var err error
+	vb.sessionMem, err = d.bindVideoSession(vb.session)
+	return err
 }
 
 // createParameters makes the session parameters and reads back the
@@ -418,115 +378,33 @@ func (vb *vulkanBackend) createParameters() error {
 	return nil
 }
 
-// videoFormat finds NV12's properties among the formats the device
-// codes pictures of usage in.
-func (vb *vulkanBackend) videoFormat(usage vk.ImageUsageFlags) (vk.VideoFormatPropertiesKHR, error) {
-	d := vb.d
-	fi := vk.PhysicalDeviceVideoFormatInfoKHR{SType: vk.StructureTypePhysicalDeviceVideoFormatInfoKhr, PNext: (*uintptr)(unsafe.Pointer(&vb.profile.list)), ImageUsage: usage}
-	var n uint32
-	if r := d.cmds.GetPhysicalDeviceVideoFormatPropertiesKHR(d.phys, &fi, &n, nil); r != vk.Success {
-		return vk.VideoFormatPropertiesKHR{}, fmt.Errorf("gpu: vkGetPhysicalDeviceVideoFormatPropertiesKHR: %w", resultError(r))
-	}
-	props := make([]vk.VideoFormatPropertiesKHR, n)
-	for i := range props {
-		props[i].SType = vk.StructureTypeVideoFormatPropertiesKhr
-	}
-	if n > 0 {
-		if r := d.cmds.GetPhysicalDeviceVideoFormatPropertiesKHR(d.phys, &fi, &n, &props[0]); r != vk.Success {
-			return vk.VideoFormatPropertiesKHR{}, fmt.Errorf("gpu: vkGetPhysicalDeviceVideoFormatPropertiesKHR: %w", resultError(r))
-		}
-	}
-	runtime.KeepAlive(vb.profile)
-	for _, p := range props[:n] {
-		if p.Format == nv12 && p.ImageType == vk.ImageType2d {
-			return p, nil
-		}
-	}
-	return vk.VideoFormatPropertiesKHR{}, fmt.Errorf("%w: %s codes no NV12 pictures for usage %#x", ErrNoVideoEncoder, d.name, usage)
-}
-
 // createImages makes each slot's source picture and the DPB.
 func (vb *vulkanBackend) createImages() error {
 	d := vb.d
-	srcUsage := vk.ImageUsageFlags(vk.ImageUsageVideoEncodeSrcBitKhr | vk.ImageUsageTransferDstBit)
-	srcFormat, err := vb.videoFormat(srcUsage)
-	if err != nil {
-		return err
+	src := pictureSpec{
+		extent: vb.coded, depth: depth8, profiles: &vb.profile.list, layers: 1,
+		usage:  vk.ImageUsageFlags(vk.ImageUsageVideoEncodeSrcBitKhr | vk.ImageUsageTransferDstBit),
+		family: d.video.family, shared: true,
 	}
-	dpbUsage := vk.ImageUsageFlags(vk.ImageUsageVideoEncodeDpbBitKhr)
-	dpbFormat, err := vb.videoFormat(dpbUsage)
-	if err != nil {
-		return err
+	dpb := src
+	dpb.usage, dpb.layers, dpb.shared = vk.ImageUsageFlags(vk.ImageUsageVideoEncodeDpbBitKhr), dpbSlots, false
+	for _, spec := range []*pictureSpec{&src, &dpb} {
+		format, err := d.videoFormat(spec.profiles, spec.usage, spec.depth, ErrNoVideoEncoder)
+		if err != nil {
+			return err
+		}
+		spec.format = format
 	}
-	families := []uint32{d.family, d.video.family}
+	var err error
 	for i := range vb.slots {
-		if err := vb.newVideoImage(&vb.slots[i].src, srcFormat, srcUsage, 1, families); err != nil {
+		if vb.slots[i].src, err = d.newPicture(src); err != nil {
 			return fmt.Errorf("gpu: encoder source picture: %w", err)
 		}
 	}
-	if err := vb.newVideoImage(&vb.dpb, dpbFormat, dpbUsage, dpbSlots, nil); err != nil {
+	if vb.dpb, err = d.newPicture(dpb); err != nil {
 		return fmt.Errorf("gpu: encoder DPB: %w", err)
 	}
 	return nil
-}
-
-// newVideoImage makes an NV12 picture of the coded size with layers
-// array layers in format's tiling, shared between families when there
-// are two different ones, and a view of each layer.
-func (vb *vulkanBackend) newVideoImage(vi *videoImage, format vk.VideoFormatPropertiesKHR, usage vk.ImageUsageFlags, layers int, families []uint32) error {
-	d := vb.d
-	ici := vk.ImageCreateInfo{
-		SType: vk.StructureTypeImageCreateInfo, PNext: (*uintptr)(unsafe.Pointer(&vb.profile.list)), Flags: format.ImageCreateFlags,
-		ImageType: vk.ImageType2d, Format: nv12, Extent: extent3D(vb.coded[0], vb.coded[1]),
-		MipLevels: 1, ArrayLayers: intconv.Must[uint32](layers), Samples: vk.SampleCount1Bit, Tiling: format.ImageTiling,
-		Usage: usage, SharingMode: vk.SharingModeExclusive, InitialLayout: vk.ImageLayoutUndefined,
-	}
-	if len(families) == 2 && families[0] != families[1] {
-		ici.SharingMode, ici.QueueFamilyIndexCount, ici.PQueueFamilyIndices = vk.SharingModeConcurrent, 2, &families[0]
-	}
-	r := d.cmds.CreateImage(d.device, &ici, nil, &vi.image)
-	runtime.KeepAlive(vb.profile)
-	runtime.KeepAlive(families)
-	if r != vk.Success {
-		return fmt.Errorf("vkCreateImage NV12 %dx%d x%d: %w", vb.coded[0], vb.coded[1], layers, resultError(r))
-	}
-	var req vk.MemoryRequirements
-	d.cmds.GetImageMemoryRequirements(d.device, vi.image, &req)
-	mem, err := d.allocate(req, vk.MemoryPropertyDeviceLocalBit, nil)
-	if err != nil {
-		return err
-	}
-	vi.memory = mem
-	if r := d.cmds.BindImageMemory(d.device, vi.image, vi.memory, 0); r != vk.Success {
-		return fmt.Errorf("vkBindImageMemory: %w", resultError(r))
-	}
-	for l := range layers {
-		vci := vk.ImageViewCreateInfo{
-			SType: vk.StructureTypeImageViewCreateInfo, Image: vi.image, ViewType: vk.ImageViewType2d, Format: nv12,
-			SubresourceRange: vk.ImageSubresourceRange{AspectMask: vk.ImageAspectFlags(vk.ImageAspectColorBit), LevelCount: 1, BaseArrayLayer: uint32(l), LayerCount: 1},
-		}
-		var v vk.ImageView
-		if r := d.cmds.CreateImageView(d.device, &vci, nil, &v); r != vk.Success {
-			return fmt.Errorf("vkCreateImageView NV12 layer %d: %w", l, resultError(r))
-		}
-		vi.views = append(vi.views, v)
-	}
-	return nil
-}
-
-func (vi *videoImage) close(d *Device) {
-	for _, v := range vi.views {
-		d.cmds.DestroyImageView(d.device, v, nil)
-	}
-	vi.views = nil
-	if vi.image != 0 {
-		d.cmds.DestroyImage(d.device, vi.image, nil)
-		vi.image = 0
-	}
-	if vi.memory != 0 {
-		d.cmds.FreeMemory(d.device, vi.memory, nil)
-		vi.memory = 0
-	}
 }
 
 // createBuffers makes the bitstream buffer each slot writes its share

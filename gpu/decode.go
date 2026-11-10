@@ -9,7 +9,6 @@ import (
 	"time"
 	"unsafe"
 
-	"github.com/stubbedev/lys-lib/fourcc"
 	"github.com/stubbedev/lys-lib/intconv"
 	"github.com/stubbedev/lys-lib/media/demux"
 	"github.com/stubbedev/lys-lib/third_party/vk"
@@ -97,47 +96,6 @@ type decodeShape struct {
 	hidden  int
 	depth   videoDepth
 	ycbcr   YCbCr
-}
-
-// videoDepth is the sample depth of a stream's 4:2:0 pictures, which
-// picks their format.
-type videoDepth uint8
-
-// The depths decoded.
-const (
-	depth8 videoDepth = iota
-	depth10
-)
-
-// depthOf is the depth of bits-bit samples; false for one not decoded.
-func depthOf(bits int) (videoDepth, bool) {
-	switch bits {
-	case 8:
-		return depth8, true
-	case 10:
-		return depth10, true
-	}
-	return 0, false
-}
-
-// format is the depth's picture format: NV12, or P010 with 10 bits in
-// the high bits of each 16.
-func (b videoDepth) format() fourcc.Format {
-	if b == depth10 {
-		return fourcc.P010
-	}
-	return fourcc.NV12
-}
-
-// vk is the depth's picture format in Vulkan.
-func (b videoDepth) vk() vk.Format { return pixelFormats[b.format()].vk }
-
-// component is the depth as a video profile names it.
-func (b videoDepth) component() vk.VideoComponentBitDepthFlagsKHR {
-	if b == depth10 {
-		return vk.VideoComponentBitDepthFlagsKHR(vk.VideoComponentBitDepth10BitKhr)
-	}
-	return vk.VideoComponentBitDepthFlagsKHR(vk.VideoComponentBitDepth8BitKhr)
 }
 
 // decodeCodec is what a decoder does differently per codec: it reads
@@ -421,38 +379,12 @@ func (v *VideoDecoder) pickProfile() error {
 			vk.ImageUsageFlags(vk.ImageUsageVideoDecodeDstBitKhr | vk.ImageUsageSampledBit | vk.ImageUsageTransferSrcBit),
 			vk.ImageUsageFlags(vk.ImageUsageVideoDecodeDpbBitKhr),
 		}
-		if v.format[0], err = d.videoFormat(&v.profile.list, v.usage[0], v.shape.depth); err != nil {
+		if v.format[0], err = d.videoFormat(&v.profile.list, v.usage[0], v.shape.depth, ErrNoVideoDecoder); err != nil {
 			return err
 		}
 	}
-	v.format[1], err = d.videoFormat(&v.profile.list, v.usage[1], v.shape.depth)
+	v.format[1], err = d.videoFormat(&v.profile.list, v.usage[1], v.shape.depth, ErrNoVideoDecoder)
 	return err
-}
-
-// videoFormat finds the properties of depth's format among the formats
-// the device codes pictures of usage in, in the profiles list names.
-func (d *Device) videoFormat(list *vk.VideoProfileListInfoKHR, usage vk.ImageUsageFlags, depth videoDepth) (vk.VideoFormatPropertiesKHR, error) {
-	fi := vk.PhysicalDeviceVideoFormatInfoKHR{SType: vk.StructureTypePhysicalDeviceVideoFormatInfoKhr, PNext: (*uintptr)(unsafe.Pointer(list)), ImageUsage: usage}
-	var n uint32
-	if r := d.cmds.GetPhysicalDeviceVideoFormatPropertiesKHR(d.phys, &fi, &n, nil); r != vk.Success {
-		return vk.VideoFormatPropertiesKHR{}, fmt.Errorf("gpu: vkGetPhysicalDeviceVideoFormatPropertiesKHR usage %#x: %w", usage, resultError(r))
-	}
-	props := make([]vk.VideoFormatPropertiesKHR, n)
-	for i := range props {
-		props[i].SType = vk.StructureTypeVideoFormatPropertiesKhr
-	}
-	if n > 0 {
-		if r := d.cmds.GetPhysicalDeviceVideoFormatPropertiesKHR(d.phys, &fi, &n, &props[0]); r != vk.Success {
-			return vk.VideoFormatPropertiesKHR{}, fmt.Errorf("gpu: vkGetPhysicalDeviceVideoFormatPropertiesKHR usage %#x: %w", usage, resultError(r))
-		}
-	}
-	runtime.KeepAlive(list)
-	for _, p := range props[:n] {
-		if p.Format == depth.vk() && p.ImageType == vk.ImageType2d {
-			return p, nil
-		}
-	}
-	return vk.VideoFormatPropertiesKHR{}, fmt.Errorf("%w: %s codes no %s pictures for usage %#x", ErrNoVideoDecoder, d.name, depth.format(), usage)
 }
 
 // createSession makes the video session, binds its memory and makes
@@ -503,51 +435,21 @@ func (v *VideoDecoder) createParameters() error {
 	return nil
 }
 
-// bindVideoSession allocates and binds the memory session needs.
-func (d *Device) bindVideoSession(session vk.VideoSessionKHR) ([]vk.DeviceMemory, error) {
-	var n uint32
-	if r := d.cmds.GetVideoSessionMemoryRequirementsKHR(d.device, session, &n, nil); r != vk.Success {
-		return nil, fmt.Errorf("gpu: vkGetVideoSessionMemoryRequirementsKHR: %w", resultError(r))
-	}
-	reqs := make([]vk.VideoSessionMemoryRequirementsKHR, n)
-	for i := range reqs {
-		reqs[i].SType = vk.StructureTypeVideoSessionMemoryRequirementsKhr
-	}
-	if n > 0 {
-		if r := d.cmds.GetVideoSessionMemoryRequirementsKHR(d.device, session, &n, &reqs[0]); r != vk.Success {
-			return nil, fmt.Errorf("gpu: vkGetVideoSessionMemoryRequirementsKHR: %w", resultError(r))
-		}
-	}
-	mems := make([]vk.DeviceMemory, 0, n)
-	binds := make([]vk.BindVideoSessionMemoryInfoKHR, 0, n)
-	for _, req := range reqs[:n] {
-		mem, err := d.allocate(req.MemoryRequirements, vk.MemoryPropertyDeviceLocalBit, nil)
-		if errors.Is(err, errNoMemoryType) {
-			mem, err = d.allocate(req.MemoryRequirements, 0, nil)
-		}
-		if err != nil {
-			d.freeMemory(mems)
-			return nil, fmt.Errorf("gpu: video session memory %d: %w", req.MemoryBindIndex, err)
-		}
-		mems = append(mems, mem)
-		binds = append(binds, vk.BindVideoSessionMemoryInfoKHR{
-			SType: vk.StructureTypeBindVideoSessionMemoryInfoKhr, MemoryBindIndex: req.MemoryBindIndex, Memory: mem, MemorySize: req.MemoryRequirements.Size,
-		})
-	}
-	if len(binds) > 0 {
-		if r := d.cmds.BindVideoSessionMemoryKHR(d.device, session, count(binds), &binds[0]); r != vk.Success {
-			d.freeMemory(mems)
-			return nil, fmt.Errorf("gpu: vkBindVideoSessionMemoryKHR: %w", resultError(r))
-		}
-	}
-	return mems, nil
-}
-
 // extent is the size of the session's pictures: the coded size rounded
 // up to the device's picture access granularity.
 func (v *VideoDecoder) extent() [2]int {
 	g := v.caps.video.PictureAccessGranularity
 	return [2]int{alignUp(v.shape.coded[0], max(int(g.Width), 1)), alignUp(v.shape.coded[1], max(int(g.Height), 1))}
+}
+
+// newPicture makes a picture of the session's size and depth with layers
+// array layers, laid out as format says, shared with the graphics queue
+// when shared.
+func (v *VideoDecoder) newPicture(format vk.VideoFormatPropertiesKHR, usage vk.ImageUsageFlags, layers int, shared bool) (videoImage, error) {
+	return v.d.newPicture(pictureSpec{
+		extent: v.extent(), depth: v.shape.depth, profiles: &v.profile.list, format: format, usage: usage, layers: layers,
+		family: v.d.decode.family, shared: shared,
+	})
 }
 
 // createDPB makes the reference pictures, a layer per DPB slot.
@@ -558,71 +460,6 @@ func (v *VideoDecoder) createDPB() error {
 	}
 	v.dpb = img
 	return nil
-}
-
-// decodeCoding are the usages of a picture the coding commands name.
-const decodeCoding = vk.ImageUsageFlags(vk.ImageUsageVideoDecodeDstBitKhr | vk.ImageUsageVideoDecodeDpbBitKhr)
-
-// newPicture makes a picture of the session's size and depth with layers
-// array layers, laid out as format says, shared with the graphics queue
-// when shared. A picture the coding commands name (usage has a video
-// decode usage) is made for the session's profile, with a view of each
-// layer for them.
-func (v *VideoDecoder) newPicture(format vk.VideoFormatPropertiesKHR, usage vk.ImageUsageFlags, layers int, shared bool) (videoImage, error) {
-	d := v.d
-	extent := v.extent()
-	ici := vk.ImageCreateInfo{
-		SType: vk.StructureTypeImageCreateInfo, Flags: format.ImageCreateFlags,
-		ImageType: vk.ImageType2d, Format: v.shape.depth.vk(), Extent: extent3D(extent[0], extent[1]),
-		MipLevels: 1, ArrayLayers: intconv.Must[uint32](layers), Samples: vk.SampleCount1Bit, Tiling: format.ImageTiling,
-		Usage: usage, SharingMode: vk.SharingModeExclusive, InitialLayout: vk.ImageLayoutUndefined,
-	}
-	if usage&decodeCoding != 0 {
-		ici.PNext = (*uintptr)(unsafe.Pointer(&v.profile.list))
-	}
-	families := [2]uint32{d.family, d.decode.family}
-	if shared && families[0] != families[1] {
-		ici.SharingMode, ici.QueueFamilyIndexCount, ici.PQueueFamilyIndices = vk.SharingModeConcurrent, 2, &families[0]
-	}
-	var vi videoImage
-	r := d.cmds.CreateImage(d.device, &ici, nil, &vi.image)
-	runtime.KeepAlive(v.profile)
-	runtime.KeepAlive(&families)
-	if r != vk.Success {
-		return videoImage{}, fmt.Errorf("vkCreateImage %s %dx%d x%d: %w", v.shape.depth.format(), extent[0], extent[1], layers, resultError(r))
-	}
-	var req vk.MemoryRequirements
-	d.cmds.GetImageMemoryRequirements(d.device, vi.image, &req)
-	mem, err := d.allocate(req, vk.MemoryPropertyDeviceLocalBit, nil)
-	if err != nil {
-		vi.close(d)
-		return videoImage{}, err
-	}
-	vi.memory = mem
-	if r := d.cmds.BindImageMemory(d.device, vi.image, vi.memory, 0); r != vk.Success {
-		vi.close(d)
-		return videoImage{}, fmt.Errorf("vkBindImageMemory: %w", resultError(r))
-	}
-	codingUsage := usage & decodeCoding
-	if codingUsage == 0 {
-		return vi, nil
-	}
-	viewUsage := vk.ImageViewUsageCreateInfo{SType: vk.StructureTypeImageViewUsageCreateInfo, Usage: codingUsage}
-	for l := range layers {
-		vci := vk.ImageViewCreateInfo{
-			SType: vk.StructureTypeImageViewCreateInfo, PNext: (*uintptr)(unsafe.Pointer(&viewUsage)), Image: vi.image, ViewType: vk.ImageViewType2d, Format: v.shape.depth.vk(),
-			SubresourceRange: vk.ImageSubresourceRange{AspectMask: vk.ImageAspectFlags(vk.ImageAspectColorBit), LevelCount: 1, BaseArrayLayer: uint32(l), LayerCount: 1},
-		}
-		var view vk.ImageView
-		r := d.cmds.CreateImageView(d.device, &vci, nil, &view)
-		runtime.KeepAlive(&viewUsage)
-		if r != vk.Success {
-			vi.close(d)
-			return videoImage{}, fmt.Errorf("vkCreateImageView %s layer %d: %w", v.shape.depth.format(), l, resultError(r))
-		}
-		vi.views = append(vi.views, view)
-	}
-	return vi, nil
 }
 
 // VideoFrame is a decoded picture the renderer samples: Texture, drawn

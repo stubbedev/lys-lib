@@ -8,6 +8,8 @@ import (
 	"strings"
 	"unsafe"
 
+	"github.com/stubbedev/lys-lib/fourcc"
+	"github.com/stubbedev/lys-lib/intconv"
 	"github.com/stubbedev/lys-lib/media/demux"
 	"github.com/stubbedev/lys-lib/third_party/vk"
 )
@@ -266,4 +268,213 @@ func (d *Device) probeVP9(p vk.PhysicalDevice) bool {
 	d.cmds.GetPhysicalDeviceFeatures2(p, &f2)
 	runtime.KeepAlive(&vp9)
 	return vp9.VideoDecodeVP9 != 0
+}
+
+// videoDepth is the sample depth of a stream's 4:2:0 pictures, which
+// picks their format.
+type videoDepth uint8
+
+// The depths decoded.
+const (
+	depth8 videoDepth = iota
+	depth10
+)
+
+// depthOf is the depth of bits-bit samples; false for one not decoded.
+func depthOf(bits int) (videoDepth, bool) {
+	switch bits {
+	case 8:
+		return depth8, true
+	case 10:
+		return depth10, true
+	}
+	return 0, false
+}
+
+// format is the depth's picture format: NV12, or P010 with 10 bits in
+// the high bits of each 16.
+func (b videoDepth) format() fourcc.Format {
+	if b == depth10 {
+		return fourcc.P010
+	}
+	return fourcc.NV12
+}
+
+// vk is the depth's picture format in Vulkan.
+func (b videoDepth) vk() vk.Format { return pixelFormats[b.format()].vk }
+
+// component is the depth as a video profile names it.
+func (b videoDepth) component() vk.VideoComponentBitDepthFlagsKHR {
+	if b == depth10 {
+		return vk.VideoComponentBitDepthFlagsKHR(vk.VideoComponentBitDepth10BitKhr)
+	}
+	return vk.VideoComponentBitDepthFlagsKHR(vk.VideoComponentBitDepth8BitKhr)
+}
+
+// videoFormat finds the properties of depth's format among the formats
+// the device codes pictures of usage in, in the profiles list names.
+// none is what the device lacks when there is no such format:
+// ErrNoVideoDecoder or ErrNoVideoEncoder.
+func (d *Device) videoFormat(list *vk.VideoProfileListInfoKHR, usage vk.ImageUsageFlags, depth videoDepth, none error) (vk.VideoFormatPropertiesKHR, error) {
+	fi := vk.PhysicalDeviceVideoFormatInfoKHR{SType: vk.StructureTypePhysicalDeviceVideoFormatInfoKhr, PNext: (*uintptr)(unsafe.Pointer(list)), ImageUsage: usage}
+	var n uint32
+	if r := d.cmds.GetPhysicalDeviceVideoFormatPropertiesKHR(d.phys, &fi, &n, nil); r != vk.Success {
+		return vk.VideoFormatPropertiesKHR{}, fmt.Errorf("gpu: vkGetPhysicalDeviceVideoFormatPropertiesKHR usage %#x: %w", usage, resultError(r))
+	}
+	props := make([]vk.VideoFormatPropertiesKHR, n)
+	for i := range props {
+		props[i].SType = vk.StructureTypeVideoFormatPropertiesKhr
+	}
+	if n > 0 {
+		if r := d.cmds.GetPhysicalDeviceVideoFormatPropertiesKHR(d.phys, &fi, &n, &props[0]); r != vk.Success {
+			return vk.VideoFormatPropertiesKHR{}, fmt.Errorf("gpu: vkGetPhysicalDeviceVideoFormatPropertiesKHR usage %#x: %w", usage, resultError(r))
+		}
+	}
+	runtime.KeepAlive(list)
+	for _, p := range props[:n] {
+		if p.Format == depth.vk() && p.ImageType == vk.ImageType2d {
+			return p, nil
+		}
+	}
+	return vk.VideoFormatPropertiesKHR{}, fmt.Errorf("%w: %s codes no %s pictures for usage %#x", none, d.name, depth.format(), usage)
+}
+
+// bindVideoSession allocates and binds the memory session needs.
+func (d *Device) bindVideoSession(session vk.VideoSessionKHR) ([]vk.DeviceMemory, error) {
+	var n uint32
+	if r := d.cmds.GetVideoSessionMemoryRequirementsKHR(d.device, session, &n, nil); r != vk.Success {
+		return nil, fmt.Errorf("gpu: vkGetVideoSessionMemoryRequirementsKHR: %w", resultError(r))
+	}
+	reqs := make([]vk.VideoSessionMemoryRequirementsKHR, n)
+	for i := range reqs {
+		reqs[i].SType = vk.StructureTypeVideoSessionMemoryRequirementsKhr
+	}
+	if n > 0 {
+		if r := d.cmds.GetVideoSessionMemoryRequirementsKHR(d.device, session, &n, &reqs[0]); r != vk.Success {
+			return nil, fmt.Errorf("gpu: vkGetVideoSessionMemoryRequirementsKHR: %w", resultError(r))
+		}
+	}
+	mems := make([]vk.DeviceMemory, 0, n)
+	binds := make([]vk.BindVideoSessionMemoryInfoKHR, 0, n)
+	for _, req := range reqs[:n] {
+		mem, err := d.allocate(req.MemoryRequirements, vk.MemoryPropertyDeviceLocalBit, nil)
+		if errors.Is(err, errNoMemoryType) {
+			mem, err = d.allocate(req.MemoryRequirements, 0, nil)
+		}
+		if err != nil {
+			d.freeMemory(mems)
+			return nil, fmt.Errorf("gpu: video session memory %d: %w", req.MemoryBindIndex, err)
+		}
+		mems = append(mems, mem)
+		binds = append(binds, vk.BindVideoSessionMemoryInfoKHR{
+			SType: vk.StructureTypeBindVideoSessionMemoryInfoKhr, MemoryBindIndex: req.MemoryBindIndex, Memory: mem, MemorySize: req.MemoryRequirements.Size,
+		})
+	}
+	if len(binds) > 0 {
+		if r := d.cmds.BindVideoSessionMemoryKHR(d.device, session, count(binds), &binds[0]); r != vk.Success {
+			d.freeMemory(mems)
+			return nil, fmt.Errorf("gpu: vkBindVideoSessionMemoryKHR: %w", resultError(r))
+		}
+	}
+	return mems, nil
+}
+
+// videoImage is a picture of a video session: its image, memory and
+// the views the coding commands name it by (one per array layer).
+type videoImage struct {
+	image  vk.Image
+	memory vk.DeviceMemory
+	views  []vk.ImageView
+}
+
+func (vi *videoImage) close(d *Device) {
+	for _, v := range vi.views {
+		d.cmds.DestroyImageView(d.device, v, nil)
+	}
+	vi.views = nil
+	if vi.image != 0 {
+		d.cmds.DestroyImage(d.device, vi.image, nil)
+		vi.image = 0
+	}
+	if vi.memory != 0 {
+		d.cmds.FreeMemory(d.device, vi.memory, nil)
+		vi.memory = 0
+	}
+}
+
+// codingUsage are the usages of a picture the coding commands name.
+const codingUsage = vk.ImageUsageFlags(vk.ImageUsageVideoDecodeDstBitKhr | vk.ImageUsageVideoDecodeDpbBitKhr | vk.ImageUsageVideoEncodeSrcBitKhr | vk.ImageUsageVideoEncodeDpbBitKhr)
+
+// pictureSpec is a picture newPicture makes: its size in luma samples,
+// its depth, the profiles of the session that codes it, its layout as
+// videoFormat found it for usage, its array layers, and the video queue
+// family that codes it, which shares it with the graphics queue when
+// shared.
+type pictureSpec struct {
+	extent   [2]int
+	depth    videoDepth
+	profiles *vk.VideoProfileListInfoKHR
+	format   vk.VideoFormatPropertiesKHR
+	usage    vk.ImageUsageFlags
+	layers   int
+	family   uint32
+	shared   bool
+}
+
+// newPicture makes the picture s describes. One the coding commands
+// name (its usage has a coding usage) is made for the session's
+// profiles, with a view of each layer for them.
+func (d *Device) newPicture(s pictureSpec) (videoImage, error) {
+	ici := vk.ImageCreateInfo{
+		SType: vk.StructureTypeImageCreateInfo, Flags: s.format.ImageCreateFlags,
+		ImageType: vk.ImageType2d, Format: s.depth.vk(), Extent: extent3D(s.extent[0], s.extent[1]),
+		MipLevels: 1, ArrayLayers: intconv.Must[uint32](s.layers), Samples: vk.SampleCount1Bit, Tiling: s.format.ImageTiling,
+		Usage: s.usage, SharingMode: vk.SharingModeExclusive, InitialLayout: vk.ImageLayoutUndefined,
+	}
+	coding := s.usage & codingUsage
+	if coding != 0 {
+		ici.PNext = (*uintptr)(unsafe.Pointer(s.profiles))
+	}
+	families := [2]uint32{d.family, s.family}
+	if s.shared && families[0] != families[1] {
+		ici.SharingMode, ici.QueueFamilyIndexCount, ici.PQueueFamilyIndices = vk.SharingModeConcurrent, 2, &families[0]
+	}
+	var vi videoImage
+	r := d.cmds.CreateImage(d.device, &ici, nil, &vi.image)
+	runtime.KeepAlive(s.profiles)
+	runtime.KeepAlive(&families)
+	if r != vk.Success {
+		return videoImage{}, fmt.Errorf("vkCreateImage %s %dx%d x%d: %w", s.depth.format(), s.extent[0], s.extent[1], s.layers, resultError(r))
+	}
+	var req vk.MemoryRequirements
+	d.cmds.GetImageMemoryRequirements(d.device, vi.image, &req)
+	mem, err := d.allocate(req, vk.MemoryPropertyDeviceLocalBit, nil)
+	if err != nil {
+		vi.close(d)
+		return videoImage{}, err
+	}
+	vi.memory = mem
+	if r := d.cmds.BindImageMemory(d.device, vi.image, vi.memory, 0); r != vk.Success {
+		vi.close(d)
+		return videoImage{}, fmt.Errorf("vkBindImageMemory: %w", resultError(r))
+	}
+	if coding == 0 {
+		return vi, nil
+	}
+	viewUsage := vk.ImageViewUsageCreateInfo{SType: vk.StructureTypeImageViewUsageCreateInfo, Usage: coding}
+	for l := range s.layers {
+		vci := vk.ImageViewCreateInfo{
+			SType: vk.StructureTypeImageViewCreateInfo, PNext: (*uintptr)(unsafe.Pointer(&viewUsage)), Image: vi.image, ViewType: vk.ImageViewType2d, Format: s.depth.vk(),
+			SubresourceRange: vk.ImageSubresourceRange{AspectMask: vk.ImageAspectFlags(vk.ImageAspectColorBit), LevelCount: 1, BaseArrayLayer: uint32(l), LayerCount: 1},
+		}
+		var view vk.ImageView
+		r := d.cmds.CreateImageView(d.device, &vci, nil, &view)
+		runtime.KeepAlive(&viewUsage)
+		if r != vk.Success {
+			vi.close(d)
+			return videoImage{}, fmt.Errorf("vkCreateImageView %s layer %d: %w", s.depth.format(), l, resultError(r))
+		}
+		vi.views = append(vi.views, view)
+	}
+	return vi, nil
 }
