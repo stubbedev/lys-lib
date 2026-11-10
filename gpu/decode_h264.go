@@ -363,7 +363,7 @@ func (c *h264Decoder) skipPPS(sps *nal.H264SPS) (*nal.H264PPS, error) {
 		c.gapPPS, c.pps[id], c.paramsChanged = &p, &p, true
 		return &p, nil
 	}
-	return nil, fmt.Errorf("%w: the stream uses every PPS ID, leaving none for the skip slices of the frames a gap in frame_num infers", nal.ErrH264)
+	return nil, fmt.Errorf("%w: the stream uses every PPS ID, leaving none for the skip slices of the frames a gap in frame_num infers: %w", nal.ErrH264, nal.ErrUnsupported)
 }
 
 // fill lays out pic's picture info and the reference info of the DPB
@@ -418,10 +418,10 @@ func h264LongTerm(pic *h264Pic) (uint32, bool) {
 // interlaced coding, and anything but 8-bit 4:2:0.
 func h264Decodes(s *nal.H264SPS) error {
 	if !s.FrameMbsOnly {
-		return fmt.Errorf("%w: SPS %d codes interlaced fields or field-pair frames, which are not decoded", nal.ErrH264, s.ID)
+		return fmt.Errorf("%w: SPS %d codes interlaced fields or field-pair frames: %w", nal.ErrH264, s.ID, nal.ErrUnsupported)
 	}
 	if s.ChromaFormatIdc != 1 || s.BitDepthLumaMinus8 != 0 || s.BitDepthChromaMinus8 != 0 {
-		return fmt.Errorf("%w: SPS %d is chroma_format_idc %d at %d and %d bits; only 8-bit 4:2:0 is decoded", nal.ErrH264, s.ID, s.ChromaFormatIdc, 8+s.BitDepthLumaMinus8, 8+s.BitDepthChromaMinus8)
+		return fmt.Errorf("%w: SPS %d is chroma_format_idc %d at %d and %d bits, and only 8-bit 4:2:0 is decoded: %w", nal.ErrH264, s.ID, s.ChromaFormatIdc, 8+s.BitDepthLumaMinus8, 8+s.BitDepthChromaMinus8, nal.ErrUnsupported)
 	}
 	return nil
 }
@@ -467,7 +467,7 @@ func (c *h264Decoder) shape(s *nal.H264SPS) (decodeShape, error) {
 	case 100:
 		c.candidates = append(c.candidates, vk.StdVideoH264ProfileIdcHigh)
 	default:
-		return decodeShape{}, fmt.Errorf("%w: SPS %d is profile_idc %d; Baseline, Main and High are decoded", nal.ErrH264, s.ID, s.ProfileIdc)
+		return decodeShape{}, fmt.Errorf("%w: SPS %d is profile_idc %d, and Baseline, Main and High are decoded: %w", nal.ErrH264, s.ID, s.ProfileIdc, nal.ErrUnsupported)
 	}
 	refs := max(int(s.MaxNumRefFrames), 1)
 	mbs := s.WidthMbs * s.FrameHeightMbs()
@@ -496,7 +496,7 @@ func h264YCbCr(s *nal.H264SPS) (YCbCr, error) {
 		sited: s.VUIPresent && v.ChromaLocInfoPresent, siting: v.ChromaSampleLocTypeTop, lines: y1 - y0,
 	}.ycbcr()
 	if err != nil {
-		return YCbCr{}, fmt.Errorf("%w: SPS %d: %w", nal.ErrH264, s.ID, err)
+		return YCbCr{}, fmt.Errorf("%w: SPS %d: %w: %w", nal.ErrH264, s.ID, err, nal.ErrUnsupported)
 	}
 	return c, nil
 }

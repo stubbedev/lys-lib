@@ -39,8 +39,8 @@ const (
 )
 
 // ErrHEVC is an H.265 header a decoder cannot read: malformed, or
-// using syntax outside what it decodes. Errors wrap it with what was
-// read.
+// using syntax outside what it decodes, which wraps ErrUnsupported too.
+// Errors wrap it with what was read.
 var ErrHEVC = errors.New("nal: H.265")
 
 // HEVCMaxSubLayers is the sub-layers a stream may have.
@@ -703,7 +703,7 @@ func (s *HEVCSPS) Parse(rbsp []byte) error {
 	if s.ExtensionPresent = r.Flag(); s.ExtensionPresent {
 		s.RangeExtension = r.Flag()
 		if others := r.U(7); others != 0 {
-			return fmt.Errorf("%w SPS %d: multilayer, 3D or screen content extensions (%#x) are not decoded", ErrHEVC, s.ID, others)
+			return fmt.Errorf("%w SPS %d: multilayer, 3D or screen content extensions (%#x): %w", ErrHEVC, s.ID, others, ErrUnsupported)
 		}
 		if s.RangeExtension {
 			s.TransformSkipRotation, s.TransformSkipContext, s.ImplicitRDPCM = r.Flag(), r.Flag(), r.Flag()
@@ -848,7 +848,7 @@ func (p *HEVCPPS) Parse(rbsp []byte, sps *[16]*HEVCSPS) error {
 	if p.ExtensionPresent = r.Flag(); p.ExtensionPresent {
 		p.RangeExtension = r.Flag()
 		if others := r.U(7); others != 0 {
-			return fmt.Errorf("%w PPS %d: multilayer, 3D or screen content extensions (%#x) are not decoded", ErrHEVC, id, others)
+			return fmt.Errorf("%w PPS %d: multilayer, 3D or screen content extensions (%#x): %w", ErrHEVC, id, others, ErrUnsupported)
 		}
 		if p.RangeExtension {
 			p.parseRange(&r)

@@ -1,6 +1,7 @@
 package nal
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -63,19 +64,20 @@ func TestH264ParsesWhatTheWriterWrites(t *testing.T) {
 }
 
 // A PPS naming an SPS the stream has not sent, slice groups, or a
-// truncated SPS are errors that say so.
+// truncated SPS are errors that say so: the slice groups an unsupported
+// stream, the others a malformed one.
 func TestH264RefusesWhatItCannotRead(t *testing.T) {
 	h := H264{ProfileIdc: 77, LevelIdc: 41, WidthMbs: 40, HeightMbs: 23, Log2MaxFrameNum: 4, MaxNumRefFrames: 1, InitQP: 26}
 	var sps [32]*H264SPS
 	var p H264PPS
 	pps := h.PPS()
-	if err := p.Parse(Unescape(nil, pps[1:]), &sps); err == nil {
-		t.Error("a PPS of an SPS not sent parsed")
+	if err := p.Parse(Unescape(nil, pps[1:]), &sps); !errors.Is(err, ErrH264) || errors.Is(err, ErrUnsupported) {
+		t.Errorf("a PPS of an SPS not sent: %v, want ErrH264 alone", err)
 	}
 	unit := h.SPS()
 	var s H264SPS
-	if err := s.Parse(Unescape(nil, unit[1:8])); err == nil {
-		t.Error("a truncated SPS parsed")
+	if err := s.Parse(Unescape(nil, unit[1:8])); !errors.Is(err, ErrH264) || errors.Is(err, ErrUnsupported) {
+		t.Errorf("a truncated SPS: %v, want ErrH264 alone", err)
 	}
 	sps[0] = parseSPS(t, unit)
 	var w Writer
@@ -85,8 +87,8 @@ func TestH264RefusesWhatItCannotRead(t *testing.T) {
 	w.Flag(false)
 	w.UE(2)
 	w.Trailing()
-	if err := p.Parse(w.buf, &sps); err == nil {
-		t.Error("a PPS with slice groups parsed")
+	if err := p.Parse(w.buf, &sps); !errors.Is(err, ErrH264) || !errors.Is(err, ErrUnsupported) {
+		t.Errorf("a PPS with slice groups: %v, want ErrH264 and ErrUnsupported", err)
 	}
 }
 

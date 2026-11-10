@@ -32,7 +32,8 @@ const (
 )
 
 // ErrH264 is an H.264 header a decoder cannot read: malformed, or using
-// syntax outside what it decodes. Errors wrap it with what was read.
+// syntax outside what it decodes, which wraps ErrUnsupported too.
+// Errors wrap it with what was read.
 var ErrH264 = errors.New("nal: H.264")
 
 // H264ScalingLists are the 4x4 and 8x8 scaling lists in the order the
@@ -456,7 +457,7 @@ func (p *H264PPS) Parse(rbsp []byte, sps *[32]*H264SPS) error {
 	p.EntropyCodingMode = r.Flag()
 	p.BottomFieldPicOrderInFramePresent = r.Flag()
 	if groups := r.UE(); groups != 0 {
-		return fmt.Errorf("%w PPS %d: %d slice groups (flexible macroblock ordering) are not decoded", ErrH264, id, groups+1)
+		return fmt.Errorf("%w PPS %d: %d slice groups (flexible macroblock ordering): %w", ErrH264, id, groups+1, ErrUnsupported)
 	}
 	l0, l1 := r.UE(), r.UE()
 	if l0 > 31 || l1 > 31 {

@@ -10,6 +10,7 @@ import (
 	"unsafe"
 
 	"github.com/stubbedev/lys-lib/intconv"
+	"github.com/stubbedev/lys-lib/internal/nal"
 	"github.com/stubbedev/lys-lib/media/demux"
 	"github.com/stubbedev/lys-lib/third_party/vk"
 )
@@ -165,7 +166,7 @@ func (d *Device) NewVideoDecoder(track demux.Track) (*VideoDecoder, error) {
 	i := slices.IndexFunc(decodeCodecs, func(c decodeEntry) bool { return c.codec == track.Codec })
 	codec, err := decodeCodecs[i].open(track.Config)
 	if err != nil {
-		return nil, fmt.Errorf("gpu: %s track %d: %w", track.Codec, track.Index, err)
+		return nil, fmt.Errorf("gpu: %s track %d: %w", track.Codec, track.Index, unsupported(err))
 	}
 	v := &VideoDecoder{d: d, name: track.Codec.String(), op: decodeCodecs[i].op.operation, codec: codec, reset: true}
 	if v.pool, err = d.commandPool(d.decode.family); err != nil {
@@ -186,8 +187,21 @@ func (d *Device) NewVideoDecoder(track demux.Track) (*VideoDecoder, error) {
 	return v, nil
 }
 
+// unsupported is err as ErrNoVideoDecoder when it is a header using
+// coding tools that are not decoded (nal.ErrUnsupported): a stream the
+// decoder does not decode, which a caller tells from a malformed one
+// by it. Any other error is itself.
+func unsupported(err error) error {
+	if errors.Is(err, nal.ErrUnsupported) && !errors.Is(err, ErrNoVideoDecoder) {
+		return fmt.Errorf("%w: %w", ErrNoVideoDecoder, err)
+	}
+	return err
+}
+
 // Decode decodes p, the track's next packet in decode order; the
-// frames it completes come out of Next. It submits the packet's
+// frames it completes come out of Next. A stream in a format that is
+// not decoded is ErrNoVideoDecoder, saying which; any other error is a
+// malformed stream or a failing device. It submits the packet's
 // pictures and waits for the GPU only when that is far behind (Busy).
 // A picture that predicts from pictures before the one decoding
 // started at (after Reset, at a keyframe that is not an IDR) is
@@ -197,7 +211,7 @@ func (v *VideoDecoder) Decode(p demux.Packet) error {
 		return fmt.Errorf("gpu: %s decode of a closed decoder", v.name)
 	}
 	if err := v.codec.decode(v, p); err != nil {
-		return fmt.Errorf("gpu: %s packet at %v: %w", v.name, p.PTS, err)
+		return fmt.Errorf("gpu: %s packet at %v: %w", v.name, p.PTS, unsupported(err))
 	}
 	return nil
 }

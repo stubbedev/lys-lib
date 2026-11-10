@@ -362,7 +362,7 @@ func (c *h265Decoder) fill(pic *h265Pic, pps *nal.HEVCPPS) {
 func (c *h265Decoder) shape(s *nal.HEVCSPS) (decodeShape, error) {
 	depth, ok := depthOf(8 + int(s.BitDepthLumaMinus8))
 	if s.ChromaFormatIdc != 1 || s.BitDepthChromaMinus8 != s.BitDepthLumaMinus8 || !ok {
-		return decodeShape{}, fmt.Errorf("%w: SPS %d is chroma_format_idc %d at %d and %d bits; only 4:2:0 at 8 or 10 bits is decoded", nal.ErrHEVC, s.ID, s.ChromaFormatIdc, 8+s.BitDepthLumaMinus8, 8+s.BitDepthChromaMinus8)
+		return decodeShape{}, fmt.Errorf("%w: SPS %d is chroma_format_idc %d at %d and %d bits, and only 4:2:0 at 8 or 10 bits is decoded: %w", nal.ErrHEVC, s.ID, s.ChromaFormatIdc, 8+s.BitDepthLumaMinus8, 8+s.BitDepthChromaMinus8, nal.ErrUnsupported)
 	}
 	c.candidates = c.candidates[:0]
 	main := s.PTL.Compatibility&(1<<30) != 0
@@ -375,7 +375,7 @@ func (c *h265Decoder) shape(s *nal.HEVCSPS) (decodeShape, error) {
 	case s.PTL.ProfileIdc == 2 || main10:
 		c.candidates = append(c.candidates, vk.StdVideoH265ProfileIdcMain10)
 	default:
-		return decodeShape{}, fmt.Errorf("%w: SPS %d is general_profile_idc %d at %d bits; Main and Main 10 are decoded", nal.ErrHEVC, s.ID, s.PTL.ProfileIdc, 8+s.BitDepthLumaMinus8)
+		return decodeShape{}, fmt.Errorf("%w: SPS %d is general_profile_idc %d at %d bits, and Main and Main 10 are decoded: %w", nal.ErrHEVC, s.ID, s.PTL.ProfileIdc, 8+s.BitDepthLumaMinus8, nal.ErrUnsupported)
 	}
 	_, y0, _, y1 := s.CropRect()
 	v := &s.VUI
@@ -385,7 +385,7 @@ func (c *h265Decoder) shape(s *nal.HEVCSPS) (decodeShape, error) {
 		sited: s.VUIPresent && v.ChromaLocInfoPresent, siting: v.ChromaSampleLocTypeTop, lines: y1 - y0,
 	}.ycbcr()
 	if err != nil {
-		return decodeShape{}, fmt.Errorf("%w: SPS %d: %w", nal.ErrHEVC, s.ID, err)
+		return decodeShape{}, fmt.Errorf("%w: SPS %d: %w: %w", nal.ErrHEVC, s.ID, err, nal.ErrUnsupported)
 	}
 	top := s.MaxSubLayersMinus1
 	refs := max(int(s.Ordering.MaxDecPicBufferingMinus1[top]), 1)

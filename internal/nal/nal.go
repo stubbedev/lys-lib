@@ -8,11 +8,17 @@
 package nal
 
 import (
+	"errors"
 	"fmt"
 	"math"
 
 	"github.com/stubbedev/lys-lib/intconv"
 )
+
+// ErrUnsupported marks a header that is well formed and uses coding
+// tools the parser does not read, beside the ErrH264 or ErrHEVC it
+// wraps: an unsupported stream, where those alone are a malformed one.
+var ErrUnsupported = errors.New("coding tools that are not decoded")
 
 // Writer collects a NAL unit's RBSP bits, most significant first.
 type Writer struct {

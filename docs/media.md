@@ -228,6 +228,11 @@ func main() {
   where the device applies it into distinct output pictures; a frame applying
   grain on a device that decodes only into its reference pictures (NVIDIA) is
   an error that says so.
+- A stream in a format that is not decoded fails with `ErrNoVideoDecoder`,
+  from `NewVideoDecoder` or the `Decode` that meets it, for every codec: the
+  error says what the stream is and wraps what the parser read. A malformed
+  stream fails with another error, so `errors.Is(err, gpu.ErrNoVideoDecoder)`
+  tells the two apart.
 - A gap in H.264 `frame_num` that the SPS allows
   (`gaps_in_frame_num_value_allowed_flag`) infers the frames it leaves
   non-existing (8.2.5.2): each decodes as a skip slice copying the reference
