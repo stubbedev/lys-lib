@@ -1,9 +1,9 @@
 // Package opus is a pure-Go Opus encoder and decoder (RFC 6716).
 //
-// The Decoder decodes CELT-only packets of every frame size,
-// bandwidth and mono or stereo layout to 48 kHz PCM, within one LSB of
-// libopus, soft-clipping as libopus's 16-bit API does; SILK and hybrid
-// packets fail with ErrUnsupportedMode.
+// The Decoder decodes SILK, hybrid and CELT packets of every frame size
+// and bandwidth, in channel mapping families 0, 1 and 255, to 48 kHz
+// PCM within one LSB of libopus, concealing discontinuous transmission
+// as libopus does and soft-clipping as its 16-bit API does.
 //
 // The Encoder, for lys-shell's recordings, writes CELT-only fullband
 // 20 ms frames (configuration 31) at a constant or constrained
@@ -381,7 +381,7 @@ func (e *Encoder) encodeFrame(out []byte, pcm []int16) (int, error) {
 	}
 	bits -= antiCollapseRsv
 	e.alloc = allocEncoder{rc: rc, prev: e.lastCodedBands, intensityB: e.intensity, dualStereo: dual}
-	a := allocate(&e.alloc, c, frameLM, nbBands, &offsets, &e.caps, trim, bits)
+	a := allocate(&e.alloc, c, frameLM, 0, nbBands, &offsets, &e.caps, trim, bits)
 	if c == 2 {
 		e.intensity = a.intensity
 	}

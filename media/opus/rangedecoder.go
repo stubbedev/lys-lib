@@ -102,10 +102,13 @@ func (d *rangeDecoder) bitLogp(logp uint) bool {
 }
 
 // icdf reads a symbol with the inverse CDF icdf over 1<<ftb.
-func (d *rangeDecoder) icdf(icdf []uint8, ftb uint) int {
+func (d *rangeDecoder) icdf(icdf []uint8, ftb uint) int { return int(d.icdf32(icdf, ftb)) }
+
+// icdf32 is icdf as the int32 SILK's fixed-point arithmetic takes.
+func (d *rangeDecoder) icdf32(icdf []uint8, ftb uint) int32 {
 	s := d.rng
 	r := s >> ftb
-	ret := -1
+	ret := int32(-1)
 	var t uint32
 	for {
 		t = s

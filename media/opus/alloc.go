@@ -74,11 +74,11 @@ func bandCaps(channels, lm int) [nbBands]int {
 	return caps
 }
 
-// allocate is compute_allocation for bands [0, end) of frames of
+// allocate is compute_allocation for bands [start, end) of frames of
 // 2.5 ms << lm: it interpolates the static allocation table to total
 // 1/8 bits, coding the skip, intensity and dual stereo decisions
 // through ac on the way.
-func allocate(ac allocCoder, channels, lm, end int, offsets, caps *[nbBands]int, trim, total int) allocation {
+func allocate(ac allocCoder, channels, lm, start, end int, offsets, caps *[nbBands]int, trim, total int) allocation {
 	total = max(total, 0)
 	skipRsv := 0
 	if total >= 1<<bitRes {
@@ -87,7 +87,7 @@ func allocate(ac allocCoder, channels, lm, end int, offsets, caps *[nbBands]int,
 	total -= skipRsv
 	intensityRsv, dualRsv := 0, 0
 	if channels == 2 {
-		intensityRsv = log2FracTable[end]
+		intensityRsv = log2FracTable[end-start]
 		if intensityRsv > total {
 			intensityRsv = 0
 		} else {
@@ -99,7 +99,7 @@ func allocate(ac allocCoder, channels, lm, end int, offsets, caps *[nbBands]int,
 		}
 	}
 	var thresh, trimOffset [nbBands]int
-	for j := range end {
+	for j := start; j < end; j++ {
 		n0 := bandWidth(j)
 		thresh[j] = max(channels<<bitRes, (3*n0<<lm<<bitRes)>>4)
 		trimOffset[j] = channels * n0 * (trim - 5 - lm) * (end - j - 1) * (1 << (lm + bitRes)) >> 6
@@ -121,7 +121,7 @@ func allocate(ac allocCoder, channels, lm, end int, offsets, caps *[nbBands]int,
 		done := false
 		psum := 0
 		mid := (lo + hi) >> 1
-		for j := end - 1; j >= 0; j-- {
+		for j := end - 1; j >= start; j-- {
 			b := vectorBits(mid, j) + offsets[j]
 			if b >= thresh[j] || done {
 				done = true
@@ -139,8 +139,8 @@ func allocate(ac allocCoder, channels, lm, end int, offsets, caps *[nbBands]int,
 	hi = lo
 	lo--
 	var bits1, bits2 [nbBands]int
-	skipStart := 0
-	for j := range end {
+	skipStart := start
+	for j := start; j < end; j++ {
 		b1 := vectorBits(lo, j)
 		b2 := trimmed(caps[j], j)
 		if hi < len(bandAllocation) {
@@ -156,10 +156,10 @@ func allocate(ac allocCoder, channels, lm, end int, offsets, caps *[nbBands]int,
 		bits1[j] = b1
 		bits2[j] = max(0, b2-b1)
 	}
-	return interpBits2Pulses(ac, channels, lm, end, skipStart, &bits1, &bits2, &thresh, caps, total, skipRsv, intensityRsv, dualRsv)
+	return interpBits2Pulses(ac, channels, lm, start, end, skipStart, &bits1, &bits2, &thresh, caps, total, skipRsv, intensityRsv, dualRsv)
 }
 
-func interpBits2Pulses(ac allocCoder, channels, lm, end, skipStart int, bits1, bits2, thresh, caps *[nbBands]int, total, skipRsv, intensityRsv, dualRsv int) allocation {
+func interpBits2Pulses(ac allocCoder, channels, lm, start, end, skipStart int, bits1, bits2, thresh, caps *[nbBands]int, total, skipRsv, intensityRsv, dualRsv int) allocation {
 	allocFloor := channels << bitRes
 	stereoShift := 0
 	if channels > 1 {
@@ -171,7 +171,7 @@ func interpBits2Pulses(ac allocCoder, channels, lm, end, skipStart int, bits1, b
 		mid := (lo + hi) >> 1
 		psum := 0
 		done := false
-		for j := end - 1; j >= 0; j-- {
+		for j := end - 1; j >= start; j-- {
 			tmp := bits1[j] + (mid * bits2[j] >> allocSteps)
 			if tmp >= thresh[j] || done {
 				done = true
@@ -190,7 +190,7 @@ func interpBits2Pulses(ac allocCoder, channels, lm, end, skipStart int, bits1, b
 	bits := &a.pulses
 	psum := 0
 	done := false
-	for j := end - 1; j >= 0; j-- {
+	for j := end - 1; j >= start; j-- {
 		tmp := bits1[j] + (lo * bits2[j] >> allocSteps)
 		if tmp < thresh[j] && !done {
 			if tmp >= allocFloor {
@@ -213,9 +213,9 @@ func interpBits2Pulses(ac allocCoder, channels, lm, end, skipStart int, bits1, b
 			break
 		}
 		left := total - psum
-		percoeff := left / (eBands[codedBands] - eBands[0])
-		left -= (eBands[codedBands] - eBands[0]) * percoeff
-		rem := max(left-(eBands[j]-eBands[0]), 0)
+		percoeff := left / (eBands[codedBands] - eBands[start])
+		left -= (eBands[codedBands] - eBands[start]) * percoeff
+		rem := max(left-(eBands[j]-eBands[start]), 0)
 		bandW := eBands[codedBands] - eBands[j]
 		bandBits := bits[j] + percoeff*bandW + rem
 		if bandBits >= max(thresh[j], allocFloor+(1<<bitRes)) {
@@ -227,7 +227,7 @@ func interpBits2Pulses(ac allocCoder, channels, lm, end, skipStart int, bits1, b
 		}
 		psum -= bits[j] + intensityRsv
 		if intensityRsv > 0 {
-			intensityRsv = log2FracTable[j]
+			intensityRsv = log2FracTable[j-start]
 		}
 		psum += intensityRsv
 		if bandBits >= allocFloor {
@@ -239,9 +239,9 @@ func interpBits2Pulses(ac allocCoder, channels, lm, end, skipStart int, bits1, b
 	}
 	a.codedBands = codedBands
 	if intensityRsv > 0 {
-		a.intensity = ac.intensity(codedBands)
+		a.intensity = ac.intensity(start, codedBands)
 	}
-	if a.intensity <= 0 {
+	if a.intensity <= start {
 		total += dualRsv
 		dualRsv = 0
 	}
@@ -249,18 +249,18 @@ func interpBits2Pulses(ac allocCoder, channels, lm, end, skipStart int, bits1, b
 		a.dualStereo = ac.dual()
 	}
 	left := total - psum
-	percoeff := left / (eBands[codedBands] - eBands[0])
-	left -= (eBands[codedBands] - eBands[0]) * percoeff
-	for j := range codedBands {
+	percoeff := left / (eBands[codedBands] - eBands[start])
+	left -= (eBands[codedBands] - eBands[start]) * percoeff
+	for j := start; j < codedBands; j++ {
 		bits[j] += percoeff * bandWidth(j)
 	}
-	for j := range codedBands {
+	for j := start; j < codedBands; j++ {
 		tmp := min(left, bandWidth(j))
 		bits[j] += tmp
 		left -= tmp
 	}
 	balance := 0
-	j := 0
+	j := start
 	for ; j < codedBands; j++ {
 		n := bandWidth(j) << lm
 		bits[j] += balance
@@ -335,9 +335,9 @@ type allocCoder interface {
 	// keep is whether band j, the highest still coded, stays coded
 	// with bandBits 1/8 bits over its bandW bins.
 	keep(j, bandBits, bandW, lm int) bool
-	// intensity is the first band coded with intensity stereo, at most
-	// codedBands.
-	intensity(codedBands int) int
+	// intensity is the first band coded with intensity stereo, from
+	// start to codedBands.
+	intensity(start, codedBands int) int
 	// dual is whether the frame codes dual stereo.
 	dual() bool
 }
@@ -362,9 +362,9 @@ func (e *allocEncoder) keep(j, bandBits, bandW, lm int) bool {
 	return k
 }
 
-func (e *allocEncoder) intensity(codedBands int) int {
-	v := min(e.intensityB, codedBands)
-	e.rc.uint(sym(v), sym(codedBands+1))
+func (e *allocEncoder) intensity(start, codedBands int) int {
+	v := max(start, min(e.intensityB, codedBands))
+	e.rc.uint(sym(v-start), sym(codedBands+1-start))
 	return v
 }
 
@@ -378,8 +378,8 @@ type allocDecoder struct{ rc *rangeDecoder }
 
 func (d allocDecoder) keep(int, int, int, int) bool { return d.rc.bitLogp(1) }
 
-func (d allocDecoder) intensity(codedBands int) int {
-	return int(d.rc.uint(sym(codedBands + 1)))
+func (d allocDecoder) intensity(start, codedBands int) int {
+	return start + int(d.rc.uint(sym(codedBands+1-start)))
 }
 
 func (d allocDecoder) dual() bool { return d.rc.bitLogp(1) }

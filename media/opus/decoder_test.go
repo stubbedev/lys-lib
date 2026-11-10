@@ -197,8 +197,6 @@ func TestDecodeRejects(t *testing.T) {
 		want   error
 	}{
 		{"empty", nil, ErrInvalidPacket},
-		{"SILK", []byte{0x08, 1, 2, 3}, ErrUnsupportedMode},
-		{"hybrid", []byte{12 << 3, 1, 2, 3}, ErrUnsupportedMode},
 		{"odd code 1", []byte{31<<3 | 1, 1, 2, 3}, ErrInvalidPacket},
 		{"code 2 overrun", []byte{31<<3 | 2, 200, 1}, ErrInvalidPacket},
 		{"code 3 no count", []byte{31<<3 | 3}, ErrInvalidPacket},
@@ -215,10 +213,22 @@ func TestDecodeRejects(t *testing.T) {
 			t.Errorf("header % x: error %v", h, err)
 		}
 	}
-	multi := bytes.Clone(head)
-	multi[18] = 1
-	if _, err := NewDecoder(multi); !errors.Is(err, ErrUnsupportedMode) {
-		t.Errorf("mapping family 1: error %v", err)
+	for _, c := range []struct {
+		name   string
+		family byte
+		table  []byte
+		want   error
+	}{
+		{"family 1 without a table", 1, nil, ErrInvalidPacket},
+		{"family 1 without streams", 1, []byte{0, 0, 0, 1}, ErrInvalidPacket},
+		{"family 1 mapping past the streams", 1, []byte{1, 0, 0, 1}, ErrInvalidPacket},
+		{"family 2", 2, []byte{1, 1, 0, 1}, ErrUnsupportedMapping},
+	} {
+		multi := append(bytes.Clone(head), c.table...)
+		multi[18] = c.family
+		if _, err := NewDecoder(multi); !errors.Is(err, c.want) {
+			t.Errorf("%s: error %v, want %v", c.name, err, c.want)
+		}
 	}
 }
 
@@ -320,18 +330,34 @@ func FuzzDecode(f *testing.F) {
 		f.Add(p)
 	}
 	f.Add([]byte{31<<3 | 3, 0xc5, 255, 3})
+	seed := uint32(1)
+	for config := range 32 {
+		for code := range 4 {
+			p := []byte{byte(config<<3 | (config&1)<<2 | code), 0x83, 40, 3}
+			for range 60 {
+				seed = 1664525*seed + 1013904223
+				p = append(p, byte(seed>>24))
+			}
+			f.Add(p)
+		}
+	}
+	surround := append((&Encoder{channels: 6}).AppendHead(nil), 4, 2, 0, 4, 1, 2, 3, 5)
+	surround[18] = 1
 	f.Fuzz(func(t *testing.T, packet []byte) {
-		for _, channels := range []int{1, 2} {
-			d, err := NewDecoder((&Encoder{channels: channels}).AppendHead(nil))
+		for _, head := range [][]byte{(&Encoder{channels: 1}).AppendHead(nil), (&Encoder{channels: 2}).AppendHead(nil), surround} {
+			d, err := NewDecoder(head)
 			if err != nil {
 				t.Fatal(err)
 			}
-			pcm, err := d.Decode(nil, packet)
-			if err != nil {
-				continue
-			}
-			if len(pcm)%channels != 0 || len(pcm) > maxPacketDur*channels {
-				t.Fatalf("%d samples from a %d-byte packet", len(pcm), len(packet))
+			channels := d.Channels()
+			for _, p := range [][]byte{packet, packet, packet[:min(1, len(packet))], packet} {
+				pcm, err := d.Decode(nil, p)
+				if err != nil {
+					continue
+				}
+				if len(pcm)%channels != 0 || len(pcm) > maxPacketDur*channels {
+					t.Fatalf("%d samples from a %d-byte packet", len(pcm), len(p))
+				}
 			}
 		}
 	})

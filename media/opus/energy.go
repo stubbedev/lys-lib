@@ -215,17 +215,17 @@ func laplaceDecode(rc *rangeDecoder, fs, decay uint32) int {
 	return val
 }
 
-// decodeCoarseEnergy is unquant_coarse_energy for bands [0, end) of
+// decodeCoarseEnergy is unquant_coarse_energy for bands [start, end) of
 // frames of 2.5 ms << lm: it adds each band's decoded integer log
 // energy to its prediction in old.
-func decodeCoarseEnergy(rc *rangeDecoder, channels, lm, end int, old *[2][nbBands]float32, intra bool) {
+func decodeCoarseEnergy(rc *rangeDecoder, channels, lm, start, end int, old *[2][nbBands]float32, intra bool) {
 	coef, beta, model := predCoefs[lm], betaInter[lm], &eProbModel[lm][0]
 	if intra {
 		coef, beta, model = 0, betaIntra, &eProbModel[lm][1]
 	}
 	budget := len(rc.buf) * 8
 	var prev [2]float32
-	for i := range end {
+	for i := start; i < end; i++ {
 		for c := range channels {
 			var qi int
 			switch tell := rc.tell(); {
@@ -248,10 +248,10 @@ func decodeCoarseEnergy(rc *rangeDecoder, channels, lm, end int, old *[2][nbBand
 	}
 }
 
-// decodeFineEnergy is unquant_fine_energy: fine[i] more bits of each
-// band's energy.
-func decodeFineEnergy(rc *rangeDecoder, channels, end int, old *[2][nbBands]float32, fine *[nbBands]int) {
-	for i := range end {
+// decodeFineEnergy is unquant_fine_energy: fine[i] more bits of the
+// energy of each band in [start, end).
+func decodeFineEnergy(rc *rangeDecoder, channels, start, end int, old *[2][nbBands]float32, fine *[nbBands]int) {
+	for i := start; i < end; i++ {
 		if fine[i] <= 0 {
 			continue
 		}
@@ -264,9 +264,9 @@ func decodeFineEnergy(rc *rangeDecoder, channels, end int, old *[2][nbBands]floa
 
 // decodeFinalEnergy is unquant_energy_finalise: the bits PVQ left
 // over, one more energy bit per band, priority 0 first.
-func decodeFinalEnergy(rc *rangeDecoder, channels, end int, old *[2][nbBands]float32, fine, priority *[nbBands]int, bitsLeft int) {
+func decodeFinalEnergy(rc *rangeDecoder, channels, start, end int, old *[2][nbBands]float32, fine, priority *[nbBands]int, bitsLeft int) {
 	for prio := range 2 {
-		for i := 0; i < end && bitsLeft >= channels; i++ {
+		for i := start; i < end && bitsLeft >= channels; i++ {
 			if fine[i] >= maxFineBits || priority[i] != prio {
 				continue
 			}

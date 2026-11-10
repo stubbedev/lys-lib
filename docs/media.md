@@ -120,10 +120,16 @@ from 48 kHz interleaved signed 16-bit PCM, one or two channels. Rate control is
 `CBR` or `ConstrainedVBR` (no packet exceeds twice the average). Tonality
 analysis is not implemented. `AppendHead` writes the stream's ID header.
 
-The `Decoder` takes an OpusHead and decodes CELT-only packets of every frame
-size, bandwidth and channel layout, within one LSB of libopus, applying the
-head's gain and libopus's soft clipping. SILK and hybrid packets return
-`ErrUnsupportedMode`; multistream heads are refused.
+The `Decoder` takes an OpusHead and decodes SILK, hybrid and CELT packets of
+every frame size (2.5 to 60 ms, up to 120 ms per packet) and bandwidth, with
+libopus's mode transitions and redundant CELT frames, within one LSB of
+libopus, applying the head's gain and libopus's soft clipping. Channel mapping
+families 0 (mono, stereo), 1 (Vorbis order, up to 8 channels: surround) and
+255 decode; other families return `ErrUnsupportedMapping`. A frame of at most
+one byte (discontinuous transmission) is concealed as libopus conceals a lost
+frame: SILK's pitch and noise extrapolation with comfort noise bit-exactly,
+CELT's pitch or noise concealment within about 80 dB of libopus. Inband FEC
+(LBRR) is skipped; there is no call to conceal a whole lost packet.
 
 ```go
 package main

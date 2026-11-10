@@ -33,22 +33,24 @@ type bandDecoder struct {
 // lcgRand is celt_lcg_rand, the decoder's noise generator.
 func lcgRand(seed uint32) uint32 { return 1664525*seed + 1013904223 }
 
-// decodeAll decodes bands [0, end) into x (and y in stereo), frames of
+// decodeAll decodes bands [start, end) into x (and y in stereo), frames of
 // 2.5 ms << lm in blocks short blocks, filling masks with each band's
 // collapse mask per channel.
-func (q *bandDecoder) decodeAll(x, y []float32, masks *[2 * nbBands]uint, a *allocation, end, blocks int, tfRes *[nbBands]int, totalBits int) {
+func (q *bandDecoder) decodeAll(x, y []float32, masks *[2 * nbBands]uint, a *allocation, start, end, blocks int, tfRes *[nbBands]int, totalBits int) {
 	m := 1 << q.lm
 	channels := 1
 	if y != nil {
 		channels = 2
 	}
-	norm, norm2 := q.norm[:m*eBands[nbBands-1]], q.norm[normLen:normLen+m*eBands[nbBands-1]]
+	normOffset := m * eBands[start]
+	normEnd := m*eBands[nbBands-1] - normOffset
+	norm, norm2 := q.norm[:normEnd], q.norm[normLen:normLen+normEnd]
 	q.intensity = a.intensity
 	dual := a.dualStereo
 	balance := a.balance
 	lowbandOffset := 0
 	updateLowband := true
-	for i := range end {
+	for i := start; i < end; i++ {
 		q.index = i
 		lo, hi := m*eBands[i], m*eBands[i+1]
 		n := hi - lo
@@ -59,7 +61,7 @@ func (q *bandDecoder) decodeAll(x, y []float32, masks *[2 * nbBands]uint, a *all
 			by = y[lo:hi]
 		}
 		tell := q.rc.tellFrac()
-		if i != 0 {
+		if i != start {
 			balance -= tell
 		}
 		q.remaining = totalBits - tell - 1
@@ -68,8 +70,15 @@ func (q *bandDecoder) decodeAll(x, y []float32, masks *[2 * nbBands]uint, a *all
 			curr := balance / min(3, a.codedBands-i)
 			b = max(0, min(16383, min(q.remaining+1, a.pulses[i]+curr)))
 		}
-		if (lo-n >= 0 || i == 1) && (updateLowband || lowbandOffset == 0) {
+		if (lo-n >= normOffset || i == start+1) && (updateLowband || lowbandOffset == 0) {
 			lowbandOffset = i
+		}
+		if i == start+1 {
+			n1, n2 := m*bandWidth(start), m*bandWidth(start+1)
+			copy(norm[n1:n2], norm[2*n1-n2:n1])
+			if dual {
+				copy(norm2[n1:n2], norm2[2*n1-n2:n1])
+			}
 		}
 		q.tfChange = tfRes[i]
 		scratch := x[m*eBands[nbBands-1]:]
@@ -79,18 +88,18 @@ func (q *bandDecoder) decodeAll(x, y []float32, masks *[2 * nbBands]uint, a *all
 		effective := -1
 		var xcm, ycm uint
 		if lowbandOffset != 0 && (q.spread != spreadAggressive || blocks > 1 || q.tfChange < 0) {
-			effective = max(0, m*eBands[lowbandOffset]-n)
+			effective = max(0, m*eBands[lowbandOffset]-normOffset-n)
 			foldStart := lowbandOffset
 			for {
 				foldStart--
-				if m*eBands[foldStart] <= effective {
+				if m*eBands[foldStart] <= effective+normOffset {
 					break
 				}
 			}
 			foldEnd := lowbandOffset - 1
 			for {
 				foldEnd++
-				if foldEnd >= i || m*eBands[foldEnd] >= effective+n {
+				if foldEnd >= i || m*eBands[foldEnd] >= effective+normOffset+n {
 					break
 				}
 			}
@@ -103,7 +112,7 @@ func (q *bandDecoder) decodeAll(x, y []float32, masks *[2 * nbBands]uint, a *all
 		}
 		if dual && i == q.intensity {
 			dual = false
-			for j := range lo {
+			for j := range lo - normOffset {
 				norm[j] = 0.5 * (norm[j] + norm2[j])
 			}
 		}
@@ -117,7 +126,7 @@ func (q *bandDecoder) decodeAll(x, y []float32, masks *[2 * nbBands]uint, a *all
 			if last {
 				return nil
 			}
-			return n[lo:]
+			return n[lo-normOffset:]
 		}
 		switch {
 		case dual:

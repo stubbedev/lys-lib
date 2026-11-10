@@ -160,10 +160,10 @@ func encodeTF(rc *rangeEncoder, transient bool, tfSelect int, res *[nbBands]int)
 	}
 }
 
-// decodeTF is tf_decode for bands [0, end) of frames of 2.5 ms << lm:
+// decodeTF is tf_decode for bands [start, end) of frames of 2.5 ms << lm:
 // it reads the per-band changes and tf_select into each band's TF
 // change.
-func decodeTF(rc *rangeDecoder, transient bool, lm, end int, res *[nbBands]int) {
+func decodeTF(rc *rangeDecoder, transient bool, lm, start, end int, res *[nbBands]int) {
 	budget := len(rc.buf) * 8
 	tell := rc.tell()
 	logp := 4
@@ -175,7 +175,7 @@ func decodeTF(rc *rangeDecoder, transient bool, lm, end int, res *[nbBands]int) 
 		budget--
 	}
 	curr, changed := 0, 0
-	for i := range end {
+	for i := start; i < end; i++ {
 		if tell+logp <= budget {
 			curr ^= b2i(rc.bitLogp(uint(logp)))
 			tell = rc.tell()
@@ -192,7 +192,7 @@ func decodeTF(rc *rangeDecoder, transient bool, lm, end int, res *[nbBands]int) 
 	if selectRsv && table[tfIndex(transient, 0, changed)] != table[tfIndex(transient, 1, changed)] {
 		tfSelect = b2i(rc.bitLogp(1))
 	}
-	for i := range end {
+	for i := start; i < end; i++ {
 		res[i] = table[tfIndex(transient, tfSelect, res[i])]
 	}
 }

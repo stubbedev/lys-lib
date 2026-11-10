@@ -145,7 +145,7 @@ func lpcFromAutocorr(ac, lpc []float32) {
 // maxPitch) at which y best matches x, both 2x decimated, from a 4x
 // decimated coarse search refined around its two best candidates.
 func pitchSearch(x, y []float32, n, maxPitch int, xcorr []float32) int {
-	var x4 [FrameSize >> 2]float32
+	var x4 [(decodeBufferSize - plcPitchLagMax) >> 2]float32
 	var y4 [(FrameSize + combMaxPeriod) >> 2]float32
 	for j := range n >> 2 {
 		x4[j] = x[2*j]
