@@ -63,21 +63,22 @@ func pulses2bits(band, lm, pulses int) int {
 	return cacheRow(band, lm)[pulses] + 1
 }
 
-// bandCaps is each band's maximum useful allocation in 1/8 bits.
-func bandCaps(channels int) [nbBands]int {
+// bandCaps is each band's maximum useful allocation in 1/8 bits for
+// frames of 2.5 ms << lm.
+func bandCaps(channels, lm int) [nbBands]int {
 	var caps [nbBands]int
 	for i := range nbBands {
-		n := bandWidth(i) << frameLM
-		caps[i] = (cacheCaps[nbBands*(2*frameLM+channels-1)+i] + 64) * channels * n >> 2
+		n := bandWidth(i) << lm
+		caps[i] = (cacheCaps[nbBands*(2*lm+channels-1)+i] + 64) * channels * n >> 2
 	}
 	return caps
 }
 
-// allocate is compute_allocation: it interpolates the static
-// allocation table to total 1/8 bits, coding the skip, intensity and
-// dual stereo decisions it takes on the way.
-func allocate(rc *rangeEncoder, channels int, offsets, caps *[nbBands]int, trim int, intensity int, dualStereo bool, total, prev int) allocation {
-	const end = nbBands
+// allocate is compute_allocation for bands [0, end) of frames of
+// 2.5 ms << lm: it interpolates the static allocation table to total
+// 1/8 bits, coding the skip, intensity and dual stereo decisions
+// through ac on the way.
+func allocate(ac allocCoder, channels, lm, end int, offsets, caps *[nbBands]int, trim, total int) allocation {
 	total = max(total, 0)
 	skipRsv := 0
 	if total >= 1<<bitRes {
@@ -100,9 +101,9 @@ func allocate(rc *rangeEncoder, channels int, offsets, caps *[nbBands]int, trim 
 	var thresh, trimOffset [nbBands]int
 	for j := range end {
 		n0 := bandWidth(j)
-		thresh[j] = max(channels<<bitRes, (3*n0<<frameLM<<bitRes)>>4)
-		trimOffset[j] = channels * n0 * (trim - 5 - frameLM) * (end - j - 1) * (1 << (frameLM + bitRes)) >> 6
-		if n0<<frameLM == 1 {
+		thresh[j] = max(channels<<bitRes, (3*n0<<lm<<bitRes)>>4)
+		trimOffset[j] = channels * n0 * (trim - 5 - lm) * (end - j - 1) * (1 << (lm + bitRes)) >> 6
+		if n0<<lm == 1 {
 			trimOffset[j] -= channels << bitRes
 		}
 	}
@@ -113,7 +114,7 @@ func allocate(rc *rangeEncoder, channels int, offsets, caps *[nbBands]int, trim 
 		return b
 	}
 	vectorBits := func(v, j int) int {
-		return trimmed(channels*bandWidth(j)*bandAllocation[v][j]<<frameLM>>2, j)
+		return trimmed(channels*bandWidth(j)*bandAllocation[v][j]<<lm>>2, j)
 	}
 	lo, hi := 1, len(bandAllocation)-1
 	for lo <= hi {
@@ -155,17 +156,16 @@ func allocate(rc *rangeEncoder, channels int, offsets, caps *[nbBands]int, trim 
 		bits1[j] = b1
 		bits2[j] = max(0, b2-b1)
 	}
-	return interpBits2Pulses(rc, channels, skipStart, &bits1, &bits2, &thresh, caps, total, skipRsv, intensity, intensityRsv, dualStereo, dualRsv, prev)
+	return interpBits2Pulses(ac, channels, lm, end, skipStart, &bits1, &bits2, &thresh, caps, total, skipRsv, intensityRsv, dualRsv)
 }
 
-func interpBits2Pulses(rc *rangeEncoder, channels, skipStart int, bits1, bits2, thresh, caps *[nbBands]int, total, skipRsv, intensity, intensityRsv int, dualStereo bool, dualRsv, prev int) allocation {
-	const end = nbBands
+func interpBits2Pulses(ac allocCoder, channels, lm, end, skipStart int, bits1, bits2, thresh, caps *[nbBands]int, total, skipRsv, intensityRsv, dualRsv int) allocation {
 	allocFloor := channels << bitRes
 	stereoShift := 0
 	if channels > 1 {
 		stereoShift = 1
 	}
-	logM := frameLM << bitRes
+	logM := lm << bitRes
 	lo, hi := 0, 1<<allocSteps
 	for range allocSteps {
 		mid := (lo + hi) >> 1
@@ -219,15 +219,9 @@ func interpBits2Pulses(rc *rangeEncoder, channels, skipStart int, bits1, bits2, 
 		bandW := eBands[codedBands] - eBands[j]
 		bandBits := bits[j] + percoeff*bandW + rem
 		if bandBits >= max(thresh[j], allocFloor+(1<<bitRes)) {
-			hyst := 9
-			if j < prev {
-				hyst = 7
-			}
-			if bandBits > (hyst*bandW<<frameLM<<bitRes)>>4 {
-				rc.bitLogp(true, 1)
+			if ac.keep(j, bandBits, bandW, lm) {
 				break
 			}
-			rc.bitLogp(false, 1)
 			psum += 1 << bitRes
 			bandBits -= 1 << bitRes
 		}
@@ -245,16 +239,14 @@ func interpBits2Pulses(rc *rangeEncoder, channels, skipStart int, bits1, bits2, 
 	}
 	a.codedBands = codedBands
 	if intensityRsv > 0 {
-		a.intensity = min(intensity, codedBands)
-		rc.uint(sym(a.intensity), sym(codedBands+1))
+		a.intensity = ac.intensity(codedBands)
 	}
 	if a.intensity <= 0 {
 		total += dualRsv
 		dualRsv = 0
 	}
 	if dualRsv > 0 {
-		a.dualStereo = dualStereo
-		rc.bitLogp(dualStereo, 1)
+		a.dualStereo = ac.dual()
 	}
 	left := total - psum
 	percoeff := left / (eBands[codedBands] - eBands[0])
@@ -270,7 +262,7 @@ func interpBits2Pulses(rc *rangeEncoder, channels, skipStart int, bits1, bits2, 
 	balance := 0
 	j := 0
 	for ; j < codedBands; j++ {
-		n := bandWidth(j) << frameLM
+		n := bandWidth(j) << lm
 		bits[j] += balance
 		var excess int
 		if n > 1 {
@@ -336,3 +328,58 @@ func b2u(b bool) uint32 {
 }
 
 func sym(v int) uint32 { return intconv.Must[uint32](v) }
+
+// allocCoder codes the allocation's decisions: an encoder takes and
+// writes them, a decoder reads them.
+type allocCoder interface {
+	// keep is whether band j, the highest still coded, stays coded
+	// with bandBits 1/8 bits over its bandW bins.
+	keep(j, bandBits, bandW, lm int) bool
+	// intensity is the first band coded with intensity stereo, at most
+	// codedBands.
+	intensity(codedBands int) int
+	// dual is whether the frame codes dual stereo.
+	dual() bool
+}
+
+// allocEncoder takes the encoder's allocation decisions: skip bands
+// past the bits to code them well, with hysteresis around the previous
+// frame's coded band count, and the stereo choices of its analysis.
+type allocEncoder struct {
+	rc         *rangeEncoder
+	prev       int
+	intensityB int
+	dualStereo bool
+}
+
+func (e *allocEncoder) keep(j, bandBits, bandW, lm int) bool {
+	hyst := 9
+	if j < e.prev {
+		hyst = 7
+	}
+	k := bandBits > (hyst*bandW<<lm<<bitRes)>>4
+	e.rc.bitLogp(k, 1)
+	return k
+}
+
+func (e *allocEncoder) intensity(codedBands int) int {
+	v := min(e.intensityB, codedBands)
+	e.rc.uint(sym(v), sym(codedBands+1))
+	return v
+}
+
+func (e *allocEncoder) dual() bool {
+	e.rc.bitLogp(e.dualStereo, 1)
+	return e.dualStereo
+}
+
+// allocDecoder reads the allocation's decisions from a frame.
+type allocDecoder struct{ rc *rangeDecoder }
+
+func (d allocDecoder) keep(int, int, int, int) bool { return d.rc.bitLogp(1) }
+
+func (d allocDecoder) intensity(codedBands int) int {
+	return int(d.rc.uint(sym(codedBands + 1)))
+}
+
+func (d allocDecoder) dual() bool { return d.rc.bitLogp(1) }

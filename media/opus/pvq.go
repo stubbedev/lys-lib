@@ -30,22 +30,11 @@ type pvq struct {
 // so sparse pulse vectors reconstruct as less tonal shapes, which the
 // decoder undoes.
 func rotate(x []float32, k, spread, blocks int) {
-	n := len(x)
-	if 2*k >= n || spread == spreadNone {
+	c, s, stride2, ok := rotation(len(x), k, spread, blocks)
+	if !ok {
 		return
 	}
-	gain := float32(n) / float32(n+spreadFactor[spread]*k)
-	theta := float32(0.5 * gain * gain)
-	c := float32(gomath.Cos(0.5 * math.Pi * float64(theta)))
-	s := float32(gomath.Cos(0.5 * math.Pi * float64(1-theta)))
-	stride2 := 0
-	if n >= 8*blocks {
-		stride2 = 1
-		for (stride2*stride2+stride2)*blocks+blocks>>2 < n {
-			stride2++
-		}
-	}
-	n /= blocks
+	n := len(x) / blocks
 	for b := range blocks {
 		block := x[b*n : (b+1)*n]
 		rotate1(block, 1, c, -s)
@@ -53,6 +42,43 @@ func rotate(x []float32, k, spread, blocks int) {
 			rotate1(block, stride2, s, -c)
 		}
 	}
+}
+
+// unrotate is exp_rotation in the inverse direction, the decoder's
+// undoing of rotate.
+func unrotate(x []float32, k, spread, blocks int) {
+	c, s, stride2, ok := rotation(len(x), k, spread, blocks)
+	if !ok {
+		return
+	}
+	n := len(x) / blocks
+	for b := range blocks {
+		block := x[b*n : (b+1)*n]
+		if stride2 != 0 {
+			rotate1(block, stride2, s, c)
+		}
+		rotate1(block, 1, c, s)
+	}
+}
+
+// rotation is the spreading rotation of n coefficients in blocks
+// holding k pulses: its cosine and sine, the second pass's stride, and
+// false when the vector is not rotated.
+func rotation(n, k, spread, blocks int) (c, s float32, stride2 int, ok bool) {
+	if 2*k >= n || spread == spreadNone {
+		return 0, 0, 0, false
+	}
+	gain := float32(n) / float32(n+spreadFactor[spread]*k)
+	theta := float32(0.5 * gain * gain)
+	c = float32(gomath.Cos(0.5 * math.Pi * float64(theta)))
+	s = float32(gomath.Cos(0.5 * math.Pi * float64(1-theta)))
+	if n >= 8*blocks {
+		stride2 = 1
+		for (stride2*stride2+stride2)*blocks+blocks>>2 < n {
+			stride2++
+		}
+	}
+	return c, s, stride2, true
 }
 
 // rotate1 applies the Givens rotation (c, s) between samples stride
@@ -184,4 +210,95 @@ func unext(u []uint32, u0 uint32) {
 		u0 = u1
 	}
 	u[j-1] = u0
+}
+
+// decodePulses is decode_pulses: it reads a k-pulse vector into iy by
+// its codebook index (cwrsi over the U(N,K) recurrence) and returns its
+// squared norm.
+func (p *pvq) decodePulses(rc *rangeDecoder, iy []int, k int) float32 {
+	n := len(iy)
+	u := p.u[:k+2]
+	u[0], u[1] = 0, 1
+	for j := 2; j < len(u); j++ {
+		u[j] = uint32(2*j - 1)
+	}
+	for range n - 2 {
+		unext(u[1:], 1)
+	}
+	idx := rc.uint(u[k] + u[k+1])
+	var yy float32
+	for j := range n {
+		pk := u[k+1]
+		neg := idx >= pk
+		if neg {
+			idx -= pk
+		}
+		yj := k
+		pk = u[k]
+		for pk > idx {
+			k--
+			pk = u[k]
+		}
+		idx -= pk
+		yj -= k
+		if neg {
+			yj = -yj
+		}
+		iy[j] = yj
+		yy += float32(yj * yj)
+		uprev(u[:k+2], 0)
+	}
+	return yy
+}
+
+// uprev steps u from row n back to row n-1 of the U(N,K) table, with
+// u0 the new row's first entry.
+func uprev(u []uint32, u0 uint32) {
+	j := 1
+	for ; j < len(u); j++ {
+		u1 := u[j] - u[j-1] - u0
+		u[j-1] = u0
+		u0 = u1
+	}
+	u[j-1] = u0
+}
+
+// unquant is alg_unquant: it decodes a k-pulse shape into x scaled to
+// norm gain, undoes the spreading and returns which of the blocks
+// interleaved short blocks got pulses.
+func (p *pvq) unquant(rc *rangeDecoder, x []float32, k, spread, blocks int, gain float32) uint {
+	n := len(x)
+	iy := p.iy[:n]
+	ryy := p.decodePulses(rc, iy, k)
+	g := gain / float32(math.Sqrt(float64(ryy)))
+	for i, v := range iy {
+		x[i] = g * float32(v)
+	}
+	unrotate(x, k, spread, blocks)
+	if blocks <= 1 {
+		return 1
+	}
+	n0 := n / blocks
+	var mask uint
+	for b := range blocks {
+		for _, v := range iy[b*n0 : (b+1)*n0] {
+			if v != 0 {
+				mask |= 1 << b
+				break
+			}
+		}
+	}
+	return mask
+}
+
+// renormalise scales x to norm gain.
+func renormalise(x []float32, gain float32) {
+	e := float32(1e-15)
+	for _, v := range x {
+		e += float32(v * v)
+	}
+	g := gain / float32(math.Sqrt(float64(e)))
+	for i := range x {
+		x[i] *= g
+	}
 }

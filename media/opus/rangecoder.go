@@ -174,13 +174,20 @@ func (e *rangeEncoder) bits(fl uint32, n uint) {
 }
 
 // tell is the number of whole bits used so far, rounded up.
-func (e *rangeEncoder) tell() int { return e.nbitsTotal - ilog(e.rng) }
+func (e *rangeEncoder) tell() int { return tellBits(e.nbitsTotal, e.rng) }
 
 // tellFrac is tell in 1/8 bits.
-func (e *rangeEncoder) tellFrac() int {
-	nbits := e.nbitsTotal << bitRes
-	l := ilog(e.rng)
-	r := e.rng >> (l - 16)
+func (e *rangeEncoder) tellFrac() int { return tellFracBits(e.nbitsTotal, e.rng) }
+
+// tellBits is ec_tell for a coder that has counted nbits bits with
+// range rng.
+func tellBits(nbits int, rng uint32) int { return nbits - ilog(rng) }
+
+// tellFracBits is ec_tell_frac: tellBits in 1/8 bits.
+func tellFracBits(nbitsTotal int, rng uint32) int {
+	nbits := nbitsTotal << bitRes
+	l := ilog(rng)
+	r := rng >> (l - 16)
 	for range bitRes {
 		r = r * r >> 15
 		b := int(r >> 16)

@@ -1,10 +1,14 @@
-// Package opus is a pure-Go Opus encoder (RFC 6716) for lys-shell's
-// recordings: CELT-only fullband 20 ms frames (configuration 31) at a
-// constant or constrained variable bitrate, from lys-ui's media PCM
-// layout (48 kHz, interleaved signed 16-bit samples, one or two
-// channels).
+// Package opus is a pure-Go Opus encoder and decoder (RFC 6716).
 //
-// It is a port of the RFC's reference encoder with libopus's later
+// The Decoder decodes CELT-only packets of every frame size,
+// bandwidth and mono or stereo layout to 48 kHz PCM, within one LSB of
+// libopus, soft-clipping as libopus's 16-bit API does; SILK and hybrid
+// packets fail with ErrUnsupportedMode.
+//
+// The Encoder, for lys-shell's recordings, writes CELT-only fullband
+// 20 ms frames (configuration 31) at a constant or constrained
+// variable bitrate, from lys-ui's media PCM layout (48 kHz, interleaved
+// signed 16-bit samples, one or two channels). It is a port of the RFC's reference encoder with libopus's later
 // analysis: a 3 Hz high-pass, transient detection with short blocks and
 // anti-collapse, time-frequency resolution changes, the pitch
 // pre-filter, inter/intra energy prediction, dynamic allocation, the
@@ -15,6 +19,9 @@
 //	enc, err := opus.NewEncoder(2, 128000, opus.CBR)
 //	head := enc.AppendHead(nil)        // the stream's ID header
 //	pkt, err := enc.Encode(nil, frame) // FrameSize*2 samples per call
+//
+//	dec, err := opus.NewDecoder(head)
+//	pcm, err := dec.Decode(nil, pkt) // drop dec.PreSkip() frames first
 package opus
 
 import (
@@ -113,6 +120,7 @@ type Encoder struct {
 	vbr             vbrState
 
 	rc           rangeEncoder
+	alloc        allocEncoder
 	pvq          pvq
 	in           [2][FrameSize + overlap]float32
 	freq         [2][FrameSize]float32
@@ -146,7 +154,7 @@ func NewEncoder(channels, bitrate int, rate RateControl) (*Encoder, error) {
 		channels:     channels,
 		rate:         rate,
 		bitrate:      bitrate,
-		caps:         bandCaps(channels),
+		caps:         bandCaps(channels, frameLM),
 		spread:       spreadNormal,
 		tonalAverage: 256,
 	}
@@ -372,7 +380,8 @@ func (e *Encoder) encodeFrame(out []byte, pcm []int16) (int, error) {
 		antiCollapseRsv = 1 << bitRes
 	}
 	bits -= antiCollapseRsv
-	a := allocate(rc, c, &offsets, &e.caps, trim, e.intensity, dual, bits, e.lastCodedBands)
+	e.alloc = allocEncoder{rc: rc, prev: e.lastCodedBands, intensityB: e.intensity, dualStereo: dual}
+	a := allocate(&e.alloc, c, frameLM, nbBands, &offsets, &e.caps, trim, bits)
 	if c == 2 {
 		e.intensity = a.intensity
 	}

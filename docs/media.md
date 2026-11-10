@@ -101,12 +101,29 @@ func main() {
 - Whole fragments or clusters are written at once, so a truncated file plays up
   to the last one written.
 
+## media/demux
+
+`demux` reads MP4/ISOBMFF (moov first or last, and fragmented) and
+Matroska/WebM in process. `OpenFile` gives the tracks (codec, frame size,
+sample rate, channels, codec config, delay and pre-roll) and the duration;
+`ReadPacket` returns packets in file order with PTS and key flag, and `Select`
+skips the data of tracks nobody reads. `Seek` lands on a keyframe from `stss` or
+fragment flags in MP4 and from Cues in Matroska, scanning the clusters once when
+a file has no Cues. A track whose codec lys cannot decode reports it through
+`Unsupported`, an error naming the codec and the file. Every size is checked
+before it is allocated; malformed input wraps `ErrMalformed`.
+
 ## media/opus
 
-`opus` is a pure-Go Opus encoder (RFC 6716): CELT-only, fullband, 20 ms frames,
+`opus` is a pure-Go Opus codec (RFC 6716). The encoder is CELT-only, fullband, 20 ms frames,
 from 48 kHz interleaved signed 16-bit PCM, one or two channels. Rate control is
 `CBR` or `ConstrainedVBR` (no packet exceeds twice the average). Tonality
 analysis is not implemented. `AppendHead` writes the stream's ID header.
+
+The `Decoder` takes an OpusHead and decodes CELT-only packets of every frame
+size, bandwidth and channel layout, within one LSB of libopus, applying the
+head's gain and libopus's soft clipping. SILK and hybrid packets return
+`ErrUnsupportedMode`; multistream heads are refused.
 
 ```go
 package main
@@ -159,7 +176,8 @@ func main() {
 
 `vorbis` is a pure-Go Ogg Vorbis I decoder. `Decode` reads the first logical
 Vorbis stream of an Ogg file and returns a `Sound`: sample rate, channel count
-and interleaved signed 16-bit samples.
+and interleaved signed 16-bit samples. For packets from a container,
+`NewDecoder` takes the three headers and `Decoder.Decode` one packet at a time.
 
 - Full specification: floor types 0 and 1, residue types 0–2, coupling, any
   channel count. Every page CRC is checked.

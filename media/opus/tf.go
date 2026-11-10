@@ -1,11 +1,5 @@
 package opus
 
-// tfSelectTable is the TF change a band's coded bit and the frame's
-// tf_select give 20 ms frames, indexed 4*transient + 2*tfSelect + bit:
-// positive values trade short blocks for frequency resolution, negative
-// ones split a long block for time resolution.
-var tfSelectTable = [8]int{0, -2, 0, -3, 3, 0, 1, -1}
-
 // tfIndex is tfSelectTable's index for a band's coded bit.
 func tfIndex(transient bool, tfSelect, bit int) int {
 	return 4*b2i(transient) + 2*tfSelect + bit
@@ -63,7 +57,7 @@ func tfAnalysis(x []float32, transient bool, tfEstimate float32, lambda int, imp
 		}
 	}
 	cost := func(i, sel, bit int) int {
-		return importance[i] * abs(metric[i]-2*tfSelectTable[tfIndex(transient, sel, bit)])
+		return importance[i] * abs(metric[i]-2*tfSelectTable[frameLM][tfIndex(transient, sel, bit)])
 	}
 	start1 := 0
 	if !transient {
@@ -156,12 +150,49 @@ func encodeTF(rc *rangeEncoder, transient bool, tfSelect int, res *[nbBands]int)
 			logp = 4
 		}
 	}
-	if selectRsv && tfSelectTable[tfIndex(transient, 0, changed)] != tfSelectTable[tfIndex(transient, 1, changed)] {
+	if selectRsv && tfSelectTable[frameLM][tfIndex(transient, 0, changed)] != tfSelectTable[frameLM][tfIndex(transient, 1, changed)] {
 		rc.bitLogp(tfSelect == 1, 1)
 	} else {
 		tfSelect = 0
 	}
 	for i := range res {
-		res[i] = tfSelectTable[tfIndex(transient, tfSelect, res[i])]
+		res[i] = tfSelectTable[frameLM][tfIndex(transient, tfSelect, res[i])]
+	}
+}
+
+// decodeTF is tf_decode for bands [0, end) of frames of 2.5 ms << lm:
+// it reads the per-band changes and tf_select into each band's TF
+// change.
+func decodeTF(rc *rangeDecoder, transient bool, lm, end int, res *[nbBands]int) {
+	budget := len(rc.buf) * 8
+	tell := rc.tell()
+	logp := 4
+	if transient {
+		logp = 2
+	}
+	selectRsv := lm > 0 && tell+logp+1 <= budget
+	if selectRsv {
+		budget--
+	}
+	curr, changed := 0, 0
+	for i := range end {
+		if tell+logp <= budget {
+			curr ^= b2i(rc.bitLogp(uint(logp)))
+			tell = rc.tell()
+			changed |= curr
+		}
+		res[i] = curr
+		logp = 5
+		if transient {
+			logp = 4
+		}
+	}
+	tfSelect := 0
+	table := &tfSelectTable[lm]
+	if selectRsv && table[tfIndex(transient, 0, changed)] != table[tfIndex(transient, 1, changed)] {
+		tfSelect = b2i(rc.bitLogp(1))
+	}
+	for i := range end {
+		res[i] = table[tfIndex(transient, tfSelect, res[i])]
 	}
 }

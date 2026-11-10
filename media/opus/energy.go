@@ -81,9 +81,9 @@ func coarseEnergy(rc *rangeEncoder, channels int, logE, old, errs *[2][nbBands]f
 	if rc.tell()+3 <= budget {
 		rc.bitLogp(intra, 3)
 	}
-	coef, beta, model := predCoef, betaInter, &eProbModel[0]
+	coef, beta, model := predCoefs[frameLM], betaInter[frameLM], &eProbModel[frameLM][0]
 	if intra {
-		coef, beta, model = 0, betaIntra, &eProbModel[1]
+		coef, beta, model = 0, betaIntra, &eProbModel[frameLM][1]
 	}
 	var prev [2]float32
 	badness := 0
@@ -180,4 +180,101 @@ func abs(v int) int {
 		return -v
 	}
 	return v
+}
+
+// laplaceDecode reads a coarse energy residual coded with the
+// Laplace-like model of probability fs for zero and decay.
+func laplaceDecode(rc *rangeDecoder, fs, decay uint32) int {
+	const minP = 1
+	const nMin = 16
+	fm := rc.decodeBin(15)
+	val := 0
+	var fl uint32
+	if fm >= fs {
+		val++
+		fl = fs
+		fs = (32768-minP*2*nMin-fs)*(16384-decay)>>15 + minP
+		for fs > minP && fm >= fl+2*fs {
+			fs *= 2
+			fl += fs
+			fs = (fs-2*minP)*decay>>15 + minP
+			val++
+		}
+		if fs <= minP {
+			di := (fm - fl) >> 1
+			val += int(di)
+			fl += 2 * di * minP
+		}
+		if fm < fl+fs {
+			val = -val
+		} else {
+			fl += fs
+		}
+	}
+	rc.update(fl, min(fl+fs, 32768), 32768)
+	return val
+}
+
+// decodeCoarseEnergy is unquant_coarse_energy for bands [0, end) of
+// frames of 2.5 ms << lm: it adds each band's decoded integer log
+// energy to its prediction in old.
+func decodeCoarseEnergy(rc *rangeDecoder, channels, lm, end int, old *[2][nbBands]float32, intra bool) {
+	coef, beta, model := predCoefs[lm], betaInter[lm], &eProbModel[lm][0]
+	if intra {
+		coef, beta, model = 0, betaIntra, &eProbModel[lm][1]
+	}
+	budget := len(rc.buf) * 8
+	var prev [2]float32
+	for i := range end {
+		for c := range channels {
+			var qi int
+			switch tell := rc.tell(); {
+			case budget-tell >= 15:
+				pi := 2 * min(i, 20)
+				qi = laplaceDecode(rc, uint32(model[pi])<<7, uint32(model[pi+1])<<6)
+			case budget-tell >= 2:
+				s := rc.icdf(smallEnergyICDF, 2)
+				qi = s>>1 ^ -(s & 1)
+			case budget-tell >= 1:
+				qi = -b2i(rc.bitLogp(1))
+			default:
+				qi = -1
+			}
+			q := float32(qi)
+			oldE := max(-9, old[c][i])
+			old[c][i] = float32(coef*oldE) + prev[c] + q
+			prev[c] += q - float32(beta*q)
+		}
+	}
+}
+
+// decodeFineEnergy is unquant_fine_energy: fine[i] more bits of each
+// band's energy.
+func decodeFineEnergy(rc *rangeDecoder, channels, end int, old *[2][nbBands]float32, fine *[nbBands]int) {
+	for i := range end {
+		if fine[i] <= 0 {
+			continue
+		}
+		for c := range channels {
+			q2 := rc.bits(uint(fine[i]))
+			old[c][i] += float32((float32(q2)+0.5)*float32(int(1)<<(14-fine[i]))/16384) - 0.5
+		}
+	}
+}
+
+// decodeFinalEnergy is unquant_energy_finalise: the bits PVQ left
+// over, one more energy bit per band, priority 0 first.
+func decodeFinalEnergy(rc *rangeDecoder, channels, end int, old *[2][nbBands]float32, fine, priority *[nbBands]int, bitsLeft int) {
+	for prio := range 2 {
+		for i := 0; i < end && bitsLeft >= channels; i++ {
+			if fine[i] >= maxFineBits || priority[i] != prio {
+				continue
+			}
+			for c := range channels {
+				q2 := rc.bits(1)
+				old[c][i] += float32((float32(q2) - 0.5) * float32(int(1)<<(14-fine[i]-1)) / 16384)
+				bitsLeft--
+			}
+		}
+	}
 }

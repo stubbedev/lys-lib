@@ -152,3 +152,65 @@ func complexMul(a, b complex64) complex64 {
 	br, bi := float64(real(b)), float64(imag(b))
 	return complex(float32(float64(ar*br)-float64(ai*bi)), float32(float64(ar*bi)+float64(ai*br)))
 }
+
+// imdct is clt_mdct_backward for one transform size: the FFT of a
+// quarter the size and the backward transform's rotation, cos(2π(i +
+// 1/8)/n) for i up to n/2.
+type imdct struct {
+	fft  *mdct
+	trig []float32
+}
+
+// imdcts are the backward transforms per LM: 2.5 ms << LM long blocks;
+// LM 0 is also every short block's.
+var imdcts = [4]*imdct{
+	newIMDCT(shortMDCT),
+	newIMDCT(newMDCT(4*shortMdct, 4, 2, 3, 5)),
+	newIMDCT(newMDCT(8*shortMdct, 4, 4, 3, 5)),
+	newIMDCT(longMDCT),
+}
+
+func newIMDCT(m *mdct) *imdct {
+	t := &imdct{fft: m, trig: make([]float32, m.n/2)}
+	for i := range t.trig {
+		t.trig[i] = float32(gomath.Cos(2 * math.Pi * (float64(i) + 0.125) / float64(m.n)))
+	}
+	return t
+}
+
+// backward inverts the n/2 coefficients in[k*stride] into out: n/2
+// samples from out[overlap/2], then the windowed TDAC mirror over
+// out[:overlap] with the n/2 samples the previous block left there.
+// f and g are scratch of at least n/4.
+func (t *imdct) backward(in []float32, stride int, out []float32, f, g []complex64) {
+	n2, n4 := t.fft.n/2, t.fft.n/4
+	f, g = f[:n4], g[:n4]
+	trig := t.trig
+	for i := range n4 {
+		x1, x2 := in[2*i*stride], in[(n2-1-2*i)*stride]
+		yr := float32(x2*trig[i]) + float32(x1*trig[n4+i])
+		yi := float32(x1*trig[i]) - float32(x2*trig[n4+i])
+		f[i] = complex(yi, yr)
+	}
+	t.fft.fftStage(g, f, 1, 0)
+	y := out[overlap/2:]
+	for i := range (n4 + 1) >> 1 {
+		j := n4 - 1 - i
+		re, im := imag(g[i]), real(g[i])
+		yr := float32(re*trig[i]) + float32(im*trig[n4+i])
+		yi := float32(re*trig[n4+i]) - float32(im*trig[i])
+		re2, im2 := imag(g[j]), real(g[j])
+		y[2*i] = yr
+		y[2*j+1] = yi
+		yr = float32(re2*trig[n4-i-1]) + float32(im2*trig[n2-i-1])
+		yi = float32(re2*trig[n2-i-1]) - float32(im2*trig[n4-i-1])
+		y[2*j] = yr
+		y[2*i+1] = yi
+	}
+	w := mdctWindow
+	for i := range overlap / 2 {
+		x1, x2 := out[overlap-1-i], out[i]
+		out[i] = float32(w[overlap-1-i]*x2) - float32(w[i]*x1)
+		out[overlap-1-i] = float32(w[i]*x2) + float32(w[overlap-1-i]*x1)
+	}
+}
