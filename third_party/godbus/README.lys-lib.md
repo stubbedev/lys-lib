@@ -85,6 +85,15 @@ Drop the copy once upstream carries every fix below.
   `TestEachSignalChannelOwnsItsDescriptors`,
   `TestDescriptorsOfASignalNoChannelTakesAreClosed` and
   `TestMapFDsReachesEveryDescriptorOfADecodedBody`.
+- `conn_other.go`, `getRuntimeDirectory`: with `DBUS_SESSION_BUS_ADDRESS`
+  unset the session bus is looked for at `$XDG_RUNTIME_DIR/bus`, as libdbus
+  and sd-bus do. Upstream looks in `/run/user/<uid>` whatever
+  `XDG_RUNTIME_DIR` says, so a process given a runtime directory of its own
+  (a test, a nested session) joined the bus of the user's login session and
+  missed the one in its own directory. `/run/user/<uid>` remains the guess
+  only where `XDG_RUNTIME_DIR` names no absolute path. Pinned by
+  `TestTheSessionBusIsFoundInTheRuntimeDirectory` and
+  `TestARuntimeDirectoryWithoutABusHasNoSessionBus`.
 - Import path: every source imports `github.com/stubbedev/lys-lib/third_party/godbus`
   in place of `github.com/godbus/dbus/v5`, and the copy has no go.mod
   of its own. Upstream's tests, CI files and fuzz corpus are not

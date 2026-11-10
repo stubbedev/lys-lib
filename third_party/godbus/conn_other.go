@@ -54,7 +54,14 @@ func tryDiscoverDbusSessionBusAddress() string {
 	return ""
 }
 
+// getRuntimeDirectory is $XDG_RUNTIME_DIR when it names an absolute
+// path (lys-lib patch), as libdbus and sd-bus look for the session bus
+// at $XDG_RUNTIME_DIR/bus; upstream's /run/user/<uid> is only the guess
+// for a process whose environment names none.
 func getRuntimeDirectory() (string, error) {
+	if dir := os.Getenv("XDG_RUNTIME_DIR"); path.IsAbs(dir) {
+		return dir, nil
+	}
 	if currentUser, err := user.Current(); err != nil {
 		return "", err
 	} else {
