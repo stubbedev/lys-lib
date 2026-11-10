@@ -254,6 +254,12 @@ a file has no Cues. A track whose codec lys cannot decode reports it through
 `Unsupported`, an error naming the codec and the file. Every size is checked
 before it is allocated; malformed input wraps `ErrMalformed`.
 
+`Track.CodecDelay` is what the container says to trim from the start: an MP4
+edit list's media time (AAC's encoder priming) or Matroska's CodecDelay. Old
+Matroska AAC tracks that name their profile in the codec ID
+(`A_AAC/MPEG4/LC` and friends) and carry no CodecPrivate get an
+AudioSpecificConfig built from the profile, sample rate and channels.
+
 ## media/opus
 
 `opus` is a pure-Go Opus codec (RFC 6716). The encoder is CELT-only, fullband, 20 ms frames,
