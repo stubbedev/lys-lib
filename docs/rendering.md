@@ -185,8 +185,17 @@ Drawing:
   `Kawase`, `SetCut`, `SetColor`. The first failing call fails the pass; `End`
   reports it and records nothing.
 - `End` records without submitting. A frame's passes go to the queue in one
-  submission when `SyncFile` exports, a CPU read or `Finish` needs them,
-  `FrameDone` asks, or `Flush` is called. `Submissions` counts submissions.
+  submission when `Publish` hands their target over, `SyncFile` exports, a CPU
+  read or `Finish` needs them, `FrameDone` asks, or `Flush` is called.
+  `Submissions` counts submissions.
+- `Publish` hands a target the passes drew to its consumer, as `Render` does
+  for its own: it submits them and attaches their fence to the target's dmabuf,
+  which linux-dmabuf's implicit synchronization has every reader wait on, and
+  returns without waiting. Where no fence tells the consumer (NVIDIA's driver,
+  which does not wait on one when a compositor samples a buffer; a device
+  without `sync_file` semaphores; a kernel that attaches none) it waits until
+  the passes are done instead. A consumer that takes an explicit fence uses
+  `SyncFile`.
 
 Vulkan comes from the patched [vk](/third-party/vk) bindings. Shaders are
 embedded SPIR-V; `just generate` rebuilds them.
