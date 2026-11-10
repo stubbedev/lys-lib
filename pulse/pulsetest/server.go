@@ -102,7 +102,8 @@ func (s *Server) Close() {
 }
 
 // Listen brings a closed server back on the same socket, its devices,
-// streams, and defaults kept, as a restarted sound server.
+// defaults and the streams the test put kept, as a restarted sound
+// server; the streams clients created went with their connections.
 func (s *Server) Listen(t testing.TB) {
 	t.Helper()
 	ln, err := net.Listen("unix", s.path)
@@ -274,7 +275,8 @@ func (s *Server) SendFrame(f native.Frame) {
 	}
 }
 
-// Disconnect drops every client connection.
+// Disconnect drops every client connection, and with each the record
+// and playback streams its client created.
 func (s *Server) Disconnect() {
 	for _, c := range s.clients() {
 		_ = c.nc.Close()
@@ -420,19 +422,9 @@ func (c *conn) serve() {
 	defer c.s.wg.Done()
 	defer func() {
 		_ = c.nc.Close()
-		c.s.mu.Lock()
-		delete(c.s.conns, c)
-		for _, r := range c.s.records {
-			if r.c == c {
-				r.deleted = true
-			}
+		for _, ev := range c.s.drop(c) {
+			c.s.Emit(ev)
 		}
-		for _, p := range c.s.playbacks {
-			if p.c == c {
-				p.deleted = true
-			}
-		}
-		c.s.mu.Unlock()
 	}()
 	br := bufio.NewReader(c.nc)
 	for {
@@ -454,6 +446,32 @@ func (c *conn) serve() {
 			return
 		}
 	}
+}
+
+// drop forgets a client whose connection ended, and with it the record
+// and playback streams it created: pulsecore unlinks a client's streams
+// with its connection, so they leave the stream listings. It returns
+// the removals to announce.
+func (s *Server) drop(c *conn) []native.SubscribeEvent {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	delete(s.conns, c)
+	var removed []native.SubscribeEvent
+	for _, r := range s.records {
+		if r.c == c && !r.deleted {
+			r.deleted = true
+			delete(s.sourceOutputs, r.SourceOutput)
+			removed = append(removed, native.SubscribeEvent{Facility: native.FacilitySourceOutput, Operation: native.OpRemove, Index: r.SourceOutput})
+		}
+	}
+	for _, p := range s.playbacks {
+		if p.c == c && !p.deleted {
+			p.deleted = true
+			delete(s.sinkInputs, p.SinkInput)
+			removed = append(removed, native.SubscribeEvent{Facility: native.FacilitySinkInput, Operation: native.OpRemove, Index: p.SinkInput})
+		}
+	}
+	return removed
 }
 
 // handle answers one request; false means the request did not parse.
