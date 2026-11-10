@@ -11,6 +11,7 @@ import (
 
 	"github.com/stubbedev/lys-lib/dbustest"
 	"github.com/stubbedev/lys-lib/pulse/pulsetest"
+	"github.com/stubbedev/lys-lib/sockdir"
 	"github.com/stubbedev/lys-lib/wltest"
 	"github.com/stubbedev/lys-lib/wmipc"
 )
@@ -465,7 +466,7 @@ func TestTheGuardTakesASessionDirectoryThatOnlyStartsLikeTheNamedOneForAnother(t
 }
 
 func TestTheGuardFailsASystemBusThatAnswersInASessionARecipeNamed(t *testing.T) {
-	dir := t.TempDir()
+	dir := sockdir.Dir(t)
 	recipeSession(t, dir, nil)
 	t.Setenv(systemBusEnv, dbustest.StartAt(t, filepath.Join(dir, "system-bus")).Address)
 	wantOnly(t, verdictOf(t), "a system bus answers")
