@@ -95,11 +95,18 @@ func (s Session) routes(emit func(Event)) []dbusx.Route {
 		dbusx.On(Unlock, path, emitAs[Unlocked](emit)),
 		dbusx.On(PauseDevice, path, emitAs[DevicePaused](emit)),
 		dbusx.On(ResumeDevice, path, emitAs[DeviceResumed](emit)),
-		dbusx.On(dbusx.PropertiesChanged, path, func(c dbusx.ChangedProperties) error {
-			return emitChanged(path, c.Changed, emit)
-		}).WithArg0(SessionInterface),
+		s.changes(emit),
 		dbusx.On(PrepareForSleep, ManagerPath, emitAs[Sleep](emit)),
 	}
+}
+
+// changes is the session's Active and LockedHint changing, each decoded
+// to the Event emit gets.
+func (s Session) changes(emit func(Event)) dbusx.Route {
+	path := s.obj.path
+	return dbusx.On(dbusx.PropertiesChanged, path, func(c dbusx.ChangedProperties) error {
+		return emitChanged(path, c.Changed, emit)
+	}).WithArg0(SessionInterface)
 }
 
 func emitAs[T Event](emit func(Event)) func(T) error {
@@ -153,17 +160,23 @@ type Watch struct {
 // for the manager's PrepareForSleep. Exactly one of handle's arguments
 // is non-nil: the decoded Event, or why a signal from logind could not
 // be decoded. Only signals from logind's owner at the time of the call
-// count; a ResumeDevice from anyone else has its descriptor closed. The
-// watch holds match rules and a signal channel on the session's
+// count; a ResumeDevice from anyone else has its descriptor closed. A
+// DeviceResumed's descriptor is this watch's own: every watch of the
+// session, on this connection or another, is handed one of its own.
+// The watch holds match rules and a signal channel on the session's
 // connection until it ends, and then removes them, leaving a shared
 // connection as it was.
 func (s Session) Watch(ctx context.Context, handle func(Event, error)) (*Watch, error) {
+	return s.watch(ctx, func(err error) { handle(nil, err) }, s.routes(func(e Event) { handle(e, nil) }))
+}
+
+func (s Session) watch(ctx context.Context, failed func(error), routes []dbusx.Route) (*Watch, error) {
 	if s.obj.conn == nil {
 		return nil, fmt.Errorf("logind: watch a session: %w", errZeroHandle)
 	}
 	signals, err := dbusx.WatchSignals(ctx, s.obj.conn, dbusx.FromOwner(BusName),
-		func(err error) { handle(nil, fmt.Errorf("logind: %w", err)) },
-		s.routes(func(e Event) { handle(e, nil) })...)
+		func(err error) { failed(fmt.Errorf("logind: %w", err)) },
+		routes...)
 	if err != nil {
 		return nil, fmt.Errorf("logind: watch session %s: %w", s.obj.path, err)
 	}
@@ -189,14 +202,14 @@ func (w *Watch) Stop() error {
 // ctx's error when it ends first.
 func (s Session) WaitLocked(ctx context.Context) (err error) {
 	locked := make(chan struct{}, 1)
-	w, err := s.Watch(ctx, func(e Event, _ error) {
+	w, err := s.watch(ctx, func(error) {}, []dbusx.Route{s.changes(func(e Event) {
 		if c, ok := e.(LockedHintChanged); ok && c.Locked {
 			select {
 			case locked <- struct{}{}:
 			default:
 			}
 		}
-	})
+	})})
 	if err != nil {
 		return err
 	}

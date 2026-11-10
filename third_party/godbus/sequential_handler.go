@@ -22,11 +22,14 @@ type sequentialSignalHandler struct {
 func (sh *sequentialSignalHandler) DeliverSignal(intf, name string, signal *Signal) {
 	sh.mu.RLock()
 	defer sh.mu.RUnlock()
-	if sh.closed {
+	// lys-lib patch: each channel owns the descriptors it is handed, and
+	// those nobody is handed are closed (lys_signal_fds.go).
+	if sh.closed || len(sh.signals) == 0 {
+		_ = signal.CloseFDs()
 		return
 	}
-	for _, scd := range sh.signals {
-		scd.deliver(signal)
+	for i, scd := range sh.signals {
+		scd.deliver(signal.forReceiver(i, len(sh.signals)))
 	}
 }
 
@@ -92,6 +95,12 @@ func (scd *sequentialSignalChannelData) bufferSignals() {
 	// Ensure that signals are delivered to scd.ch in the same
 	// order they are received from scd.in.
 	var queue []*Signal
+	// lys-lib patch: the descriptors of what the channel never got.
+	defer func() {
+		for _, signal := range queue {
+			_ = signal.CloseFDs()
+		}
+	}()
 	for {
 		if len(queue) == 0 {
 			signal, ok := <-scd.in

@@ -66,6 +66,25 @@ Drop the copy once upstream carries every fix below.
   could find an object between the steps. `addInterface` and
   `deleteInterface` now do each change in one locked step. Pinned by
   `TestConcurrentExportsAndCalls`.
+- `lys_signal_fds.go` (with `conn.go`'s `handleSignal`, `default_handler.go`
+  and `sequential_handler.go`): each channel a signal is delivered to owns
+  the descriptors in the `Signal` it receives. Upstream hands one `Signal`,
+  and so the same `UnixFD` values, to every channel registered with
+  `Conn.Signal`: two readers of logind's `ResumeDevice` on one connection
+  closed one descriptor twice, or one used it after the other had closed it.
+  A signal that came with descriptors now reaches the last channel as it
+  was read and every other channel as a copy holding duplicates
+  (`F_DUPFD_CLOEXEC`) of them, at any depth of the body; one that cannot be
+  duplicated arrives as -1. The descriptors of a signal no channel takes
+  (none registered, the channel removed with the signal undelivered, the
+  connection closed) are closed, where upstream leaked them. A reader that
+  does not take a signal's descriptors over closes them with
+  `Signal.CloseFDs` (`CloseFDs` for a reply's body), which costs nothing for
+  a signal that came without any. A signal without descriptors is still one
+  `Signal` shared by every channel. Pinned by
+  `TestEachSignalChannelOwnsItsDescriptors`,
+  `TestDescriptorsOfASignalNoChannelTakesAreClosed` and
+  `TestMapFDsReachesEveryDescriptorOfADecodedBody`.
 - Import path: every source imports `github.com/stubbedev/lys-lib/third_party/godbus`
   in place of `github.com/godbus/dbus/v5`, and the copy has no go.mod
   of its own. Upstream's tests, CI files and fuzz corpus are not

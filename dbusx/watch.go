@@ -7,8 +7,6 @@ import (
 	"slices"
 	"time"
 
-	"golang.org/x/sys/unix"
-
 	dbus "github.com/stubbedev/lys-lib/third_party/godbus"
 )
 
@@ -77,7 +75,7 @@ func On[T any](s Signal[T], path dbus.ObjectPath, handle func(T) error) Route {
 	return Route{path: path, iface: s.iface, member: s.member, name: s.Name(), deliver: func(sig *dbus.Signal) error {
 		v, err := s.Decode(sig)
 		if err != nil {
-			return errors.Join(err, CloseFDs(sig.Body))
+			return errors.Join(err, sig.CloseFDs())
 		}
 		return handle(v)
 	}}
@@ -132,36 +130,40 @@ func matches(sender string, routes []Route) [][]dbus.MatchOption {
 }
 
 // Dispatch hands sig to the route it belongs to, decoded, when sender
-// sent it; a signal of no route is left alone. A signal of a route
-// that the route's handler does not get, because another peer sent it
-// or it does not decode, has the descriptors it carries closed. The
-// error is the handler's, or says why the signal was not decoded.
+// sent it. It takes over the descriptors sig carries, which are the
+// caller's own (each signal channel of a connection is handed
+// duplicates of its own): a handler that gets the signal owns them,
+// and a signal no handler gets, because it is of no route, another
+// peer sent it or it does not decode, has them closed. The error is
+// the handler's, or says why the signal was not decoded or a
+// descriptor not closed.
 func Dispatch(sig *dbus.Signal, sender string, routes []Route) error {
-	for i := range routes {
-		r := &routes[i]
-		if !r.takes(sig) {
-			continue
-		}
-		if sig.Sender != sender {
-			return CloseFDs(sig.Body)
-		}
-		return r.deliver(sig)
+	if sig.Sender != sender {
+		return sig.CloseFDs()
 	}
-	return nil
+	for i := range routes {
+		if r := &routes[i]; r.takes(sig) {
+			return r.deliver(sig)
+		}
+	}
+	return sig.CloseFDs()
 }
 
-// CloseFDs closes the descriptors a message body carries at its top
-// level, for a receiver that does not take them over.
-func CloseFDs(body []any) error {
+// closeUnread closes the descriptors of the signals a watch that has
+// ended was sent and never read. Nothing is sent on signals any more.
+func closeUnread(signals <-chan *dbus.Signal) error {
 	var errs []error
-	for _, v := range body {
-		if fd, ok := v.(dbus.UnixFD); ok && fd >= 0 {
-			if err := unix.Close(int(fd)); err != nil {
-				errs = append(errs, fmt.Errorf("close descriptor %d: %w", fd, err))
+	for {
+		select {
+		case sig, open := <-signals:
+			if !open {
+				return errors.Join(errs...)
 			}
+			errs = append(errs, sig.CloseFDs())
+		default:
+			return errors.Join(errs...)
 		}
 	}
-	return errors.Join(errs...)
 }
 
 // Watch follows signals on a connection until its context ends, it is
@@ -175,9 +177,13 @@ type Watch struct {
 // WatchSignals runs each route's handler, on the watch's goroutine and
 // in arrival order, for the signals the routes name, when from sent
 // them. failed is told, on the same goroutine, of each such signal a
-// handler did not accept or that did not decode. The watch holds match
-// rules and a signal channel on conn until it ends, and then removes
-// them, leaving a connection shared with others as it was.
+// handler did not accept or that did not decode. A signal carrying
+// descriptors reaches each watch of a connection with descriptors of
+// its own: a handler that gets the signal owns them, and the watch
+// closes those of every signal no handler gets and of the signals
+// still unread when it ends. The watch holds match rules and a signal
+// channel on conn until it ends, and then removes them, leaving a
+// connection shared with others as it was.
 func WatchSignals(ctx context.Context, conn *dbus.Conn, from Sender, failed func(error), routes ...Route) (*Watch, error) {
 	if len(routes) == 0 {
 		return nil, fmt.Errorf("watch %s: no signal to watch", from.name)
@@ -202,7 +208,7 @@ func WatchSignals(ctx context.Context, conn *dbus.Conn, from Sender, failed func
 		defer close(w.done)
 		defer func() {
 			conn.RemoveSignal(signals)
-			if err := removeMatches(ctx, conn, rules); err != nil {
+			if err := errors.Join(closeUnread(signals), removeMatches(ctx, conn, rules)); err != nil {
 				w.err = errors.Join(w.err, fmt.Errorf("stop watching %s: %w", from.name, err))
 			}
 		}()

@@ -477,12 +477,15 @@ func (conn *Conn) handleSignal(sequence Sequence, msg *Message) {
 			conn.names.acquireName(name)
 		}
 	}
+	// lys-lib patch: whether descriptors came with it (lys_signal_fds.go).
+	fds, _ := msg.Headers[FieldUnixFDs].value.(uint32)
 	signal := &Signal{
 		Sender:   sender,
 		Path:     msg.Headers[FieldPath].value.(ObjectPath),
 		Name:     iface + "." + member,
 		Body:     msg.Body,
 		Sequence: sequence,
+		bare:     fds == 0,
 	}
 	conn.signalHandler.DeliverSignal(iface, member, signal)
 }
@@ -689,6 +692,10 @@ func (conn *Conn) RemoveMatchSignalContext(ctx context.Context, options ...Match
 
 // Signal registers the given channel to be passed all received signal messages.
 //
+// lys-lib patch: a signal carrying descriptors reaches each channel with
+// duplicates of its own, which that channel's reader closes or takes
+// over (Signal.CloseFDs); those of a signal no channel takes are closed.
+//
 // Multiple of these channels can be registered at the same time. The channel is
 // closed if the Conn is closed; it should not be closed by the caller before
 // RemoveSignal was called on it.
@@ -747,12 +754,20 @@ func (e Error) Error() string {
 
 // Signal represents a D-Bus message of type Signal. The name member is given in
 // "interface.member" notation, e.g. org.freedesktop.D-Bus.NameLost.
+//
+// lys-lib patch: each channel a signal is delivered to owns the
+// descriptors in the Signal it receives, as duplicates of its own, and
+// closes those it does not take over (CloseFDs).
 type Signal struct {
 	Sender   string
 	Path     ObjectPath
 	Name     string
 	Body     []any
 	Sequence Sequence
+
+	// bare says the message the signal was read from carried no
+	// descriptors, so its body holds none.
+	bare bool
 }
 
 // transport is a D-Bus transport.

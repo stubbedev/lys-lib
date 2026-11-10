@@ -156,7 +156,10 @@ func TestDispatchClosesTheDescriptorsOfASignalItsHandlerDoesNotGet(t *testing.T)
 		}, true, true},
 		{"of no route", func(fd dbus.UnixFD) *dbus.Signal {
 			return &dbus.Signal{Sender: sender, Path: otherPath, Name: handSignal.Name(), Body: []any{fd}}
-		}, false, false},
+		}, false, true},
+		{"of no route, inside a variant", func(fd dbus.UnixFD) *dbus.Signal {
+			return &dbus.Signal{Sender: sender, Path: watchedPath, Name: watchedIface + ".Unrouted", Body: []any{map[string]dbus.Variant{"fd": dbus.MakeVariant(fd)}}}
+		}, false, true},
 	}
 	for _, tc := range tests {
 		read, write := watchPipe(t)

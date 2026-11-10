@@ -108,7 +108,7 @@ func (o object) call(ctx context.Context, iface, method string, out []any, args 
 	if err := c.Store(out...); err != nil {
 		return errors.Join(
 			fmt.Errorf("logind %s on %s: decode the reply: %w", describe(iface, method, args), o.path, err),
-			dbusx.CloseFDs(c.Body),
+			dbus.CloseFDs(c.Body),
 		)
 	}
 	return nil

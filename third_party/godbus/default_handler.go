@@ -290,11 +290,14 @@ type defaultSignalHandler struct {
 func (sh *defaultSignalHandler) DeliverSignal(intf, name string, signal *Signal) {
 	sh.mu.RLock()
 	defer sh.mu.RUnlock()
-	if sh.closed {
+	// lys-lib patch: each channel owns the descriptors it is handed, and
+	// those nobody is handed are closed (lys_signal_fds.go).
+	if sh.closed || len(sh.signals) == 0 {
+		_ = signal.CloseFDs()
 		return
 	}
-	for _, scd := range sh.signals {
-		scd.deliver(signal)
+	for i, scd := range sh.signals {
+		scd.deliver(signal.forReceiver(i, len(sh.signals)))
 	}
 }
 
@@ -351,6 +354,7 @@ func (scd *signalChannelData) deliver(signal *Signal) {
 	select {
 	case scd.ch <- signal:
 	case <-scd.done:
+		_ = signal.CloseFDs() // lys-lib patch
 		return
 	default:
 		scd.wg.Add(1)
@@ -362,6 +366,7 @@ func (scd *signalChannelData) deferredDeliver(signal *Signal) {
 	select {
 	case scd.ch <- signal:
 	case <-scd.done:
+		_ = signal.CloseFDs() // lys-lib patch
 	}
 	scd.wg.Done()
 }

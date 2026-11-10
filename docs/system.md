@@ -156,14 +156,18 @@ demand.
 
 `WatchSignals` runs each route's handler in arrival order on one goroutine and
 tells `failed` of a signal that does not decode. It takes signals only from the
-sender it resolved when it started; one from any other peer is dropped, and a
-signal a handler does not get has the descriptors it carries closed
-(`CloseFDs`). The watch holds one match rule per signal, or one for the whole
+sender it resolved when it started; one from any other peer is dropped. A signal
+carrying descriptors reaches every watch of a connection with duplicates of its
+own, so several watches may route the same signal: the handler that gets it owns
+them, and the watch closes those of every signal no handler gets and of the
+signals still unread when it ends (`dbus.Signal.CloseFDs`, on the
+[patched godbus](/third-party/godbus)). The watch holds one match rule per signal, or one for the whole
 interface where several signals of an object share it, and removes them when its
 context ends, `Watch.Stop` is called, or the connection closes
 (`ErrDisconnected`). `Route.WithArg0` narrows a route to one first argument, as
 for `PropertiesChanged` of one interface. `Dispatch` is the watch without the
-bus: it routes one signal, for a caller that reads its own signal channel.
+bus: it routes one signal, for a caller that reads its own signal channel, and
+closes the descriptors of a signal it hands to no handler.
 
 ## pulse/native
 
@@ -192,7 +196,7 @@ the object. `Dial`, which connects to the system bus, is bounded the same way.
 | Lock state | `Session.Lock`, `LockedHint`, `SetLockedHint`, `WaitLocked` |
 | Device access for a compositor | `Session.TakeControl`, `TakeDevice`, `PauseDeviceComplete`, `ReleaseDevice` |
 | Backlight through logind | `Session.SetBrightness` |
-| Sleep, lock, device and property signals | `Session.Watch`, which takes signals only from logind's owner |
+| Sleep, lock, device and property signals | `Session.Watch`, which takes signals only from logind's owner; each watch owns the descriptor of a device it is told resumed |
 
 `logind/logindtest` is a fake logind on a private bus that records every call.
 The methods that have it announce something (`SetLockedHint`, `Lock`,
