@@ -45,7 +45,7 @@ func TestWatchesOfOneSignalEachOwnItsDescriptor(t *testing.T) {
 	failed := func(err error) { t.Errorf("a watch failed: %v", err) }
 	for _, took := range takers {
 		watch, err := dbusx.WatchSignals(t.Context(), w.client, dbusx.FromOwner(watchedName), failed,
-			dbusx.On(handSignal, watchedPath, func(h handed) error {
+			dbusx.On(handSignal, watchedPath, func(h handed, _ dbus.Sequence) error {
 				took <- h.FD
 				return nil
 			}))
@@ -56,7 +56,7 @@ func TestWatchesOfOneSignalEachOwnItsDescriptor(t *testing.T) {
 	}
 	ticked := make(chan uint32, 1)
 	bystander, err := dbusx.WatchSignals(t.Context(), w.client, dbusx.FromOwner(watchedName), failed,
-		dbusx.On(tickSignal, watchedPath, func(c counted) error {
+		dbusx.On(tickSignal, watchedPath, func(c counted, _ dbus.Sequence) error {
 			ticked <- c.N
 			return nil
 		}))
@@ -109,7 +109,7 @@ func TestAWatchThatEndsClosesTheDescriptorsItNeverRead(t *testing.T) {
 	var mu sync.Mutex
 	var took []dbus.UnixFD
 	watch, err := dbusx.WatchSignals(ctx, w.client, dbusx.FromOwner(watchedName), func(err error) { t.Errorf("the watch failed: %v", err) },
-		dbusx.On(handSignal, watchedPath, func(h handed) error {
+		dbusx.On(handSignal, watchedPath, func(h handed, _ dbus.Sequence) error {
 			mu.Lock()
 			took = append(took, h.FD)
 			mu.Unlock()
@@ -134,7 +134,7 @@ func TestAWatchThatEndsClosesTheDescriptorsItNeverRead(t *testing.T) {
 	awaitWatch(t, entered, "first Hand in its handler")
 	arrived := make(chan uint32, 1)
 	marker, err := dbusx.WatchSignals(t.Context(), w.client, dbusx.FromOwner(watchedName), func(error) {},
-		dbusx.On(tickSignal, watchedPath, func(c counted) error {
+		dbusx.On(tickSignal, watchedPath, func(c counted, _ dbus.Sequence) error {
 			arrived <- c.N
 			return nil
 		}))

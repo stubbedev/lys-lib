@@ -330,7 +330,7 @@ func TestTemporaryAuthorizationsAreListedAndRevoked(t *testing.T) {
 
 	changes := make(chan struct{}, 4)
 	watch, err := dbusx.WatchSignals(t.Context(), conn, dbusx.FromOwner(polkit.BusName), func(err error) { t.Errorf("Changed: %v", err) },
-		dbusx.On(polkit.Changed, polkit.AuthorityPath, func(polkit.AuthorityChanged) error {
+		dbusx.On(polkit.Changed, polkit.AuthorityPath, func(polkit.AuthorityChanged, dbus.Sequence) error {
 			changes <- struct{}{}
 			return nil
 		}))

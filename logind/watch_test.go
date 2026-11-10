@@ -156,8 +156,8 @@ func TestStoppingAWatchLeavesTheConnectionAsItWas(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if during := dbustest.MatchRules(t, conn); len(during) != len(before)+3 {
-		t.Errorf("match rules during the watch %v, want 3 more than %v", during, before)
+	if during := dbustest.MatchRules(t, conn); len(during) != len(before)+4 {
+		t.Errorf("match rules during the watch %v, want 4 more than %v: three for the signals and the one that follows logind's owner", during, before)
 	}
 	if err := w.Stop(); err != nil {
 		t.Fatalf("Stop: %v", err)

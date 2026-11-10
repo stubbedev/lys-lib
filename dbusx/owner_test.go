@@ -20,7 +20,7 @@ func TestWatchOwnerSeesALateService(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	appeared := make(chan struct{}, 8)
-	stop, err := dbusx.WatchOwner(ctx, client, "dev.stubbe.lys.Late", func() { appeared <- struct{}{} })
+	stop, err := dbusx.WatchOwner(ctx, client, "dev.stubbe.lys.Late", func(dbus.Sequence) { appeared <- struct{}{} })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -80,7 +80,7 @@ func TestStoppingAWatchLeavesTheConnectionAsItWas(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := dbustest.MatchRules(t, client)
-	stop, err := dbusx.WatchOwner(context.Background(), client, "dev.stubbe.lys.Late", func() { t.Error("appeared ran") })
+	stop, err := dbusx.WatchOwner(context.Background(), client, "dev.stubbe.lys.Late", func(dbus.Sequence) { t.Error("appeared ran") })
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -95,7 +95,7 @@ func TestStoppingAWatchLeavesTheConnectionAsItWas(t *testing.T) {
 			t.Fatalf("after stop the connection holds %q, want %q", got, before)
 		}
 	}
-	stopped, err := dbusx.WatchOwner(context.Background(), client, "dev.stubbe.lys.Late", func() {})
+	stopped, err := dbusx.WatchOwner(context.Background(), client, "dev.stubbe.lys.Late", func(dbus.Sequence) {})
 	if err != nil {
 		t.Fatal(err)
 	}

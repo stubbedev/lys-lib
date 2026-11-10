@@ -104,13 +104,13 @@ func (s Session) routes(emit func(Event)) []dbusx.Route {
 // to the Event emit gets.
 func (s Session) changes(emit func(Event)) dbusx.Route {
 	path := s.obj.path
-	return dbusx.On(dbusx.PropertiesChanged, path, func(c dbusx.ChangedProperties) error {
+	return dbusx.On(dbusx.PropertiesChanged, path, func(c dbusx.ChangedProperties, _ dbus.Sequence) error {
 		return emitChanged(path, c.Changed, emit)
 	}).WithArg0(SessionInterface)
 }
 
-func emitAs[T Event](emit func(Event)) func(T) error {
-	return func(v T) error {
+func emitAs[T Event](emit func(Event)) func(T, dbus.Sequence) error {
+	return func(v T, _ dbus.Sequence) error {
 		emit(v)
 		return nil
 	}
@@ -159,8 +159,9 @@ type Watch struct {
 // PauseDevice, ResumeDevice, its Active and LockedHint changing) and
 // for the manager's PrepareForSleep. Exactly one of handle's arguments
 // is non-nil: the decoded Event, or why a signal from logind could not
-// be decoded. Only signals from logind's owner at the time of the call
-// count; a ResumeDevice from anyone else has its descriptor closed. A
+// be decoded. Only signals from whoever owns logind's name as they
+// arrive count, so the watch outlives a restart of logind; a
+// ResumeDevice from anyone else has its descriptor closed. A
 // DeviceResumed's descriptor is this watch's own: every watch of the
 // session, on this connection or another, is handed one of its own.
 // The watch holds match rules and a signal channel on the session's

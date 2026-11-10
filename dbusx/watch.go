@@ -44,16 +44,25 @@ type Sender struct {
 // org.freedesktop.DBus.
 func FromBus() Sender { return Sender{name: bus} }
 
-// FromOwner is the connection that owns the well-known name when the
-// watch starts: the watch asks the bus who that is, and a name nobody
-// owns fails it.
+// FromOwner is whichever connection owns the well-known name as each
+// signal arrives. The watch follows the name from one owner to the
+// next, so a service that restarts keeps being heard, and a name nobody
+// owns yet does not fail it: its signals are delivered from the moment
+// it gains an owner.
 func FromOwner(name string) Sender { return Sender{name: name, owned: true} }
 
-func (s Sender) resolve(ctx context.Context, conn *dbus.Conn) (string, error) {
+// current is the sender's unique name now, "" for a name nobody owns,
+// and the sequence of the bus's answer saying so: an owner change the
+// bus announced before it is already in the answer.
+func (s Sender) current(ctx context.Context, conn *dbus.Conn) (unique string, asOf dbus.Sequence, err error) {
 	if !s.owned {
-		return s.name, nil
+		return s.name, dbus.NoSequence, nil
 	}
-	return NameOwner(ctx, conn, s.name)
+	unique, asOf, err = nameOwner(ctx, conn, s.name)
+	if derr, ok := errors.AsType[dbus.Error](err); ok && derr.Name == errNameHasNoOwner {
+		return "", asOf, nil
+	}
+	return unique, asOf, err
 }
 
 // Route is one signal of a watch: which signal, from which object, and
@@ -68,16 +77,19 @@ type Route struct {
 	deliver func(*dbus.Signal) error
 }
 
-// On routes the signal s, sent from the object at path, to handle. An
-// error handle returns is reported as the watch reports a signal it
-// could not decode.
-func On[T any](s Signal[T], path dbus.ObjectPath, handle func(T) error) Route {
+// On routes the signal s, sent from the object at path, to handle,
+// which also gets the signal's sequence on its connection: every
+// message a connection reads has one, in the order it was read, so a
+// signal sequenced before a call's reply (dbus.Call.ResponseSequence)
+// was sent before the peer answered. An error handle returns is
+// reported as the watch reports a signal it could not decode.
+func On[T any](s Signal[T], path dbus.ObjectPath, handle func(T, dbus.Sequence) error) Route {
 	return Route{path: path, iface: s.iface, member: s.member, name: s.Name(), deliver: func(sig *dbus.Signal) error {
 		v, err := s.Decode(sig)
 		if err != nil {
 			return errors.Join(err, sig.CloseFDs())
 		}
-		return handle(v)
+		return handle(v, sig.Sequence)
 	}}
 }
 
@@ -129,8 +141,9 @@ func matches(sender string, routes []Route) [][]dbus.MatchOption {
 	return out
 }
 
-// Dispatch hands sig to the route it belongs to, decoded, when sender
-// sent it. It takes over the descriptors sig carries, which are the
+// Dispatch hands sig to the route it belongs to, decoded, when sender,
+// a unique name or the bus's, sent it; no signal is from the sender "".
+// It takes over the descriptors sig carries, which are the
 // caller's own (each signal channel of a connection is handed
 // duplicates of its own): a handler that gets the signal owns them,
 // and a signal no handler gets, because it is of no route, another
@@ -138,7 +151,7 @@ func matches(sender string, routes []Route) [][]dbus.MatchOption {
 // the handler's, or says why the signal was not decoded or a
 // descriptor not closed.
 func Dispatch(sig *dbus.Signal, sender string, routes []Route) error {
-	if sig.Sender != sender {
+	if sender == "" || sig.Sender != sender {
 		return sig.CloseFDs()
 	}
 	for i := range routes {
@@ -190,18 +203,25 @@ func WatchSignals(ctx context.Context, conn *dbus.Conn, from Sender, failed func
 	}
 	setup, cancelSetup := context.WithTimeout(ctx, watchTimeout)
 	defer cancelSetup()
-	sender, err := from.resolve(setup, conn)
-	if err != nil {
-		return nil, fmt.Errorf("watch %s: %w", from.name, err)
-	}
 	rules := matches(from.name, routes)
-	for i, rule := range rules {
-		if err := conn.AddMatchSignalContext(setup, rule...); err != nil {
-			return nil, errors.Join(fmt.Errorf("watch %s: %w", from.name, err), removeMatches(ctx, conn, rules[:i]))
-		}
+	if from.owned {
+		rules = append(rules, OwnerMatch(from.name))
 	}
 	signals := make(chan *dbus.Signal, signalBuffer)
 	conn.Signal(signals)
+	abandon := func(err error, added [][]dbus.MatchOption) error {
+		conn.RemoveSignal(signals)
+		return errors.Join(fmt.Errorf("watch %s: %w", from.name, err), closeUnread(signals), removeMatches(ctx, conn, added))
+	}
+	for i, rule := range rules {
+		if err := conn.AddMatchSignalContext(setup, rule...); err != nil {
+			return nil, abandon(err, rules[:i])
+		}
+	}
+	sender, asOf, err := from.current(setup, conn)
+	if err != nil {
+		return nil, abandon(err, rules)
+	}
 	watching, cancel := context.WithCancel(ctx)
 	w := &Watch{cancel: cancel, done: make(chan struct{})}
 	go func() {
@@ -220,6 +240,14 @@ func WatchSignals(ctx context.Context, conn *dbus.Conn, from Sender, failed func
 				if !ok {
 					w.err = fmt.Errorf("watch %s: %w", from.name, ErrDisconnected)
 					return
+				}
+				if from.owned {
+					if _, owner, changed := NameOwnerChange(sig, from.name); changed {
+						if sig.Sequence > asOf {
+							sender = owner
+						}
+						continue
+					}
 				}
 				if err := Dispatch(sig, sender, routes); err != nil {
 					failed(err)

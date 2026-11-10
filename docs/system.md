@@ -148,15 +148,19 @@ func main() {
 | Methods run one at a time in arrival order | `Interface.Ordered` |
 | Following a service that starts or restarts | `WatchOwner`, `NameOwner` |
 | One peer's signals, decoded | `WatchSignals` with an `On` route per signal, from `FromOwner(name)` or `FromBus()` |
-| The system bus, without hanging on a silent one | `DialSystem` with a timeout |
+| Ordering a signal against a call's reply | the `dbus.Sequence` every `On` handler and `WatchOwner`'s `appeared` get, against `dbus.Call.ResponseSequence` |
+| The system or session bus, without hanging on a silent one | `DialSystem`, `DialSession` with a timeout |
 
 A D-Bus method is an exported method whose last result is `*dbus.Error`;
 `Failed` and `InvalidArgs` build common errors. Introspection is generated on
 demand.
 
 `WatchSignals` runs each route's handler in arrival order on one goroutine and
-tells `failed` of a signal that does not decode. It takes signals only from the
-sender it resolved when it started; one from any other peer is dropped. A signal
+tells `failed` of a signal that does not decode. It takes signals only from its
+sender; one from any other peer is dropped. `FromOwner(name)` is whoever owns the
+well-known name as each signal arrives: the watch follows the name from owner to
+owner, so a service that restarts keeps being heard, and it starts while nobody
+owns the name yet, as before a bus-activated service's first call. A signal
 carrying descriptors reaches every watch of a connection with duplicates of its
 own, so several watches may route the same signal: the handler that gets it owns
 them, and the watch closes those of every signal no handler gets and of the
@@ -196,7 +200,7 @@ the object. `Dial`, which connects to the system bus, is bounded the same way.
 | Lock state | `Session.Lock`, `LockedHint`, `SetLockedHint`, `WaitLocked` |
 | Device access for a compositor | `Session.TakeControl`, `TakeDevice`, `PauseDeviceComplete`, `ReleaseDevice` |
 | Backlight through logind | `Session.SetBrightness` |
-| Sleep, lock, device and property signals | `Session.Watch`, which takes signals only from logind's owner; each watch owns the descriptor of a device it is told resumed |
+| Sleep, lock, device and property signals | `Session.Watch`, which takes signals only from logind's owner, across a restart of logind; each watch owns the descriptor of a device it is told resumed |
 
 `logind/logindtest` is a fake logind on a private bus that records every call.
 The methods that have it announce something (`SetLockedHint`, `Lock`,

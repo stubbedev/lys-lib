@@ -69,8 +69,8 @@ func writeEndClosed(t *testing.T, read int) bool {
 func TestDispatchRoutesByObjectSignalAndFirstArgument(t *testing.T) {
 	const sender = ":1.7"
 	var got []string
-	record := func(what string) func(counted) error {
-		return func(c counted) error {
+	record := func(what string) func(counted, dbus.Sequence) error {
+		return func(c counted, _ dbus.Sequence) error {
 			got = append(got, what+" "+string(rune('0'+c.N)))
 			return nil
 		}
@@ -79,7 +79,7 @@ func TestDispatchRoutesByObjectSignalAndFirstArgument(t *testing.T) {
 		dbusx.On(tickSignal, watchedPath, record("tick")),
 		dbusx.On(tockSignal, watchedPath, record("tock")),
 		dbusx.On(tickSignal, otherPath, record("other tick")),
-		dbusx.On(aboutSignal, watchedPath, func(a about) error {
+		dbusx.On(aboutSignal, watchedPath, func(a about, _ dbus.Sequence) error {
 			got = append(got, "about "+a.Subject)
 			return nil
 		}).WithArg0("mine"),
@@ -107,8 +107,8 @@ func TestDispatchReportsWhatARouteCannotHandOver(t *testing.T) {
 	const sender = ":1.7"
 	refusal := errors.New("refused")
 	routes := []dbusx.Route{
-		dbusx.On(tickSignal, watchedPath, func(counted) error { return refusal }),
-		dbusx.On(aboutSignal, watchedPath, func(about) error {
+		dbusx.On(tickSignal, watchedPath, func(counted, dbus.Sequence) error { return refusal }),
+		dbusx.On(aboutSignal, watchedPath, func(about, dbus.Sequence) error {
 			t.Error("a signal that does not decode reached its handler")
 			return nil
 		}).WithArg0("mine"),
@@ -133,11 +133,11 @@ func TestDispatchClosesTheDescriptorsOfASignalItsHandlerDoesNotGet(t *testing.T)
 	const sender = ":1.7"
 	var took []dbus.UnixFD
 	routes := []dbusx.Route{
-		dbusx.On(handSignal, watchedPath, func(h handed) error {
+		dbusx.On(handSignal, watchedPath, func(h handed, _ dbus.Sequence) error {
 			took = append(took, h.FD)
 			return nil
 		}),
-		dbusx.On(tickSignal, watchedPath, func(counted) error { return nil }),
+		dbusx.On(tickSignal, watchedPath, func(counted, dbus.Sequence) error { return nil }),
 	}
 	tests := []struct {
 		name       string
@@ -213,8 +213,8 @@ func TestWatchSignalsDeliversTheSendersSignalsInOrder(t *testing.T) {
 	w := startWatched(t)
 	got := make(chan string, 16)
 	failed := make(chan error, 16)
-	note := func(what string) func(counted) error {
-		return func(c counted) error {
+	note := func(what string) func(counted, dbus.Sequence) error {
+		return func(c counted, _ dbus.Sequence) error {
 			got <- what + " " + string(rune('0'+c.N))
 			return nil
 		}
@@ -271,23 +271,27 @@ func TestAWatchHoldsOneRulePerInterfaceOfAnObjectUntilItEnds(t *testing.T) {
 		t.Fatal(err)
 	}
 	before := dbustest.MatchRules(t, w.client)
-	ignore := func(counted) error { return nil }
+	ignore := func(counted, dbus.Sequence) error { return nil }
 	watch, err := dbusx.WatchSignals(t.Context(), w.client, dbusx.FromOwner(watchedName), func(error) {},
 		dbusx.On(tickSignal, watchedPath, ignore),
 		dbusx.On(tockSignal, watchedPath, ignore),
 		dbusx.On(tickSignal, otherPath, ignore),
-		dbusx.On(aboutSignal, watchedPath, func(about) error { return nil }).WithArg0("mine"),
+		dbusx.On(aboutSignal, watchedPath, func(about, dbus.Sequence) error { return nil }).WithArg0("mine"),
 	)
 	if err != nil {
 		t.Fatal(err)
 	}
 	during := dbustest.MatchRules(t, w.client)
-	if len(during) != len(before)+3 {
-		t.Fatalf("the watch holds %q, want three rules more than %q", during, before)
+	if len(during) != len(before)+4 {
+		t.Fatalf("the watch holds %q, want four rules more than %q: three for its signals and the one that follows its sender's owner", during, before)
 	}
-	var whole, single, narrowed int
+	var whole, single, narrowed, owner int
 	for _, rule := range during {
 		if slices.Contains(before, rule) {
+			continue
+		}
+		if strings.Contains(rule, "member='NameOwnerChanged'") && strings.Contains(rule, "sender='org.freedesktop.DBus'") && strings.Contains(rule, "arg0='"+watchedName+"'") {
+			owner++
 			continue
 		}
 		if !strings.Contains(rule, "sender='"+watchedName+"'") {
@@ -302,8 +306,8 @@ func TestAWatchHoldsOneRulePerInterfaceOfAnObjectUntilItEnds(t *testing.T) {
 			whole++
 		}
 	}
-	if whole != 1 || single != 1 || narrowed != 1 {
-		t.Errorf("rules %q: want one for the interface two signals share, one for the single signal, one narrowed by its first argument", during)
+	if whole != 1 || single != 1 || narrowed != 1 || owner != 1 {
+		t.Errorf("rules %q: want one for the interface two signals share, one for the single signal, one narrowed by its first argument, one for the sender's owner changing", during)
 	}
 	for range 2 {
 		if err := watch.Stop(); err != nil {
@@ -320,43 +324,174 @@ func TestAWatchHoldsOneRulePerInterfaceOfAnObjectUntilItEnds(t *testing.T) {
 	}
 }
 
-func TestWatchSignalsFromANameNobodyOwnsFails(t *testing.T) {
+func TestAWatchOfNoSignalFails(t *testing.T) {
 	bus := dbustest.Start(t)
 	client := bus.Conn(t)
 	before := dbustest.MatchRules(t, client)
-	watch, err := dbusx.WatchSignals(t.Context(), client, dbusx.FromOwner(watchedName), func(error) {},
-		dbusx.On(tickSignal, watchedPath, func(counted) error { return nil }))
-	if err == nil {
-		_ = watch.Stop()
-		t.Fatal("a watch of a sender that does not exist started")
-	}
-	if !strings.Contains(err.Error(), watchedName) {
-		t.Errorf("error %q does not name the sender", err)
-	}
-	if got := dbustest.MatchRules(t, client); !slices.Equal(got, before) {
-		t.Errorf("the failed watch left the rules %q, want %q", got, before)
-	}
 	if _, err := dbusx.WatchSignals(t.Context(), client, dbusx.FromBus(), func(error) {}); err == nil {
 		t.Error("a watch of no signal started")
+	}
+	if _, err := dbusx.WatchSignals(t.Context(), client, dbusx.FromOwner(watchedName), func(error) {}); err == nil || !strings.Contains(err.Error(), watchedName) {
+		t.Errorf("a watch of no signal of %s = %v, want an error naming the sender", watchedName, err)
+	}
+	if got := dbustest.MatchRules(t, client); !slices.Equal(got, before) {
+		t.Errorf("the failed watches left the rules %q, want %q", got, before)
+	}
+}
+
+func ownAs(t *testing.T, bus *dbustest.Bus, name string) *dbus.Conn {
+	t.Helper()
+	conn := bus.Conn(t)
+	if _, err := dbusx.Own(conn, name); err != nil {
+		t.Fatal(err)
+	}
+	return conn
+}
+
+func emitBehindTheBus(t *testing.T, conn *dbus.Conn, n uint32) {
+	t.Helper()
+	if err := tickSignal.Emit(conn, watchedPath, counted{N: n}); err != nil {
+		t.Fatal(err)
+	}
+	if err := conn.BusObject().CallWithContext(t.Context(), "org.freedesktop.DBus.GetId", 0).Err; err != nil {
+		t.Fatalf("a round trip that puts the signal ahead of what follows: %v", err)
+	}
+}
+
+func TestAWatchFollowsItsSendersNameFromNoOwnerToOwnerToOwner(t *testing.T) {
+	bus := dbustest.Start(t)
+	client := bus.Conn(t)
+	broad := []dbus.MatchOption{dbus.WithMatchInterface(watchedIface)}
+	if err := client.AddMatchSignal(broad...); err != nil {
+		t.Fatal(err)
+	}
+	got := make(chan uint32, 16)
+	watch, err := dbusx.WatchSignals(t.Context(), client, dbusx.FromOwner(watchedName), func(err error) { t.Errorf("the watch failed: %v", err) },
+		dbusx.On(tickSignal, watchedPath, func(c counted, _ dbus.Sequence) error {
+			got <- c.N
+			return nil
+		}))
+	if err != nil {
+		t.Fatalf("a watch of a name nobody owns yet: %v", err)
+	}
+	stranger := bus.Conn(t)
+	emitBehindTheBus(t, stranger, 90)
+
+	first := ownAs(t, bus, watchedName)
+	emitBehindTheBus(t, first, 1)
+	emitBehindTheBus(t, stranger, 91)
+	emitBehindTheBus(t, first, 2)
+	if _, err := first.ReleaseName(watchedName); err != nil {
+		t.Fatal(err)
+	}
+	emitBehindTheBus(t, first, 92)
+
+	second := ownAs(t, bus, watchedName)
+	emitBehindTheBus(t, first, 93)
+	emitBehindTheBus(t, second, 3)
+	if err := second.Close(); err != nil {
+		t.Fatal(err)
+	}
+	third := ownAs(t, bus, watchedName)
+	emitBehindTheBus(t, third, 4)
+
+	for _, want := range []uint32{1, 2, 3, 4} {
+		if n := awaitWatch(t, got, "Tick from the name's owner"); n != want {
+			t.Fatalf("handled Tick %d, want %d: only what the name's owner of the moment sent, across its owners", n, want)
+		}
+	}
+	if err := watch.Stop(); err != nil {
+		t.Fatal(err)
+	}
+	select {
+	case n := <-got:
+		t.Errorf("handled Tick %d too, from a peer that did not own the name", n)
+	default:
+	}
+}
+
+func TestAWatchStartedOnAnOwnedNameFollowsItToTheNextOwner(t *testing.T) {
+	w := startWatched(t)
+	got := make(chan uint32, 4)
+	watch, err := dbusx.WatchSignals(t.Context(), w.client, dbusx.FromOwner(watchedName), func(err error) { t.Errorf("the watch failed: %v", err) },
+		dbusx.On(tickSignal, watchedPath, func(c counted, _ dbus.Sequence) error {
+			got <- c.N
+			return nil
+		}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = watch.Stop() })
+	emitBehindTheBus(t, w.service, 1)
+	if err := w.service.Close(); err != nil {
+		t.Fatal(err)
+	}
+	restarted := ownAs(t, w.bus, watchedName)
+	emitBehindTheBus(t, restarted, 2)
+	for _, want := range []uint32{1, 2} {
+		if n := awaitWatch(t, got, "Tick from the name's owner"); n != want {
+			t.Fatalf("handled Tick %d, want %d", n, want)
+		}
+	}
+}
+
+func TestHandlersGetTheSequenceThatOrdersASignalAgainstAReply(t *testing.T) {
+	w := startWatched(t)
+	ticks, owners := make(chan dbus.Sequence, 4), make(chan dbus.Sequence, 4)
+	watch, err := dbusx.WatchSignals(t.Context(), w.client, dbusx.FromOwner(watchedName), func(err error) { t.Errorf("the watch failed: %v", err) },
+		dbusx.On(tickSignal, watchedPath, func(_ counted, seq dbus.Sequence) error {
+			ticks <- seq
+			return nil
+		}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = watch.Stop() })
+	stop, err := dbusx.WatchOwner(t.Context(), w.client, watchedName, func(seq dbus.Sequence) { owners <- seq })
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = stop() })
+	reply := func() dbus.Sequence {
+		t.Helper()
+		call := w.client.BusObject().CallWithContext(t.Context(), "org.freedesktop.DBus.GetId", 0)
+		if call.Err != nil {
+			t.Fatal(call.Err)
+		}
+		return call.ResponseSequence
+	}
+
+	emitBehindTheBus(t, w.service, 1)
+	before := awaitWatch(t, ticks, "Tick sent before the call")
+	answered := reply()
+	if err := w.service.Close(); err != nil {
+		t.Fatal(err)
+	}
+	restarted := ownAs(t, w.bus, watchedName)
+	emitBehindTheBus(t, restarted, 2)
+	appeared := awaitWatch(t, owners, "announcement of the restarted owner")
+	after := awaitWatch(t, ticks, "Tick sent after the call")
+	if before >= answered || answered >= appeared || appeared >= after {
+		t.Errorf("sequences: Tick %d, the reply %d, the new owner %d, its Tick %d; want them in that order", before, answered, appeared, after)
 	}
 }
 
 func TestAWatchEndsWithItsContextOrItsConnection(t *testing.T) {
 	w := startWatched(t)
-	ignore := dbusx.On(tickSignal, watchedPath, func(counted) error { return nil })
+	ignore := dbusx.On(tickSignal, watchedPath, func(counted, dbus.Sequence) error { return nil })
+	before := dbustest.MatchRules(t, w.client)
 	ctx, cancel := context.WithCancel(t.Context())
 	ended, err := dbusx.WatchSignals(ctx, w.client, dbusx.FromOwner(watchedName), func(error) {}, ignore)
 	if err != nil {
 		t.Fatal(err)
 	}
-	before := dbustest.MatchRules(t, w.client)
 	cancel()
 	awaitWatch(t, ended.Done(), "end of the watch whose context ended")
 	if err := ended.Stop(); err != nil {
 		t.Errorf("Stop after the context ended = %v", err)
 	}
-	if got := dbustest.MatchRules(t, w.client); len(got) != len(before)-1 {
-		t.Errorf("the ended watch left the rules %q of %q", got, before)
+	if got := dbustest.MatchRules(t, w.client); !slices.Equal(got, before) {
+		t.Errorf("the ended watch left the rules %q, want %q", got, before)
 	}
 
 	cut, err := dbusx.WatchSignals(t.Context(), w.client, dbusx.FromOwner(watchedName), func(error) {}, ignore)
@@ -395,9 +530,9 @@ func TestNameOwnerChangeOfAnotherSignalAllocatesNothing(t *testing.T) {
 func TestDispatchOfASignalItDoesNotDeliverAllocatesNothing(t *testing.T) {
 	const sender = ":1.7"
 	routes := []dbusx.Route{
-		dbusx.On(tickSignal, watchedPath, func(counted) error { return nil }),
-		dbusx.On(tockSignal, watchedPath, func(counted) error { return nil }),
-		dbusx.On(aboutSignal, watchedPath, func(about) error { return nil }).WithArg0("mine"),
+		dbusx.On(tickSignal, watchedPath, func(counted, dbus.Sequence) error { return nil }),
+		dbusx.On(tockSignal, watchedPath, func(counted, dbus.Sequence) error { return nil }),
+		dbusx.On(aboutSignal, watchedPath, func(about, dbus.Sequence) error { return nil }).WithArg0("mine"),
 	}
 	others := []*dbus.Signal{
 		{Sender: sender, Path: otherPath, Name: tickSignal.Name(), Body: []any{uint32(1)}},
