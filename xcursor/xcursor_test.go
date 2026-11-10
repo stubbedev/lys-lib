@@ -194,6 +194,18 @@ func TestSearchPath(t *testing.T) {
 	if got := SearchPath(env(map[string]string{"HOME": "/h", "XDG_DATA_DIRS": "/d"})); !slices.Equal(got, want) {
 		t.Fatalf("defaults give %v, want %v", got, want)
 	}
+	want = []string{"/x/icons", "/h/.icons", "/d/icons", "/e/icons", "/usr/share/pixmaps"}
+	if got := SearchPath(env(map[string]string{"HOME": "/h", "XDG_DATA_HOME": "/x", "XDG_DATA_DIRS": "/d:relative::/e"})); !slices.Equal(got, want) {
+		t.Fatalf("a relative data dir gives %v, want %v", got, want)
+	}
+	want = []string{"/h/.local/share/icons", "/h/.icons", "/usr/local/share/icons", "/usr/share/icons", "/usr/share/pixmaps"}
+	if got := SearchPath(env(map[string]string{"HOME": "/h", "XDG_DATA_HOME": "relative"})); !slices.Equal(got, want) {
+		t.Fatalf("a relative data home gives %v, want %v", got, want)
+	}
+	want = []string{"/x/icons", "/d/icons", "/usr/share/pixmaps"}
+	if got := SearchPath(env(map[string]string{"XDG_DATA_HOME": "/x", "XDG_DATA_DIRS": "/d"})); !slices.Equal(got, want) {
+		t.Fatalf("no home gives %v, want %v", got, want)
+	}
 }
 
 func TestBuiltinArrowHasItsTipAtTheHotspot(t *testing.T) {

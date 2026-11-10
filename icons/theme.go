@@ -12,11 +12,12 @@
 package icons
 
 import (
-	"os"
 	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
+
+	"github.com/stubbedev/lys-lib/xdg"
 )
 
 // DirType is an icon directory's size-matching rule from index.theme.
@@ -238,26 +239,22 @@ const maxInheritDepth = 16
 // the legacy ~/.icons, $XDG_DATA_HOME/icons (default ~/.local/share/
 // icons), each $XDG_DATA_DIRS entry's icons subdirectory (default
 // /usr/local/share:/usr/share), and the /usr/share/pixmaps fallback.
-// Empty environment entries and duplicates are dropped.
-func defaultSearchPaths() []string {
-	home, _ := os.UserHomeDir()
-	var dirs []string
+// Relative environment entries and duplicates are dropped.
+func defaultSearchPaths(env xdg.Env) []string {
+	system := env.DataDirs()
+	dirs := make([]string, 0, len(system)+3)
 	add := func(dir string) {
-		if dir != "" && !slices.Contains(dirs, dir) {
+		if !slices.Contains(dirs, dir) {
 			dirs = append(dirs, dir)
 		}
 	}
-	add(filepath.Join(home, ".icons"))
-	dataHome := os.Getenv("XDG_DATA_HOME")
-	if dataHome == "" {
-		dataHome = filepath.Join(home, ".local", "share")
+	if home, ok := env.Home(); ok {
+		add(filepath.Join(home, ".icons"))
 	}
-	add(filepath.Join(dataHome, "icons"))
-	dataDirs := os.Getenv("XDG_DATA_DIRS")
-	if dataDirs == "" {
-		dataDirs = "/usr/local/share:/usr/share"
+	if data, ok := env.DataHome(); ok {
+		add(filepath.Join(data, "icons"))
 	}
-	for _, dir := range filepath.SplitList(dataDirs) {
+	for _, dir := range system {
 		add(filepath.Join(dir, "icons"))
 	}
 	add("/usr/share/pixmaps")

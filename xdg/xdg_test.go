@@ -100,6 +100,86 @@ func TestConfigDirs(t *testing.T) {
 	}
 }
 
+func TestDataDirs(t *testing.T) {
+	for _, c := range []struct {
+		dirs string
+		want []string
+	}{
+		{"/a:/b", []string{"/a", "/b"}},
+		{"/a:relative::/b:/a", []string{"/a", "/b", "/a"}},
+		{"relative", []string{"/usr/local/share", "/usr/share"}},
+		{"", []string{"/usr/local/share", "/usr/share"}},
+	} {
+		if got := env(map[string]string{"XDG_DATA_DIRS": c.dirs}).DataDirs(); !slices.Equal(got, c.want) {
+			t.Errorf("XDG_DATA_DIRS=%q: DataDirs = %q, want %q", c.dirs, got, c.want)
+		}
+	}
+}
+
+func TestSearchPaths(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		path     func(Env) []string
+		home     string
+		dirs     string
+		fallback []string
+	}{
+		{"data", Env.DataSearchPath, "XDG_DATA_HOME", "XDG_DATA_DIRS", []string{"/home/u/.local/share", "/usr/local/share", "/usr/share"}},
+		{"config", Env.ConfigSearchPath, "XDG_CONFIG_HOME", "XDG_CONFIG_DIRS", []string{"/home/u/.config", "/etc/xdg"}},
+	} {
+		for _, c := range []struct {
+			vars map[string]string
+			want []string
+		}{
+			{map[string]string{tc.home: "/x", tc.dirs: "/a:/b", "HOME": "/home/u"}, []string{"/x", "/a", "/b"}},
+			{map[string]string{tc.home: "/x", tc.dirs: "/a:relative::/x:/a"}, []string{"/x", "/a", "/x", "/a"}},
+			{map[string]string{tc.home: "relative", tc.dirs: "relative", "HOME": "/home/u"}, tc.fallback},
+			{map[string]string{"HOME": "/home/u"}, tc.fallback},
+			{map[string]string{tc.dirs: "/a"}, []string{"/a"}},
+			{map[string]string{"HOME": "home/u"}, tc.fallback[1:]},
+		} {
+			if got := tc.path(env(c.vars)); !slices.Equal(got, c.want) {
+				t.Errorf("%s search path of %v = %q, want %q", tc.name, c.vars, got, c.want)
+			}
+		}
+	}
+}
+
+func TestDirListsAreTheCallersToChange(t *testing.T) {
+	e := env(nil)
+	for name, list := range map[string]func() []string{
+		"DataDirs": e.DataDirs, "ConfigDirs": e.ConfigDirs, "DataSearchPath": e.DataSearchPath, "ConfigSearchPath": e.ConfigSearchPath,
+	} {
+		want := slices.Clone(list())
+		got := list()
+		for i := range got {
+			got[i] = "/changed"
+		}
+		if again := list(); !slices.Equal(again, want) {
+			t.Errorf("%s after a caller changed its result = %q, want %q", name, again, want)
+		}
+	}
+}
+
+func TestSearchPathAllocatesItsListOnce(t *testing.T) {
+	vars := map[string]string{"XDG_DATA_HOME": "/x", "XDG_DATA_DIRS": "/a:/b:/c:/d"}
+	e := Env(func(name string) string { return vars[name] })
+	if allocs := testing.AllocsPerRun(100, func() { _ = e.DataSearchPath() }); allocs != 1 {
+		t.Errorf("DataSearchPath made %v allocations, want 1", allocs)
+	}
+}
+
+func TestHome(t *testing.T) {
+	if got, ok := env(map[string]string{"HOME": "/home/u"}).Home(); !ok || got != "/home/u" {
+		t.Errorf("Home = %q, %v", got, ok)
+	}
+	for _, home := range []string{"", "home/u"} {
+		if got, ok := env(map[string]string{"HOME": home}).Home(); ok {
+			t.Errorf("Home with HOME=%q = %q", home, got)
+		}
+	}
+}
+
 func TestRuntimeDir(t *testing.T) {
 	for _, c := range []struct {
 		vars     map[string]string

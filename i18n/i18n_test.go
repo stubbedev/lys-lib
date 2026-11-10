@@ -2,6 +2,7 @@ package i18n
 
 import (
 	"os"
+	"path/filepath"
 	"slices"
 	"testing"
 	"testing/fstest"
@@ -118,5 +119,41 @@ func TestLoadPicksTheFirstLocaleWithACatalog(t *testing.T) {
 	}
 	if _, err := Load(fsys, "app", []string{"xx"}); err == nil {
 		t.Error("a corrupt catalog loaded")
+	}
+}
+
+func TestLoadSystemSearchesTheDataHomeBeforeTheSystemDataDirs(t *testing.T) {
+	user, err := os.ReadFile("testdata/pl.po")
+	if err != nil {
+		t.Fatal(err)
+	}
+	write := func(dataDir string, po []byte) {
+		t.Helper()
+		dir := filepath.Join(dataDir, "locale", "pl", "LC_MESSAGES")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "app.po"), po, 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+	home, empty, system := t.TempDir(), t.TempDir(), t.TempDir()
+	write(home, user)
+	write(system, []byte("msgid \"Open\"\nmsgstr \"System\"\n"))
+	t.Setenv("XDG_DATA_DIRS", "relative:"+empty+":"+system)
+	for _, c := range []struct{ dataHome, want string }{
+		{home, "Otwórz"},
+		{empty, "System"},
+		{"relative", "System"},
+	} {
+		t.Setenv("XDG_DATA_HOME", c.dataHome)
+		t.Setenv("HOME", empty)
+		cat, err := LoadSystem("app", []string{"pl"})
+		if err != nil {
+			t.Fatalf("XDG_DATA_HOME=%s: %v", c.dataHome, err)
+		}
+		if got := cat.Get("Open"); got != c.want {
+			t.Errorf("XDG_DATA_HOME=%s: Get(Open) = %q, want %q", c.dataHome, got, c.want)
+		}
 	}
 }

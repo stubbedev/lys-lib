@@ -18,6 +18,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/stubbedev/lys-lib/xdg"
 )
 
 const contextSeparator = "\x04"
@@ -322,10 +324,10 @@ func Load(fsys fs.FS, domain string, locales []string) (*Catalog, error) {
 }
 
 // LoadSystem is Load over the system's locale directories: each
-// XDG data dir's locale directory (XDG_DATA_HOME, then XDG_DATA_DIRS,
-// defaulting to /usr/local/share and /usr/share), first match wins.
+// directory of [xdg.Env.DataSearchPath]'s locale directory, first match
+// wins.
 func LoadSystem(domain string, locales []string) (*Catalog, error) {
-	for _, dir := range dataDirs() {
+	for _, dir := range xdg.OS.DataSearchPath() {
 		root := filepath.Join(dir, "locale")
 		c, err := Load(os.DirFS(root), domain, locales)
 		if err != nil {
@@ -336,18 +338,4 @@ func LoadSystem(domain string, locales []string) (*Catalog, error) {
 		}
 	}
 	return &Catalog{}, nil
-}
-
-func dataDirs() []string {
-	var dirs []string
-	if home := os.Getenv("XDG_DATA_HOME"); home != "" {
-		dirs = append(dirs, home)
-	} else if h, err := os.UserHomeDir(); err == nil {
-		dirs = append(dirs, filepath.Join(h, ".local", "share"))
-	}
-	system := os.Getenv("XDG_DATA_DIRS")
-	if system == "" {
-		system = "/usr/local/share:/usr/share"
-	}
-	return append(dirs, filepath.SplitList(system)...)
 }

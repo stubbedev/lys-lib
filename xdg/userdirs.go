@@ -56,8 +56,8 @@ func (e Env) userDirValue(value string) (string, error) {
 	}
 	dir := value[1 : len(value)-1]
 	if dir == "$HOME" || strings.HasPrefix(dir, "$HOME/") {
-		home := e.abs("HOME")
-		if home == "" {
+		home, ok := e.Home()
+		if !ok {
 			return "", fmt.Errorf("value %s is under $HOME, which is not an absolute path", value)
 		}
 		dir = home + strings.TrimPrefix(dir, "$HOME")

@@ -7,6 +7,7 @@ import (
 	"sync/atomic"
 
 	"github.com/stubbedev/lys-lib/render"
+	"github.com/stubbedev/lys-lib/xdg"
 )
 
 // maxEntries caps the raster cache; the least recently used entry
@@ -200,7 +201,7 @@ func (c *Cache) searchPathsLocked() []string {
 	if c.paths != nil {
 		return c.paths
 	}
-	return defaultSearchPaths()
+	return defaultSearchPaths(xdg.OS)
 }
 
 // Icon returns the icon called name at logical size in its natural

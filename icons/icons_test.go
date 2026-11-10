@@ -14,6 +14,7 @@ import (
 	"testing"
 
 	"github.com/stubbedev/lys-lib/render"
+	"github.com/stubbedev/lys-lib/xdg"
 )
 
 // The fixture tree, laid out per the icon theme spec. Every flag glyph
@@ -713,9 +714,34 @@ func TestCacheResetListeners(t *testing.T) {
 	}
 }
 
+func TestDefaultSearchPaths(t *testing.T) {
+	for _, c := range []struct {
+		vars map[string]string
+		want []string
+	}{
+		{
+			map[string]string{"HOME": "/h"},
+			[]string{"/h/.icons", "/h/.local/share/icons", "/usr/local/share/icons", "/usr/share/icons", "/usr/share/pixmaps"},
+		},
+		{
+			map[string]string{"HOME": "/h", "XDG_DATA_HOME": "/x", "XDG_DATA_DIRS": "/d:relative::/x:/d:/e"},
+			[]string{"/h/.icons", "/x/icons", "/d/icons", "/e/icons", "/usr/share/pixmaps"},
+		},
+		{
+			map[string]string{"HOME": "h", "XDG_DATA_HOME": "x", "XDG_DATA_DIRS": "/usr/share"},
+			[]string{"/usr/share/icons", "/usr/share/pixmaps"},
+		},
+	} {
+		env := xdg.Env(func(name string) string { return c.vars[name] })
+		if got := defaultSearchPaths(env); !slices.Equal(got, c.want) {
+			t.Errorf("%v: default search paths = %q, want %q", c.vars, got, c.want)
+		}
+	}
+}
+
 func TestCacheSearchPaths(t *testing.T) {
 	c := New("hicolor")
-	if got, want := c.SearchPaths(), defaultSearchPaths(); !slices.Equal(got, want) {
+	if got, want := c.SearchPaths(), defaultSearchPaths(xdg.OS); !slices.Equal(got, want) {
 		t.Errorf("unset paths = %v, want the XDG default %v", got, want)
 	}
 
@@ -743,7 +769,7 @@ func TestCacheSearchPaths(t *testing.T) {
 	if resets != 2 {
 		t.Errorf("nil after empty paths: %d resets, want 2 (nil is the default, not empty)", resets)
 	}
-	if got, want := c.SearchPaths(), defaultSearchPaths(); !slices.Equal(got, want) {
+	if got, want := c.SearchPaths(), defaultSearchPaths(xdg.OS); !slices.Equal(got, want) {
 		t.Errorf("nil paths = %v, want the XDG default %v", got, want)
 	}
 }

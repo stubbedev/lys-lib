@@ -16,6 +16,8 @@ import (
 	"strings"
 
 	"golang.org/x/sys/unix"
+
+	"github.com/stubbedev/lys-lib/xdg"
 )
 
 const (
@@ -274,24 +276,21 @@ func readRun(r io.ReaderAt, size int64, first uint32, positions []uint32, side i
 }
 
 // SearchPath lists the directories a theme is looked for in: XCURSOR_PATH,
-// else the XDG data directories' icons, ~/.icons and /usr/share/pixmaps.
-func SearchPath(getenv func(string) string) []string {
-	if p := getenv("XCURSOR_PATH"); p != "" {
+// else the XDG data home's icons, ~/.icons, each XDG system data
+// directory's icons and /usr/share/pixmaps.
+func SearchPath(env xdg.Env) []string {
+	if p := env("XCURSOR_PATH"); p != "" {
 		return filepath.SplitList(p)
 	}
-	var dirs []string
-	if home := getenv("HOME"); home != "" {
-		data := getenv("XDG_DATA_HOME")
-		if data == "" {
-			data = filepath.Join(home, ".local", "share")
-		}
-		dirs = append(dirs, filepath.Join(data, "icons"), filepath.Join(home, ".icons"))
+	system := env.DataDirs()
+	dirs := make([]string, 0, len(system)+3)
+	if data, ok := env.DataHome(); ok {
+		dirs = append(dirs, filepath.Join(data, "icons"))
 	}
-	xdg := getenv("XDG_DATA_DIRS")
-	if xdg == "" {
-		xdg = "/usr/local/share:/usr/share"
+	if home, ok := env.Home(); ok {
+		dirs = append(dirs, filepath.Join(home, ".icons"))
 	}
-	for _, d := range filepath.SplitList(xdg) {
+	for _, d := range system {
 		dirs = append(dirs, filepath.Join(d, "icons"))
 	}
 	return append(dirs, "/usr/share/pixmaps")

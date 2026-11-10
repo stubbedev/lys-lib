@@ -13,6 +13,7 @@ import (
 	"testing"
 
 	"github.com/stubbedev/lys-lib/testbuild"
+	"github.com/stubbedev/lys-lib/xdg"
 )
 
 var (
@@ -185,7 +186,7 @@ func TestIndexedLookupMatchesWalkOnInstalledThemes(t *testing.T) {
 	if testbuild.Race {
 		t.Skip("the reference walk over every installed icon takes minutes under -race; the fixtures cover the race build")
 	}
-	paths := defaultSearchPaths()
+	paths := defaultSearchPaths(xdg.OS)
 	if len(themeChain(osFS{}, DefaultTheme, paths)) == 0 {
 		t.Skipf("no icon theme installed under %v", paths)
 	}

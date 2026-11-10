@@ -325,7 +325,7 @@ real `localedef` output for tests.
 | `intconv` | Integer conversion without silent wraparound: `Exact` errors, `Must` panics, `Clamp` saturates, `Duration` scales a count. `Uint32Bits`, `Uint64Bits`, `Int32Bits`, `Int64Bits` reinterpret two's-complement bits |
 | `atomicfile` | `Write`, `WriteFile`, `WriteSeekable` replace a file whole and durably: synced temporary, rename, directory sync |
 | `assetfile` | `Open` opens an asset without blocking and rejects anything but a regular file within a size limit |
-| `xdg` | `Env` resolves base directories (`ConfigHome`, `StateDir`, …), an app's directory under each, and `user-dirs.dirs` via `UserDir`. `xdg.OS` reads the process environment |
+| `xdg` | `Env` resolves base directories (`ConfigHome`, `StateDir`, …), an app's directory under each, the system directories (`DataDirs`, `ConfigDirs`), the search paths files are looked up along (`DataSearchPath`, `ConfigSearchPath`: the home directory, then the system ones, relative entries ignored), and `user-dirs.dirs` via `UserDir`. `xdg.OS` reads the process environment |
 | `peercred` | Who is at a Unix socket's other end: `Of` reads its `Credentials` (uid, gid, pid, from `SO_PEERCRED`), `PIDFDOf` opens a `PIDFD` of that process (`SO_PEERPIDFD`), which keeps naming it after its pid is reused and tells whether it has `Exited`. A kernel before Linux 6.5 has none: `ErrNoPIDFD` |
 | `debug` | `Log` traces only in builds with the `lysdebug` tag; otherwise it compiles out with its arguments. `LYS_DEBUG` selects categories: unset, empty or `*` for all, a comma-separated list for those, `-name` to exclude one |
 | `logutil` | The injectable `*slog.Logger` the libraries emit through; a discarding sink until `Set` |
