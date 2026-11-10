@@ -14,7 +14,6 @@ const (
 	fineOffset   = 21
 	qthetaOffset = 4
 	qthetaTwo    = 16
-	maxPulses    = 128
 	logMaxPseudo = 6
 	allocSteps   = 6
 )

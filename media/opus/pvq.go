@@ -22,7 +22,6 @@ type pvq struct {
 	y    [FrameSize]float32
 	iy   [FrameSize]int
 	sign [FrameSize]bool
-	u    [maxPulses + 2]uint32
 }
 
 // rotate is exp_rotation in the forward direction: it spreads the
@@ -165,102 +164,120 @@ func (p *pvq) quant(rc *rangeEncoder, x []float32, k, spread, blocks int) {
 			iy[j] = -iy[j]
 		}
 	}
-	p.encodePulses(rc, iy, k)
+	rc.uint(pvqIndex(iy), pvqSize(n, k))
 }
 
-// encodePulses codes the pulse vector iy (k pulses) by its index in the
-// PVQ codebook (icwrs over the U(N,K) recurrence).
-func (p *pvq) encodePulses(rc *rangeEncoder, iy []int, k int) {
-	n := len(iy)
-	u := p.u[:k+2]
-	u[0] = 0
-	for j := 1; j < len(u); j++ {
-		u[j] = uint32(2*j - 1)
+const (
+	pvqRows   = 15
+	pvqMaxDim = 22 << frameLM
+)
+
+var pvqU = newPVQTable()
+
+func newPVQTable() *[pvqRows][pvqMaxDim + 1]uint32 {
+	var u [pvqRows][pvqMaxDim + 1]uint32
+	u[0][0] = 1
+	for n := 1; n < pvqRows; n++ {
+		for k := 1; k <= pvqMaxDim; k++ {
+			u[n][k] = u[n-1][k] + u[n][k-1] + u[n-1][k-1]
+		}
 	}
+	return &u
+}
+
+func pvqCount(n, k int) uint32 { return pvqU[min(n, k)][max(n, k)] }
+
+func pvqSize(n, k int) uint32 { return pvqCount(n, k) + pvqCount(n, k+1) }
+
+// pvqIndex is icwrs: the index of the pulse vector iy, of at least two
+// dimensions, in its codebook.
+func pvqIndex(iy []int) uint32 {
+	n := len(iy)
+	j := n - 1
 	var idx uint32
-	if iy[n-1] < 0 {
+	if iy[j] < 0 {
 		idx = 1
 	}
-	kk := abs(iy[n-1])
-	j := n - 2
-	idx += u[kk]
-	kk += abs(iy[j])
-	if iy[j] < 0 {
-		idx += u[kk+1]
-	}
+	k := abs(iy[j])
 	for j > 0 {
 		j--
-		unext(u, 0)
-		idx += u[kk]
-		kk += abs(iy[j])
+		idx += pvqCount(n-j, k)
+		k += abs(iy[j])
 		if iy[j] < 0 {
-			idx += u[kk+1]
+			idx += pvqCount(n-j, k+1)
 		}
 	}
-	rc.uint(idx, u[kk]+u[kk+1])
+	return idx
 }
 
-// unext advances u from row n to row n+1 of the U(N,K) table, with u0
-// the new row's first entry.
-func unext(u []uint32, u0 uint32) {
-	j := 1
-	for ; j < len(u); j++ {
-		u1 := u[j] + u[j-1] + u0
-		u[j-1] = u0
-		u0 = u1
+func signed(v int, negative bool) int {
+	if negative {
+		return -v
 	}
-	u[j-1] = u0
+	return v
 }
 
-// decodePulses is decode_pulses: it reads a k-pulse vector into iy by
-// its codebook index (cwrsi over the U(N,K) recurrence) and returns its
-// squared norm.
-func (p *pvq) decodePulses(rc *rangeDecoder, iy []int, k int) float32 {
-	n := len(iy)
-	u := p.u[:k+2]
-	u[0], u[1] = 0, 1
-	for j := 2; j < len(u); j++ {
-		u[j] = uint32(2*j - 1)
-	}
-	for range n - 2 {
-		unext(u[1:], 1)
-	}
-	idx := rc.uint(u[k] + u[k+1])
+// pvqVector is cwrsi: it writes the k-pulse vector of index idx into
+// iy, of at least two dimensions, and returns its squared norm.
+func pvqVector(iy []int, k int, idx uint32) float32 {
 	var yy float32
-	for j := range n {
-		pk := u[k+1]
-		neg := idx >= pk
-		if neg {
-			idx -= pk
+	n := len(iy)
+	for ; n > 2; n-- {
+		var v int
+		switch {
+		case k >= n:
+			row := &pvqU[n]
+			p := row[k+1]
+			negative := idx >= p
+			if negative {
+				idx -= p
+			}
+			k0 := k
+			if row[n] > idx {
+				for k, p = n-1, pvqU[n-1][n]; p > idx; p = pvqU[k][n] {
+					k--
+				}
+			} else {
+				for p = row[k]; p > idx; p = row[k] {
+					k--
+				}
+			}
+			idx -= p
+			v = signed(k0-k, negative)
+		default:
+			p, q := pvqU[k][n], pvqU[k+1][n]
+			if p <= idx && idx < q {
+				idx -= p
+				break
+			}
+			negative := idx >= q
+			if negative {
+				idx -= q
+			}
+			k0 := k
+			for k, p = k-1, pvqU[k-1][n]; p > idx; p = pvqU[k][n] {
+				k--
+			}
+			idx -= p
+			v = signed(k0-k, negative)
 		}
-		yj := k
-		pk = u[k]
-		for pk > idx {
-			k--
-			pk = u[k]
-		}
-		idx -= pk
-		yj -= k
-		if neg {
-			yj = -yj
-		}
-		iy[j] = yj
-		yy += float32(yj * yj)
-		uprev(u[:k+2], 0)
+		iy[len(iy)-n] = v
+		yy += float32(v * v)
 	}
-	return yy
-}
-
-// uprev steps u from row n back to row n-1 of the U(N,K) table, with
-// u0 the new row's first entry.
-func uprev(u []uint32, u0 uint32) {
-	j := 1
-	for ; j < len(u); j++ {
-		u1 := u[j] - u[j-1] - u0
-		u[j-1] = u0
-		u0 = u1
+	p := pvqCount(2, k+1)
+	negative := idx >= p
+	if negative {
+		idx -= p
 	}
-	u[j-1] = u0
+	k0 := k
+	k = int((idx + 1) >> 1)
+	idx -= pvqCount(2, k)
+	v := signed(k0-k, negative)
+	iy[len(iy)-2] = v
+	yy += float32(v * v)
+	v = signed(k, idx != 0)
+	iy[len(iy)-1] = v
+	return yy + float32(v*v)
 }
 
 // unquant is alg_unquant: it decodes a k-pulse shape into x scaled to
@@ -269,7 +286,7 @@ func uprev(u []uint32, u0 uint32) {
 func (p *pvq) unquant(rc *rangeDecoder, x []float32, k, spread, blocks int, gain float32) uint {
 	n := len(x)
 	iy := p.iy[:n]
-	ryy := p.decodePulses(rc, iy, k)
+	ryy := pvqVector(iy, k, rc.uint(pvqSize(n, k)))
 	g := gain / float32(math.Sqrt(float64(ryy)))
 	for i, v := range iy {
 		x[i] = g * float32(v)
