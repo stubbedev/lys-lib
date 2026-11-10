@@ -66,29 +66,39 @@ func imageBarrier(img vk.Image, rng vk.ImageSubresourceRange, from, to vk.ImageL
 }
 
 // barrier2 records a memory barrier (nil for none) and image barriers.
+// What a Vulkan command points at escapes to the heap, so it copies
+// them into the device's arguments: the caller's stay on its stack, and
+// a barrier allocates nothing.
 func barrier2(d *Device, cb vk.CommandBuffer, mem *vk.MemoryBarrier2, images ...vk.ImageMemoryBarrier2) {
-	di := vk.DependencyInfo{SType: vk.StructureTypeDependencyInfo}
+	a := &d.args
+	a.dependency = vk.DependencyInfo{SType: vk.StructureTypeDependencyInfo}
 	if mem != nil {
-		di.MemoryBarrierCount, di.PMemoryBarriers = 1, mem
+		a.memory2 = *mem
+		a.dependency.MemoryBarrierCount, a.dependency.PMemoryBarriers = 1, &a.memory2
 	}
 	if len(images) > 0 {
-		di.ImageMemoryBarrierCount, di.PImageMemoryBarriers = count(images), &images[0]
+		a.images2 = append(a.images2[:0], images...)
+		a.dependency.ImageMemoryBarrierCount, a.dependency.PImageMemoryBarriers = count(a.images2), &a.images2[0]
 	}
-	d.cmds.CmdPipelineBarrier2(cb, &di)
+	d.cmds.CmdPipelineBarrier2(cb, &a.dependency)
 }
 
 // submit2 submits cb to queue after wait and before signal (each nil
-// for none), signalling done when it finishes.
+// for none), signalling done when it finishes. Like
+// barrier2 it copies what it is handed into the device's arguments.
 func submit2(d *Device, queue vk.Queue, cb vk.CommandBuffer, wait, signal *vk.SemaphoreSubmitInfo, done vk.Fence) error {
-	cbi := vk.CommandBufferSubmitInfo{SType: vk.StructureTypeCommandBufferSubmitInfo, CommandBuffer: cb}
-	si := vk.SubmitInfo2{SType: vk.StructureTypeSubmitInfo2, CommandBufferInfoCount: 1, PCommandBufferInfos: &cbi}
+	a := &d.args
+	a.buffer2 = vk.CommandBufferSubmitInfo{SType: vk.StructureTypeCommandBufferSubmitInfo, CommandBuffer: cb}
+	a.submit2 = vk.SubmitInfo2{SType: vk.StructureTypeSubmitInfo2, CommandBufferInfoCount: 1, PCommandBufferInfos: &a.buffer2}
 	if wait != nil {
-		si.WaitSemaphoreInfoCount, si.PWaitSemaphoreInfos = 1, wait
+		a.wait2 = *wait
+		a.submit2.WaitSemaphoreInfoCount, a.submit2.PWaitSemaphoreInfos = 1, &a.wait2
 	}
 	if signal != nil {
-		si.SignalSemaphoreInfoCount, si.PSignalSemaphoreInfos = 1, signal
+		a.signal2 = *signal
+		a.submit2.SignalSemaphoreInfoCount, a.submit2.PSignalSemaphoreInfos = 1, &a.signal2
 	}
-	if r := d.cmds.QueueSubmit2(queue, 1, &si, done); r != vk.Success {
+	if r := d.cmds.QueueSubmit2(queue, 1, &a.submit2, done); r != vk.Success {
 		return fmt.Errorf("gpu: vkQueueSubmit2: %w", resultError(r))
 	}
 	return nil

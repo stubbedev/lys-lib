@@ -133,6 +133,17 @@ type callArgs struct {
 	infos       [2]vk.CalibratedTimestampInfoKHR
 	now         [2]uint64
 	deviation   uint64
+	// planes are the copies of an encoder's converted planes. dependency
+	// to signal2 are barrier2's and submit2's: the video queues' and the
+	// encoder's conversion's, every frame.
+	planes     [2]vk.BufferImageCopy
+	dependency vk.DependencyInfo
+	memory2    vk.MemoryBarrier2
+	images2    []vk.ImageMemoryBarrier2
+	buffer2    vk.CommandBufferSubmitInfo
+	submit2    vk.SubmitInfo2
+	wait2      vk.SemaphoreSubmitInfo
+	signal2    vk.SemaphoreSubmitInfo
 }
 
 type inflight struct {

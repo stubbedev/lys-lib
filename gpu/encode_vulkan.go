@@ -38,6 +38,32 @@ type vulkanBackend struct {
 	queries   vk.QueryPool
 	pool      vk.CommandPool
 	slots     [encodeSlots]vulkanSlot
+
+	cmd      encodeCommands
+	feedback encodeFeedback
+}
+
+// encodeCommands are the structures the coding commands take, kept in
+// the backend: what a Vulkan command points at escapes to the heap, so
+// each frame's would be allocations. res holds the source picture, the
+// one reconstructed and the one referenced; bound the latter two as the
+// session binds them.
+type encodeCommands struct {
+	res     [3]vk.VideoPictureResourceInfoKHR
+	bound   [2]vk.VideoReferenceSlotInfoKHR
+	begin   vk.VideoBeginCodingInfoKHR
+	control vk.VideoCodingControlInfoKHR
+	setup   vk.VideoReferenceSlotInfoKHR
+	ref     vk.VideoReferenceSlotInfoKHR
+	encode  vk.VideoEncodeInfoKHR
+	end     vk.VideoEndCodingInfoKHR
+}
+
+// encodeFeedback is what a feedback query reports of an encode: where
+// in its bitstream slot the packet is, and whether it encoded.
+type encodeFeedback struct {
+	offset, bytes uint32
+	status        vk.QueryResultStatusKHR
 }
 
 // vulkanSlot is a frame in flight on the video queue: its source
@@ -114,12 +140,10 @@ func (vb *vulkanBackend) collect(slot int) ([]byte, error) {
 	if r := d.cmds.WaitForFences(d.device, 1, &s.done, vk.True, ^uint64(0)); r != vk.Success {
 		return nil, fmt.Errorf("wait for an encode: %w", resultError(r))
 	}
-	var res struct {
-		offset, bytes uint32
-		status        vk.QueryResultStatusKHR
-	}
+	res := &vb.feedback
+	*res = encodeFeedback{}
 	flags := vk.QueryResultFlags(vk.QueryResultWithStatusBitKhr)
-	if r := d.cmds.GetQueryPoolResults(d.device, vb.queries, intconv.Must[uint32](slot), 1, unsafe.Sizeof(res), unsafe.Pointer(&res), vk.DeviceSize(unsafe.Sizeof(res)), flags); r != vk.Success {
+	if r := d.cmds.GetQueryPoolResults(d.device, vb.queries, intconv.Must[uint32](slot), 1, unsafe.Sizeof(*res), unsafe.Pointer(res), vk.DeviceSize(unsafe.Sizeof(*res)), flags); r != vk.Success {
 		return nil, fmt.Errorf("vkGetQueryPoolResults (encode feedback): %w", resultError(r))
 	}
 	if res.status != vk.QueryResultStatusCompleteKhr {
@@ -542,7 +566,7 @@ func (vb *vulkanBackend) createBuffers() error {
 // encode records and submits encoding slot's source picture, after
 // its semaphore.
 func (vb *vulkanBackend) encode(slot, frame, sinceIDR int, idrs uint16) error {
-	d, s := vb.d, &vb.slots[slot]
+	d, s, c := vb.d, &vb.slots[slot], &vb.cmd
 	cb := s.cb
 	if err := begin(d, cb); err != nil {
 		return err
@@ -566,7 +590,7 @@ func (vb *vulkanBackend) encode(slot, frame, sinceIDR int, idrs uint16) error {
 	cur, prev := frame%dpbSlots, (frame+dpbSlots-1)%dpbSlots
 	picInfo, setupInfo, refInfo := vb.codec.picture(sinceIDR, idrs, prev, vb.qp)
 	extent := extent2D(vb.coded[0], vb.coded[1])
-	res := [3]vk.VideoPictureResourceInfoKHR{
+	c.res = [3]vk.VideoPictureResourceInfoKHR{
 		{SType: vk.StructureTypeVideoPictureResourceInfoKhr, CodedExtent: extent, ImageViewBinding: s.src.views[0]},
 		{SType: vk.StructureTypeVideoPictureResourceInfoKhr, CodedExtent: extent, ImageViewBinding: vb.dpb.views[cur]},
 		{SType: vk.StructureTypeVideoPictureResourceInfoKhr, CodedExtent: extent, ImageViewBinding: vb.dpb.views[prev]},
@@ -575,41 +599,39 @@ func (vb *vulkanBackend) encode(slot, frame, sinceIDR int, idrs uint16) error {
 	if sinceIDR > 0 {
 		refs = 1
 	}
-	bound := [2]vk.VideoReferenceSlotInfoKHR{
-		{SType: vk.StructureTypeVideoReferenceSlotInfoKhr, SlotIndex: -1, PPictureResource: &res[1]},
-		{SType: vk.StructureTypeVideoReferenceSlotInfoKhr, SlotIndex: int32(prev), PPictureResource: &res[2]},
+	c.bound = [2]vk.VideoReferenceSlotInfoKHR{
+		{SType: vk.StructureTypeVideoReferenceSlotInfoKhr, SlotIndex: -1, PPictureResource: &c.res[1]},
+		{SType: vk.StructureTypeVideoReferenceSlotInfoKhr, SlotIndex: int32(prev), PPictureResource: &c.res[2]},
 	}
-	bi := vk.VideoBeginCodingInfoKHR{
+	c.begin = vk.VideoBeginCodingInfoKHR{
 		SType: vk.StructureTypeVideoBeginCodingInfoKhr, VideoSession: vb.session, VideoSessionParameters: vb.sessionPar,
-		ReferenceSlotCount: uint32(1 + refs), PReferenceSlots: &bound[0],
+		ReferenceSlotCount: uint32(1 + refs), PReferenceSlots: &c.bound[0],
 	}
 	if vb.rcSet {
-		bi.PNext = vb.rc.chain()
+		c.begin.PNext = vb.rc.chain()
 	}
-	d.cmds.CmdBeginVideoCodingKHR(cb, &bi)
+	d.cmds.CmdBeginVideoCodingKHR(cb, &c.begin)
 	if !vb.rcSet {
-		ctl := vk.VideoCodingControlInfoKHR{
+		c.control = vk.VideoCodingControlInfoKHR{
 			SType: vk.StructureTypeVideoCodingControlInfoKhr, PNext: vb.rc.chain(),
 			Flags: vk.VideoCodingControlFlagsKHR(vk.VideoCodingControlResetBitKhr | vk.VideoCodingControlEncodeRateControlBitKhr),
 		}
-		d.cmds.CmdControlVideoCodingKHR(cb, &ctl)
+		d.cmds.CmdControlVideoCodingKHR(cb, &c.control)
 		vb.rcSet = true
 	}
-	setup := vk.VideoReferenceSlotInfoKHR{SType: vk.StructureTypeVideoReferenceSlotInfoKhr, PNext: (*uintptr)(setupInfo), SlotIndex: int32(cur), PPictureResource: &res[1]}
-	ref := vk.VideoReferenceSlotInfoKHR{SType: vk.StructureTypeVideoReferenceSlotInfoKhr, PNext: (*uintptr)(refInfo), SlotIndex: int32(prev), PPictureResource: &res[2]}
-	ei := vk.VideoEncodeInfoKHR{
+	c.setup = vk.VideoReferenceSlotInfoKHR{SType: vk.StructureTypeVideoReferenceSlotInfoKhr, PNext: (*uintptr)(setupInfo), SlotIndex: int32(cur), PPictureResource: &c.res[1]}
+	c.ref = vk.VideoReferenceSlotInfoKHR{SType: vk.StructureTypeVideoReferenceSlotInfoKhr, PNext: (*uintptr)(refInfo), SlotIndex: int32(prev), PPictureResource: &c.res[2]}
+	c.encode = vk.VideoEncodeInfoKHR{
 		SType: vk.StructureTypeVideoEncodeInfoKhr, PNext: (*uintptr)(picInfo),
 		DstBuffer: vb.bitstream.buf, DstBufferOffset: intconv.Must[vk.DeviceSize](s.offset), DstBufferRange: intconv.Must[vk.DeviceSize](vb.slotSize),
-		SrcPictureResource: res[0], PSetupReferenceSlot: &setup, ReferenceSlotCount: uint32(refs), PReferenceSlots: &ref,
+		SrcPictureResource: c.res[0], PSetupReferenceSlot: &c.setup, ReferenceSlotCount: uint32(refs), PReferenceSlots: &c.ref,
 	}
 	d.cmds.CmdBeginQuery(cb, vb.queries, q, 0)
-	d.cmds.CmdEncodeVideoKHR(cb, &ei)
+	d.cmds.CmdEncodeVideoKHR(cb, &c.encode)
 	d.cmds.CmdEndQuery(cb, vb.queries, q)
-	end := vk.VideoEndCodingInfoKHR{SType: vk.StructureTypeVideoEndCodingInfoKhr}
-	d.cmds.CmdEndVideoCodingKHR(cb, &end)
+	c.end = vk.VideoEndCodingInfoKHR{SType: vk.StructureTypeVideoEndCodingInfoKhr}
+	d.cmds.CmdEndVideoCodingKHR(cb, &c.end)
 	runtime.KeepAlive(vb.codec)
-	runtime.KeepAlive(&res)
-	runtime.KeepAlive(&bound)
 	if r := d.cmds.EndCommandBuffer(cb); r != vk.Success {
 		return fmt.Errorf("gpu: vkEndCommandBuffer (encode): %w", resultError(r))
 	}

@@ -183,6 +183,17 @@ type Encoder struct {
 	frames int
 	idrs   uint16
 	closed bool
+
+	cmd convertCommands
+}
+
+// convertCommands are the structures the conversion's commands take,
+// kept in the encoder: what a Vulkan command points at escapes to the
+// heap, so each frame's would be allocations.
+type convertCommands struct {
+	images    [2]vk.DescriptorImageInfo
+	writes    [2]vk.WriteDescriptorSet
+	constants nv12Constants
 }
 
 // EncoderBackend is the path an Encoder encodes through.
@@ -410,7 +421,8 @@ func copyPlanes(d *Device, cb vk.CommandBuffer, planes vk.Buffer, dst vk.Image, 
 	}
 	barrier2(d, cb, &written, toDst)
 	cw, ch := intconv.Must[uint32](coded[0]), intconv.Must[uint32](coded[1])
-	regions := [2]vk.BufferImageCopy{
+	regions := &d.args.planes
+	*regions = [2]vk.BufferImageCopy{
 		{BufferRowLength: cw, BufferImageHeight: ch, ImageSubresource: vk.ImageSubresourceLayers{AspectMask: vk.ImageAspectFlags(vk.ImageAspectPlane0Bit), LayerCount: 1}, ImageExtent: vk.Extent3D{Width: cw, Height: ch, Depth: 1}},
 		{BufferOffset: vk.DeviceSize(cw * ch), BufferRowLength: cw / 2, BufferImageHeight: ch / 2, ImageSubresource: vk.ImageSubresourceLayers{AspectMask: vk.ImageAspectFlags(vk.ImageAspectPlane1Bit), LayerCount: 1}, ImageExtent: vk.Extent3D{Width: cw / 2, Height: ch / 2, Depth: 1}},
 	}
@@ -600,26 +612,26 @@ func (e *Encoder) collect(i int) (Packet, error) {
 // convert records and submits the NV12 conversion of src into slot's
 // planes, and what the backend does with them on the graphics queue.
 func (e *Encoder) convert(src *Buffer, origin image.Point, slot int) error {
-	d := e.d
 	view, err := src.view()
 	if err != nil {
 		return err
 	}
-	ii := [2]vk.DescriptorImageInfo{
+	d, c := e.d, &e.cmd
+	c.images = [2]vk.DescriptorImageInfo{
 		{Sampler: d.sampler, ImageView: view, ImageLayout: vk.ImageLayoutGeneral},
 		{Sampler: e.linear, ImageView: view, ImageLayout: vk.ImageLayoutGeneral},
 	}
 	var over [4]int32
 	if e.overlay != nil {
-		ii[1] = vk.DescriptorImageInfo{Sampler: e.linear, ImageView: e.overlay.view, ImageLayout: vk.ImageLayoutShaderReadOnlyOptimal}
+		c.images[1] = vk.DescriptorImageInfo{Sampler: e.linear, ImageView: e.overlay.view, ImageLayout: vk.ImageLayoutShaderReadOnlyOptimal}
 		r := e.overlayDst
 		over = [4]int32{intconv.Must[int32](r.Min.X), intconv.Must[int32](r.Min.Y), intconv.Must[int32](r.Max.X), intconv.Must[int32](r.Max.Y)}
 	}
-	w := [2]vk.WriteDescriptorSet{
-		{SType: vk.StructureTypeWriteDescriptorSet, DstSet: e.set, DstBinding: 0, DescriptorCount: 1, DescriptorType: vk.DescriptorTypeCombinedImageSampler, PImageInfo: &ii[0]},
-		{SType: vk.StructureTypeWriteDescriptorSet, DstSet: e.set, DstBinding: 2, DescriptorCount: 1, DescriptorType: vk.DescriptorTypeCombinedImageSampler, PImageInfo: &ii[1]},
+	c.writes = [2]vk.WriteDescriptorSet{
+		{SType: vk.StructureTypeWriteDescriptorSet, DstSet: e.set, DstBinding: 0, DescriptorCount: 1, DescriptorType: vk.DescriptorTypeCombinedImageSampler, PImageInfo: &c.images[0]},
+		{SType: vk.StructureTypeWriteDescriptorSet, DstSet: e.set, DstBinding: 2, DescriptorCount: 1, DescriptorType: vk.DescriptorTypeCombinedImageSampler, PImageInfo: &c.images[1]},
 	}
-	d.cmds.UpdateDescriptorSets(d.device, 2, &w[0], 0, nil)
+	d.cmds.UpdateDescriptorSets(d.device, 2, &c.writes[0], 0, nil)
 	cb := e.gfxCB
 	if err := begin(d, cb); err != nil {
 		return err
@@ -630,11 +642,11 @@ func (e *Encoder) convert(src *Buffer, origin image.Point, slot int) error {
 	barrier2(d, cb, nil, foreign)
 	d.cmds.CmdBindPipeline(cb, vk.PipelineBindPointCompute, e.pipeline)
 	d.cmds.CmdBindDescriptorSets(cb, vk.PipelineBindPointCompute, e.layout, 0, 1, &e.set, 0, nil)
-	pc := nv12Constants{
+	c.constants = nv12Constants{
 		frameW: intconv.Must[int32](e.cfg.Width), frameH: intconv.Must[int32](e.cfg.Height), codedW: intconv.Must[int32](e.coded[0]), codedH: intconv.Must[int32](e.coded[1]), overlay: over,
 		originX: intconv.Must[int32](origin.X), originY: intconv.Must[int32](origin.Y), transform: intconv.Must[int32](e.cfg.Transform),
 	}
-	d.cmds.CmdPushConstants(cb, e.layout, vk.ShaderStageFlags(vk.ShaderStageComputeBit), 0, uint32(unsafe.Sizeof(pc)), unsafe.Pointer(&pc))
+	d.cmds.CmdPushConstants(cb, e.layout, vk.ShaderStageFlags(vk.ShaderStageComputeBit), 0, uint32(unsafe.Sizeof(c.constants)), unsafe.Pointer(&c.constants))
 	d.cmds.CmdDispatch(cb, intconv.Must[uint32]((e.coded[0]/4+7)/8), intconv.Must[uint32]((e.coded[1]/2+7)/8), 1)
 	release := imageBarrier(src.e.image, colorRange, vk.ImageLayoutGeneral, vk.ImageLayoutGeneral)
 	release.SrcQueueFamilyIndex, release.DstQueueFamilyIndex = d.family, vk.QueueFamilyForeignExt

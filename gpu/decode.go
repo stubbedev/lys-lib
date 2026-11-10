@@ -889,10 +889,8 @@ func (v *VideoDecoder) submit(p *decodePicture) error {
 	if err := resetFence(d, s.done); err != nil {
 		return err
 	}
-	c.buffer = vk.CommandBufferSubmitInfo{SType: vk.StructureTypeCommandBufferSubmitInfo, CommandBuffer: cb}
-	c.submit = vk.SubmitInfo2{SType: vk.StructureTypeSubmitInfo2, CommandBufferInfoCount: 1, PCommandBufferInfos: &c.buffer}
-	if r := d.cmds.QueueSubmit2(d.decode.queue, 1, &c.submit, s.done); r != vk.Success {
-		return fmt.Errorf("gpu: vkQueueSubmit2 (%s decode): %w", v.name, resultError(r))
+	if err := submit2(d, d.decode.queue, cb, nil, nil, s.done); err != nil {
+		return err
 	}
 	v.submitted++
 	s.seq = v.submitted
@@ -900,9 +898,10 @@ func (v *VideoDecoder) submit(p *decodePicture) error {
 	return nil
 }
 
-// decodeCommands are the structures the decode commands take, kept in
+// decodeCommands are the structures the coding commands take, kept in
 // the decoder: what a Vulkan command points at escapes to the heap, so
-// each picture's would be allocations.
+// each picture's would be allocations. The barriers and the submission
+// go through barrier2 and submit2, which keep theirs in the device.
 type decodeCommands struct {
 	res     [maxDPBSlots + 1]vk.VideoPictureResourceInfoKHR
 	bound   [maxDPBSlots + 1]vk.VideoReferenceSlotInfoKHR
@@ -911,53 +910,35 @@ type decodeCommands struct {
 	control vk.VideoCodingControlInfoKHR
 	decode  vk.VideoDecodeInfoKHR
 	end     vk.VideoEndCodingInfoKHR
-	images  [2]vk.ImageMemoryBarrier2
-	memory  vk.MemoryBarrier2
-	dep     vk.DependencyInfo
 	regions [2]vk.ImageCopy
-	buffer  vk.CommandBufferSubmitInfo
-	submit  vk.SubmitInfo2
-}
-
-// barrier records a barrier of the first n of c.images, and c.memory
-// with memory set.
-func (c *decodeCommands) barrier(d *Device, cb vk.CommandBuffer, memory bool, n int) {
-	c.dep = vk.DependencyInfo{SType: vk.StructureTypeDependencyInfo}
-	if memory {
-		c.dep.MemoryBarrierCount, c.dep.PMemoryBarriers = 1, &c.memory
-	}
-	if n > 0 {
-		c.dep.ImageMemoryBarrierCount, c.dep.PImageMemoryBarriers = intconv.Must[uint32](n), &c.images[0]
-	}
-	d.cmds.CmdPipelineBarrier2(cb, &c.dep)
 }
 
 // barriersBefore records what p's decode waits for: the DPB in its
 // layout once, the decodes and copies before it done with the DPB, and
 // its output picture made ready to write, its contents dropped.
 func (v *VideoDecoder) barriersBefore(cb vk.CommandBuffer, p *decodePicture) {
-	c := &v.cmd
 	coding := vk.PipelineStageFlags2(vk.PipelineStage2VideoDecodeBitKhr)
 	readWrite := vk.AccessFlags2(vk.Access2VideoDecodeReadBitKhr | vk.Access2VideoDecodeWriteBitKhr)
+	var images [2]vk.ImageMemoryBarrier2
 	n := 0
 	if !v.copies {
-		c.images[n] = imageBarrier(p.frame.tex.image, colorRange, vk.ImageLayoutUndefined, vk.ImageLayoutVideoDecodeDstKhr)
-		c.images[n].DstStageMask, c.images[n].DstAccessMask = coding, vk.AccessFlags2(vk.Access2VideoDecodeWriteBitKhr)
+		images[n] = imageBarrier(p.frame.tex.image, colorRange, vk.ImageLayoutUndefined, vk.ImageLayoutVideoDecodeDstKhr)
+		images[n].DstStageMask, images[n].DstAccessMask = coding, vk.AccessFlags2(vk.Access2VideoDecodeWriteBitKhr)
 		n++
 	}
 	if v.dpbFresh {
 		dpbAll := vk.ImageSubresourceRange{AspectMask: vk.ImageAspectFlags(vk.ImageAspectColorBit), LevelCount: 1, LayerCount: intconv.Must[uint32](v.shape.slots)}
-		c.images[n] = imageBarrier(v.dpb.image, dpbAll, vk.ImageLayoutUndefined, vk.ImageLayoutVideoDecodeDpbKhr)
-		c.images[n].DstStageMask, c.images[n].DstAccessMask = coding, readWrite
+		images[n] = imageBarrier(v.dpb.image, dpbAll, vk.ImageLayoutUndefined, vk.ImageLayoutVideoDecodeDpbKhr)
+		images[n].DstStageMask, images[n].DstAccessMask = coding, readWrite
 		n++
 		v.dpbFresh = false
 	}
-	c.memory = vk.MemoryBarrier2{
+	done := vk.MemoryBarrier2{
 		SType:        vk.StructureTypeMemoryBarrier2,
 		SrcStageMask: coding | vk.PipelineStageFlags2(vk.PipelineStage2CopyBit), SrcAccessMask: vk.AccessFlags2(vk.Access2VideoDecodeWriteBitKhr | vk.Access2TransferReadBit),
 		DstStageMask: coding, DstAccessMask: readWrite,
 	}
-	c.barrier(v.d, cb, true, n)
+	barrier2(v.d, cb, &done, images[:n]...)
 }
 
 // barriersAfter records what follows p's decode: with the DPB the
@@ -968,19 +949,19 @@ func (v *VideoDecoder) barriersAfter(cb vk.CommandBuffer, p *decodePicture) {
 	coding := vk.PipelineStageFlags2(vk.PipelineStage2VideoDecodeBitKhr)
 	frame := p.frame.tex.image
 	if !v.copies {
-		c.images[0] = imageBarrier(frame, colorRange, vk.ImageLayoutVideoDecodeDstKhr, vk.ImageLayoutShaderReadOnlyOptimal)
-		c.images[0].SrcStageMask, c.images[0].SrcAccessMask = coding, vk.AccessFlags2(vk.Access2VideoDecodeWriteBitKhr)
-		c.barrier(d, cb, false, 1)
+		decoded := imageBarrier(frame, colorRange, vk.ImageLayoutVideoDecodeDstKhr, vk.ImageLayoutShaderReadOnlyOptimal)
+		decoded.SrcStageMask, decoded.SrcAccessMask = coding, vk.AccessFlags2(vk.Access2VideoDecodeWriteBitKhr)
+		barrier2(d, cb, nil, decoded)
 		return
 	}
 	copying := vk.PipelineStageFlags2(vk.PipelineStage2CopyBit)
 	layer := vk.ImageSubresourceRange{AspectMask: vk.ImageAspectFlags(vk.ImageAspectColorBit), LevelCount: 1, BaseArrayLayer: intconv.Must[uint32](p.setup), LayerCount: 1}
-	c.images[0] = imageBarrier(v.dpb.image, layer, vk.ImageLayoutVideoDecodeDpbKhr, vk.ImageLayoutTransferSrcOptimal)
-	c.images[0].SrcStageMask, c.images[0].SrcAccessMask = coding, vk.AccessFlags2(vk.Access2VideoDecodeWriteBitKhr)
-	c.images[0].DstStageMask, c.images[0].DstAccessMask = copying, vk.AccessFlags2(vk.Access2TransferReadBit)
-	c.images[1] = imageBarrier(frame, colorRange, vk.ImageLayoutUndefined, vk.ImageLayoutTransferDstOptimal)
-	c.images[1].DstStageMask, c.images[1].DstAccessMask = copying, vk.AccessFlags2(vk.Access2TransferWriteBit)
-	c.barrier(d, cb, false, 2)
+	from := imageBarrier(v.dpb.image, layer, vk.ImageLayoutVideoDecodeDpbKhr, vk.ImageLayoutTransferSrcOptimal)
+	from.SrcStageMask, from.SrcAccessMask = coding, vk.AccessFlags2(vk.Access2VideoDecodeWriteBitKhr)
+	from.DstStageMask, from.DstAccessMask = copying, vk.AccessFlags2(vk.Access2TransferReadBit)
+	to := imageBarrier(frame, colorRange, vk.ImageLayoutUndefined, vk.ImageLayoutTransferDstOptimal)
+	to.DstStageMask, to.DstAccessMask = copying, vk.AccessFlags2(vk.Access2TransferWriteBit)
+	barrier2(d, cb, nil, from, to)
 	w, h := v.shape.coded[0], v.shape.coded[1]
 	plane := func(aspect vk.ImageAspectFlagBits, layer uint32) vk.ImageSubresourceLayers {
 		return vk.ImageSubresourceLayers{AspectMask: flags[vk.ImageAspectFlags](aspect), BaseArrayLayer: layer, LayerCount: 1}
@@ -991,11 +972,11 @@ func (v *VideoDecoder) barriersAfter(cb vk.CommandBuffer, p *decodePicture) {
 		{SrcSubresource: plane(vk.ImageAspectPlane1Bit, src), DstSubresource: plane(vk.ImageAspectPlane1Bit, 0), Extent: extent3D((w+1)/2, (h+1)/2)},
 	}
 	d.cmds.CmdCopyImage(cb, v.dpb.image, vk.ImageLayoutTransferSrcOptimal, frame, vk.ImageLayoutTransferDstOptimal, 2, &c.regions[0])
-	c.images[0] = imageBarrier(v.dpb.image, layer, vk.ImageLayoutTransferSrcOptimal, vk.ImageLayoutVideoDecodeDpbKhr)
-	c.images[0].SrcStageMask, c.images[0].SrcAccessMask = copying, vk.AccessFlags2(vk.Access2TransferReadBit)
-	c.images[1] = imageBarrier(frame, colorRange, vk.ImageLayoutTransferDstOptimal, vk.ImageLayoutShaderReadOnlyOptimal)
-	c.images[1].SrcStageMask, c.images[1].SrcAccessMask = copying, vk.AccessFlags2(vk.Access2TransferWriteBit)
-	c.barrier(d, cb, false, 2)
+	from = imageBarrier(v.dpb.image, layer, vk.ImageLayoutTransferSrcOptimal, vk.ImageLayoutVideoDecodeDpbKhr)
+	from.SrcStageMask, from.SrcAccessMask = copying, vk.AccessFlags2(vk.Access2TransferReadBit)
+	to = imageBarrier(frame, colorRange, vk.ImageLayoutTransferDstOptimal, vk.ImageLayoutShaderReadOnlyOptimal)
+	to.SrcStageMask, to.SrcAccessMask = copying, vk.AccessFlags2(vk.Access2TransferWriteBit)
+	barrier2(d, cb, nil, from, to)
 }
 
 // queue puts f, decoded, among the frames waiting for presentation
