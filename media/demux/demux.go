@@ -139,9 +139,11 @@ type Track struct {
 	// say.
 	Duration time.Duration
 	// CodecDelay is the decoder output to drop at the stream's start
-	// (Opus pre-skip). Packet timestamps have it subtracted, as the
-	// container says (an MP4 edit list, a Matroska CodecDelay): the
-	// first packet of such a track starts before zero.
+	// as the container states it: an MP4 edit list's media time (AAC
+	// encoder priming, Opus pre-skip) or a Matroska CodecDelay. Packet
+	// timestamps have it subtracted, so the first packet of such a
+	// track starts before zero. An Opus track whose container states
+	// none still has its pre-skip in the OpusHead.
 	CodecDelay time.Duration
 	// SeekPreRoll is how long before a seek target the decoder has
 	// to start to converge (80 ms for Opus).

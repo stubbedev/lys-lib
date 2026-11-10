@@ -171,7 +171,7 @@ func TestReadsWhatTheMuxerWrote(t *testing.T) {
 				t.Fatalf("%d tracks, want 2", len(tr))
 			}
 			v, a := tr[0], tr[1]
-			if v.Kind != Video || v.Codec != H264 || v.Width != testW || v.Height != testH || len(v.Config) == 0 || v.Config[0] != 1 {
+			if v.Kind != Video || v.Codec != H264 || v.Width != testW || v.Height != testH || len(v.Config) == 0 || v.Config[0] != 1 || v.CodecDelay != 0 {
 				t.Errorf("video track %+v", v)
 			}
 			if a.Kind != Audio || a.Codec != Opus || a.Channels != 2 || a.SampleRate != opusRate || a.SeekPreRoll != opusPreRoll || a.CodecDelay != preSkipDur {

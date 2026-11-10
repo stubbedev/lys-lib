@@ -295,6 +295,7 @@ func parseTrak(trak []byte, movieScale uint64) (*mp4Track, error) {
 	if t.timescale == 0 {
 		return nil, fmt.Errorf("no mdhd: %w", ErrMalformed)
 	}
+	t.info.CodecDelay = ticksToTime(t.shift, t.timescale)
 	return t, nil
 }
 
@@ -511,7 +512,6 @@ func (t *mp4Track) parseDOps(b []byte) error {
 	t.info.Channels = int(channels)
 	t.info.SampleRate = opusRate
 	t.info.SeekPreRoll = opusPreRoll
-	t.info.CodecDelay = ticksToTime(int64(preSkip), opusRate)
 	return nil
 }
 

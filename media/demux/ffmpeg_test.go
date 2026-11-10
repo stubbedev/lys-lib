@@ -108,6 +108,8 @@ func ffprobePackets(t *testing.T, path string) map[int][]probed {
 	return got
 }
 
+const aacFrame = 1024
+
 var ffmpegCases = []struct {
 	name   string
 	file   string
@@ -156,6 +158,12 @@ func TestPacketsMatchFFprobe(t *testing.T) {
 					t.Fatal(err)
 				}
 				got[p.Track] = append(got[p.Track], probed{pts: p.PTS, size: len(p.Data), key: p.Key, crc: crc32.ChecksumIEEE(p.Data)})
+			}
+			if a := tr[1]; c.format == MP4 && a.Codec == AAC {
+				priming := time.Duration(aacFrame) * time.Second / time.Duration(a.SampleRate)
+				if a.CodecDelay != priming || got[1][0].pts != -priming {
+					t.Errorf("AAC codec delay %v, first PTS %v, want the edit list's %v priming in both", a.CodecDelay, got[1][0].pts, priming)
+				}
 			}
 			for s := range 2 {
 				if len(got[s]) != len(want[s]) {
