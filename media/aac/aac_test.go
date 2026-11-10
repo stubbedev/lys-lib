@@ -125,10 +125,12 @@ func readTrack(t testing.TB, path string) (demux.Track, [][]byte, time.Duration)
 	}
 }
 
-func samples(b []byte) []int16 {
-	s := make([]int16, len(b)/2)
+func ffmpegDecode(t testing.TB, path string) []int16 {
+	t.Helper()
+	b := runFFmpeg(t, "-i", path, "-f", "f32le", "-")
+	s := make([]int16, len(b)/4)
 	for i := range s {
-		s[i] = int16(binary.LittleEndian.Uint16(b[2*i:]))
+		s[i] = toInt16(32768 * math.Float32frombits(binary.LittleEndian.Uint32(b[4*i:])))
 	}
 	return s
 }
@@ -186,7 +188,7 @@ func TestDecodeMatchesFFmpeg(t *testing.T) {
 			}
 			skip := int((-first*time.Duration(c.rate) + time.Second/2) / time.Second)
 			got = got[skip*c.channels:]
-			want := samples(runFFmpeg(t, "-i", path, "-f", "s16le", "-"))
+			want := ffmpegDecode(t, path)
 			if c.channels == 6 {
 				got = toFFmpegOrder51(got)
 			}
@@ -230,7 +232,7 @@ func TestDecodeNoiseSubstitutionKeepsTheEnergy(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	want := samples(runFFmpeg(t, "-i", path, "-f", "s16le", "-"))
+	want := ffmpegDecode(t, path)
 	energy := func(s []int16) float64 {
 		var e float64
 		for _, v := range s[len(s)/4 : 3*len(s)/4] {
