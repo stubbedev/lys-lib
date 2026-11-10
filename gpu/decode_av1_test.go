@@ -123,8 +123,8 @@ func TestDecodeAV1CropsToTheFrame(t *testing.T) {
 		t.Fatalf("frame %v, %v", f, err)
 	}
 	defer f.Release()
-	if r := f.Rect(); r != image.Rect(0, 0, 270, 150) {
-		t.Errorf("rect %v, want the stream's 270x150", r)
+	if s := f.Size(); s != image.Pt(270, 150) {
+		t.Errorf("size %v, want the stream's 270x150", s)
 	}
 }
 

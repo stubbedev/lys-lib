@@ -180,7 +180,8 @@ Drawing:
 - `Render` draws a recorded `List`. `RenderExplicit` does the same and returns a
   `sync_file` instead of waiting.
 - `Begin` opens a `Pass` clipped to damage: `Clear`, `FillRect`,
-  `FillGradient`, `DrawTexture`, `DrawGlass`, `DrawFragmentShader`, `FillGoo`,
+  `FillGradient`, `DrawTexture`, `DrawFrame` (a [decoded video
+  frame](/media#video-decoding)), `DrawGlass`, `DrawFragmentShader`, `FillGoo`,
   `Kawase`, `SetCut`, `SetColor`. The first failing call fails the pass; `End`
   reports it and records nothing.
 - `End` records without submitting. A frame's passes go to the queue in one

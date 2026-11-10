@@ -194,7 +194,7 @@ func takeFrames(t *testing.T, v *VideoDecoder, out []decoded) []decoded {
 }
 
 // readPicture copies f's picture back to the CPU through the graphics
-// queue, as NV12 or P010 (its texture's format) of its Rect.
+// queue, as NV12 or P010 (its texture's format) of its picture.
 func readPicture(t *testing.T, f *VideoFrame) []byte {
 	t.Helper()
 	d := f.v.d
@@ -222,7 +222,7 @@ func readPicture(t *testing.T, f *VideoFrame) []byte {
 	if err := buf.invalidate(); err != nil {
 		t.Fatal(err)
 	}
-	r := f.Rect()
+	r := f.rect
 	if r.Min.X%2 != 0 || r.Min.Y%2 != 0 {
 		t.Fatalf("rect %v starts within a chroma sample", r)
 	}
@@ -405,11 +405,12 @@ func TestDecodeH264ResetsAtAKeyframe(t *testing.T) {
 }
 
 // A decoded frame draws through the renderer's YCbCr conversion: what
-// a Pass makes of its texture is the picture's colours in the matrix
+// a Pass makes of it (DrawFrame) is the picture's colours in the matrix
 // and range its VUI names (BT.601 limited range unnamed, at this
 // size), chroma reconstructed linearly between samples sited as H.264
 // and H.265 site them: with the even luma columns, between the rows. A
-// 10-bit picture draws from its P010 texture at its 10 bits.
+// 10-bit picture draws from its P010 texture at its 10 bits. Only its
+// picture draws, not the padding the codec adds around it.
 func TestDecodedFrameDraws(t *testing.T) {
 	for _, c := range []struct {
 		name   string
@@ -442,24 +443,24 @@ func TestDecodedFrameDraws(t *testing.T) {
 				t.Fatalf("frame %v, %v", f, err)
 			}
 			defer f.Release()
-			if got := f.Texture().format; got != c.format {
+			if got := f.tex.format; got != c.format {
 				t.Errorf("texture in %s, want %s", got, c.format)
 			}
-			r := f.Rect()
-			if r != image.Rect(0, 0, c.w, c.h) {
-				t.Errorf("rect %v, want the stream's %dx%d", r, c.w, c.h)
+			size := f.Size()
+			if size != image.Pt(c.w, c.h) {
+				t.Errorf("size %v, want the stream's %dx%d", size, c.w, c.h)
 			}
-			tg, err := d.NewOffscreen(r.Dx(), r.Dy())
+			tg, err := d.NewOffscreen(size.X, size.Y)
 			if err != nil {
 				t.Fatal(err)
 			}
 			defer tg.Close()
 			runPass(t, d, tg, []image.Rectangle{{Max: tg.Size()}}, func(p *Pass) {
-				p.DrawTexture(f.Texture(), FRect{X: float64(r.Min.X), Y: float64(r.Min.Y), W: float64(r.Dx()), H: float64(r.Dy())}, image.Rectangle{Max: tg.Size()}, TransformNormal, 1, Mask{})
+				p.DrawFrame(f, FRect{W: float64(size.X), H: float64(size.Y)}, image.Rectangle{Max: tg.Size()}, TransformNormal, 1, Mask{})
 			})
 			got := readTarget(t, tg)
 			pic := newSamples(cl.frames[0], c.format)
-			w, h := r.Dx(), r.Dy()
+			w, h := size.X, size.Y
 			want := make([]byte, 0, w*h*3)
 			for y := range h {
 				for x := range w {

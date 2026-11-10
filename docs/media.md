@@ -92,9 +92,9 @@ func main() {
 
 `gpu.VideoDecoder` decodes H.264, H.265, AV1 and VP9 on the device's Vulkan
 video decode queue, the device the renderer draws with. It takes [`demux`](#media-demux)
-packets in decode order and hands out frames in presentation order, each a
-`Texture` a `Pass` draws through its YCbCr conversion: the picture never leaves
-the GPU.
+packets in decode order and hands out frames in presentation order, each
+drawn by a `Pass` (`DrawFrame`) through its YCbCr conversion: the picture never
+leaves the GPU.
 
 ```go
 package main
@@ -140,7 +140,7 @@ func main() {
 			if frame == nil {
 				return
 			}
-			// Draw frame.Texture()'s frame.Rect() in a Pass at frame.PTS().
+			// pass.DrawFrame(frame, ...) at frame.PTS().
 			frame.Release()
 		}
 	}
@@ -170,19 +170,23 @@ func main() {
   or nil until more packets complete one; it waits for that frame's decode.
   `Flush` at the end of the track hands out the frames held back for
   reordering.
-- A frame carries its packet's `PTS` and `Duration`. `Texture` is larger than
-  the picture by the codec's padding: draw `Rect` of it. Its YCbCr matrix, range
-  and chroma siting come from the stream's VUI, AV1 colour config or VP9
-  colour space (an unnamed matrix is BT.709 from 720 lines up, BT.601 below).
-  An AV1 frame's `Rect` is its render size where that crops the frame, else the
-  frame; a VP9 frame's is the frame. An 8-bit stream decodes into NV12
-  textures, a 10-bit one into P010 (`G10X6_B10X6R10X6_2PLANE_420`), both drawn
-  through the sampler's YCbCr conversion.
-- The texture belongs to the decoder: `Release` hands the frame back, and the
-  decoder decodes into it again once the passes submitted so far, which may
-  sample it, have finished. Up to 8 frames may be held beside the ones held for
-  reordering and the AV1 and VP9 frames decoded hidden to be shown later; `Close`
-  releases them all.
+- A frame carries its packet's `PTS` and `Duration`, and its picture's `Size`
+  with the stream's cropping applied. `Pass.DrawFrame` draws a region of the
+  picture, given in the picture's own pixels, as `DrawTexture` draws a
+  texture's; the codec's padding around the picture is out of its reach. The
+  YCbCr matrix, range and chroma siting come from the stream's VUI, AV1 colour
+  config or VP9 colour space (an unnamed matrix is BT.709 from 720 lines up,
+  BT.601 below). An AV1 frame's `Size` is its render size where that crops the
+  frame, else the frame's; a VP9 frame's is the frame's. An 8-bit stream
+  decodes into NV12 pictures, a 10-bit one into P010
+  (`G10X6_B10X6R10X6_2PLANE_420`), both drawn through the sampler's YCbCr
+  conversion.
+- A frame's texture belongs to the decoder and is never handed out, so nothing
+  can update or close it: `Release` hands the frame back, and the decoder
+  decodes into it again once the passes that drew it, the open one too, have
+  finished. Up to 8 frames may be held beside the ones held for reordering and
+  the AV1 and VP9 frames decoded hidden to be shown later; `Close` releases them
+  all, and a pass refuses a frame released or of a closed decoder.
 - To seek, `Reset` the decoder, `Seek` the file and decode from the keyframe,
   dropping frames before the target. Decoding starts at an IDR or I picture
   (H.264), an IRAP picture (H.265) or a key frame (AV1 and VP9, from the first

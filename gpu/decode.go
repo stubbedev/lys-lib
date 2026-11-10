@@ -462,8 +462,11 @@ func (v *VideoDecoder) createDPB() error {
 	return nil
 }
 
-// VideoFrame is a decoded picture the renderer samples: Texture, drawn
-// through its YCbCr conversion, with the picture in Rect.
+// VideoFrame is a decoded picture a Pass draws (DrawFrame) through the
+// stream's YCbCr conversion. Its texture is the decoder's, which
+// decodes into it again after Release, and never the caller's to
+// update or close: tex is larger than the picture by the codec's
+// padding, with the picture in rect.
 type VideoFrame struct {
 	v        *VideoDecoder
 	tex      *Texture
@@ -499,25 +502,19 @@ func (f *VideoFrame) PTS() time.Duration { return f.pts }
 // the container does not say.
 func (f *VideoFrame) Duration() time.Duration { return f.duration }
 
-// Texture is the picture as a texture a Pass draws (DrawTexture), its
-// YCbCr matrix, range and chroma siting the stream's. It is larger
-// than the picture by the codec's padding: draw Rect of it. It belongs
-// to the decoder: neither Update nor Close it.
-func (f *VideoFrame) Texture() *Texture { return f.tex }
-
-// Rect is the picture within Texture, the stream's cropping applied.
-func (f *VideoFrame) Rect() image.Rectangle { return f.rect }
+// Size is the picture's size in pixels, the stream's cropping applied.
+func (f *VideoFrame) Size() image.Point { return f.rect.Size() }
 
 // Release hands the frame back for the decoder to decode into once the
-// passes submitted so far, which may sample it, finish. The frame is
-// not to be used after.
+// passes that drew it, the open one too, finish. The frame is not to
+// be used after.
 func (f *VideoFrame) Release() {
 	if f.state != frameHeld {
 		return
 	}
 	d := f.v.d
 	after := d.submitted
-	if d.batch != 0 || d.framing {
+	if d.batch != 0 || d.framing || d.active != nil {
 		after++
 	}
 	f.free(after)
@@ -535,9 +532,39 @@ func (f *VideoFrame) destroy() {
 	}
 	f.pic.views = nil
 	if f.tex != nil {
+		f.tex.closed = true
 		d.retire(f.tex)
 		f.tex = nil
 	}
+}
+
+// DrawFrame blends src of f's picture, a frame the caller holds, scaled
+// to dst and turned by tr, at alpha over dst's damaged part within m,
+// its colours converted by the stream's YCbCr matrix, range and chroma
+// siting: DrawTexture for a decoded frame. src is in the picture's
+// pixels, within its Size.
+func (p *Pass) DrawFrame(f *VideoFrame, src FRect, dst image.Rectangle, tr Transform, alpha float32, m Mask) {
+	if !p.open("DrawFrame") {
+		return
+	}
+	switch {
+	case f == nil || f.state != frameHeld:
+		p.fail(errors.New("gpu: DrawFrame of a frame the caller does not hold"))
+		return
+	case f.tex == nil:
+		p.fail(errors.New("gpu: DrawFrame of a frame whose decoder is closed"))
+		return
+	case f.v.d != p.d:
+		p.fail(errors.New("gpu: DrawFrame of another device's frame"))
+		return
+	}
+	size := f.Size()
+	if !(src.W > 0 && src.H > 0 && src.X >= 0 && src.Y >= 0 && src.X+src.W <= float64(size.X) && src.Y+src.H <= float64(size.Y)) {
+		p.fail(fmt.Errorf("gpu: source %+v outside a %dx%d picture", src, size.X, size.Y))
+		return
+	}
+	src.X, src.Y = src.X+float64(f.rect.Min.X), src.Y+float64(f.rect.Min.Y)
+	p.drawTexture(f.tex, src, dst, tr, alpha, m)
 }
 
 // frame is a free frame of the session's size to decode into: one the

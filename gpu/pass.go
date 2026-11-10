@@ -396,6 +396,14 @@ func (p *Pass) DrawTexture(t *Texture, src FRect, dst image.Rectangle, tr Transf
 	case t.surf == &p.t.s:
 		p.fail(errors.New("gpu: DrawTexture of the pass's own target"))
 		return
+	}
+	p.drawTexture(t, src, dst, tr, alpha, m)
+}
+
+// drawTexture is DrawTexture of t, a texture of the pass's device that
+// is open and not the pass's target: what DrawFrame shares with it.
+func (p *Pass) drawTexture(t *Texture, src FRect, dst image.Rectangle, tr Transform, alpha float32, m Mask) {
+	switch {
 	case tr < TransformNormal || tr > TransformFlipped270:
 		p.fail(fmt.Errorf("gpu: transform %d is no wl_output transform", tr))
 		return
