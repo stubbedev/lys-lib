@@ -13,11 +13,21 @@ import (
 // never hangs its caller. Once made, the connection outlives both and
 // is the caller's to close.
 func DialSystem(ctx context.Context, timeout time.Duration) (*dbus.Conn, error) {
+	return dial(ctx, timeout, "system", dbus.ConnectSystemBus)
+}
+
+// DialSession connects to the session bus as DialSystem does to the
+// system bus, bounded the same way.
+func DialSession(ctx context.Context, timeout time.Duration) (*dbus.Conn, error) {
+	return dial(ctx, timeout, "session", dbus.ConnectSessionBus)
+}
+
+func dial(ctx context.Context, timeout time.Duration, bus string, connect func(...dbus.ConnOption) (*dbus.Conn, error)) (*dbus.Conn, error) {
 	dialing, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	life, closeConn := context.WithCancel(context.Background())
 	giveUp := context.AfterFunc(dialing, closeConn)
-	conn, err := dbus.ConnectSystemBus(dbus.WithContext(life))
+	conn, err := connect(dbus.WithContext(life))
 	if !giveUp() {
 		gaveUp := dialing.Err()
 		if err != nil {
@@ -27,7 +37,7 @@ func DialSystem(ctx context.Context, timeout time.Duration) (*dbus.Conn, error) 
 	}
 	if err != nil {
 		closeConn()
-		return nil, fmt.Errorf("connect to the system bus: %w", err)
+		return nil, fmt.Errorf("connect to the %s bus: %w", bus, err)
 	}
 	return conn, nil
 }
