@@ -149,14 +149,16 @@ func (h *HEVC) vui(w *Writer) {
 	w.UE(15)
 }
 
-// SliceHeader is the slice segment header (7.3.6.1) of the picture
-// sinceIDR frames into its key interval at quantiser qp: one IDR_W_RADL
-// I slice, or one TRAIL_R slice predicting from the picture before
+// AppendSliceHeader appends to dst the slice segment header (7.3.6.1)
+// of the picture sinceIDR frames into its key interval at quantiser
+// qp: one IDR_W_RADL I slice, or one TRAIL_R slice predicting from the picture before
 // through the sequence's short-term reference set, a P slice or, with
 // gpb, a B slice with the same picture in both lists. It ends
-// byte-aligned, where the slice data starts.
-func (h *HEVC) SliceHeader(sinceIDR int, gpb bool, qp int) (unit []byte, bits int) {
-	var w Writer
+// byte-aligned, where the slice data starts, written through w, which
+// it resets: with a w kept between frames and room in dst it allocates
+// nothing.
+func (h *HEVC) AppendSliceHeader(dst []byte, w *Writer, sinceIDR int, gpb bool, qp int) (out []byte, bits int) {
+	w.Reset()
 	idr := sinceIDR == 0
 	w.Flag(true)
 	if idr {
@@ -196,9 +198,9 @@ func (h *HEVC) SliceHeader(sinceIDR int, gpb bool, qp int) (unit []byte, bits in
 	w.Flag(false)
 	w.Trailing()
 	if idr {
-		return w.Packed(19<<1, 1)
+		return w.AppendPacked(dst, 19<<1, 1)
 	}
-	return w.Packed(1<<1, 1)
+	return w.AppendPacked(dst, 1<<1, 1)
 }
 
 // PPS is the picture parameter set NAL unit (7.3.2.3.1).

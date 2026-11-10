@@ -51,7 +51,7 @@ func TestH264ParsesWhatTheWriterWrites(t *testing.T) {
 		idr      uint16
 		typ      uint8
 	}{{0, 7, H264SliceI}, {5, 0, H264SliceP}} {
-		unit, _ := h.SliceHeader(c.sinceIDR, c.idr, 20)
+		unit, _ := h.AppendSliceHeader(nil, new(Writer), c.sinceIDR, c.idr, 20)
 		var sh H264SliceHeader
 		if err := sh.Parse(Unescape(nil, unit[1:]), unit[0], &ppss, &sps); err != nil {
 			t.Fatal(err)

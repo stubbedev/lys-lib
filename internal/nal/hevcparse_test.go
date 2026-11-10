@@ -54,7 +54,7 @@ func TestHEVCParsesWhatTheWriterWrites(t *testing.T) {
 		nalType  uint8
 		typ      uint8
 	}{{0, HEVCNALIDRWRAD, HEVCSliceI}, {5, 1, HEVCSliceP}} {
-		unit, _ := h.SliceHeader(c.sinceIDR, false, 20)
+		unit, _ := h.AppendSliceHeader(nil, new(Writer), c.sinceIDR, false, 20)
 		var sh HEVCSliceHeader
 		if HEVCType(unit) != c.nalType {
 			t.Fatalf("frame %d: NAL unit type %d, want %d", c.sinceIDR, HEVCType(unit), c.nalType)

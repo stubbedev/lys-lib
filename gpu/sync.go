@@ -68,8 +68,13 @@ type timing struct {
 	// signal, the oldest submission's first.
 	heldSemaphores []vk.Semaphore
 	// timelineWaits are the points on other queues' timeline semaphores
-	// the next submission waits for (awaitTimeline).
-	timelineWaits []timelineWait
+	// the next submission waits for (awaitTimeline), timelineSignals the
+	// points it signals for them (signalTimeline).
+	timelineWaits   []timelineWait
+	timelineSignals []timelineWait
+	// fault is a result a test makes the next vkQueueSubmit return in
+	// place of submitting; VK_SUCCESS, the zero value, for none.
+	fault vk.Result
 	// spareFences, spareBuffers and spareSemaphores are the objects of
 	// finished submissions, for the next ones.
 	spareFences     []vk.Fence
@@ -113,7 +118,6 @@ type timing struct {
 type callArgs struct {
 	fence       vk.Fence
 	cb          vk.CommandBuffer
-	signal      vk.Semaphore
 	stages      []vk.PipelineStageFlags
 	begin       vk.CommandBufferBeginInfo
 	submit      vk.SubmitInfo
@@ -137,11 +141,14 @@ type callArgs struct {
 	now         [2]uint64
 	deviation   uint64
 	// waits and values are a submission's wait semaphores and the values
-	// it waits for on the timeline ones among them, with timeline to say
-	// so; waitInfo, timelineSemaphore and timelineValue are a wait for, or
-	// a look at, one timeline semaphore from here.
+	// it waits for on the timeline ones among them, signals and
+	// signalValues what it signals, with timeline to say so; waitInfo,
+	// timelineSemaphore and timelineValue are a wait for, or a look at,
+	// one timeline semaphore from here.
 	waits             []vk.Semaphore
 	values            []uint64
+	signals           []vk.Semaphore
+	signalValues      []uint64
 	timeline          vk.TimelineSemaphoreSubmitInfo
 	waitInfo          vk.SemaphoreWaitInfo
 	timelineSemaphore vk.Semaphore
@@ -476,6 +483,14 @@ func (d *Device) awaitTimeline(w timelineWait) {
 	d.timelineWaits = append(d.timelineWaits, w)
 }
 
+// signalTimeline makes the device's next submission signal w's timeline
+// semaphore with w's value when it finishes: for another queue's work
+// to wait on, as a video encode does for the conversion of the frame it
+// codes. Values rise from one call to the next.
+func (d *Device) signalTimeline(w timelineWait) {
+	d.timelineSignals = append(d.timelineSignals, w)
+}
+
 // retireTimeline destroys s once the submissions that wait for it have
 // finished. Its owner has seen every value it signals reached, so the
 // submission to come waits for it no longer.
@@ -522,9 +537,38 @@ func (d *Device) waitTimeline(s vk.Semaphore, value uint64) error {
 }
 
 // queue1 submits cb (0 for none) after the pending waits, signalling
-// signal (0 for none). cb carries the open batch, and with it the passes
-// it holds.
+// signal (0 for none) and the pending timeline signals. cb carries the
+// open batch, and with it the passes it holds. A submission that fails
+// takes its waits and signals with it: they were its own, and the next
+// one neither waits on a fence meant for work that never ran nor
+// signals for it.
 func (d *Device) queue1(cb vk.CommandBuffer, signal vk.Semaphore, sub submission) error {
+	err := d.submit1(cb, signal, sub)
+	if err != nil {
+		d.dropWaits()
+	}
+	return err
+}
+
+// dropWaits forgets what the next submission was to wait for and
+// signal. The semaphores holding imported sync_files are destroyed:
+// nothing waited on them, so they still hold their fences.
+func (d *Device) dropWaits() {
+	for _, s := range d.waits {
+		d.cmds.DestroySemaphore(d.device, s, nil)
+	}
+	d.waits, d.timelineWaits, d.timelineSignals = d.waits[:0], d.timelineWaits[:0], d.timelineSignals[:0]
+}
+
+// takeFault is the result a test set for the next vkQueueSubmit, which
+// it then is no more: VK_SUCCESS for none.
+func (d *Device) takeFault() vk.Result {
+	r := d.fault
+	d.fault = vk.Success
+	return r
+}
+
+func (d *Device) submit1(cb vk.CommandBuffer, signal vk.Semaphore, sub submission) error {
 	if err := d.retireSyncFile(); err != nil {
 		return err
 	}
@@ -554,14 +598,30 @@ func (d *Device) queue1(cb vk.CommandBuffer, signal vk.Semaphore, sub submission
 	a := &d.args
 	si := &a.submit
 	*si = vk.SubmitInfo{SType: vk.StructureTypeSubmitInfo}
+	a.timeline = vk.TimelineSemaphoreSubmitInfo{SType: vk.StructureTypeTimelineSemaphoreSubmitInfo}
 	a.waits = append(a.waits[:0], d.waits...)
 	if len(d.timelineWaits) > 0 {
 		a.values = append(a.values[:0], make([]uint64, len(d.waits))...)
 		for _, w := range d.timelineWaits {
 			a.waits, a.values = append(a.waits, w.semaphore), append(a.values, w.value)
 		}
-		a.timeline = vk.TimelineSemaphoreSubmitInfo{SType: vk.StructureTypeTimelineSemaphoreSubmitInfo, WaitSemaphoreValueCount: count(a.values), PWaitSemaphoreValues: &a.values[0]}
+		a.timeline.WaitSemaphoreValueCount, a.timeline.PWaitSemaphoreValues = count(a.values), &a.values[0]
 		si.PNext = (*uintptr)(unsafe.Pointer(&a.timeline))
+	}
+	a.signals = a.signals[:0]
+	if signal != 0 {
+		a.signals = append(a.signals, signal)
+	}
+	if len(d.timelineSignals) > 0 {
+		a.signalValues = append(a.signalValues[:0], make([]uint64, len(a.signals))...)
+		for _, w := range d.timelineSignals {
+			a.signals, a.signalValues = append(a.signals, w.semaphore), append(a.signalValues, w.value)
+		}
+		a.timeline.SignalSemaphoreValueCount, a.timeline.PSignalSemaphoreValues = count(a.signalValues), &a.signalValues[0]
+		si.PNext = (*uintptr)(unsafe.Pointer(&a.timeline))
+	}
+	if n := len(a.signals); n > 0 {
+		si.SignalSemaphoreCount, si.PSignalSemaphores = count(a.signals), &a.signals[0]
 	}
 	if n := len(a.waits); n > 0 {
 		for len(a.stages) < n {
@@ -573,11 +633,11 @@ func (d *Device) queue1(cb vk.CommandBuffer, signal vk.Semaphore, sub submission
 		a.cb = cb
 		si.CommandBufferCount, si.PCommandBuffers = 1, &a.cb
 	}
-	if signal != 0 {
-		a.signal = signal
-		si.SignalSemaphoreCount, si.PSignalSemaphores = 1, &a.signal
+	r := d.takeFault()
+	if r == vk.Success {
+		r = d.cmds.QueueSubmit(d.queue, 1, si, fence)
 	}
-	if r := d.cmds.QueueSubmit(d.queue, 1, si, fence); r != vk.Success {
+	if r != vk.Success {
 		d.cmds.DestroyFence(d.device, fence, nil)
 		if frame {
 			d.spareSemaphores = append(d.spareSemaphores, signal)
@@ -595,7 +655,7 @@ func (d *Device) queue1(cb vk.CommandBuffer, signal vk.Semaphore, sub submission
 		f.staged, f.stagingEnd, d.batched, d.batchBytes = true, d.batchEnd, 0, 0
 	}
 	d.heldSemaphores = append(d.heldSemaphores, d.waits...)
-	d.waits, d.timelineWaits = d.waits[:0], d.timelineWaits[:0]
+	d.waits, d.timelineWaits, d.timelineSignals = d.waits[:0], d.timelineWaits[:0], d.timelineSignals[:0]
 	switch {
 	case frame:
 		d.frameSignal = signal
@@ -737,8 +797,10 @@ func (d *Device) flushBatch() error {
 func (d *Device) Flush() error { return d.flushBatch() }
 
 // dropBatch takes back cb, whose submission failed, with the uploads it
-// carried: their staging bytes are free again.
+// carried, their staging bytes free again, and what the submission was
+// to wait for and signal.
 func (d *Device) dropBatch(cb vk.CommandBuffer) {
+	d.dropWaits()
 	d.spareBuffers = append(d.spareBuffers, cb)
 	d.batchOps, d.batchPass = 0, false
 	if d.batched > 0 {

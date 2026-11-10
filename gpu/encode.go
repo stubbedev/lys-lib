@@ -151,9 +151,10 @@ type encodeSlot struct {
 // Encoder encodes frames into H.264 or H.265 on the device's hardware
 // encoder: its Vulkan video queue, else its VA-API driver. A frame's
 // pixels come from a Buffer a compositor copied a screen into: a
-// compute pass crops, turns, overlays and converts them to NV12, and
-// the backend encodes that while the next frame converts. Like the
-// Device, it belongs to one goroutine.
+// compute pass crops, turns, overlays and converts them to NV12, a
+// submission of the device like any pass's, and the backend encodes
+// that while the next frame converts. Like the Device, it belongs to
+// one goroutine.
 type Encoder struct {
 	d       *Device
 	cfg     EncoderConfig
@@ -167,11 +168,11 @@ type Encoder struct {
 	pipeline  vk.Pipeline
 	module    vk.ShaderModule
 	descPool  vk.DescriptorPool
-	set       vk.DescriptorSet
-	gfxPool   vk.CommandPool
-	gfxCB     vk.CommandBuffer
-	gfxDone   vk.Fence
-	linear    vk.Sampler
+	// sets are each slot's descriptor set: a slot's conversion may still
+	// run when the next slot's is recorded, and is done, its frame
+	// collected, before its own set is written again.
+	sets   [encodeSlots]vk.DescriptorSet
+	linear vk.Sampler
 
 	// overlay is the picture SetOverlay draws over every frame, scaled
 	// to overlayDst; nil for none. overlayStaging carries its uploads.
@@ -227,13 +228,16 @@ type encodeBackend interface {
 	codedSize() [2]int
 	// afterConvert records what follows slot's conversion on the
 	// graphics queue, which wrote the coded picture's planes tight into
-	// planes: their copy into the backend's picture. It returns the
-	// semaphore the conversion signals for the backend, or nil.
-	afterConvert(cb vk.CommandBuffer, slot int, planes vk.Buffer) *vk.SemaphoreSubmitInfo
-	// encode queues slot's converted frame, the encoder's frame-th,
-	// sinceIDR frames after its IDR, the idrs-th IDR's.
+	// planes: their copy into the backend's picture, and what the
+	// submission signals for the backend to encode after.
+	afterConvert(cb vk.CommandBuffer, slot int, planes vk.Buffer)
+	// encode queues slot's frame, whose conversion is submitted, the
+	// encoder's frame-th, sinceIDR frames after its IDR, the idrs-th
+	// IDR's: after the conversion, without waiting here where the
+	// backend can wait for it on the GPU.
 	encode(slot, frame, sinceIDR int, idrs uint16) error
-	// collect waits for slot's frame and returns its access unit.
+	// collect waits for slot's frame, the device's wait limit at most,
+	// and returns its access unit.
 	collect(slot int) ([]byte, error)
 	// parameterSets are the stream's parameter set NAL units.
 	parameterSets() [][]byte
@@ -265,7 +269,7 @@ func newEncoderOn[B encodeBackend](d *Device, cfg EncoderConfig, newBackend func
 		return nil, err
 	}
 	e := &Encoder{d: d, cfg: cfg, backend: backend, coded: backend.codedSize()}
-	for _, step := range []func() error{e.createPlanes, e.createPipeline, e.createCommands} {
+	for _, step := range []func() error{e.createPlanes, e.createPipeline} {
 		if err := step(); err != nil {
 			e.Close()
 			return nil, err
@@ -290,25 +294,33 @@ func desktopBitrate(cfg EncoderConfig) uint64 {
 	return uint64(float32(cfg.Width*cfg.Height*cfg.FrameRate) * desktopBitsPerPixel)
 }
 
+// nextNALUnit is the first NAL unit of an Annex-B stream, its start
+// code and the zeros after it dropped, and the stream behind it; false
+// when the stream holds no more.
+func nextNALUnit(b []byte) (unit, rest []byte, ok bool) {
+	for {
+		i := bytes.Index(b, startCode)
+		if i < 0 {
+			return nil, nil, false
+		}
+		b = b[i+len(startCode):]
+		j := bytes.Index(b, startCode)
+		if j < 0 {
+			j = len(b)
+		}
+		if unit = bytes.TrimRight(b[:j], "\x00"); len(unit) > 0 {
+			return unit, b[j:], true
+		}
+		b = b[j:]
+	}
+}
+
 // nalUnits splits an Annex-B stream into its NAL units, start codes
 // dropped.
 func nalUnits(b []byte) [][]byte {
 	var out [][]byte
-	for len(b) > 0 {
-		i := bytes.Index(b, []byte{0, 0, 1})
-		if i < 0 {
-			break
-		}
-		b = b[i+3:]
-		j := bytes.Index(b, []byte{0, 0, 1})
-		if j < 0 {
-			j = len(b)
-		}
-		nal := bytes.TrimRight(b[:j], "\x00")
-		if len(nal) > 0 {
-			out = append(out, nal)
-		}
-		b = b[j:]
+	for unit, rest, ok := nextNALUnit(b); ok; unit, rest, ok = nextNALUnit(rest) {
+		out = append(out, unit)
 	}
 	return out
 }
@@ -376,18 +388,20 @@ func (e *Encoder) createPipeline() error {
 	if r := d.cmds.CreateSampler(d.device, &sci, nil, &e.linear); r != vk.Success {
 		return fmt.Errorf("gpu: vkCreateSampler (overlay): %w", resultError(r))
 	}
-	sizes := [2]vk.DescriptorPoolSize{{Type: vk.DescriptorTypeCombinedImageSampler, DescriptorCount: 2}, {Type: vk.DescriptorTypeStorageBuffer, DescriptorCount: 1}}
-	dci := vk.DescriptorPoolCreateInfo{SType: vk.StructureTypeDescriptorPoolCreateInfo, MaxSets: 1, PoolSizeCount: 2, PPoolSizes: &sizes[0]}
+	sizes := [2]vk.DescriptorPoolSize{{Type: vk.DescriptorTypeCombinedImageSampler, DescriptorCount: 2 * encodeSlots}, {Type: vk.DescriptorTypeStorageBuffer, DescriptorCount: encodeSlots}}
+	dci := vk.DescriptorPoolCreateInfo{SType: vk.StructureTypeDescriptorPoolCreateInfo, MaxSets: encodeSlots, PoolSizeCount: 2, PPoolSizes: &sizes[0]}
 	if r := d.cmds.CreateDescriptorPool(d.device, &dci, nil, &e.descPool); r != vk.Success {
 		return fmt.Errorf("gpu: vkCreateDescriptorPool (NV12): %w", resultError(r))
 	}
-	ai := vk.DescriptorSetAllocateInfo{SType: vk.StructureTypeDescriptorSetAllocateInfo, DescriptorPool: e.descPool, DescriptorSetCount: 1, PSetLayouts: &e.setLayout}
-	if r := d.cmds.AllocateDescriptorSets(d.device, &ai, &e.set); r != vk.Success {
-		return fmt.Errorf("gpu: vkAllocateDescriptorSets (NV12): %w", resultError(r))
-	}
 	bi := vk.DescriptorBufferInfo{Buffer: e.planes.buf, Range: intconv.Must[vk.DeviceSize](nv12Bytes(e.coded))}
-	w := vk.WriteDescriptorSet{SType: vk.StructureTypeWriteDescriptorSet, DstSet: e.set, DstBinding: 1, DescriptorCount: 1, DescriptorType: vk.DescriptorTypeStorageBuffer, PBufferInfo: &bi}
-	d.cmds.UpdateDescriptorSets(d.device, 1, &w, 0, nil)
+	for i := range e.sets {
+		ai := vk.DescriptorSetAllocateInfo{SType: vk.StructureTypeDescriptorSetAllocateInfo, DescriptorPool: e.descPool, DescriptorSetCount: 1, PSetLayouts: &e.setLayout}
+		if r := d.cmds.AllocateDescriptorSets(d.device, &ai, &e.sets[i]); r != vk.Success {
+			return fmt.Errorf("gpu: vkAllocateDescriptorSets (NV12): %w", resultError(r))
+		}
+		w := vk.WriteDescriptorSet{SType: vk.StructureTypeWriteDescriptorSet, DstSet: e.sets[i], DstBinding: 1, DescriptorCount: 1, DescriptorType: vk.DescriptorTypeStorageBuffer, PBufferInfo: &bi}
+		d.cmds.UpdateDescriptorSets(d.device, 1, &w, 0, nil)
+	}
 	return nil
 }
 
@@ -432,25 +446,15 @@ func copyPlanes(d *Device, cb vk.CommandBuffer, planes vk.Buffer, dst vk.Image, 
 // nv12Range is a whole NV12 picture of one layer.
 var nv12Range = vk.ImageSubresourceRange{AspectMask: vk.ImageAspectFlags(vk.ImageAspectColorBit), LevelCount: 1, LayerCount: 1}
 
-// createCommands makes the conversion's command buffer and the fence
-// the host waits for it on.
-func (e *Encoder) createCommands() error {
-	d := e.d
-	var err error
-	if e.gfxPool, err = d.commandPool(d.family); err != nil {
-		return err
-	}
-	if e.gfxCB, err = d.commandBuffer(e.gfxPool); err != nil {
-		return err
-	}
-	e.gfxDone, err = d.fence()
-	return err
-}
-
-// Encode converts src's pixels (a Buffer the size the encoder was made
-// for) and queues them for encoding, presented at pts; it returns the
-// packets of the frames that finished meanwhile, oldest first. src is
-// free to take the next frame when Encode returns.
+// Encode queues src's pixels (a Buffer the size the encoder was made
+// for) for conversion and encoding, presented at pts; it returns the
+// packets of the frames that finished meanwhile, oldest first. It
+// waits for neither: the Vulkan video queue encodes after the
+// conversion on the GPU. The conversion reads src, as a pass reads a
+// texture, until the device has finished it: Finish waits for that and
+// SyncFile signals it, and src takes its next frame only then. The
+// VA-API driver has no such handoff, so on it Encode waits for the
+// conversion, the device's wait limit at most.
 func (e *Encoder) Encode(src *Buffer, pts time.Duration) ([]Packet, error) {
 	if e.closed {
 		return nil, errors.New("gpu: encode on a closed encoder")
@@ -478,12 +482,9 @@ func (e *Encoder) Encode(src *Buffer, pts time.Duration) ([]Packet, error) {
 	if err := e.convert(src, region.Min, i); err != nil {
 		return nil, err
 	}
-	if r := e.d.cmds.WaitForFences(e.d.device, 1, &e.gfxDone, vk.True, ^uint64(0)); r != vk.Success {
-		return nil, fmt.Errorf("gpu: wait for the NV12 conversion: %w", resultError(r))
-	}
 	sinceIDR := e.frames % e.cfg.KeyInterval
 	if err := e.backend.encode(i, e.frames, sinceIDR, e.idrs); err != nil {
-		return nil, err
+		return nil, errors.Join(err, e.d.idle())
 	}
 	slot.busy, slot.pts, slot.key = true, pts, sinceIDR == 0
 	if sinceIDR == 0 {
@@ -509,7 +510,7 @@ func (e *Encoder) SetOverlay(img *image.RGBA, dst image.Rectangle) error {
 	if img == nil {
 		e.overlayDst = image.Rectangle{}
 		if e.overlay != nil {
-			e.overlay.close()
+			e.d.retire(e.overlay)
 			e.overlay = nil
 		}
 		return nil
@@ -539,7 +540,7 @@ func (e *Encoder) uploadOverlay(img *image.RGBA) error {
 	d := e.d
 	w, h := img.Rect.Dx(), img.Rect.Dy()
 	if e.overlay != nil && (e.overlay.w != w || e.overlay.h != h) {
-		e.overlay.close()
+		d.retire(e.overlay)
 		e.overlay = nil
 	}
 	if e.overlay == nil {
@@ -609,8 +610,9 @@ func (e *Encoder) collect(i int) (Packet, error) {
 	return Packet{Data: data, PTS: slot.pts, Key: slot.key}, nil
 }
 
-// convert records and submits the NV12 conversion of src into slot's
-// planes, and what the backend does with them on the graphics queue.
+// convert submits the NV12 conversion of src into slot's planes, and
+// what the backend does with them on the graphics queue, without
+// waiting for it.
 func (e *Encoder) convert(src *Buffer, origin image.Point, slot int) error {
 	view, err := src.view()
 	if err != nil {
@@ -628,38 +630,40 @@ func (e *Encoder) convert(src *Buffer, origin image.Point, slot int) error {
 		over = [4]int32{intconv.Must[int32](r.Min.X), intconv.Must[int32](r.Min.Y), intconv.Must[int32](r.Max.X), intconv.Must[int32](r.Max.Y)}
 	}
 	c.writes = [2]vk.WriteDescriptorSet{
-		{SType: vk.StructureTypeWriteDescriptorSet, DstSet: e.set, DstBinding: 0, DescriptorCount: 1, DescriptorType: vk.DescriptorTypeCombinedImageSampler, PImageInfo: &c.images[0]},
-		{SType: vk.StructureTypeWriteDescriptorSet, DstSet: e.set, DstBinding: 2, DescriptorCount: 1, DescriptorType: vk.DescriptorTypeCombinedImageSampler, PImageInfo: &c.images[1]},
+		{SType: vk.StructureTypeWriteDescriptorSet, DstSet: e.sets[slot], DstBinding: 0, DescriptorCount: 1, DescriptorType: vk.DescriptorTypeCombinedImageSampler, PImageInfo: &c.images[0]},
+		{SType: vk.StructureTypeWriteDescriptorSet, DstSet: e.sets[slot], DstBinding: 2, DescriptorCount: 1, DescriptorType: vk.DescriptorTypeCombinedImageSampler, PImageInfo: &c.images[1]},
 	}
 	d.cmds.UpdateDescriptorSets(d.device, 2, &c.writes[0], 0, nil)
-	cb := e.gfxCB
-	if err := begin(d, cb); err != nil {
-		return err
-	}
-	foreign := imageBarrier(src.e.image, colorRange, vk.ImageLayoutGeneral, vk.ImageLayoutGeneral)
-	foreign.SrcQueueFamilyIndex, foreign.DstQueueFamilyIndex = vk.QueueFamilyForeignExt, d.family
-	foreign.DstStageMask, foreign.DstAccessMask = vk.PipelineStageFlags2(vk.PipelineStage2ComputeShaderBit), vk.AccessFlags2(vk.Access2ShaderSampledReadBit)
-	barrier2(d, cb, nil, foreign)
-	d.cmds.CmdBindPipeline(cb, vk.PipelineBindPointCompute, e.pipeline)
-	d.cmds.CmdBindDescriptorSets(cb, vk.PipelineBindPointCompute, e.layout, 0, 1, &e.set, 0, nil)
 	c.constants = nv12Constants{
 		frameW: intconv.Must[int32](e.cfg.Width), frameH: intconv.Must[int32](e.cfg.Height), codedW: intconv.Must[int32](e.coded[0]), codedH: intconv.Must[int32](e.coded[1]), overlay: over,
 		originX: intconv.Must[int32](origin.X), originY: intconv.Must[int32](origin.Y), transform: intconv.Must[int32](e.cfg.Transform),
 	}
+	return d.submitAsync(func(cb vk.CommandBuffer) { e.recordConvert(cb, src.e.image, slot) }, submission{})
+}
+
+// recordConvert records slot's conversion of src, the caller's buffer:
+// the planes are free of the copy the frame before made of them, src is
+// taken from its writer and handed back, and the backend follows.
+func (e *Encoder) recordConvert(cb vk.CommandBuffer, src vk.Image, slot int) {
+	d, c := e.d, &e.cmd
+	copied := vk.MemoryBarrier2{
+		SType:        vk.StructureTypeMemoryBarrier2,
+		SrcStageMask: vk.PipelineStageFlags2(vk.PipelineStage2CopyBit), SrcAccessMask: vk.AccessFlags2(vk.Access2TransferReadBit),
+		DstStageMask: vk.PipelineStageFlags2(vk.PipelineStage2ComputeShaderBit), DstAccessMask: vk.AccessFlags2(vk.Access2ShaderStorageWriteBit),
+	}
+	foreign := imageBarrier(src, colorRange, vk.ImageLayoutGeneral, vk.ImageLayoutGeneral)
+	foreign.SrcQueueFamilyIndex, foreign.DstQueueFamilyIndex = vk.QueueFamilyForeignExt, d.family
+	foreign.DstStageMask, foreign.DstAccessMask = vk.PipelineStageFlags2(vk.PipelineStage2ComputeShaderBit), vk.AccessFlags2(vk.Access2ShaderSampledReadBit)
+	barrier2(d, cb, &copied, foreign)
+	d.cmds.CmdBindPipeline(cb, vk.PipelineBindPointCompute, e.pipeline)
+	d.cmds.CmdBindDescriptorSets(cb, vk.PipelineBindPointCompute, e.layout, 0, 1, &e.sets[slot], 0, nil)
 	d.cmds.CmdPushConstants(cb, e.layout, vk.ShaderStageFlags(vk.ShaderStageComputeBit), 0, uint32(unsafe.Sizeof(c.constants)), unsafe.Pointer(&c.constants))
 	d.cmds.CmdDispatch(cb, intconv.Must[uint32]((e.coded[0]/4+7)/8), intconv.Must[uint32]((e.coded[1]/2+7)/8), 1)
-	release := imageBarrier(src.e.image, colorRange, vk.ImageLayoutGeneral, vk.ImageLayoutGeneral)
+	release := imageBarrier(src, colorRange, vk.ImageLayoutGeneral, vk.ImageLayoutGeneral)
 	release.SrcQueueFamilyIndex, release.DstQueueFamilyIndex = d.family, vk.QueueFamilyForeignExt
 	release.SrcStageMask, release.SrcAccessMask = vk.PipelineStageFlags2(vk.PipelineStage2ComputeShaderBit), vk.AccessFlags2(vk.Access2ShaderSampledReadBit)
 	barrier2(d, cb, nil, release)
-	signal := e.backend.afterConvert(cb, slot, e.planes.buf)
-	if r := d.cmds.EndCommandBuffer(cb); r != vk.Success {
-		return fmt.Errorf("gpu: vkEndCommandBuffer (NV12): %w", resultError(r))
-	}
-	if err := resetFence(d, e.gfxDone); err != nil {
-		return err
-	}
-	return submit2(d, d.queue, cb, nil, signal, e.gfxDone)
+	e.backend.afterConvert(cb, slot, e.planes.buf)
 }
 
 // Close waits for the frames in flight, dropping their packets, and
@@ -685,12 +689,6 @@ func (e *Encoder) Close() {
 	}
 	if e.linear != 0 {
 		d.cmds.DestroySampler(d.device, e.linear, nil)
-	}
-	if e.gfxDone != 0 {
-		d.cmds.DestroyFence(d.device, e.gfxDone, nil)
-	}
-	if e.gfxPool != 0 {
-		d.cmds.DestroyCommandPool(d.device, e.gfxPool, nil)
 	}
 	if e.descPool != 0 {
 		d.cmds.DestroyDescriptorPool(d.device, e.descPool, nil)

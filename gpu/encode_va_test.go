@@ -96,8 +96,8 @@ func TestVASurfaceHoldsTheConversion(t *testing.T) {
 			if err := c.enc.convert(c.buf, image.Point{}, 0); err != nil {
 				t.Fatal(err)
 			}
-			if r := d.cmds.WaitForFences(d.device, 1, &c.enc.gfxDone, vk.True, ^uint64(0)); r != vk.Success {
-				t.Fatalf("wait for the conversion: %d", r)
+			if err := d.Finish(); err != nil {
+				t.Fatalf("wait for the conversion: %v", err)
 			}
 			y, u, v := nv12Of(col)
 			w, h := vb.coded[0], vb.coded[1]
@@ -115,8 +115,8 @@ func TestVASurfaceHoldsTheConversion(t *testing.T) {
 			if err := c.enc.convert(c.buf, image.Point{}, 0); err != nil {
 				t.Fatal(err)
 			}
-			if r := d.cmds.WaitForFences(d.device, 1, &c.enc.gfxDone, vk.True, ^uint64(0)); r != vk.Success {
-				t.Fatalf("wait for the conversion: %d", r)
+			if err := d.Finish(); err != nil {
+				t.Fatalf("wait for the conversion: %v", err)
 			}
 			written := readPlanes(t, c.enc)
 			if pix, err = vb.dpy.ReadNV12(vb.slots[0].surface, w, h); err != nil {
@@ -216,8 +216,8 @@ func TestVAEncodesFromItsOwnSurfaces(t *testing.T) {
 				if err := c.enc.convert(c.buf, image.Point{}, slot); err != nil {
 					t.Fatal(err)
 				}
-				if r := d.cmds.WaitForFences(d.device, 1, &c.enc.gfxDone, vk.True, ^uint64(0)); r != vk.Success {
-					t.Fatalf("wait for the conversion: %d", r)
+				if err := d.Finish(); err != nil {
+					t.Fatalf("wait for the conversion: %v", err)
 				}
 				if err := vb.dpy.WriteNV12(own[slot], w, h, readPlanes(t, c.enc)); err != nil {
 					t.Fatal(err)

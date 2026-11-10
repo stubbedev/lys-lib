@@ -79,8 +79,15 @@ func main() {
 - The source is a `Buffer`; pass `frame.Dmabuf()` to [`capture`](/wayland#capture)
   to fill it.
 - A compute pass crops, rotates, draws the overlay (`SetOverlay`) and converts
-  to NV12. Encoding overlaps the next conversion, so the buffer is free again
-  when `Encode` returns.
+  to NV12. It is a submission of the device like a pass, and `Encode` waits for
+  neither it nor the encode: the Vulkan video queue encodes after the
+  conversion on the GPU, by a timeline semaphore. The conversion reads the
+  buffer until the device has finished it, so fill the buffer again only after
+  `Device.Finish` (or once `Device.SyncFile` has signalled). The VA-API driver
+  has no such handoff: there `Encode` waits for the conversion.
+- Every wait on the Vulkan device is bounded by its wait limit, a hung GPU an
+  error instead of a frozen caller. The VA-API driver's own wait for a picture
+  (`vaSyncSurface`) has no bound.
 - An `Encoder` belongs to one goroutine.
 - `NewEncoder` fails with `ErrNoVideoEncoder`, carrying both backends' reasons,
   when neither encodes the codec.

@@ -361,17 +361,19 @@ func (b *Buffer) view() (vk.ImageView, error) {
 	return b.sampled, nil
 }
 
-// Close releases the buffer and its fd; closing it again, or after its
-// device, does nothing.
+// Close releases the buffer and its fd, its image once the conversions
+// that read it (Encoder.Encode) have finished; closing it again, or
+// after its device, does nothing.
 func (b *Buffer) Close() {
 	if b.closed {
 		return
 	}
 	b.closed = true
-	delete(b.d.buffers, b)
-	if b.sampled != 0 {
-		b.d.cmds.DestroyImageView(b.d.device, b.sampled, nil)
-		b.sampled = 0
+	d := b.d
+	delete(d.buffers, b)
+	for _, p := range b.e.buf.Planes {
+		_ = syscall.Close(p.FD)
 	}
-	b.e.close(b.d)
+	b.e.buf.Planes = nil
+	d.retire(b)
 }

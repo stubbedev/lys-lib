@@ -21,6 +21,10 @@ type Writer struct {
 	bits uint
 }
 
+// Reset empties the writer for another unit, keeping its storage: a
+// Writer kept between units writes them without allocating.
+func (w *Writer) Reset() { w.buf, w.cur, w.bits = w.buf[:0], 0, 0 }
+
 // U writes v's low n bits, n up to 32.
 func (w *Writer) U(n uint, v uint32) {
 	w.cur = w.cur<<n | uint64(v)&(1<<n-1)
@@ -98,8 +102,11 @@ func (w *Writer) Trailing() {
 
 // Unit is the NAL unit of header bytes and the RBSP written so far
 // (byte-aligned by Trailing), emulation prevention bytes inserted.
-func (w *Writer) Unit(header ...byte) []byte {
-	out := append([]byte(nil), header...)
+func (w *Writer) Unit(header ...byte) []byte { return w.AppendUnit(nil, header...) }
+
+// AppendUnit appends Unit to dst.
+func (w *Writer) AppendUnit(dst []byte, header ...byte) []byte {
+	out := append(dst, header...)
 	zeros := 0
 	for _, b := range w.buf {
 		if zeros == 2 && b <= 3 {
@@ -116,26 +123,28 @@ func (w *Writer) Unit(header ...byte) []byte {
 	return out
 }
 
-// Packed is the NAL unit of header bytes and the bits written so far
-// for a driver to continue (a slice header before its slice data):
-// escaped, its last byte zero-padded, and how many of its bits are
-// the unit's.
-func (w *Writer) Packed(header ...byte) (unit []byte, bits int) {
+// AppendPacked appends to dst the NAL unit of header bytes and the bits
+// written so far for a driver to continue (a slice header before its
+// slice data): escaped, its last byte zero-padded. It returns dst so
+// grown and how many of the bits appended are the unit's.
+func (w *Writer) AppendPacked(dst []byte, header ...byte) (out []byte, bits int) {
 	pad := 0
 	if w.bits > 0 {
 		pad = int(8 - w.bits)
 		w.U(uint(pad), 0)
 	}
-	unit = w.Unit(header...)
-	return unit, len(unit)*8 - pad
+	out = w.AppendUnit(dst, header...)
+	return out, (len(out)-len(dst))*8 - pad
 }
 
 // AnnexB joins NAL units, each behind a four-byte start code.
-func AnnexB(units ...[]byte) []byte {
-	var out []byte
+func AnnexB(units ...[]byte) []byte { return AppendAnnexB(nil, units...) }
+
+// AppendAnnexB appends AnnexB to dst.
+func AppendAnnexB(dst []byte, units ...[]byte) []byte {
 	for _, u := range units {
-		out = append(out, 0, 0, 0, 1)
-		out = append(out, u...)
+		dst = append(dst, 0, 0, 0, 1)
+		dst = append(dst, u...)
 	}
-	return out
+	return dst
 }

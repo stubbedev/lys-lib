@@ -52,6 +52,14 @@ func (t *Texture) destroy() { t.release() }
 
 func (l *Linear) destroy() { l.release() }
 
+func (b *Buffer) destroy() {
+	if b.sampled != 0 {
+		b.d.cmds.DestroyImageView(b.d.device, b.sampled, nil)
+		b.sampled = 0
+	}
+	b.e.close(b.d)
+}
+
 func (t *Target) destroy() {
 	d := t.s.d
 	if t.tex != nil {

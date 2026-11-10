@@ -38,6 +38,11 @@ type vulkanBackend struct {
 	queries   vk.QueryPool
 	pool      vk.CommandPool
 	slots     [encodeSlots]vulkanSlot
+	// converted is the timeline semaphore the n-th conversion signals
+	// with n, which its encode waits for on the video queue; conversions
+	// counts them.
+	converted   vk.Semaphore
+	conversions uint64
 
 	cmd      encodeCommands
 	feedback encodeFeedback
@@ -67,12 +72,11 @@ type encodeFeedback struct {
 }
 
 // vulkanSlot is a frame in flight on the video queue: its source
-// picture, its commands, the semaphore its conversion signals and the
-// fence its encode does, and where in the bitstream buffer it writes.
+// picture, its commands, the fence its encode signals, and where in
+// the bitstream buffer it writes.
 type vulkanSlot struct {
 	src    videoImage
 	cb     vk.CommandBuffer
-	ready  vk.SemaphoreSubmitInfo
 	done   vk.Fence
 	offset int
 }
@@ -97,8 +101,8 @@ func (vb *vulkanBackend) codedSize() [2]int { return vb.coded }
 
 func (vb *vulkanBackend) parameterSets() [][]byte { return vb.paramSets }
 
-// createCommands makes the video queue's command buffers, and each
-// slot's semaphore and fence.
+// createCommands makes the video queue's command buffers, each slot's
+// fence and the conversions' semaphore.
 func (vb *vulkanBackend) createCommands() error {
 	d := vb.d
 	var err error
@@ -113,32 +117,32 @@ func (vb *vulkanBackend) createCommands() error {
 		if s.done, err = d.fence(); err != nil {
 			return err
 		}
-		s.ready = vk.SemaphoreSubmitInfo{SType: vk.StructureTypeSemaphoreSubmitInfo, StageMask: vk.PipelineStageFlags2(vk.PipelineStage2AllCommandsBit)}
-		sci := vk.SemaphoreCreateInfo{SType: vk.StructureTypeSemaphoreCreateInfo}
-		if r := d.cmds.CreateSemaphore(d.device, &sci, nil, &s.ready.Semaphore); r != vk.Success {
-			return fmt.Errorf("gpu: vkCreateSemaphore: %w", resultError(r))
-		}
 	}
-	return nil
+	vb.converted, err = d.timelineSemaphore()
+	return err
 }
 
-// afterConvert copies the planes into slot's source picture and
-// signals its semaphore for the video queue.
-func (vb *vulkanBackend) afterConvert(cb vk.CommandBuffer, slot int, planes vk.Buffer) *vk.SemaphoreSubmitInfo {
+// afterConvert copies the planes into slot's source picture and has the
+// conversion's submission signal the video queue.
+func (vb *vulkanBackend) afterConvert(cb vk.CommandBuffer, slot int, planes vk.Buffer) {
 	d, s := vb.d, &vb.slots[slot]
 	copyPlanes(d, cb, planes, s.src.image, vb.coded, vk.QueueFamilyIgnored)
 	toSrc := imageBarrier(s.src.image, nv12Range, vk.ImageLayoutTransferDstOptimal, vk.ImageLayoutVideoEncodeSrcKhr)
 	toSrc.SrcStageMask, toSrc.SrcAccessMask = vk.PipelineStageFlags2(vk.PipelineStage2CopyBit), vk.AccessFlags2(vk.Access2TransferWriteBit)
 	barrier2(d, cb, nil, toSrc)
-	return &s.ready
+	vb.conversions++
+	d.signalTimeline(timelineWait{semaphore: vb.converted, value: vb.conversions})
 }
 
-// collect waits for slot's encode and reads its packet out of the
-// bitstream buffer, where the feedback query says it is.
+// collect waits for slot's encode, when it has not finished, and reads
+// its packet out of the bitstream buffer, where the feedback query says
+// it is.
 func (vb *vulkanBackend) collect(slot int) ([]byte, error) {
 	d, s := vb.d, &vb.slots[slot]
-	if r := d.cmds.WaitForFences(d.device, 1, &s.done, vk.True, ^uint64(0)); r != vk.Success {
-		return nil, fmt.Errorf("wait for an encode: %w", resultError(r))
+	if !d.fenceFinished(s.done) {
+		if err := d.waitFence(s.done); err != nil {
+			return nil, fmt.Errorf("wait for an encode: %w", err)
+		}
 	}
 	res := &vb.feedback
 	*res = encodeFeedback{}
@@ -165,14 +169,14 @@ func (vb *vulkanBackend) close() {
 	for i := range vb.slots {
 		s := &vb.slots[i]
 		s.src.close(d)
-		if s.ready.Semaphore != 0 {
-			d.cmds.DestroySemaphore(d.device, s.ready.Semaphore, nil)
-		}
 		if s.done != 0 {
 			d.cmds.DestroyFence(d.device, s.done, nil)
 		}
 	}
 	vb.dpb.close(d)
+	if vb.converted != 0 {
+		d.cmds.DestroySemaphore(d.device, vb.converted, nil)
+	}
 	if vb.pool != 0 {
 		d.cmds.DestroyCommandPool(d.device, vb.pool, nil)
 	}
@@ -442,7 +446,7 @@ func (vb *vulkanBackend) createBuffers() error {
 }
 
 // encode records and submits encoding slot's source picture, after
-// its semaphore.
+// the conversion submitted last.
 func (vb *vulkanBackend) encode(slot, frame, sinceIDR int, idrs uint16) error {
 	d, s, c := vb.d, &vb.slots[slot], &vb.cmd
 	cb := s.cb
@@ -516,7 +520,7 @@ func (vb *vulkanBackend) encode(slot, frame, sinceIDR int, idrs uint16) error {
 	if err := resetFence(d, s.done); err != nil {
 		return err
 	}
-	wait := vk.SemaphoreSubmitInfo{SType: vk.StructureTypeSemaphoreSubmitInfo, Semaphore: s.ready.Semaphore, StageMask: coding}
+	wait := vk.SemaphoreSubmitInfo{SType: vk.StructureTypeSemaphoreSubmitInfo, Semaphore: vb.converted, Value: vb.conversions, StageMask: coding}
 	return submit2(d, d.video.queue, cb, &wait, nil, s.done)
 }
 

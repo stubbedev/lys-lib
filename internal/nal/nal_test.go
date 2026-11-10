@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/stubbedev/lys-lib/internal/nal/naltest"
+	"github.com/stubbedev/lys-lib/testbuild"
 )
 
 // Exp-Golomb codes come out as the spec's table 9-2 lists them.
@@ -104,15 +105,51 @@ func TestHEVCParameterSets(t *testing.T) {
 }
 
 // A packed unit pads its last byte with zeros and counts only the bits
-// written, escaped as a whole unit is.
+// written, escaped as a whole unit is, behind what it is appended to.
 func TestPacked(t *testing.T) {
 	var w Writer
 	w.U(8, 0)
 	w.U(8, 0)
 	w.U(3, 0)
-	unit, bits := w.Packed(0x65)
-	if want := []byte{0x65, 0, 0, 3, 0}; !bytes.Equal(unit, want) || bits != 8*len(want)-5 {
-		t.Errorf("packed %x of %d bits, want %x of %d", unit, bits, want, 8*len(want)-5)
+	out, bits := w.AppendPacked([]byte{0xaa, 0xbb}, 0x65)
+	if want := []byte{0xaa, 0xbb, 0x65, 0, 0, 3, 0}; !bytes.Equal(out, want) || bits != 8*5-5 {
+		t.Errorf("packed %x of %d bits, want %x of %d", out, bits, want, 8*5-5)
+	}
+}
+
+// A slice header appended to a buffer with room for it allocates
+// nothing, the encoder's every frame, and is the header a fresh buffer
+// gets; Annex-B appends likewise.
+func TestSliceHeadersAppendWithoutAllocating(t *testing.T) {
+	if testbuild.Race {
+		t.Skip("the race detector allocates on its own")
+	}
+	avc := H264{ProfileIdc: 100, LevelIdc: 41, WidthMbs: 40, HeightMbs: 23, Log2MaxFrameNum: 4, MaxNumRefFrames: 1, CABAC: true, Transform8x8: true, InitQP: 26}
+	hevc := HEVC{LevelIdc: 93, Width: 640, Height: 360, Log2MaxPocLsb: 8, Log2MinCb: 3, Log2Ctb: 6, Log2MinTb: 2, Log2MaxTb: 5, TransformDepth: 2, SAO: true, InitQP: 20}
+	unit, stream := make([]byte, 0, 128), make([]byte, 0, 128)
+	var w Writer
+	for name, header := range map[string]func(dst []byte, sinceIDR int) ([]byte, int){
+		"H.264": func(dst []byte, sinceIDR int) ([]byte, int) { return avc.AppendSliceHeader(dst, &w, sinceIDR, 3, 20) },
+		"H.265": func(dst []byte, sinceIDR int) ([]byte, int) {
+			return hevc.AppendSliceHeader(dst, &w, sinceIDR, true, 23)
+		},
+	} {
+		for _, sinceIDR := range []int{0, 9} {
+			want, wantBits := header(nil, sinceIDR)
+			var bits int
+			if n := testing.AllocsPerRun(100, func() {
+				unit, bits = header(unit[:0], sinceIDR)
+				stream = AppendAnnexB(stream[:0], unit)
+			}); n != 0 {
+				t.Errorf("%s frame %d: %v allocations a slice header, want 0", name, sinceIDR, n)
+			}
+			if !bytes.Equal(unit, want) || bits != wantBits {
+				t.Errorf("%s frame %d: appended %x of %d bits, a fresh buffer gets %x of %d", name, sinceIDR, unit, bits, want, wantBits)
+			}
+			if !bytes.Equal(stream, AnnexB(want)) {
+				t.Errorf("%s frame %d: appended %x behind a start code, want %x", name, sinceIDR, stream, AnnexB(want))
+			}
+		}
 	}
 }
 
@@ -132,17 +169,17 @@ func asDriver(unit []byte, bits int) []byte {
 // from the picture's initial one.
 func TestH264SliceHeaders(t *testing.T) {
 	h := H264{ProfileIdc: 100, LevelIdc: 41, WidthMbs: 40, HeightMbs: 23, CropBottom: 4, Log2MaxFrameNum: 4, MaxNumRefFrames: 1, CABAC: true, Transform8x8: true, InitQP: 26}
-	idr := asDriver(h.SliceHeader(0, 3, 20))
+	idr := asDriver(h.AppendSliceHeader(nil, new(Writer), 0, 3, 20))
 	fields := naltest.Trace(t, "h264", AnnexB(h.SPS(), h.PPS(), idr))
 	naltest.Want(t, fields, map[string]int{"nal_unit_type": 5, "slice_type": 7, "frame_num": 0, "idr_pic_id": 3, "no_output_of_prior_pics_flag": 0, "long_term_reference_flag": 0, "slice_qp_delta": -6})
-	p := asDriver(h.SliceHeader(9, 0, 30))
+	p := asDriver(h.AppendSliceHeader(nil, new(Writer), 9, 0, 30))
 	fields = naltest.Trace(t, "h264", AnnexB(h.SPS(), h.PPS(), idr, p))
 	naltest.Want(t, fields, map[string]int{"nal_unit_type": 1, "slice_type": 5, "frame_num": 9, "num_ref_idx_active_override_flag": 0, "ref_pic_list_modification_flag_l0": 0, "adaptive_ref_pic_marking_mode_flag": 0, "cabac_init_idc": 0, "slice_qp_delta": 4})
 }
 
 func TestH264SliceHeaderCarriesTheLargestIdrPicID(t *testing.T) {
 	h := H264{ProfileIdc: 100, LevelIdc: 41, WidthMbs: 40, HeightMbs: 23, CropBottom: 4, Log2MaxFrameNum: 4, MaxNumRefFrames: 1, CABAC: true, Transform8x8: true, InitQP: 26}
-	idr := asDriver(h.SliceHeader(0, math.MaxUint16, 26))
+	idr := asDriver(h.AppendSliceHeader(nil, new(Writer), 0, math.MaxUint16, 26))
 	fields := naltest.Trace(t, "h264", AnnexB(h.SPS(), h.PPS(), idr))
 	naltest.Want(t, fields, map[string]int{"nal_unit_type": 5, "idr_pic_id": math.MaxUint16})
 }
@@ -154,7 +191,7 @@ func TestH264SliceHeaderCarriesTheLargestIdrPicID(t *testing.T) {
 func TestHEVCSliceHeaders(t *testing.T) {
 	h := HEVC{LevelIdc: 93, Width: 640, Height: 360, Log2MaxPocLsb: 8, Log2MinCb: 3, Log2Ctb: 6, Log2MinTb: 2, Log2MaxTb: 5, TransformDepth: 2, SAO: true, InitQP: 20}
 	sets := [][]byte{h.VPS(), h.SPS(), h.PPS()}
-	idr, bits := h.SliceHeader(0, false, 20)
+	idr, bits := h.AppendSliceHeader(nil, new(Writer), 0, false, 20)
 	if bits != 8*len(idr) {
 		t.Errorf("an H.265 slice header of %d bytes is %d bits, want it byte-aligned", len(idr), bits)
 	}
@@ -165,7 +202,7 @@ func TestHEVCSliceHeaders(t *testing.T) {
 		gpb  bool
 		kind int
 	}{{false, 1}, {true, 0}} {
-		p, _ := h.SliceHeader(5, c.gpb, 23)
+		p, _ := h.AppendSliceHeader(nil, new(Writer), 5, c.gpb, 23)
 		p = append(p, 0x11, 0x80)
 		fields = naltest.Trace(t, "hevc", AnnexB(append(sets, idr, p)...))
 		naltest.Want(t, fields, map[string]int{"nal_unit_type": 1, "slice_type": c.kind, "slice_pic_order_cnt_lsb": 5, "short_term_ref_pic_set_sps_flag": 1, "num_ref_idx_active_override_flag": 0, "five_minus_max_num_merge_cand": 0, "slice_qp_delta": 3})

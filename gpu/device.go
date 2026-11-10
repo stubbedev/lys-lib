@@ -323,8 +323,9 @@ func (d *Device) pick(p vk.PhysicalDevice, exporting bool, node *drmNode) error 
 			d.implicitFences = d.syncFiles && exporting && props.VendorID != nvidiaVendor
 			d.mapsPlanesWhole = props.VendorID == nvidiaVendor
 			d.ycbcr = d.probeYCbCr(p)
-			d.video, d.videoWhy = d.probeVideo(p, d.sync2, have)
-			d.decode, d.decodeWhy = d.probeDecode(p, d.sync2, d.ycbcr, have)
+			timelines := d.sync2 && d.probeTimeline(p)
+			d.video, d.videoWhy = d.probeVideo(p, d.sync2, timelines, have)
+			d.decode, d.decodeWhy = d.probeDecode(p, d.sync2, timelines, d.ycbcr, have)
 			return nil
 		}
 	}
@@ -334,7 +335,7 @@ func (d *Device) pick(p vk.PhysicalDevice, exporting bool, node *drmNode) error 
 // open creates the logical device: its graphics queue, the video
 // encode and decode queues where the device codes video,
 // synchronization2 where it has it (video coding records with it),
-// timeline semaphores where it decodes video, and the videoDecodeVP9
+// timeline semaphores where it codes video, and the videoDecodeVP9
 // feature where it decodes VP9.
 func (d *Device) open() error {
 	prio := float32(1)
@@ -363,7 +364,7 @@ func (d *Device) open() error {
 		dci.PNext = (*uintptr)(unsafe.Pointer(&vp9))
 	}
 	timeline := vk.PhysicalDeviceTimelineSemaphoreFeatures{SType: vk.StructureTypePhysicalDeviceTimelineSemaphoreFeatures, PNext: dci.PNext, TimelineSemaphore: vk.True}
-	if d.decode != nil {
+	if d.decode != nil || d.video != nil {
 		dci.PNext = (*uintptr)(unsafe.Pointer(&timeline))
 	}
 	if d.video != nil {
