@@ -28,6 +28,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
+	"math"
 	"slices"
 
 	"github.com/stubbedev/lys-lib/intconv"
@@ -441,27 +442,36 @@ func (e *Encoder) encodeFrame(out []byte, pcm []int16) (int, error) {
 // history and reports whether the frame, with the previous frame's
 // overlap, is digital silence.
 func (e *Encoder) loadInput(pcm []int16) bool {
-	peak := e.overlapMax
-	var tail float32
+	peak := math.Float32bits(e.overlapMax)
+	var tail uint32
 	for ch := range e.channels {
-		hp, pm := e.highPassMem[ch], e.preemphMem[ch]
 		dst := e.pre[ch][combMaxPeriod:]
-		for i := range FrameSize {
-			x := float32(pcm[i*e.channels+ch])
-			y := x - hp
-			hp = float32(highPassCoef*x) + highPassFloor + float32((1-highPassCoef)*hp)
-			if i < FrameSize-overlap {
-				peak = max(peak, abs32(y))
-			} else {
-				tail = max(tail, abs32(y))
-			}
-			dst[i] = y - pm
-			pm = preemphasis * y
-		}
-		e.highPassMem[ch], e.preemphMem[ch] = hp, pm
+		const body = FrameSize - overlap
+		peak = e.filterInput(ch, dst[:body], pcm[ch:], peak)
+		tail = e.filterInput(ch, dst[body:FrameSize], pcm[body*e.channels+ch:], tail)
 	}
-	e.overlapMax = tail
-	return max(peak, tail) <= silenceLevel
+	e.overlapMax = math.Float32frombits(tail)
+	return max(peak, tail) <= math.Float32bits(silenceLevel)
+}
+
+// filterInput high-passes and pre-emphasises channel ch's next
+// len(dst) samples, every e.channels-th of pcm, into dst and returns
+// the larger of peak and the high-passed samples' largest magnitude,
+// both as absBits has them.
+func (e *Encoder) filterInput(ch int, dst []float32, pcm []int16, peak uint32) uint32 {
+	hp, pm := e.highPassMem[ch], e.preemphMem[ch]
+	at := 0
+	for i := range dst {
+		x := float32(pcm[at])
+		at += e.channels
+		y := x - hp
+		hp = float32(highPassCoef*x) + highPassFloor + float32((1-highPassCoef)*hp)
+		peak = max(peak, absBits(y))
+		dst[i] = y - pm
+		pm = preemphasis * y
+	}
+	e.highPassMem[ch], e.preemphMem[ch] = hp, pm
+	return peak
 }
 
 // computeEnergies runs the long or short-block MDCTs over the filtered

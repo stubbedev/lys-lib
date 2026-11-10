@@ -86,16 +86,53 @@ func rotation(n, k, spread, blocks int) (c, s float32, stride2 int, ok bool) {
 // apart, forward and then backward over x.
 func rotate1(x []float32, stride int, c, s float32) {
 	n := len(x)
-	for i := range n - stride {
-		x1, x2 := x[i], x[i+stride]
-		x[i+stride] = float32(c*x2) + float32(s*x1)
-		x[i] = float32(c*x1) - float32(s*x2)
+	if stride == 1 {
+		rotateAdjacent(x, c, s)
+		return
 	}
-	for i := n - 2*stride - 1; i >= 0; i-- {
-		x1, x2 := x[i], x[i+stride]
-		x[i+stride] = float32(c*x2) + float32(s*x1)
-		x[i] = float32(c*x1) - float32(s*x2)
+	if n <= stride {
+		return
 	}
+	lo := x[:n-stride]
+	hi := x[stride:][:len(lo)]
+	for i, x2 := range hi {
+		x1 := lo[i]
+		hi[i] = float32(c*x2) + float32(s*x1)
+		lo[i] = float32(c*x1) - float32(s*x2)
+	}
+	if n <= 2*stride {
+		return
+	}
+	lo = x[:n-2*stride]
+	hi = x[stride:][:len(lo)]
+	for i := len(lo) - 1; i >= 0; i-- {
+		x1, x2 := lo[i], hi[i]
+		hi[i] = float32(c*x2) + float32(s*x1)
+		lo[i] = float32(c*x1) - float32(s*x2)
+	}
+}
+
+// rotateAdjacent is rotate1 at stride 1, where each rotation takes the
+// sample the one before it wrote: that sample stays in a register
+// instead of going through memory.
+func rotateAdjacent(x []float32, c, s float32) {
+	n := len(x)
+	if n < 2 {
+		return
+	}
+	x1 := x[0]
+	for i, x2 := range x[1:] {
+		x[i] = float32(c*x1) - float32(s*x2)
+		x1 = float32(c*x2) + float32(s*x1)
+	}
+	x[n-1] = x1
+	x2 := x[n-2]
+	for i := n - 3; i >= 0; i-- {
+		x1 := x[i]
+		x[i+1] = float32(c*x2) + float32(s*x1)
+		x2 = float32(c*x1) - float32(s*x2)
+	}
+	x[0] = x2
 }
 
 // quant is alg_quant: it finds the k-pulse vector closest in direction
@@ -106,10 +143,9 @@ func (p *pvq) quant(rc *rangeEncoder, x []float32, k, spread, blocks int) {
 	rotate(x, k, spread, blocks)
 	y, iy, sign := p.y[:n], p.iy[:n], p.sign[:n]
 	for j, v := range x {
-		sign[j] = v <= 0
-		if sign[j] {
-			x[j] = -v
-		}
+		negative := v <= 0
+		sign[j] = negative
+		x[j] = math.Float32frombits(math.Float32bits(v) ^ b2u(negative)<<31)
 		iy[j] = 0
 		y[j] = 0
 	}
@@ -127,7 +163,7 @@ func (p *pvq) quant(rc *rangeEncoder, x []float32, k, spread, blocks int) {
 		}
 		rcp := float32(k-1) * (1 / sum)
 		for j, v := range x {
-			iy[j] = int(math.Floor(float64(rcp * v)))
+			iy[j] = int(float32(rcp * v))
 			y[j] = float32(iy[j])
 			yy += float32(y[j] * y[j])
 			xy += float32(v * y[j])
@@ -146,27 +182,38 @@ func (p *pvq) quant(rc *rangeEncoder, x []float32, k, spread, blocks int) {
 		bestNum := float32(-1e15)
 		bestDen := float32(0)
 		yy++
-		for j, v := range x {
-			rxy := xy + v
-			ryy := yy + y[j]
-			rxy *= rxy
-			if bestDen*rxy > ryy*bestNum {
-				bestDen = ryy
-				bestNum = rxy
-				best = j
+		for j := 0; ; j++ {
+			for ; j < len(x); j++ {
+				if num, den := pulseGain(xy, yy, x[j], y[j]); bestDen*num > den*bestNum {
+					break
+				}
 			}
+			if j == len(x) {
+				break
+			}
+			bestNum, bestDen = pulseGain(xy, yy, x[j], y[j])
+			best = j
 		}
 		xy += x[best]
 		yy += y[best]
 		y[best] += 2
 		iy[best]++
 	}
-	for j := range iy {
-		if sign[j] {
-			iy[j] = -iy[j]
-		}
+	for j, v := range iy {
+		iy[j] = signed(v, sign[j])
 	}
 	rc.uint(p.u.index(iy), p.u.size(n, k))
+}
+
+// pulseGain is what one more pulse does at a position of magnitude v
+// that holds y/2 of them, given the vector's correlation xy with the
+// band and its energy yy with the pulse counted: the squared
+// correlation and the energy, whose ratio the search maximises. The
+// search computes it again for a position that wins instead of keeping
+// every position's, which leaves its scan nothing to save.
+func pulseGain(xy, yy, v, y float32) (num, den float32) {
+	rxy := xy + v
+	return rxy * rxy, yy + y
 }
 
 const (
@@ -214,16 +261,14 @@ func (u *pvqTable) index(iy []int) uint32 {
 }
 
 func signed(v int, negative bool) int {
-	if negative {
-		return -v
-	}
-	return v
+	flip := -b2i(negative)
+	return (v ^ flip) - flip
 }
 
 // vector is cwrsi: it writes the k-pulse vector of index idx into iy,
 // of at least two dimensions, and returns its squared norm.
 func (u *pvqTable) vector(iy []int, k int, idx uint32) float32 {
-	var yy float32
+	yy := 0
 	n := len(iy)
 	for ; n > 2; n-- {
 		var v int
@@ -232,9 +277,7 @@ func (u *pvqTable) vector(iy []int, k int, idx uint32) float32 {
 			row := &u[n]
 			p := row[k+1]
 			negative := idx >= p
-			if negative {
-				idx -= p
-			}
+			idx -= p & -b2u(negative)
 			k0 := k
 			if row[n] > idx {
 				for k, p = n-1, u[n-1][n]; p > idx; p = u[k][n] {
@@ -254,9 +297,7 @@ func (u *pvqTable) vector(iy []int, k int, idx uint32) float32 {
 				break
 			}
 			negative := idx >= q
-			if negative {
-				idx -= q
-			}
+			idx -= q & -b2u(negative)
 			k0 := k
 			for k, p = k-1, u[k-1][n]; p > idx; p = u[k][n] {
 				k--
@@ -265,22 +306,20 @@ func (u *pvqTable) vector(iy []int, k int, idx uint32) float32 {
 			v = signed(k0-k, negative)
 		}
 		iy[len(iy)-n] = v
-		yy += float32(v * v)
+		yy += v * v
 	}
 	p := u.count(2, k+1)
 	negative := idx >= p
-	if negative {
-		idx -= p
-	}
+	idx -= p & -b2u(negative)
 	k0 := k
 	k = int((idx + 1) >> 1)
 	idx -= u.count(2, k)
 	v := signed(k0-k, negative)
 	iy[len(iy)-2] = v
-	yy += float32(v * v)
+	yy += v * v
 	v = signed(k, idx != 0)
 	iy[len(iy)-1] = v
-	return yy + float32(v*v)
+	return float32(yy + v*v)
 }
 
 // unquant is alg_unquant: it decodes a k-pulse shape into x scaled to

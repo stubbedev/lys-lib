@@ -2,7 +2,9 @@ package opus
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/binary"
+	"encoding/hex"
 	"math"
 	"os"
 	"os/exec"
@@ -588,5 +590,88 @@ func TestAppendHead(t *testing.T) {
 	want := []byte{'O', 'p', 'u', 's', 'H', 'e', 'a', 'd', 1, 2, PreSkip, 0, 0x80, 0xbb, 0, 0, 0, 0, 0}
 	if got := enc.AppendHead(nil); !bytes.Equal(got, want) {
 		t.Errorf("AppendHead = %v, want %v", got, want)
+	}
+}
+
+// pinnedPCM is two seconds of a signal built from integers alone, so it
+// is the same on every architecture: a triangle wave per channel over
+// shared noise, rising from silence, with a gap and near full-scale
+// bursts.
+func pinnedPCM(channels int) []int16 {
+	const frames = 2 * SampleRate
+	pcm := make([]int16, frames*channels)
+	seed := uint32(1)
+	for i := range frames {
+		seed = seed*1664525 + 1013904223
+		shared := int(int32(seed) >> 20)
+		for c := range channels {
+			seed = seed*1664525 + 1013904223
+			phase := i * (440 + 330*c) % SampleRate
+			triangle := abs(4*phase-2*SampleRate) - SampleRate
+			v := shared + int(int32(seed)>>22) + triangle*9000/SampleRate*min(i, SampleRate)/SampleRate
+			switch {
+			case i%20000 < 240:
+				v += int(int32(seed) >> 16)
+			case i > SampleRate/2 && i < SampleRate/2+6000:
+				v = 0
+			}
+			pcm[i*channels+c] = int16(max(math.MinInt16, min(math.MaxInt16, v)))
+		}
+	}
+	return pcm
+}
+
+// pinnedStreams are the first eight bytes of the SHA-256 of what
+// pinnedPCM codes to (each packet after its length) and of what those
+// packets decode to.
+var pinnedStreams = []struct {
+	channels int
+	bitrate  int
+	rate     RateControl
+	packets  string
+	pcm      string
+}{
+	{channels: 2, bitrate: 128000, rate: CBR, packets: "3a482bb7a8881795", pcm: "10ce81a4b5eb423a"},
+	{channels: 2, bitrate: 64000, rate: ConstrainedVBR, packets: "1514f2c33837fc40", pcm: "75b67d5ffb29e0dd"},
+	{channels: 2, bitrate: 24000, rate: ConstrainedVBR, packets: "9adf47b29ce2766f", pcm: "ce6fa993b9add488"},
+	{channels: 2, bitrate: 320000, rate: CBR, packets: "90b9d29da2b86796", pcm: "95ab3d889f3af0bc"},
+	{channels: 1, bitrate: 64000, rate: CBR, packets: "cdff8ad270f019ff", pcm: "0c3bca7277cdbfd1"},
+	{channels: 1, bitrate: 16000, rate: ConstrainedVBR, packets: "b6020221339e4ec7", pcm: "a3caeeebcb3f56ab"},
+}
+
+func TestEncodeAndDecodeAreBitExact(t *testing.T) {
+	for _, c := range pinnedStreams {
+		enc, err := NewEncoder(c.channels, c.bitrate, c.rate)
+		if err != nil {
+			t.Fatal(err)
+		}
+		dec, err := NewDecoder(enc.AppendHead(nil))
+		if err != nil {
+			t.Fatal(err)
+		}
+		in := pinnedPCM(c.channels)
+		packets, pcm := sha256.New(), sha256.New()
+		for n := FrameSize * c.channels; len(in) >= n; in = in[n:] {
+			p, err := enc.Encode(nil, in[:n])
+			if err != nil {
+				t.Fatal(err)
+			}
+			packets.Write(binary.LittleEndian.AppendUint16(nil, uint16(len(p))))
+			packets.Write(p)
+			out, err := dec.Decode(nil, p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := binary.Write(pcm, binary.LittleEndian, out); err != nil {
+				t.Fatal(err)
+			}
+		}
+		gotPackets, gotPCM := hex.EncodeToString(packets.Sum(nil)[:8]), hex.EncodeToString(pcm.Sum(nil)[:8])
+		if gotPackets != c.packets {
+			t.Errorf("%d channels at %d b/s, rate control %d: the packets hash to %s, want %s: the bitstream changed", c.channels, c.bitrate, c.rate, gotPackets, c.packets)
+		}
+		if gotPCM != c.pcm {
+			t.Errorf("%d channels at %d b/s, rate control %d: the decoded samples hash to %s, want %s: the decoder's output changed", c.channels, c.bitrate, c.rate, gotPCM, c.pcm)
+		}
 	}
 }

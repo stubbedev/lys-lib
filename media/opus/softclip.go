@@ -1,22 +1,25 @@
 package opus
 
-// softClip is opus_pcm_soft_clip: it bends every excursion of x (one
-// packet's interleaved samples in [-1, 1] scale) past full scale back
-// under it with the quadratic x + a*x², from the zero crossing before
-// the peak to the one after, so loud decoded audio saturates smoothly
-// instead of clipping. mem carries each channel's curve into the next
-// packet.
-func softClip(x []float32, channels int, mem *[2]float32) {
-	clean := mem[0] == 0 && mem[1] == 0
+import "math"
+
+// softClip is opus_pcm_soft_clip on samples it first scales: it brings
+// x (one packet's interleaved samples) to [-1, 1] scale by scale and
+// bends every excursion past full scale back under it with the
+// quadratic x + a*x², from the zero crossing before the peak to the
+// one after, so loud decoded audio saturates smoothly instead of
+// clipping. mem carries each channel's curve into the next packet.
+func softClip(x []float32, scale float32, channels int, mem *[2]float32) {
+	var peak uint32
 	for i, v := range x {
-		if v >= -1 && v <= 1 {
-			continue
-		}
-		x[i] = max(-2, min(2, v))
-		clean = false
+		v *= scale
+		x[i] = v
+		peak = max(peak, absBits(v))
 	}
-	if clean {
+	if peak <= math.Float32bits(1) && mem[0] == 0 && mem[1] == 0 {
 		return
+	}
+	for i, v := range x {
+		x[i] = max(-2, min(2, v))
 	}
 	n := len(x) / channels
 	for c := range channels {

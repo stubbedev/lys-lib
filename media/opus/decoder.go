@@ -4,7 +4,6 @@ import (
 	"encoding/binary"
 	"errors"
 	"fmt"
-	"math"
 	"slices"
 
 	"github.com/stubbedev/lys-lib/intconv"
@@ -242,15 +241,29 @@ func (d *Decoder) Decode(dst []int16, packet []byte) ([]int16, error) {
 			s, sc = int(m)/2, int(m)%2
 		}
 		st := &d.streams[s]
-		for i := range samples {
-			out[i*d.channels+c] = toInt16(st.pcm[i*st.channels+sc] * 32768)
+		src, step, width := st.pcm[sc:], st.channels, d.channels
+		for i, o := 0, c; o < len(out); i, o = i+step, o+width {
+			out[o] = toInt16(src[i] * 32768)
 		}
 	}
 	return dst, nil
 }
 
+// toInt16 rounds v to the nearest int16, halves to even, saturating;
+// NaN is 0. Adding 1.5·2²³ to a value within int16 leaves a float32
+// with no fraction bits, which rounds it as the conversion must; v is
+// converted first so that a product passed in cannot fuse into the sum.
 func toInt16(v float32) int16 {
-	return int16(math.RoundToEven(float64(max(-32768, min(32767, v)))))
+	const integral = 3 << 22
+	switch {
+	case v > -32768 && v < 32767:
+		return int16(float32(float32(v)+integral) - integral)
+	case v >= 32767:
+		return 32767
+	case v <= -32768:
+		return -32768
+	}
+	return 0
 }
 
 // streamDecoder is OpusDecoder: one elementary stream of one or two
@@ -436,12 +449,7 @@ func (s *streamDecoder) decode() {
 	for _, f := range s.frames[:s.nframes] {
 		n += s.decodeFrame(f, s.pcm[n*s.channels:], maxPacketDur-n)
 	}
-	pcm := s.pcm[:n*s.channels]
-	scale := s.gain / 32768
-	for i, v := range pcm {
-		pcm[i] = v * scale
-	}
-	softClip(pcm, s.channels, &s.clip)
+	softClip(s.pcm[:n*s.channels], s.gain/32768, s.channels, &s.clip)
 }
 
 // decodeFrame is opus_decode_frame: one frame (nil or of at most one

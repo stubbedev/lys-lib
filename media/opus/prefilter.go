@@ -59,12 +59,19 @@ func combFilter(y, x []float32, at int, f0, f1 pitchFilter, window []float32) {
 			float32(f*g1[1]*(x[j-t1+1]+x[j-t1-1])) +
 			float32(f*g1[2]*(x[j-t1+2]+x[j-t1-2]))
 	}
-	for i := fade; i < n; i++ {
-		j := at + i
-		y[i] = x[j] +
-			float32(g1[0]*x[j-t1]) +
-			float32(g1[1]*(x[j-t1+1]+x[j-t1-1])) +
-			float32(g1[2]*(x[j-t1+2]+x[j-t1-2]))
+	if fade >= n {
+		return
+	}
+	dst := y[fade:n]
+	src := x[at+fade:][:len(dst)]
+	taps := x[at+fade-t1-2:][:len(dst)+4]
+	x0, x1, x2, x3 := taps[0], taps[1], taps[2], taps[3]
+	for i, x4 := range taps[4:] {
+		dst[i] = src[i] +
+			float32(g1[0]*x2) +
+			float32(g1[1]*(x3+x1)) +
+			float32(g1[2]*(x4+x0))
+		x0, x1, x2, x3 = x1, x2, x3, x4
 	}
 }
 

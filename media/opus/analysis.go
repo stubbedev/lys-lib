@@ -218,15 +218,9 @@ func (e *Encoder) spreadingDecision(weight *[nbBands]int, updateTapset bool) int
 			var tcount [3]int
 			for _, v := range x {
 				x2n := v * v * float32(n)
-				if x2n < 0.25 {
-					tcount[0]++
-				}
-				if x2n < 0.0625 {
-					tcount[1]++
-				}
-				if x2n < 0.015625 {
-					tcount[2]++
-				}
+				tcount[0] += b2i(x2n < 0.25)
+				tcount[1] += b2i(x2n < 0.0625)
+				tcount[2] += b2i(x2n < 0.015625)
 			}
 			if i > nbBands-4 {
 				hfSum += 32 * (tcount[1] + tcount[0]) / n
@@ -350,12 +344,11 @@ func (e *Encoder) stereoAnalysis() bool {
 	return (width+thetas)*sumMS > width*sumLR
 }
 
-func abs32(v float32) float32 {
-	if v < 0 {
-		return -v
-	}
-	return v
-}
+func abs32(v float32) float32 { return math.Float32frombits(absBits(v)) }
+
+// absBits is the bit pattern of |v|, which orders as |v| does for
+// every v but NaN, above them all.
+func absBits(v float32) uint32 { return math.Float32bits(v) &^ (1 << 31) }
 
 func log2(v float32) float32 { return float32(gomath.Log2(float64(v))) }
 

@@ -130,3 +130,32 @@ func TestPVQVectorInvertsIndexInEveryReachableCodebook(t *testing.T) {
 		}
 	}
 }
+
+func TestRotate1RotatesEachPairForwardThenBackward(t *testing.T) {
+	noise := testNoise(13)
+	for stride := 1; stride <= 5; stride++ {
+		for n := range 48 {
+			c, s := noise.next(), noise.next()
+			got := make([]float32, n)
+			for i := range got {
+				got[i] = noise.next()
+			}
+			want := slices.Clone(got)
+			pair := func(i int) {
+				x1, x2 := want[i], want[i+stride]
+				want[i+stride] = float32(c*x2) + float32(s*x1)
+				want[i] = float32(c*x1) - float32(s*x2)
+			}
+			for i := range n - stride {
+				pair(i)
+			}
+			for i := n - 2*stride - 1; i >= 0; i-- {
+				pair(i)
+			}
+			rotate1(got, stride, c, s)
+			if !slices.Equal(got, want) {
+				t.Fatalf("%d samples at stride %d: %v, want %v", n, stride, got, want)
+			}
+		}
+	}
+}
