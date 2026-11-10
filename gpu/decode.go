@@ -66,6 +66,9 @@ type VideoDecoder struct {
 	dpb        videoImage
 	dpbFresh   bool
 	reset      bool
+	// coded is the size of the picture each DPB slot holds, which a
+	// stream that scales its references (VP9) changes between pictures.
+	coded [maxDPBSlots][2]int
 
 	// slots are the pictures in flight and the room for more: from next
 	// on, round, in the order their decodes were submitted, so next is
@@ -812,11 +815,12 @@ func (v *VideoDecoder) streamAlign() int {
 }
 
 // decodePicture is one picture to decode: the frame it decodes into,
-// the bytes of the stream buffer it reads, the codec's picture info,
-// the DPB slot it sets up and the slots it references, each with the
-// codec's DPB slot info.
+// its coded size, within the session's, the bytes of the stream buffer
+// it reads, the codec's picture info, the DPB slot it sets up and the
+// slots it references, each with the codec's DPB slot info.
 type decodePicture struct {
 	frame     *VideoFrame
+	coded     [2]int
 	bytes     int
 	info      unsafe.Pointer
 	setup     int
@@ -835,15 +839,14 @@ func (v *VideoDecoder) submit(p *decodePicture) error {
 		return err
 	}
 	v.barriersBefore(cb, p)
-	extent := extent2D(v.shape.coded[0], v.shape.coded[1])
-	resource := func(view vk.ImageView) vk.VideoPictureResourceInfoKHR {
-		return vk.VideoPictureResourceInfoKHR{SType: vk.StructureTypeVideoPictureResourceInfoKhr, CodedExtent: extent, ImageViewBinding: view}
+	resource := func(view vk.ImageView, coded [2]int) vk.VideoPictureResourceInfoKHR {
+		return vk.VideoPictureResourceInfoKHR{SType: vk.StructureTypeVideoPictureResourceInfoKhr, CodedExtent: extent2D(coded[0], coded[1]), ImageViewBinding: view}
 	}
 	n := len(p.refs)
-	c.res[0] = resource(v.dpb.views[p.setup])
+	c.res[0] = resource(v.dpb.views[p.setup], p.coded)
 	c.bound[0] = vk.VideoReferenceSlotInfoKHR{SType: vk.StructureTypeVideoReferenceSlotInfoKhr, SlotIndex: -1, PPictureResource: &c.res[0]}
 	for i, slot := range p.refs {
-		c.res[1+i] = resource(v.dpb.views[slot])
+		c.res[1+i] = resource(v.dpb.views[slot], v.coded[slot])
 		c.bound[1+i] = vk.VideoReferenceSlotInfoKHR{SType: vk.StructureTypeVideoReferenceSlotInfoKhr, PNext: (*uintptr)(p.refInfo[i]), SlotIndex: intconv.Must[int32](slot), PPictureResource: &c.res[1+i]}
 	}
 	c.begin = vk.VideoBeginCodingInfoKHR{
@@ -863,7 +866,7 @@ func (v *VideoDecoder) submit(p *decodePicture) error {
 		DstPictureResource: c.res[0], PSetupReferenceSlot: &c.setup,
 	}
 	if !v.copies {
-		c.decode.DstPictureResource = resource(p.frame.pic.views[0])
+		c.decode.DstPictureResource = resource(p.frame.pic.views[0], p.coded)
 	}
 	if n > 0 {
 		c.decode.ReferenceSlotCount, c.decode.PReferenceSlots = intconv.Must[uint32](n), &c.bound[1]
@@ -871,18 +874,50 @@ func (v *VideoDecoder) submit(p *decodePicture) error {
 	d.cmds.CmdDecodeVideoKHR(cb, &c.decode)
 	c.end = vk.VideoEndCodingInfoKHR{SType: vk.StructureTypeVideoEndCodingInfoKhr}
 	d.cmds.CmdEndVideoCodingKHR(cb, &c.end)
+	v.coded[p.setup] = p.coded
 	v.barriersAfter(cb, p)
-	if r := d.cmds.EndCommandBuffer(cb); r != vk.Success {
+	return v.finish(s, p.frame)
+}
+
+// finish ends the commands of s, the slot of the next decode
+// submission, and submits them: what writes frame's picture.
+func (v *VideoDecoder) finish(s *decodeSlot, frame *VideoFrame) error {
+	d := v.d
+	if r := d.cmds.EndCommandBuffer(s.cb); r != vk.Success {
 		return fmt.Errorf("gpu: vkEndCommandBuffer (%s decode): %w", v.name, resultError(r))
 	}
 	signal := vk.SemaphoreSubmitInfo{SType: vk.StructureTypeSemaphoreSubmitInfo, Semaphore: v.done, Value: v.submitted + 1, StageMask: vk.PipelineStageFlags2(vk.PipelineStage2AllCommandsBit)}
-	if err := submit2(d, d.decode.queue, cb, nil, &signal, 0); err != nil {
+	if err := submit2(d, d.decode.queue, s.cb, nil, &signal, 0); err != nil {
 		return err
 	}
 	v.submitted++
 	s.seq, v.next = v.submitted, (v.next+1)%len(v.slots)
-	p.frame.seq, p.frame.post, p.frame.state = s.seq, 0, frameQueued
+	frame.seq, frame.post, frame.state = s.seq, 0, frameQueued
 	return nil
+}
+
+// again copies the picture in DPB slot out into a frame of its own a
+// second time, for a frame header that shows a picture shown before:
+// the frame it went out in then is the caller's, or decoded into again.
+// Only a device that decodes into its reference pictures alone can: one
+// with output pictures apart from them copies nothing out of its DPB.
+func (v *VideoDecoder) again(slot int) (*VideoFrame, error) {
+	if !v.copies {
+		return nil, fmt.Errorf("%w: a frame header shows the picture in DPB slot %d a second time; %s decodes %s into output pictures apart from its reference pictures, which are not copied out of", ErrNoVideoDecoder, slot, v.d.name, v.name)
+	}
+	frame, err := v.frame()
+	if err != nil {
+		return nil, err
+	}
+	s, err := v.slot()
+	if err != nil {
+		return nil, err
+	}
+	if err := begin(v.d, s.cb); err != nil {
+		return nil, err
+	}
+	v.copyOut(s.cb, slot, frame)
+	return frame, v.finish(s, frame)
 }
 
 // decodeCommands are the structures the coding commands take, kept in
@@ -932,29 +967,35 @@ func (v *VideoDecoder) barriersBefore(cb vk.CommandBuffer, p *decodePicture) {
 // output, the picture copied out of its DPB slot into the frame; the
 // frame made ready to sample.
 func (v *VideoDecoder) barriersAfter(cb vk.CommandBuffer, p *decodePicture) {
-	d, c := v.d, &v.cmd
-	coding := vk.PipelineStageFlags2(vk.PipelineStage2VideoDecodeBitKhr)
-	frame := p.frame.tex.image
-	if !v.copies {
-		decoded := imageBarrier(frame, colorRange, vk.ImageLayoutVideoDecodeDstKhr, vk.ImageLayoutShaderReadOnlyOptimal)
-		decoded.SrcStageMask, decoded.SrcAccessMask = coding, vk.AccessFlags2(vk.Access2VideoDecodeWriteBitKhr)
-		barrier2(d, cb, nil, decoded)
+	if v.copies {
+		v.copyOut(cb, p.setup, p.frame)
 		return
 	}
+	decoded := imageBarrier(p.frame.tex.image, colorRange, vk.ImageLayoutVideoDecodeDstKhr, vk.ImageLayoutShaderReadOnlyOptimal)
+	decoded.SrcStageMask, decoded.SrcAccessMask = vk.PipelineStageFlags2(vk.PipelineStage2VideoDecodeBitKhr), vk.AccessFlags2(vk.Access2VideoDecodeWriteBitKhr)
+	barrier2(v.d, cb, nil, decoded)
+}
+
+// copyOut records copying the picture in DPB slot, once the decodes
+// before it are done with the slot, into f, made ready to sample.
+func (v *VideoDecoder) copyOut(cb vk.CommandBuffer, slot int, f *VideoFrame) {
+	d, c := v.d, &v.cmd
+	coding := vk.PipelineStageFlags2(vk.PipelineStage2VideoDecodeBitKhr)
+	frame := f.tex.image
 	copying := vk.PipelineStageFlags2(vk.PipelineStage2CopyBit)
-	layer := vk.ImageSubresourceRange{AspectMask: vk.ImageAspectFlags(vk.ImageAspectColorBit), LevelCount: 1, BaseArrayLayer: intconv.Must[uint32](p.setup), LayerCount: 1}
+	layer := vk.ImageSubresourceRange{AspectMask: vk.ImageAspectFlags(vk.ImageAspectColorBit), LevelCount: 1, BaseArrayLayer: intconv.Must[uint32](slot), LayerCount: 1}
 	from := imageBarrier(v.dpb.image, layer, vk.ImageLayoutVideoDecodeDpbKhr, vk.ImageLayoutTransferSrcOptimal)
 	from.SrcStageMask, from.SrcAccessMask = coding, vk.AccessFlags2(vk.Access2VideoDecodeWriteBitKhr)
 	from.DstStageMask, from.DstAccessMask = copying, vk.AccessFlags2(vk.Access2TransferReadBit)
 	to := imageBarrier(frame, colorRange, vk.ImageLayoutUndefined, vk.ImageLayoutTransferDstOptimal)
 	to.DstStageMask, to.DstAccessMask = copying, vk.AccessFlags2(vk.Access2TransferWriteBit)
 	barrier2(d, cb, nil, from, to)
-	w, h := v.shape.coded[0], v.shape.coded[1]
+	w, h := v.coded[slot][0], v.coded[slot][1]
 	cw, ch := v.shape.samples.chromaSize(w, h)
 	plane := func(aspect vk.ImageAspectFlagBits, layer uint32) vk.ImageSubresourceLayers {
 		return vk.ImageSubresourceLayers{AspectMask: flags[vk.ImageAspectFlags](aspect), BaseArrayLayer: layer, LayerCount: 1}
 	}
-	src := intconv.Must[uint32](p.setup)
+	src := intconv.Must[uint32](slot)
 	c.regions = [2]vk.ImageCopy{
 		{SrcSubresource: plane(vk.ImageAspectPlane0Bit, src), DstSubresource: plane(vk.ImageAspectPlane0Bit, 0), Extent: extent3D(w, h)},
 		{SrcSubresource: plane(vk.ImageAspectPlane1Bit, src), DstSubresource: plane(vk.ImageAspectPlane1Bit, 0), Extent: extent3D(cw, ch)},

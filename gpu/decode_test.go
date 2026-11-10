@@ -195,9 +195,11 @@ func videoTrack(t *testing.T, f *demux.File) demux.Track {
 	return demux.Track{}
 }
 
-// decoded is a frame read back: its PTS and picture, cropped.
+// decoded is a frame read back: its PTS, its size and its picture,
+// cropped to it.
 type decoded struct {
 	pts     time.Duration
+	size    image.Point
 	picture []byte
 }
 
@@ -230,7 +232,7 @@ func takeFrames(t *testing.T, v *VideoDecoder, out []decoded) []decoded {
 		if f == nil {
 			return out
 		}
-		out = append(out, decoded{f.PTS(), readPicture(t, f)})
+		out = append(out, decoded{f.PTS(), f.Size(), readPicture(t, f)})
 		f.Release()
 	}
 }

@@ -191,8 +191,10 @@ func main() {
   texture's; the codec's padding around the picture is out of its reach. The
   YCbCr matrix, range and chroma siting come from the stream's VUI, AV1 colour
   config or VP9 colour space (an unnamed matrix is BT.709 from 720 lines up,
-  BT.601 below). An AV1 frame's `Size` is its render size where that crops the
-  frame, else the frame's; a VP9 frame's is the frame's. Pictures are luma and
+  BT.601 below; a VP9 stream's lines are its render size's, which a stream
+  that resizes its frames keeps). An AV1 frame's `Size` is its render size
+  where that crops the frame, else the frame's; a VP9 frame's is the frame's,
+  which changes where the stream resizes. Pictures are luma and
   a plane of interleaved chroma in the stream's depth and chroma format: NV12
   for 8-bit 4:2:0, P010 (`G10X6_B10X6R10X6_2PLANE_420`) for 10-bit, and the
   12-bit and 4:4:4 formats of the same family, all drawn through the sampler's
@@ -219,15 +221,36 @@ func main() {
   tools; libaom and SVT-AV1 streams), and VP9 profiles 0 and 2 at 8 and 10
   bits (hidden alternate reference frames in superframes, all three
   references, segmentation with temporal prediction and cyclic refresh, tile
-  columns, error resilient and lossless frames, odd sizes; libvpx streams in
+  columns, error resilient and lossless frames, odd sizes, frames predicted
+  from references of another size, intra-only frames; libvpx streams in
   WebM and MP4), and, where the device decodes them (NVIDIA does), 12-bit
   H.265 and VP9 profile 2 and 4:4:4 H.265 at 8, 10 and 12 bits (the format
   range extensions). Progressive only: interlaced H.264 is an error that says
   so, as are AV1 frames
-  coded at a superres-scaled width, AV1 and VP9 inter frames whose size
-  differs from their references' (reference scaling), a frame showing a frame
-  it already showed, and frames smaller than the device decodes (NVIDIA
-  decodes AV1 from 128x128, H.265 from 144x144).
+  coded at a superres-scaled width, AV1 inter frames whose size
+  differs from their references' (reference scaling), and frames smaller than
+  the device decodes (NVIDIA decodes AV1 from 128x128, H.265 from 144x144).
+- A VP9 frame is the size its header says, whatever its references' (libvpx
+  resizes a stream it cannot fit in its bitrate): the device scales the
+  references as it predicts, each picture decoded at its own size into the
+  pictures of the session its key frame made, so the frames' `Size` changes
+  and the caller scales them to where it draws them. A frame larger than the
+  session's pictures starts another session where it leaves nothing of the
+  frames before it (a key frame, or an intra-only frame that refreshes every
+  reference slot and resets every frame context); one that keeps reference
+  pictures or frame contexts is refused, as is one naming a reference VP9
+  scales to no frame of its size (less than half or more than 16 times it).
+- A frame header that shows a picture shown before (AV1 and VP9
+  `show_existing_frame`) gets the picture copied out of its reference picture
+  into a frame of its own again, with its film grain; a device with output
+  pictures apart from its reference pictures copies nothing out of those, and
+  refuses the stream there.
+- A VP9 intra frame decodes from frame context 0 and saves to it whatever
+  `frame_context_idx` it codes, which the device is told as 0; the context
+  coded is the one `reset_frame_context` 2 resets. A Vulkan Video picture
+  names one context, so an intra-only frame that resets another one is
+  decoded where nothing was saved to that context (resetting it changes
+  nothing) and refused where something was.
 - AV1 film grain comes out as dav1d synthesizes it, sample for sample. A
   device with output pictures apart from its reference pictures applies it; on
   one that decodes into its reference pictures alone (NVIDIA) the decoder
@@ -260,9 +283,13 @@ func main() {
   reference frame state they predict from) and tile groups; `internal/vp9`
   reads superframe indexes and uncompressed headers (with the reference frame
   sizes, loop filter deltas, segmentation features and motion vector reuse
-  they predict from; the device reads the compressed header and keeps the
-  probability contexts). Their tests check them against ffmpeg's
-  `trace_headers` element for element.
+  they predict from, and which frame contexts frames saved to; the device
+  reads the compressed header and keeps the probability contexts). Their
+  tests check them against ffmpeg's `trace_headers` element for element.
+  libvpx codes no intra-only frame, no frame shown twice and, through ffmpeg,
+  no resized frame: the tests make the first two of the frames it does code
+  (`internal/vp9/vp9test`), and `gpu/testdata/vp9-resize.ivf` is a stream
+  vpxenc resized (`gpu/testdata/README.md` says how).
 - A device whose decoder writes its output into its reference pictures (NVIDIA)
   has each picture copied into its frame on the decode queue; one with distinct
   output pictures decodes into the frame directly.

@@ -286,7 +286,7 @@ func (c *h264Decoder) prepare(v *VideoDecoder, sps *nal.H264SPS, shape decodeSha
 // active.
 func (c *h264Decoder) submit(v *VideoDecoder, pic *h264Pic, frame *VideoFrame, total int) error {
 	c.fill(pic)
-	c.req = decodePicture{frame: frame, bytes: total, info: unsafe.Pointer(&c.picInfo), setup: pic.slot, setupInfo: unsafe.Pointer(&c.setupInfo)}
+	c.req = decodePicture{frame: frame, coded: v.shape.coded, bytes: total, info: unsafe.Pointer(&c.picInfo), setup: pic.slot, setupInfo: unsafe.Pointer(&c.setupInfo)}
 	n := 0
 	for slot := range c.state.slots {
 		r := &c.state.refs[slot]

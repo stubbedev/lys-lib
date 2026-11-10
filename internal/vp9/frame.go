@@ -2,8 +2,9 @@
 // Specification, version 0.6) as far as a decoder that keeps its own
 // reference state needs: superframes and the uncompressed header, with
 // the state its syntax and semantics predict from (the reference frames'
-// sizes, the loop filter deltas, the segmentation features and whether
-// a frame reuses the previous frame's motion vectors). Decoding the
+// sizes, the loop filter deltas, the segmentation features, whether a
+// frame reuses the previous frame's motion vectors and which frame
+// contexts hold probabilities frames saved). Decoding the
 // compressed header and the tiles is the hardware's (Vulkan Video's).
 package vp9
 
@@ -23,8 +24,13 @@ var ErrSyntax = errors.New("vp9: stream")
 const (
 	NumRefFrames = 8
 	RefsPerFrame = 3
-	MaxSegments  = 8
-	SegLvlMax    = 4
+	// ResetOneContext and ResetAllContexts are the reset_frame_context
+	// values that reset the frame context the header names and every
+	// frame context.
+	ResetOneContext  = 2
+	ResetAllContexts = 3
+	MaxSegments      = 8
+	SegLvlMax        = 4
 	// MaxRefFrames counts the reference names, intra included: the loop
 	// filter's reference deltas are by them.
 	MaxRefFrames = 4
@@ -148,7 +154,17 @@ type FrameHeader struct {
 	InterpolationFilter       uint8
 	RefreshFrameContext       bool
 	FrameParallelDecodingMode bool
-	FrameContextIdx           uint8
+	// FrameContextIdx is the frame context the frame decodes from and,
+	// with RefreshFrameContext, saves to: the frame_context_idx coded,
+	// but 0 for an intra or error resilient frame, whose coded one is
+	// ResetContextIdx, the context a ResetFrameContext of
+	// ResetOneContext resets.
+	FrameContextIdx uint8
+	ResetContextIdx uint8
+	// SavedContexts has bit i set where a frame since the last reset of
+	// frame context i saved to it, before this frame resets and saves
+	// any: the contexts that may not be the default one.
+	SavedContexts uint8
 
 	LoopFilter LoopFilter
 	Quant      Quantization
@@ -185,6 +201,8 @@ type Stream struct {
 	refDeltas  [MaxRefFrames]int8
 	modeDeltas [2]int8
 	seg        Segmentation
+	// saved is the next frame's SavedContexts.
+	saved uint8
 	// last is the frame decoded before, its size and whether it showed.
 	last struct {
 		valid         bool
@@ -302,8 +320,10 @@ func (s *Stream) uncompressedHeader(h *FrameHeader, r *nal.Reader) error {
 		h.FrameParallelDecodingMode = true
 	}
 	h.FrameContextIdx = r.U8(2)
+	h.SavedContexts = s.saved
 	if h.FrameIsIntra() || h.ErrorResilientMode {
 		s.setupPastIndependence()
+		h.ResetContextIdx, h.FrameContextIdx = h.FrameContextIdx, 0
 	}
 	s.loopFilter(h, r)
 	quantization(h, r)
@@ -520,4 +540,13 @@ func (s *Stream) update(h *FrameHeader) {
 		}
 	}
 	s.last.valid, s.last.width, s.last.height, s.last.show = true, h.FrameWidth, h.FrameHeight, h.ShowFrame
+	switch {
+	case h.FrameType == KeyFrame || h.ErrorResilientMode || h.IntraOnly && h.ResetFrameContext == ResetAllContexts:
+		s.saved = 0
+	case h.IntraOnly && h.ResetFrameContext == ResetOneContext:
+		s.saved &^= 1 << h.ResetContextIdx
+	}
+	if h.RefreshFrameContext {
+		s.saved |= 1 << h.FrameContextIdx
+	}
 }

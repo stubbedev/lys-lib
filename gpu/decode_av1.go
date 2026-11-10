@@ -243,7 +243,7 @@ func (c *av1Decoder) picture(v *VideoDecoder, p demux.Packet, data []byte) error
 	}
 	copy(buf, data)
 	c.fill(setup)
-	c.req = decodePicture{frame: frame, bytes: len(data), info: unsafe.Pointer(&c.picInfo), setup: setup, setupInfo: unsafe.Pointer(&c.setupInfo)}
+	c.req = decodePicture{frame: frame, coded: v.shape.coded, bytes: len(data), info: unsafe.Pointer(&c.picInfo), setup: setup, setupInfo: unsafe.Pointer(&c.setupInfo)}
 	n := 0
 	if !h.FrameIsIntra {
 		for i, idx := range h.RefFrameIdx {
@@ -265,9 +265,7 @@ func (c *av1Decoder) picture(v *VideoDecoder, p demux.Packet, data []byte) error
 		return err
 	}
 	if h.FilmGrain.ApplyGrain && v.copies && (h.ShowFrame || h.ShowableFrame) {
-		col := &c.stream.Seq.Color
-		grain := grainFrame{params: &h.FilmGrain, w: h.FrameWidth, h: h.FrameHeight, bits: col.BitDepth, identity: col.MatrixCoefficients == 0}
-		if err := v.applyGrain(frame, grain); err != nil {
+		if err := v.applyGrain(frame, c.grain()); err != nil {
 			return err
 		}
 	}
@@ -286,13 +284,26 @@ func (c *av1Decoder) picture(v *VideoDecoder, p demux.Packet, data []byte) error
 	return nil
 }
 
-// showExisting shows the frame c.hdr names, decoded hidden before; a
-// key frame shown so also takes every reference frame slot.
+// grain is the film grain of the frame c.hdr heads.
+func (c *av1Decoder) grain() grainFrame {
+	h, col := &c.hdr, &c.stream.Seq.Color
+	return grainFrame{params: &h.FilmGrain, w: h.FrameWidth, h: h.FrameHeight, bits: col.BitDepth, identity: col.MatrixCoefficients == 0}
+}
+
+// showExisting shows the frame c.hdr names, decoded before; a key frame
+// shown so also takes every reference frame slot. A picture copied out
+// a second time takes its film grain again: the grain is in the frames,
+// not in the reference pictures.
 func (c *av1Decoder) showExisting(v *VideoDecoder, p demux.Packet) error {
 	h := &c.hdr
-	f, slot, err := c.takeHidden(h.FrameToShowMapIdx)
+	f, slot, copied, err := c.show(v, h.FrameToShowMapIdx)
 	if err != nil {
 		return err
+	}
+	if copied && h.FilmGrain.ApplyGrain {
+		if err := v.applyGrain(f, c.grain()); err != nil {
+			return err
+		}
 	}
 	f.pts, f.duration = p.PTS, p.Duration
 	v.queue(f, 0, false, false)

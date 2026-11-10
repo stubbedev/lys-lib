@@ -274,7 +274,7 @@ func (c *h265Decoder) picture(v *VideoDecoder, p demux.Packet) error {
 		at += copy(buf[at:], unit)
 	}
 	c.fill(&pic, pps)
-	c.req = decodePicture{frame: frame, bytes: total, info: unsafe.Pointer(&c.picInfo), setup: pic.slot, setupInfo: unsafe.Pointer(&c.setupInfo)}
+	c.req = decodePicture{frame: frame, coded: v.shape.coded, bytes: total, info: unsafe.Pointer(&c.picInfo), setup: pic.slot, setupInfo: unsafe.Pointer(&c.setupInfo)}
 	n := 0
 	for _, list := range [3][]int{pic.before[:pic.nBefore], pic.after[:pic.nAfter], pic.lt[:pic.nLt]} {
 		for _, slot := range list {

@@ -162,6 +162,10 @@ func b2i(b bool) int64 {
 // syntax is h's syntax elements under trace_headers' names, as far as
 // the parser keeps them as coded.
 func syntax(h *FrameHeader) map[string]int64 {
+	context := h.FrameContextIdx
+	if h.FrameIsIntra() || h.ErrorResilientMode {
+		context = h.ResetContextIdx
+	}
 	m := map[string]int64{
 		"show_existing_frame": b2i(h.ShowExistingFrame), "frame_to_show_map_idx": int64(h.FrameToShowMapIdx),
 		"profile_low_bit": int64(h.Profile & 1), "profile_high_bit": int64(h.Profile >> 1),
@@ -173,7 +177,7 @@ func syntax(h *FrameHeader) map[string]int64 {
 		"render_width_minus_1":            int64(h.RenderWidth - 1), "render_height_minus_1": int64(h.RenderHeight - 1),
 		"allow_high_precision_mv": b2i(h.AllowHighPrecisionMV), "is_filter_switchable": b2i(h.InterpolationFilter == Switchable),
 		"refresh_frame_context": b2i(h.RefreshFrameContext), "frame_parallel_decoding_mode": b2i(h.FrameParallelDecodingMode),
-		"frame_context_idx": int64(h.FrameContextIdx),
+		"frame_context_idx": int64(context),
 		"loop_filter_level": int64(h.LoopFilter.Level), "loop_filter_sharpness": int64(h.LoopFilter.Sharpness),
 		"loop_filter_delta_enabled": b2i(h.LoopFilter.DeltaEnabled), "loop_filter_delta_update": b2i(h.LoopFilter.DeltaUpdate),
 		"base_q_idx": int64(h.Quant.BaseQIdx), "delta_q_y_dc.delta_q": int64(h.Quant.DeltaQYDc),

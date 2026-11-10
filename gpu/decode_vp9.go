@@ -36,6 +36,10 @@ type vp9Decoder struct {
 	req     decodePicture
 }
 
+// vp9RefUpscale is how many times its reference's size a frame may be
+// (the frame size with refs semantics, 7.2.5).
+const vp9RefUpscale = 16
+
 // newVP9Decoder makes VP9's part of a decoder. The configuration record
 // (MP4's vpcC; WebM has none) repeats what every key frame's header
 // says, so the decoder reads the headers instead.
@@ -78,7 +82,7 @@ func (c *vp9Decoder) frame(v *VideoDecoder, p demux.Packet, b []byte) error {
 		return err
 	}
 	if h.ShowExistingFrame {
-		f, _, err := c.takeHidden(h.FrameToShowMapIdx)
+		f, _, _, err := c.show(v, h.FrameToShowMapIdx)
 		if err != nil {
 			return err
 		}
@@ -86,12 +90,18 @@ func (c *vp9Decoder) frame(v *VideoDecoder, p demux.Packet, b []byte) error {
 		v.queue(f, 0, false, false)
 		return nil
 	}
+	reset, err := c.contextReset()
+	if err != nil {
+		return err
+	}
 	shape, err := c.shape()
 	if err != nil {
 		return err
 	}
-	if v.session != 0 && shape != v.shape && h.FrameType != vp9.KeyFrame {
-		return fmt.Errorf("%w: a VP9 %s is %dx%d, its references %dx%d, which needs reference scaling the decoder does not do", ErrNoVideoDecoder, h.FrameType, shape.coded[0], shape.coded[1], v.shape.coded[0], v.shape.coded[1])
+	if v.session != 0 && !c.independent() {
+		if shape, err = c.within(v.shape, shape); err != nil {
+			return err
+		}
 	}
 	if v.session == 0 || shape != v.shape {
 		c.forget()
@@ -109,14 +119,17 @@ func (c *vp9Decoder) frame(v *VideoDecoder, p demux.Packet, b []byte) error {
 		return err
 	}
 	copy(buf, b)
-	c.fill()
-	c.req = decodePicture{frame: frame, bytes: len(b), info: unsafe.Pointer(&c.picInfo), setup: setup}
+	c.fill(reset)
+	c.req = decodePicture{frame: frame, coded: [2]int{h.FrameWidth, h.FrameHeight}, bytes: len(b), info: unsafe.Pointer(&c.picInfo), setup: setup}
 	n := 0
 	if !h.FrameIsIntra() {
 		for i, idx := range h.RefFrameIdx {
 			slot := c.slotOf[idx]
 			if slot < 0 {
 				return fmt.Errorf("gpu: a VP9 %s references slot %d, which holds no decoded picture", h.FrameType, idx)
+			}
+			if ref := v.coded[slot]; 2*h.FrameWidth < ref[0] || 2*h.FrameHeight < ref[1] || h.FrameWidth > vp9RefUpscale*ref[0] || h.FrameHeight > vp9RefUpscale*ref[1] {
+				return fmt.Errorf("%w: a VP9 %s of %dx%d names reference frame slot %d, a %dx%d picture, which VP9 scales to no frame less than half or more than %d times its size: the frame may name it only where no block predicts from it, which the decoder does not read the blocks to tell", ErrNoVideoDecoder, h.FrameType, h.FrameWidth, h.FrameHeight, idx, ref[0], ref[1], vp9RefUpscale)
 			}
 			c.picInfo.ReferenceNameSlotIndices[i] = intconv.Must[int32](slot)
 			if slices.Contains(c.active[:n], slot) {
@@ -144,7 +157,39 @@ func (c *vp9Decoder) frame(v *VideoDecoder, p demux.Packet, b []byte) error {
 	return nil
 }
 
-// shape is the session the frame decodes in.
+// independent reports whether the frame c.hdr heads takes nothing from
+// the frames before it and leaves nothing of them to the frames after
+// it: a key frame, or an intra-only frame that refreshes every
+// reference frame slot and resets every frame context. Such a frame
+// may start another video session, which has neither reference
+// pictures nor frame contexts.
+func (c *vp9Decoder) independent() bool {
+	h := &c.hdr
+	return h.FrameType == vp9.KeyFrame || h.IntraOnly && h.RefreshFrameFlags == 1<<vp9.NumRefFrames-1 && (h.ErrorResilientMode || h.ResetFrameContext == vp9.ResetAllContexts)
+}
+
+// within is the session a frame that is not independent decodes in:
+// the one there is, when the frame is of its format and no larger than
+// the pictures the session was made with. Its size is its own (VP9
+// scales the references of another size as it predicts from them), but
+// another session would have none of what the frame, or the frames
+// after it, decode from.
+func (c *vp9Decoder) within(session, frame decodeShape) (decodeShape, error) {
+	h := &c.hdr
+	sized := frame
+	sized.coded = session.coded
+	switch {
+	case sized != session:
+		return decodeShape{}, fmt.Errorf("%w: a VP9 %s is profile %d at %s with colours %+v, the frames before it profile %d at %s with colours %+v, and it keeps reference pictures or frame contexts of theirs (it refreshes slots %08b and resets contexts as reset_frame_context %d says), which the video session another format takes has none of", ErrNoVideoDecoder, h.FrameType, frame.profile, frame.samples, frame.ycbcr, session.profile, session.samples, session.ycbcr, h.RefreshFrameFlags, h.ResetFrameContext)
+	case frame.coded[0] > session.coded[0] || frame.coded[1] > session.coded[1]:
+		return decodeShape{}, fmt.Errorf("%w: a VP9 %s is %dx%d, larger than the %dx%d pictures of its video session, and it keeps reference pictures or frame contexts of the frames before it (it refreshes slots %08b and resets contexts as reset_frame_context %d says): a session's pictures do not grow, and another session has neither", ErrNoVideoDecoder, h.FrameType, frame.coded[0], frame.coded[1], session.coded[0], session.coded[1], h.RefreshFrameFlags, h.ResetFrameContext)
+	}
+	return session, nil
+}
+
+// shape is the session the frame would start: one of the frame's size.
+// An unnamed colour space converts by the size the frame presents at,
+// its render size, which a stream that scales its frames keeps.
 func (c *vp9Decoder) shape() (decodeShape, error) {
 	h := &c.hdr
 	col := &h.Color
@@ -157,7 +202,7 @@ func (c *vp9Decoder) shape() (decodeShape, error) {
 	if chroma != chroma420 {
 		unverified = "decoding VP9 beyond 4:2:0 (profiles 1 and 3)"
 	}
-	signal := videoSignal{typed: true, fullRange: col.FullRange, described: true, lines: h.FrameHeight}
+	signal := videoSignal{typed: true, fullRange: col.FullRange, described: true, lines: h.RenderHeight}
 	switch col.ColorSpace {
 	case vp9.CSUnknown:
 		signal.described = false
@@ -198,8 +243,28 @@ func (c *vp9Decoder) checkCaps() error { return nil }
 
 func (c *vp9Decoder) parameters() unsafe.Pointer { return nil }
 
-// fill lays out the frame's picture info.
-func (c *vp9Decoder) fill() {
+// contextReset is the reset_frame_context the device is told for the
+// frame c.hdr heads. The picture info names one frame context, the one
+// the frame decodes from and saves to, which is then the one a device
+// resets; an intra-only frame may name another to reset and still
+// decode from context 0. Resetting a context nothing was saved to
+// resets nothing, so the device is told so; one that holds saved
+// probabilities cannot be reset through the picture info, and the frame
+// is refused.
+func (c *vp9Decoder) contextReset() (uint8, error) {
+	h := &c.hdr
+	if !h.IntraOnly || h.ResetFrameContext != vp9.ResetOneContext || h.ResetContextIdx == h.FrameContextIdx {
+		return h.ResetFrameContext, nil
+	}
+	if h.SavedContexts>>h.ResetContextIdx&1 != 0 {
+		return 0, fmt.Errorf("%w: a VP9 intra-only frame resets frame context %d, which holds saved probabilities, and decodes from context %d; a Vulkan Video picture names one frame context, which is both the one a device resets and the one it decodes from", ErrNoVideoDecoder, h.ResetContextIdx, h.FrameContextIdx)
+	}
+	return 0, nil
+}
+
+// fill lays out the frame's picture info, the device told reset for
+// its reset_frame_context.
+func (c *vp9Decoder) fill(reset uint8) {
 	h := &c.hdr
 	col := &h.Color
 	c.colorStd = vk.StdVideoVP9ColorConfig{
@@ -251,7 +316,7 @@ func (c *vp9Decoder) fill() {
 			flagBit{h.UsePrevFrameMVs, vk.StdVideoDecodeVP9PictureUsePrevFrameMvs},
 		),
 		Profile: vk.StdVideoVP9Profile(h.Profile), FrameType: int32(h.FrameType),
-		FrameContextIdx: h.FrameContextIdx, ResetFrameContext: h.ResetFrameContext, RefreshFrameFlags: h.RefreshFrameFlags,
+		FrameContextIdx: h.FrameContextIdx, ResetFrameContext: reset, RefreshFrameFlags: h.RefreshFrameFlags,
 		RefFrameSignBiasMask: signBias, InterpolationFilter: int32(h.InterpolationFilter),
 		BaseQIdx: q.BaseQIdx, DeltaQYDc: q.DeltaQYDc, DeltaQUVDc: q.DeltaQUVDc, DeltaQUVAc: q.DeltaQUVAc,
 		TileColsLog2: h.TileColsLog2, TileRowsLog2: h.TileRowsLog2,

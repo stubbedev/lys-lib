@@ -1,12 +1,15 @@
 package gpu
 
 import (
+	"bytes"
 	"image"
+	"math/bits"
 	"slices"
 	"strconv"
 	"testing"
 	"time"
 
+	"github.com/stubbedev/lys-lib/internal/av1"
 	"github.com/stubbedev/lys-lib/media/demux"
 	"github.com/stubbedev/lys-lib/testbuild"
 )
@@ -229,5 +232,109 @@ func TestDecodeAV1DoesNotAllocate(t *testing.T) {
 	}
 	if n := testing.AllocsPerRun(len(pkts)-i-1, step); n != 0 {
 		t.Errorf("%.1f allocations a frame, want 0", n)
+	}
+}
+
+// av1Headers reads the frame headers in each of pkts, an AV1 stream
+// whose sequence header is in config, the track's av1C, or in the
+// packets.
+func av1Headers(t *testing.T, config []byte, pkts []demux.Packet) [][]av1.FrameHeader {
+	t.Helper()
+	var s av1.Stream
+	out := make([][]av1.FrameHeader, len(pkts))
+	read := func(b []byte, into *[]av1.FrameHeader) {
+		walk := av1.NewOBUs(b)
+		for u, ok := walk.Next(); ok; u, ok = walk.Next() {
+			switch u.Type {
+			case av1.OBUSequenceHeader:
+				if err := s.Seq.Parse(u.Payload); err != nil {
+					t.Fatal(err)
+				}
+			case av1.OBUFrameHeader, av1.OBUFrame:
+				var h av1.FrameHeader
+				if err := s.ParseFrameHeader(&h, &u); err != nil {
+					t.Fatal(err)
+				}
+				s.Update(&h)
+				*into = append(*into, h)
+			}
+		}
+		if err := walk.Err(); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if len(config) > 0 {
+		obus, err := av1.ConfigOBUs(config)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var none []av1.FrameHeader
+		read(obus, &none)
+	}
+	for i, p := range pkts {
+		read(p.Data, &out[i])
+	}
+	return out
+}
+
+// av1TemporalDelimiter is a temporal delimiter OBU, which starts each
+// temporal unit of an IVF file and which MP4 leaves out.
+var av1TemporalDelimiter = []byte{0x12, 0x00}
+
+// av1ShowExisting is a temporal unit whose frame header OBU shows the
+// frame in reference frame slot, in a stream that codes neither frame
+// ids nor a decoder model: show_existing_frame, the slot and the
+// trailing bit.
+func av1ShowExisting(slot int) []byte {
+	return append(slices.Clone(av1TemporalDelimiter), 0x1a, 0x01, 0x88|byte(slot)<<4)
+}
+
+// A frame header that shows a frame shown before shows it again, as
+// ffmpeg (dav1d) does, with its film grain, which is in the frame the
+// picture went out in and not in the reference picture it is copied
+// out of again.
+func TestDecodeAV1ShowsAFrameAgain(t *testing.T) {
+	d := decodingDevice(t, demux.AV1)
+	for _, c := range []struct {
+		name  string
+		args  []string
+		grain bool
+	}{
+		{"without film grain", libaom("", "-g", "12"), false},
+		{"with film grain", libaom("film-grain-test=1", "-g", "12"), true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			cl := ffmpegClip(t, "a.mp4", 192, 128, 0.4, c.args...)
+			track, pkts := packets(t, cl.path)
+			hdrs := av1Headers(t, track.Config, pkts)
+			at := slices.IndexFunc(hdrs, func(h []av1.FrameHeader) bool {
+				last := &h[len(h)-1]
+				return last.FrameType == av1.InterFrame && last.ShowFrame && !last.ShowExistingFrame && last.RefreshFrameFlags != 0 && last.FilmGrain.ApplyGrain == c.grain
+			})
+			if at < 0 {
+				t.Fatal("libaom coded no shown inter frame that a reference slot holds")
+			}
+			var cut [][]byte
+			for i, p := range pkts {
+				cut = append(cut, slices.Concat(av1TemporalDelimiter, p.Data))
+				if i == at {
+					cut = append(cut, av1ShowExisting(bits.TrailingZeros8(hdrs[at][len(hdrs[at])-1].RefreshFrameFlags)))
+				}
+			}
+			again := apart(cut)
+			v, err := d.NewVideoDecoder(track)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer v.Close()
+			got := decodeShownAgain(t, v, again)
+			checkFrames(t, ffmpegDecoded(t, writeIVF(t, "AV01", cl.w, cl.h, again), cl.w, cl.h, nv12Samples), got, 0)
+			if want := len(cl.frames) + 1; len(got) != want {
+				t.Errorf("%d frames, want the stream's %d and the one shown again", len(got), len(cl.frames))
+			}
+			if !bytes.Equal(got[at].picture, got[at+1].picture) {
+				t.Errorf("the frame shown again differs from its first showing in %d bytes", differing(got[at].picture, got[at+1].picture))
+			}
+		})
 	}
 }

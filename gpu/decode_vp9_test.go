@@ -26,7 +26,9 @@ func libvpxTwoPass(args ...string) [][]string {
 // hidden alternate reference frames in superframes, all three
 // references, segmentation with temporal prediction and cyclic refresh,
 // tile columns, error resilient frames, lossless frames, an odd size,
-// and MP4.
+// MP4, and frames whose probabilities adapt to what they decoded
+// (ffmpeg's libvpx codes frames that decode in parallel, which do not,
+// unless told otherwise).
 func TestDecodeVP9MatchesFFmpeg(t *testing.T) {
 	d := decodingDevice(t, demux.VP9)
 	for _, c := range []struct {
@@ -40,6 +42,7 @@ func TestDecodeVP9MatchesFFmpeg(t *testing.T) {
 		{"lossless", "d.webm", 192, 128, [][]string{libvpx("-lossless", "1", "-g", "10")}},
 		{"odd size 271x153", "e.webm", 271, 153, libvpxTwoPass("-b:v", "200k", "-g", "20", "-auto-alt-ref", "1")},
 		{"MP4", "f.mp4", 192, 128, [][]string{libvpx("-g", "12")}},
+		{"backward adaptation", "g.webm", 192, 128, libvpxTwoPass("-b:v", "200k", "-g", "30", "-auto-alt-ref", "1", "-lag-in-frames", "16", "-frame-parallel", "0")},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			cl := ffmpegPasses(t, c.file, c.w, c.h, 2, c.passes...)

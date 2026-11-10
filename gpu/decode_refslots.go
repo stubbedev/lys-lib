@@ -91,19 +91,25 @@ func (r *refSlots) keep(setup int, f *VideoFrame, showable bool) {
 	f.free(0)
 }
 
-// takeHidden hands out the frame decoded hidden that reference frame
-// slot idx holds, with its DPB slot, for a frame header showing it.
-func (r *refSlots) takeHidden(idx uint8) (*VideoFrame, int, error) {
-	slot := r.slotOf[idx]
+// show hands out a frame with the picture reference frame slot idx
+// holds, and the picture's DPB slot, for a frame header showing it: the
+// frame the picture was decoded hidden into, or, once that has gone
+// out, as where the picture was shown when it was decoded, a frame v
+// copies the picture into again (copied), which has none of the film
+// grain a shown picture takes.
+func (r *refSlots) show(v *VideoDecoder, idx uint8) (f *VideoFrame, slot int, copied bool, err error) {
+	slot = r.slotOf[idx]
 	if slot < 0 {
-		return nil, 0, fmt.Errorf("gpu: a frame header shows reference frame slot %d, which holds no decoded picture", idx)
+		return nil, 0, false, fmt.Errorf("gpu: a frame header shows reference frame slot %d, which holds no decoded picture", idx)
 	}
 	p := &r.pictures[slot]
-	f := p.frame
+	f, p.frame = p.frame, nil
 	if f == nil {
-		return nil, 0, fmt.Errorf("%w: a frame header shows the frame in reference frame slot %d a second time, which the decoder does not copy out again", ErrNoVideoDecoder, idx)
+		copied = true
+		if f, err = v.again(slot); err != nil {
+			return nil, 0, false, fmt.Errorf("reference frame slot %d: %w", idx, err)
+		}
 	}
-	p.frame = nil
 	f.rect = p.rect
-	return f, slot, nil
+	return f, slot, copied, nil
 }
