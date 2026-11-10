@@ -287,7 +287,7 @@ func (c *conn) deletePlayback(tag uint32, r *native.Reader, failed func() bool) 
 		c.fail(tag, native.ErrNoEntity)
 		return true
 	}
-	c.reply(tag, nil)
 	s.RemoveSinkInput(p.SinkInput)
+	c.reply(tag, nil)
 	return true
 }

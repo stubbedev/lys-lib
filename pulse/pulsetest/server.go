@@ -1038,8 +1038,8 @@ func (c *conn) deleteRecord(tag uint32, r *native.Reader, failed func() bool) bo
 		c.fail(tag, native.ErrNoEntity)
 		return true
 	}
-	c.reply(tag, nil)
 	s.RemoveSourceOutput(rec.SourceOutput)
+	c.reply(tag, nil)
 	return true
 }
 
