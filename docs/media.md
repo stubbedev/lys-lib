@@ -132,14 +132,7 @@ func main() {
 		log.Fatal(err)
 	}
 	show := func() {
-		for {
-			frame, err := dec.Next()
-			if err != nil {
-				log.Fatal(err)
-			}
-			if frame == nil {
-				return
-			}
+		for frame := dec.Next(); frame != nil; frame = dec.Next() {
 			// pass.DrawFrame(frame, ...) at frame.PTS().
 			frame.Release()
 		}
@@ -167,9 +160,16 @@ func main() {
   decodes nothing.
 - `Decode` takes one packet (an access unit; an AV1 temporal unit or a VP9
   superframe, whose hidden frames it decodes too). `Next` returns the next frame in presentation order,
-  or nil until more packets complete one; it waits for that frame's decode.
-  `Flush` at the end of the track hands out the frames held back for
-  reordering.
+  or nil until more packets complete one. `Flush` at the end of the track hands
+  out the frames held back for reordering.
+- Nothing waits on the CPU for a decode. `Next` hands a frame out while its
+  picture may still be decoding, and the pass that draws it waits for the
+  decode on the GPU: the decode queue signals a timeline semaphore the pass's
+  submission waits for. What waits for that pass (`Finish`, a CPU read,
+  `Publish` on a device whose dmabufs carry no fence) then waits for the decode
+  too; `VideoFrame.Decoded` says, without waiting, whether the decode has
+  finished, for a caller that must not stall there. A device decodes only where
+  it has timeline semaphores.
 - A frame carries its packet's `PTS` and `Duration`, and its picture's `Size`
   with the stream's cropping applied. `Pass.DrawFrame` draws a region of the
   picture, given in the picture's own pixels, as `DrawTexture` draws a

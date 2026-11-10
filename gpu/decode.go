@@ -60,8 +60,13 @@ type VideoDecoder struct {
 	dpbFresh   bool
 	reset      bool
 
-	pool      vk.CommandPool
-	slots     [decodeSlots]decodeSlot
+	pool  vk.CommandPool
+	slots [decodeSlots]decodeSlot
+	// done is the timeline semaphore decode submission n signals with n:
+	// what a pass that draws a frame waits for on the graphics queue, and
+	// the decoder here before it reuses what a decode reads. submitted is
+	// the last n, completed the last value done was seen at.
+	done      vk.Semaphore
 	submitted uint64
 	completed uint64
 
@@ -73,11 +78,10 @@ type VideoDecoder struct {
 	cmd decodeCommands
 }
 
-// decodeSlot is a picture in flight: its commands, the fence its decode
-// signals, the bitstream it reads and the submission it is.
+// decodeSlot is a picture in flight: its commands, the bitstream it
+// reads and the submission it is.
 type decodeSlot struct {
 	cb        vk.CommandBuffer
-	done      vk.Fence
 	bitstream *buffer
 	seq       uint64
 }
@@ -157,12 +161,12 @@ func (d *Device) NewVideoDecoder(track demux.Track) (*VideoDecoder, error) {
 	if v.pool, err = d.commandPool(d.decode.family); err != nil {
 		return nil, err
 	}
+	if v.done, err = d.timelineSemaphore(); err != nil {
+		v.Close()
+		return nil, err
+	}
 	for i := range v.slots {
-		s := &v.slots[i]
-		if s.cb, err = d.commandBuffer(v.pool); err == nil {
-			s.done, err = d.fence()
-		}
-		if err != nil {
+		if v.slots[i].cb, err = d.commandBuffer(v.pool); err != nil {
 			v.Close()
 			return nil, err
 		}
@@ -186,21 +190,19 @@ func (v *VideoDecoder) Decode(p demux.Packet) error {
 }
 
 // Next is the next frame in presentation order, nil when the packets
-// decoded so far complete none: Decode more, or Flush at the end.
-// It waits for the frame's decode to finish. The frame is the caller's
-// until Release.
-func (v *VideoDecoder) Next() (*VideoFrame, error) {
+// decoded so far complete none: Decode more, or Flush at the end. It
+// waits for nothing: the frame's picture may still be decoding, and the
+// pass that draws it waits for that on the GPU (DrawFrame). The frame
+// is the caller's until Release.
+func (v *VideoDecoder) Next() *VideoFrame {
 	if len(v.ready) == 0 {
-		return nil, nil
+		return nil
 	}
 	f := v.ready[0]
-	if err := v.wait(f.seq); err != nil {
-		return nil, err
-	}
 	copy(v.ready, v.ready[1:])
 	v.ready = v.ready[:len(v.ready)-1]
 	f.state = frameHeld
-	return f, nil
+	return f
 }
 
 // Flush hands every frame held back for presentation order to Next:
@@ -227,7 +229,7 @@ func (v *VideoDecoder) Reset() error {
 }
 
 // Close releases the decoder and its frames, the ones the caller still
-// holds too. Closing it again does nothing.
+// holds too: Next has none after. Closing it again does nothing.
 func (v *VideoDecoder) Close() {
 	if v.closed {
 		return
@@ -239,15 +241,14 @@ func (v *VideoDecoder) Close() {
 	for _, f := range v.frames {
 		f.destroy()
 	}
-	v.frames = nil
+	v.frames, v.ready, v.pending = nil, nil, reorder{}
 	for i := range v.slots {
-		s := &v.slots[i]
-		if s.done != 0 {
-			d.cmds.DestroyFence(d.device, s.done, nil)
+		if b := v.slots[i].bitstream; b != nil {
+			b.close()
 		}
-		if s.bitstream != nil {
-			s.bitstream.close()
-		}
+	}
+	if v.done != 0 {
+		d.retireTimeline(v.done)
 	}
 	if v.pool != 0 {
 		d.cmds.DestroyCommandPool(d.device, v.pool, nil)
@@ -271,18 +272,28 @@ func (v *VideoDecoder) closeSession() {
 	v.sessionMem = nil
 }
 
-// wait waits for decode submission seq to finish.
-func (v *VideoDecoder) wait(seq uint64) error {
+// finished reports whether decode submission seq has finished, without
+// waiting for it.
+func (v *VideoDecoder) finished(seq uint64) (bool, error) {
 	if seq <= v.completed {
-		return nil
+		return true, nil
 	}
-	d, s := v.d, &v.slots[(seq-1)%decodeSlots]
-	d.blockingWaits++
-	if r := d.cmds.WaitForFences(d.device, 1, &s.done, vk.True, intconv.Must[uint64](d.waitLimit.Nanoseconds())); r != vk.Success {
-		if r == vk.ErrorDeviceLost {
-			d.lost = true
-		}
-		return fmt.Errorf("gpu: wait for %s decode %d, %v at most: %w", v.name, seq, d.waitLimit, resultError(r))
+	reached, err := v.d.timelineValue(v.done)
+	if err != nil {
+		return false, fmt.Errorf("gpu: %s decode %d: %w", v.name, seq, err)
+	}
+	v.completed = reached
+	return seq <= reached, nil
+}
+
+// wait waits for decode submission seq to finish, when it has not.
+func (v *VideoDecoder) wait(seq uint64) error {
+	done, err := v.finished(seq)
+	if done || err != nil {
+		return err
+	}
+	if err := v.d.waitTimeline(v.done, seq); err != nil {
+		return fmt.Errorf("gpu: wait for %s decode %d: %w", v.name, seq, err)
 	}
 	v.completed = seq
 	return nil
@@ -483,6 +494,32 @@ type VideoFrame struct {
 	state frameState
 }
 
+// Decoded reports whether the frame's picture has finished decoding,
+// without waiting for it. A pass may draw the frame before it has: the
+// pass waits for the decode on the GPU. What then waits here for that
+// pass (Finish, a CPU read, Publish on a device whose dmabufs carry no
+// fence) waits for the decode with it, so a caller that must not stall
+// there draws the frame once Decoded says so.
+func (f *VideoFrame) Decoded() (bool, error) {
+	switch {
+	case f.state != frameHeld:
+		return false, errors.New("gpu: Decoded of a frame the caller does not hold")
+	case f.v.closed:
+		return false, errors.New("gpu: Decoded of a frame whose decoder is closed")
+	}
+	return f.v.finished(f.seq)
+}
+
+// decoding is the point on the decoder's timeline a submission that
+// samples the frame waits for: none, the zero value, once its decode is
+// known to have finished.
+func (f *VideoFrame) decoding() timelineWait {
+	if f.seq <= f.v.completed {
+		return timelineWait{}
+	}
+	return timelineWait{semaphore: f.v.done, value: f.seq}
+}
+
 // frameState is where a frame's picture is.
 type frameState uint8
 
@@ -542,7 +579,9 @@ func (f *VideoFrame) destroy() {
 // to dst and turned by tr, at alpha over dst's damaged part within m,
 // its colours converted by the stream's YCbCr matrix, range and chroma
 // siting: DrawTexture for a decoded frame. src is in the picture's
-// pixels, within its Size.
+// pixels, within its Size. A picture still decoding is waited for on the
+// GPU: the pass's submission runs after the decode, and nothing waits
+// here.
 func (p *Pass) DrawFrame(f *VideoFrame, src FRect, dst image.Rectangle, tr Transform, alpha float32, m Mask) {
 	if !p.open("DrawFrame") {
 		return
@@ -564,7 +603,7 @@ func (p *Pass) DrawFrame(f *VideoFrame, src FRect, dst image.Rectangle, tr Trans
 		return
 	}
 	src.X, src.Y = src.X+float64(f.rect.Min.X), src.Y+float64(f.rect.Min.Y)
-	p.drawTexture(f.tex, src, dst, tr, alpha, m)
+	p.drawTexture(f.tex, src, dst, tr, alpha, m, f.decoding())
 }
 
 // frame is a free frame of the session's size to decode into: one the
@@ -750,10 +789,8 @@ func (v *VideoDecoder) submit(p *decodePicture) error {
 	if r := d.cmds.EndCommandBuffer(cb); r != vk.Success {
 		return fmt.Errorf("gpu: vkEndCommandBuffer (%s decode): %w", v.name, resultError(r))
 	}
-	if err := resetFence(d, s.done); err != nil {
-		return err
-	}
-	if err := submit2(d, d.decode.queue, cb, nil, nil, s.done); err != nil {
+	signal := vk.SemaphoreSubmitInfo{SType: vk.StructureTypeSemaphoreSubmitInfo, Semaphore: v.done, Value: v.submitted + 1, StageMask: vk.PipelineStageFlags2(vk.PipelineStage2AllCommandsBit)}
+	if err := submit2(d, d.decode.queue, cb, nil, &signal, 0); err != nil {
 		return err
 	}
 	v.submitted++

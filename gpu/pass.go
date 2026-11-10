@@ -68,9 +68,12 @@ const (
 )
 
 type passOp struct {
-	kind   opKind
-	dst    image.Rectangle
-	tex    *Texture
+	kind opKind
+	dst  image.Rectangle
+	tex  *Texture
+	// after is what another queue signals once it has written tex, a
+	// decoded frame's: the pass's submission waits for it.
+	after  timelineWait
 	set    vk.DescriptorSet
 	pipe   vk.Pipeline
 	layout vk.PipelineLayout
@@ -397,12 +400,14 @@ func (p *Pass) DrawTexture(t *Texture, src FRect, dst image.Rectangle, tr Transf
 		p.fail(errors.New("gpu: DrawTexture of the pass's own target"))
 		return
 	}
-	p.drawTexture(t, src, dst, tr, alpha, m)
+	p.drawTexture(t, src, dst, tr, alpha, m, timelineWait{})
 }
 
 // drawTexture is DrawTexture of t, a texture of the pass's device that
 // is open and not the pass's target: what DrawFrame shares with it.
-func (p *Pass) drawTexture(t *Texture, src FRect, dst image.Rectangle, tr Transform, alpha float32, m Mask) {
+// after is what another queue signals once it has written t, for the
+// pass's submission to wait for; none for the zero value.
+func (p *Pass) drawTexture(t *Texture, src FRect, dst image.Rectangle, tr Transform, alpha float32, m Mask, after timelineWait) {
 	switch {
 	case tr < TransformNormal || tr > TransformFlipped270:
 		p.fail(fmt.Errorf("gpu: transform %d is no wl_output transform", tr))
@@ -435,7 +440,7 @@ func (p *Pass) drawTexture(t *Texture, src FRect, dst image.Rectangle, tr Transf
 	for i, uv := range textureCorners(src, tr, image.Pt(t.w, t.h)) {
 		dc.extra[i/2][i%2*2], dc.extra[i/2][i%2*2+1] = uv[0], uv[1]
 	}
-	op := passOp{kind: opTexture, dst: dst, tex: t, set: set, pipe: p.ct.tex, layout: p.d.comp.layout, dc: dc}
+	op := passOp{kind: opTexture, dst: dst, tex: t, after: after, set: set, pipe: p.ct.tex, layout: p.d.comp.layout, dc: dc}
 	if p.cutSet != 0 {
 		if t.yuv() {
 			p.fail(errors.New("gpu: a cut DrawTexture of a YCbCr texture"))
@@ -616,6 +621,7 @@ func (p *Pass) record(cb vk.CommandBuffer) {
 		if !p.touchesDamage(op.dst) {
 			continue
 		}
+		d.awaitTimeline(op.after)
 		for _, t := range [2]*Texture{op.tex, op.cutTex} {
 			if t == nil {
 				continue

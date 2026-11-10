@@ -67,6 +67,9 @@ type timing struct {
 	// heldSemaphores are what the submissions in flight wait on and
 	// signal, the oldest submission's first.
 	heldSemaphores []vk.Semaphore
+	// timelineWaits are the points on other queues' timeline semaphores
+	// the next submission waits for (awaitTimeline).
+	timelineWaits []timelineWait
 	// spareFences, spareBuffers and spareSemaphores are the objects of
 	// finished submissions, for the next ones.
 	spareFences     []vk.Fence
@@ -133,6 +136,16 @@ type callArgs struct {
 	infos       [2]vk.CalibratedTimestampInfoKHR
 	now         [2]uint64
 	deviation   uint64
+	// waits and values are a submission's wait semaphores and the values
+	// it waits for on the timeline ones among them, with timeline to say
+	// so; waitInfo, timelineSemaphore and timelineValue are a wait for, or
+	// a look at, one timeline semaphore from here.
+	waits             []vk.Semaphore
+	values            []uint64
+	timeline          vk.TimelineSemaphoreSubmitInfo
+	waitInfo          vk.SemaphoreWaitInfo
+	timelineSemaphore vk.Semaphore
+	timelineValue     uint64
 	// planes are the copies of an encoder's converted planes. dependency
 	// to signal2 are barrier2's and submit2's: the video queues' and the
 	// encoder's conversion's, every frame.
@@ -281,7 +294,7 @@ func (d *Device) SyncFile() (int, error) {
 	if !d.syncFiles {
 		return -1, ErrNoSyncFile
 	}
-	if len(d.waits) == 0 && d.batch == 0 {
+	if len(d.waits) == 0 && len(d.timelineWaits) == 0 && d.batch == 0 {
 		if d.lastSyncFileSet {
 			return dupSyncFile(d.lastSyncFile)
 		}
@@ -420,6 +433,94 @@ func (d *Device) forgetSignal() {
 	d.cmds.DestroySemaphore(d.device, s, nil)
 }
 
+// timelineWait is a point on a timeline semaphore: the value a
+// submission waits for it to reach.
+type timelineWait struct {
+	semaphore vk.Semaphore
+	value     uint64
+}
+
+// timelineSemaphore makes a timeline semaphore at zero: what another
+// queue's submissions signal with rising values, for the graphics queue
+// (awaitTimeline) or this goroutine (waitTimeline) to wait on any of
+// them, any number of times. The device has them where it decodes video.
+func (d *Device) timelineSemaphore() (vk.Semaphore, error) {
+	kind := vk.SemaphoreTypeCreateInfo{SType: vk.StructureTypeSemaphoreTypeCreateInfo, SemaphoreType: vk.SemaphoreTypeTimeline}
+	sci := vk.SemaphoreCreateInfo{SType: vk.StructureTypeSemaphoreCreateInfo, PNext: (*uintptr)(unsafe.Pointer(&kind))}
+	var s vk.Semaphore
+	r := d.cmds.CreateSemaphore(d.device, &sci, nil, &s)
+	runtime.KeepAlive(&kind)
+	if r != vk.Success {
+		return 0, fmt.Errorf("gpu: vkCreateSemaphore (timeline): %w", resultError(r))
+	}
+	return s, nil
+}
+
+// awaitTimeline makes the device's next submission (the one carrying
+// the passes ended since the last, an upload, a copy) wait on the GPU
+// until w's timeline semaphore reaches w's value: for the work of
+// another queue that signals it, as a video decode does for the picture
+// a pass samples. Nothing waits here, and the zero value asks for no
+// wait. The semaphore stays its owner's, who retires it once done
+// (retireTimeline) instead of destroying it under a submission.
+func (d *Device) awaitTimeline(w timelineWait) {
+	if w.semaphore == 0 {
+		return
+	}
+	for i := range d.timelineWaits {
+		if have := &d.timelineWaits[i]; have.semaphore == w.semaphore {
+			have.value = max(have.value, w.value)
+			return
+		}
+	}
+	d.timelineWaits = append(d.timelineWaits, w)
+}
+
+// retireTimeline destroys s once the submissions that wait for it have
+// finished. Its owner has seen every value it signals reached, so the
+// submission to come waits for it no longer.
+func (d *Device) retireTimeline(s vk.Semaphore) {
+	d.timelineWaits = slices.DeleteFunc(d.timelineWaits, func(w timelineWait) bool { return w.semaphore == s })
+	d.retire(&retiredSemaphore{d: d, semaphore: s})
+}
+
+// retiredSemaphore is a semaphore to destroy once nothing in flight
+// waits on it.
+type retiredSemaphore struct {
+	d         *Device
+	semaphore vk.Semaphore
+}
+
+func (r *retiredSemaphore) destroy() { r.d.cmds.DestroySemaphore(r.d.device, r.semaphore, nil) }
+
+// timelineValue is the value s has reached, without waiting.
+func (d *Device) timelineValue(s vk.Semaphore) (uint64, error) {
+	a := &d.args
+	if r := d.cmds.GetSemaphoreCounterValue(d.device, s, &a.timelineValue); r != vk.Success {
+		if r == vk.ErrorDeviceLost {
+			d.lost = true
+		}
+		return 0, fmt.Errorf("gpu: vkGetSemaphoreCounterValue: %w", resultError(r))
+	}
+	return a.timelineValue, nil
+}
+
+// waitTimeline waits here until s reaches value, the device's wait
+// limit at most.
+func (d *Device) waitTimeline(s vk.Semaphore, value uint64) error {
+	d.blockingWaits++
+	a := &d.args
+	a.timelineSemaphore, a.timelineValue = s, value
+	a.waitInfo = vk.SemaphoreWaitInfo{SType: vk.StructureTypeSemaphoreWaitInfo, SemaphoreCount: 1, PSemaphores: &a.timelineSemaphore, PValues: &a.timelineValue}
+	if r := d.cmds.WaitSemaphores(d.device, &a.waitInfo, intconv.Must[uint64](d.waitLimit.Nanoseconds())); r != vk.Success {
+		if r == vk.ErrorDeviceLost {
+			d.lost = true
+		}
+		return fmt.Errorf("gpu: vkWaitSemaphores for value %d, %v at most: %w", value, d.waitLimit, resultError(r))
+	}
+	return nil
+}
+
 // queue1 submits cb (0 for none) after the pending waits, signalling
 // signal (0 for none). cb carries the open batch, and with it the passes
 // it holds.
@@ -453,11 +554,20 @@ func (d *Device) queue1(cb vk.CommandBuffer, signal vk.Semaphore, sub submission
 	a := &d.args
 	si := &a.submit
 	*si = vk.SubmitInfo{SType: vk.StructureTypeSubmitInfo}
-	if n := len(d.waits); n > 0 {
+	a.waits = append(a.waits[:0], d.waits...)
+	if len(d.timelineWaits) > 0 {
+		a.values = append(a.values[:0], make([]uint64, len(d.waits))...)
+		for _, w := range d.timelineWaits {
+			a.waits, a.values = append(a.waits, w.semaphore), append(a.values, w.value)
+		}
+		a.timeline = vk.TimelineSemaphoreSubmitInfo{SType: vk.StructureTypeTimelineSemaphoreSubmitInfo, WaitSemaphoreValueCount: count(a.values), PWaitSemaphoreValues: &a.values[0]}
+		si.PNext = (*uintptr)(unsafe.Pointer(&a.timeline))
+	}
+	if n := len(a.waits); n > 0 {
 		for len(a.stages) < n {
 			a.stages = append(a.stages, vk.PipelineStageFlags(vk.PipelineStageAllCommandsBit))
 		}
-		si.WaitSemaphoreCount, si.PWaitSemaphores, si.PWaitDstStageMask = count(d.waits), &d.waits[0], &a.stages[0]
+		si.WaitSemaphoreCount, si.PWaitSemaphores, si.PWaitDstStageMask = count(a.waits), &a.waits[0], &a.stages[0]
 	}
 	if cb != 0 {
 		a.cb = cb
@@ -485,7 +595,7 @@ func (d *Device) queue1(cb vk.CommandBuffer, signal vk.Semaphore, sub submission
 		f.staged, f.stagingEnd, d.batched, d.batchBytes = true, d.batchEnd, 0, 0
 	}
 	d.heldSemaphores = append(d.heldSemaphores, d.waits...)
-	d.waits = d.waits[:0]
+	d.waits, d.timelineWaits = d.waits[:0], d.timelineWaits[:0]
 	switch {
 	case frame:
 		d.frameSignal = signal

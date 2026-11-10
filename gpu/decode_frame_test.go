@@ -24,9 +24,9 @@ func heldFrame(t *testing.T, w, h int) (*Device, *VideoDecoder, *VideoFrame) {
 		t.Fatal(err)
 	}
 	v.Flush()
-	f, err := v.Next()
-	if err != nil || f == nil {
-		t.Fatalf("frame %v, %v", f, err)
+	f := v.Next()
+	if f == nil {
+		t.Fatal("the first packet completed no frame")
 	}
 	return d, v, f
 }

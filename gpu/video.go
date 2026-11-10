@@ -136,7 +136,8 @@ func (d *Device) probeVideo(p vk.PhysicalDevice, sync2 bool, have map[string]boo
 // probeDecode finds p's video decode queue family and the codecs it
 // decodes, as probeVideo does for encoding; decoding also needs the
 // sampler YCbCr conversion the renderer samples its pictures through,
-// and VP9 the videoDecodeVP9 feature.
+// the timeline semaphores its queue hands them to the graphics queue
+// with, and VP9 the videoDecodeVP9 feature.
 func (d *Device) probeDecode(p vk.PhysicalDevice, sync2, ycbcr bool, have map[string]bool) (*decodeQueue, map[demux.Codec]error) {
 	ops := make([]videoOp, len(decodeCodecs))
 	for i, c := range decodeCodecs {
@@ -148,6 +149,8 @@ func (d *Device) probeDecode(p vk.PhysicalDevice, sync2, ycbcr bool, have map[st
 		missing = errors.New("no Vulkan 1.3 synchronization2")
 	case !ycbcr:
 		missing = errors.New("no sampler YCbCr conversion to sample decoded pictures")
+	case !d.probeTimeline(p):
+		missing = errors.New("no timeline semaphores to hand decoded pictures to the graphics queue")
 	}
 	family, queueFlags, offered, reasons := d.probeVideoFamily(p, have, missing, vk.QueueVideoDecodeBitKhr, decodeExtensions, ops)
 	why := map[demux.Codec]error{}
@@ -258,6 +261,16 @@ func (q *decodeQueue) extensions() []string {
 		}
 	}
 	return exts
+}
+
+// probeTimeline reports whether p, a Vulkan 1.3 device, has timeline
+// semaphores, which a device that decodes video enables.
+func (d *Device) probeTimeline(p vk.PhysicalDevice) bool {
+	timeline := vk.PhysicalDeviceTimelineSemaphoreFeatures{SType: vk.StructureTypePhysicalDeviceTimelineSemaphoreFeatures}
+	f2 := vk.PhysicalDeviceFeatures2{SType: vk.StructureTypePhysicalDeviceFeatures2, PNext: (*uintptr)(unsafe.Pointer(&timeline))}
+	d.cmds.GetPhysicalDeviceFeatures2(p, &f2)
+	runtime.KeepAlive(&timeline)
+	return timeline.TimelineSemaphore != 0
 }
 
 // probeVP9 reports whether p has the videoDecodeVP9 feature, which

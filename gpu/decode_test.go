@@ -181,10 +181,7 @@ func decodeSome(t *testing.T, v *VideoDecoder, pkts []demux.Packet) []decoded {
 func takeFrames(t *testing.T, v *VideoDecoder, out []decoded) []decoded {
 	t.Helper()
 	for {
-		f, err := v.Next()
-		if err != nil {
-			t.Fatal(err)
-		}
+		f := v.Next()
 		if f == nil {
 			return out
 		}
@@ -194,7 +191,8 @@ func takeFrames(t *testing.T, v *VideoDecoder, out []decoded) []decoded {
 }
 
 // readPicture copies f's picture back to the CPU through the graphics
-// queue, as NV12 or P010 (its texture's format) of its picture.
+// queue, which waits for its decode, as NV12 or P010 (its texture's
+// format) of its picture.
 func readPicture(t *testing.T, f *VideoFrame) []byte {
 	t.Helper()
 	d := f.v.d
@@ -206,6 +204,7 @@ func readPicture(t *testing.T, f *VideoFrame) []byte {
 	}
 	defer buf.close()
 	img := f.tex.image
+	d.awaitTimeline(f.decoding())
 	err = d.submit(func(cb vk.CommandBuffer) {
 		fullBarrier(d, cb, img, vk.ImageLayoutShaderReadOnlyOptimal, vk.ImageLayoutTransferSrcOptimal, vk.QueueFamilyIgnored, vk.QueueFamilyIgnored)
 		regions := [2]vk.BufferImageCopy{
@@ -438,9 +437,9 @@ func TestDecodedFrameDraws(t *testing.T) {
 				t.Fatal(err)
 			}
 			v.Flush()
-			f, err := v.Next()
-			if err != nil || f == nil {
-				t.Fatalf("frame %v, %v", f, err)
+			f := v.Next()
+			if f == nil {
+				t.Fatal("the first packet completed no frame")
 			}
 			defer f.Release()
 			if got := f.tex.format; got != c.format {
@@ -544,10 +543,7 @@ func TestDecodeDoesNotAllocate(t *testing.T) {
 				}
 				i++
 				for {
-					f, err := v.Next()
-					if err != nil {
-						t.Fatal(err)
-					}
+					f := v.Next()
 					if f == nil {
 						return
 					}

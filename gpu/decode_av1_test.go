@@ -118,9 +118,9 @@ func TestDecodeAV1CropsToTheFrame(t *testing.T) {
 	if err := v.Decode(pkts[0]); err != nil {
 		t.Fatal(err)
 	}
-	f, err := v.Next()
-	if err != nil || f == nil {
-		t.Fatalf("frame %v, %v", f, err)
+	f := v.Next()
+	if f == nil {
+		t.Fatal("the first packet completed no frame")
 	}
 	defer f.Release()
 	if s := f.Size(); s != image.Pt(270, 150) {
@@ -146,10 +146,7 @@ func TestDecodeAV1DoesNotAllocate(t *testing.T) {
 		}
 		i++
 		for {
-			f, err := v.Next()
-			if err != nil {
-				t.Fatal(err)
-			}
+			f := v.Next()
 			if f == nil {
 				return
 			}

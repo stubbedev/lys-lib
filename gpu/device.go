@@ -333,8 +333,9 @@ func (d *Device) pick(p vk.PhysicalDevice, exporting bool, node *drmNode) error 
 
 // open creates the logical device: its graphics queue, the video
 // encode and decode queues where the device codes video,
-// synchronization2 where it has it (video coding records with it), and
-// the videoDecodeVP9 feature where it decodes VP9.
+// synchronization2 where it has it (video coding records with it),
+// timeline semaphores where it decodes video, and the videoDecodeVP9
+// feature where it decodes VP9.
 func (d *Device) open() error {
 	prio := float32(1)
 	qcis := []vk.DeviceQueueCreateInfo{{SType: vk.StructureTypeDeviceQueueCreateInfo, QueueFamilyIndex: d.family, QueueCount: 1, PQueuePriorities: &prio}}
@@ -361,6 +362,10 @@ func (d *Device) open() error {
 	if d.decode != nil && slices.Contains(d.decode.codecs, demux.VP9) {
 		dci.PNext = (*uintptr)(unsafe.Pointer(&vp9))
 	}
+	timeline := vk.PhysicalDeviceTimelineSemaphoreFeatures{SType: vk.StructureTypePhysicalDeviceTimelineSemaphoreFeatures, PNext: dci.PNext, TimelineSemaphore: vk.True}
+	if d.decode != nil {
+		dci.PNext = (*uintptr)(unsafe.Pointer(&timeline))
+	}
 	if d.video != nil {
 		addQueue(d.video.family)
 		exts = append(exts, d.video.extensions()...)
@@ -380,6 +385,7 @@ func (d *Device) open() error {
 	runtime.KeepAlive(&f13)
 	runtime.KeepAlive(&f11)
 	runtime.KeepAlive(&vp9)
+	runtime.KeepAlive(&timeline)
 	if r != vk.Success {
 		return fmt.Errorf("%s: vkCreateDevice: %w", d.name, resultError(r))
 	}
