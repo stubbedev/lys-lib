@@ -21,7 +21,7 @@ var isolatedKeys = []string{"HOME", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_STA
 
 func restoreAfter(t *testing.T) {
 	t.Helper()
-	for _, k := range slices.Concat(isolatedKeys, sessionEnv[:], toolchainEnv[:], []string{wltest.HeadlessEnv}) {
+	for _, k := range slices.Concat(isolatedKeys, sessionEnv[:], toolchainEnv[:], []string{wltest.HeadlessEnv, SessionEnv}) {
 		v, set := os.LookupEnv(k)
 		t.Setenv(k, v)
 		if !set {
@@ -46,6 +46,7 @@ func (v *verdict) Errorf(format string, args ...any) {
 func guard(t *testing.T) []string {
 	t.Helper()
 	t.Setenv(wltest.HeadlessEnv, "")
+	t.Setenv(SessionEnv, "")
 	return verdictOf(t)
 }
 
@@ -367,6 +368,115 @@ func TestTheGuardFailsAnEndpointInTheHostsRuntimeDir(t *testing.T) {
 
 func TestTheGuardFailsAHeadlessRunOnTheHostsSession(t *testing.T) {
 	t.Setenv(wltest.HeadlessEnv, "1")
+	t.Setenv(SessionEnv, "")
 	t.Setenv(runtimeEnv, hostRuntimeDir())
 	wantOnly(t, verdictOf(t), "is in the host's runtime directory")
+}
+
+func recipeSession(t *testing.T, dir string, env map[string]string) (home string) {
+	t.Helper()
+	restoreAfter(t)
+	for _, k := range slices.Concat(sessionEnv[:], []string{sessionBusEnv, wltest.HeadlessEnv}) {
+		t.Setenv(k, "")
+		if err := os.Unsetenv(k); err != nil {
+			t.Fatal(err)
+		}
+	}
+	t.Setenv(SessionEnv, dir)
+	t.Setenv(runtimeEnv, dir)
+	for k, v := range env {
+		t.Setenv(k, v)
+	}
+	home = t.TempDir()
+	if err := isolate(home); err != nil {
+		t.Fatal(err)
+	}
+	return home
+}
+
+func TestASessionARecipeNamedStaysAndPassesTheGuardWhereverItLies(t *testing.T) {
+	for _, c := range []struct{ name, dir string }{
+		{"a directory of the recipe's", t.TempDir()},
+		{"the runtime directory of the user, as in a VM", hostRuntimeDir()},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			home := recipeSession(t, c.dir, map[string]string{displayEnv: "wayland-1", "HYPRLAND_INSTANCE_SIGNATURE": "recipe"})
+			for k, want := range map[string]string{
+				runtimeEnv: c.dir, displayEnv: "wayland-1", "HYPRLAND_INSTANCE_SIGNATURE": "recipe",
+				sessionBusEnv: busAddress(home + "/session-bus"), systemBusEnv: busAddress(home + "/system-bus"),
+				pulseEnv: "unix:" + c.dir + "/pulse/native", "HOME": home,
+			} {
+				if got := os.Getenv(k); got != want {
+					t.Errorf("%s = %q, want %q", k, got, want)
+				}
+			}
+			if errs := verdictOf(t); len(errs) != 0 {
+				t.Errorf("the guard fails the session the recipe named: %q", errs)
+			}
+		})
+	}
+}
+
+func TestIsolateKeepsTheSessionBusARecipeNamed(t *testing.T) {
+	dir := t.TempDir()
+	bus := "unix:path=" + dir + "/bus,guid=0123"
+	recipeSession(t, dir, map[string]string{sessionBusEnv: bus})
+	if got := os.Getenv(sessionBusEnv); got != bus {
+		t.Errorf("%s = %q, want the recipe's %q", sessionBusEnv, got, bus)
+	}
+	if errs := verdictOf(t); len(errs) != 0 {
+		t.Errorf("the guard fails the recipe's own session bus: %q", errs)
+	}
+}
+
+func TestTheGuardHoldsEveryEndpointToTheSessionARecipeNamed(t *testing.T) {
+	host := hostRuntimeDir()
+	for _, c := range []struct {
+		key, value, want string
+	}{
+		{runtimeEnv, host, runtimeEnv + "=" + strconv.Quote(host) + " is not the session"},
+		{sessionBusEnv, "unix:path=" + host + "/bus", "lies outside the session"},
+		{systemBusEnv, "unix:path=/run/dbus/system_bus_socket", "lies outside the session"},
+		{pulseEnv, "unix:" + host + "/pulse/native", "lies outside the session"},
+		{displayEnv, host + "/wayland-0", "lies outside the session"},
+		{"PIPEWIRE_REMOTE", host + "/pipewire-0", "lies outside the session"},
+		{"PIPEWIRE_RUNTIME_DIR", host, "lies outside the session"},
+		{"PULSE_RUNTIME_PATH", host + "/pulse", "lies outside the session"},
+		{sessionBusEnv, "", sessionBusEnv + " is unset"},
+		{systemBusEnv, "", systemBusEnv + " is unset"},
+		{pulseEnv, "", pulseEnv + " is unset"},
+	} {
+		t.Run(c.key+"="+c.value, func(t *testing.T) {
+			dir := t.TempDir()
+			recipeSession(t, dir, nil)
+			t.Setenv(c.key, c.value)
+			wantOnly(t, verdictOf(t), c.want)
+		})
+	}
+}
+
+func TestTheGuardTakesASessionDirectoryThatOnlyStartsLikeTheNamedOneForAnother(t *testing.T) {
+	dir := t.TempDir()
+	recipeSession(t, dir, nil)
+	t.Setenv(sessionBusEnv, "unix:path="+dir+"-of-the-desktop/bus")
+	wantOnly(t, verdictOf(t), "lies outside the session")
+	t.Setenv(sessionBusEnv, "unix:path=/elsewhere"+dir+"/bus")
+	wantOnly(t, verdictOf(t), "lies outside the session")
+}
+
+func TestTheGuardFailsASystemBusThatAnswersInASessionARecipeNamed(t *testing.T) {
+	dir := t.TempDir()
+	recipeSession(t, dir, nil)
+	t.Setenv(systemBusEnv, dbustest.StartAt(t, filepath.Join(dir, "system-bus")).Address)
+	wantOnly(t, verdictOf(t), "a system bus answers")
+}
+
+func TestASessionARecipeNamedWithNoTestHomeOwnsOnlyItsDirectory(t *testing.T) {
+	dir := t.TempDir()
+	recipeSession(t, dir, nil)
+	t.Setenv(isolatedEnv, "")
+	errs := verdictOf(t)
+	if len(errs) != 2 || !strings.Contains(errs[0], sessionBusEnv) || !strings.Contains(errs[1], systemBusEnv) {
+		t.Errorf("without a test home the guard said %q, want the buses Main pinned there refused", errs)
+	}
 }

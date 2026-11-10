@@ -29,6 +29,14 @@ import (
 	"github.com/stubbedev/lys-lib/wmipc"
 )
 
+// SessionEnv is how a recipe that boots a session for a test run (a
+// headless compositor, a VM's desktop) names it to the tests: the
+// session's runtime directory. Main then leaves that session in place,
+// and RequireNoHostSession holds every endpoint to it, wherever the
+// directory lies: in a VM it is /run/user/<uid>, which on a developer's
+// machine is the desktop's.
+const SessionEnv = "LYS_TEST_SESSION"
+
 const (
 	isolatedEnv   = "LYS_TESTHOME"
 	runtimeEnv    = "XDG_RUNTIME_DIR"
@@ -81,10 +89,12 @@ func Run(m *testing.M) { os.Exit(Main(m.Run)) }
 // display, desktop or media server, and points the runtime directory,
 // which it creates with mode 0700, the session bus and the sound
 // server at sockets under the temp directory, where only a test's own
-// fake can be. In a headless run (wltest.HeadlessEnv) the session in
-// the environment is the one the recipe booted for the tests, and
-// stays: only the system bus and the sound server are pinned, the
-// latter to the recipe's runtime directory.
+// fake can be. In a headless run (wltest.HeadlessEnv), or with a session
+// a recipe named (SessionEnv), the session in the environment is the
+// one the recipe booted for the tests, and stays: only the system bus
+// and the sound server are pinned, the latter to the recipe's runtime
+// directory, and a session bus the recipe did not name, to a socket
+// under the temp directory, so that no client guesses one.
 // The go command's caches and configuration, whose defaults lie under
 // the home that moved, stay where they were, so a go build a test runs
 // starts warm.
@@ -129,7 +139,8 @@ func isolate(home string) error {
 		[2]string{isolatedEnv, home},
 	)
 	runtime := os.Getenv(runtimeEnv)
-	if os.Getenv(wltest.HeadlessEnv) == "" {
+	switch {
+	case !sessionProvided():
 		for _, key := range sessionEnv {
 			if err := os.Unsetenv(key); err != nil {
 				return fmt.Errorf("unset %s: %w", key, err)
@@ -143,6 +154,8 @@ func isolate(home string) error {
 			[2]string{runtimeEnv, runtime},
 			[2]string{sessionBusEnv, busAddress(filepath.Join(runtime, "bus"))},
 		)
+	case os.Getenv(sessionBusEnv) == "":
+		env = append(env, [2]string{sessionBusEnv, busAddress(filepath.Join(home, "session-bus"))})
 	}
 	env = append(env, [2]string{pulseEnv, "unix:" + filepath.Join(runtime, "pulse", "native")})
 	for _, kv := range env {
@@ -151,6 +164,10 @@ func isolate(home string) error {
 		}
 	}
 	return nil
+}
+
+func sessionProvided() bool {
+	return os.Getenv(wltest.HeadlessEnv) != "" || os.Getenv(SessionEnv) != ""
 }
 
 func busAddress(socket string) string {
@@ -218,8 +235,18 @@ func WithoutSession(environ []string) []string {
 // or a sound server answers. Every package whose tests build
 // applications or dial a bus calls it from a test of its own, under a
 // TestMain that calls Run.
+//
+// Where a recipe named the session it booted (SessionEnv), the process
+// is held to exactly that session instead: the runtime directory is the
+// one named, and the session bus, the system bus, the sound server, an
+// absolute Wayland display and a media server's socket each lie in it
+// or in the test home Main made. The system bus still answers to none.
 func RequireNoHostSession(t testing.TB) {
 	t.Helper()
+	if session := os.Getenv(SessionEnv); session != "" {
+		requireSession(t, filepath.Clean(session))
+		return
+	}
 	host := filepath.Join("/run/user", strconv.Itoa(os.Getuid()))
 	reachable := false
 	for _, key := range []string{runtimeEnv, sessionBusEnv, systemBusEnv, pulseEnv} {
@@ -262,5 +289,60 @@ func RequireNoHostSession(t testing.TB) {
 	if conn, err := native.Dial(ctx, native.Options{ClientName: "lys testhome", Timeout: probeTimeout}); err == nil {
 		_ = conn.Close()
 		t.Errorf("a sound server answers at %s", os.Getenv(pulseEnv))
+	}
+}
+
+func requireSession(t testing.TB, session string) {
+	t.Helper()
+	owned := []string{session, dbus.EscapeBusAddressValue(session)}
+	if home := os.Getenv(isolatedEnv); home != "" {
+		owned = append(owned, home, dbus.EscapeBusAddressValue(home))
+	}
+	ok := true
+	fail := func(format string, args ...any) {
+		ok = false
+		t.Errorf(format, args...)
+	}
+	if runtime := os.Getenv(runtimeEnv); filepath.Clean(runtime) != session {
+		fail("%s=%q is not the session %s names, %s", runtimeEnv, runtime, SessionEnv, session)
+	}
+	for _, key := range []string{sessionBusEnv, systemBusEnv, pulseEnv} {
+		if os.Getenv(key) == "" {
+			fail("%s is unset: a client guesses the host's", key)
+		}
+	}
+	for _, key := range []string{sessionBusEnv, systemBusEnv, pulseEnv, "PIPEWIRE_REMOTE", "PIPEWIRE_RUNTIME_DIR", "PULSE_RUNTIME_PATH"} {
+		if v := os.Getenv(key); v != "" && !slices.ContainsFunc(owned, func(dir string) bool { return liesIn(v, dir) }) {
+			fail("%s=%q lies outside the session %s names (%s) and the test home", key, v, SessionEnv, session)
+		}
+	}
+	if display := os.Getenv(displayEnv); filepath.IsAbs(display) && !liesIn(display, session) {
+		fail("%s=%q lies outside the session %s names, %s", displayEnv, display, SessionEnv, session)
+	}
+	if !ok {
+		return
+	}
+	ctx, cancel := context.WithTimeout(t.Context(), probeTimeout)
+	defer cancel()
+	if conn, err := dbusx.DialSystem(ctx, probeTimeout); err == nil {
+		_ = conn.Close()
+		t.Errorf("a system bus answers at %s", os.Getenv(systemBusEnv))
+	}
+}
+
+func liesIn(endpoint, dir string) bool {
+	for rest := endpoint; ; {
+		i := strings.Index(rest, dir)
+		if i < 0 {
+			return false
+		}
+		start := len(endpoint) - len(rest) + i
+		end := start + len(dir)
+		atPathStart := start == 0 || endpoint[start-1] == '=' || endpoint[start-1] == ':'
+		atPathEnd := end == len(endpoint) || endpoint[end] == '/' || endpoint[end] == ','
+		if atPathStart && atPathEnd {
+			return true
+		}
+		rest = rest[i+1:]
 	}
 }

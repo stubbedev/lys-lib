@@ -86,3 +86,11 @@ A test that needs a bus starts its own (`dbustest`) and points the process at it
 (`UseAsSessionBus`, `UseAsSystemBus`). A test binary an isolated test starts
 again, as a helper or as the program under test, keeps the environment its
 parent gave it.
+
+A recipe that boots a session for the tests, a headless compositor or a VM's
+login, exports `LYS_TEST_SESSION` with that session's runtime directory.
+`Main` then leaves the session in place, and the guard holds the runtime
+directory, the buses, the sound server and the display to exactly that
+directory or the test home, wherever it lies; a session bus the recipe did not
+name is pinned to an absent socket. Without the variable a session in
+`/run/user/<uid>` is the host's and fails the guard.
