@@ -61,8 +61,9 @@ type Cache struct {
 
 	// themeListeners hear every followed icon-theme switch (follow.go).
 	themeListeners []func(string)
-	// resetListeners hear every reset, whatever caused it.
-	resetListeners []func()
+	// resetListeners hear every reset, whatever caused it, each until
+	// it is unsubscribed: a registration is its pointer.
+	resetListeners []*func()
 
 	entries map[cacheKey]*cacheEntry
 	// order lists the keys from least to most recently used.
@@ -169,14 +170,25 @@ func (c *Cache) InvalidateTheme() {
 // SetSearchPaths, InvalidateTheme, an applied ApplyIconTheme), once
 // Generation has moved. Callbacks run on the caller's goroutine; bridge
 // into the loop with Application.Invoke, where the usual reaction is
-// requesting a repaint.
-func (c *Cache) OnReset(fn func()) {
+// requesting a repaint. The returned unsubscribe takes this
+// registration off the cache again, so what registered it (an
+// application closing) is no longer held by a cache that outlives it;
+// calling it twice does nothing more. A reset another goroutine has
+// already begun may still run fn once after unsubscribe returns. A nil
+// fn registers nothing.
+func (c *Cache) OnReset(fn func()) (unsubscribe func()) {
 	if fn == nil {
-		return
+		return func() {}
 	}
+	registration := &fn
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.resetListeners = append(c.resetListeners, fn)
+	c.resetListeners = append(c.resetListeners, registration)
+	return func() {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		c.resetListeners = slices.DeleteFunc(c.resetListeners, func(l *func()) bool { return l == registration })
+	}
 }
 
 // resetLocked drops every cached raster and bumps Generation; it
@@ -188,7 +200,11 @@ func (c *Cache) resetLocked() []func() {
 	c.index = nil
 	c.namespaceIndex = nil
 	c.gen.Add(1)
-	return slices.Clone(c.resetListeners)
+	listeners := make([]func(), len(c.resetListeners))
+	for i, l := range c.resetListeners {
+		listeners[i] = *l
+	}
+	return listeners
 }
 
 func runAll(fns []func()) {
