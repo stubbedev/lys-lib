@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/stubbedev/lys-lib/internal/matroska"
 )
 
 func unhex(t *testing.T, s string) []byte {
@@ -168,17 +170,17 @@ func TestEBMLEncoding(t *testing.T) {
 		do   func(*ebml)
 		want string
 	}{
-		{"one byte id, minimal uint", func(e *ebml) { e.uint(idTrackNumber, 1) }, "d78101"},
-		{"zero uint keeps a byte", func(e *ebml) { e.uint(idFlagLacing, 0) }, "9c8100"},
-		{"three byte id, wide uint", func(e *ebml) { e.uint(idTimestampScale, 1000000) }, "2ad7b1830f4240"},
-		{"two byte size at 127", func(e *ebml) { e.bytes(idCodecPrivate, make([]byte, 127)) }, "63a2407f" + strings.Repeat("00", 127)},
+		{"one byte id, minimal uint", func(e *ebml) { e.uint(matroska.TrackNumber, 1) }, "d78101"},
+		{"zero uint keeps a byte", func(e *ebml) { e.uint(matroska.FlagLacing, 0) }, "9c8100"},
+		{"three byte id, wide uint", func(e *ebml) { e.uint(matroska.TimestampScale, 1000000) }, "2ad7b1830f4240"},
+		{"two byte size at 127", func(e *ebml) { e.bytes(matroska.CodecPrivate, make([]byte, 127)) }, "63a2407f" + strings.Repeat("00", 127)},
 		{"master with an eight byte size", func(e *ebml) {
-			e.begin(idVideo)
-			e.uint(idPixelWidth, 320)
+			e.begin(matroska.Video)
+			e.uint(matroska.PixelWidth, 320)
 			e.end()
 		}, "e00100000000000004b0820140"},
 		{"void fills its total", func(e *ebml) { e.void(4) }, "ec820000"},
-		{"float64", func(e *ebml) { e.float(idDuration, 2000) }, "448988409f400000000000"},
+		{"float64", func(e *ebml) { e.float(matroska.Duration, 2000) }, "448988409f400000000000"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			var e ebml
@@ -266,7 +268,7 @@ func TestWriteErrorsStick(t *testing.T) {
 }
 
 type element struct {
-	id      uint32
+	id      matroska.ID
 	payload []byte
 	at      int
 }
@@ -300,13 +302,13 @@ func children(t *testing.T, b []byte, base int) []element {
 		if start+int(size) > len(b) {
 			t.Fatalf("element %x at %d runs %d bytes past its parent", id, base+i, start+int(size)-len(b))
 		}
-		out = append(out, element{id: uint32(id), payload: b[start : start+int(size)], at: base + i})
+		out = append(out, element{id: matroska.ID(id), payload: b[start : start+int(size)], at: base + i})
 		i = start + int(size)
 	}
 	return out
 }
 
-func find(t *testing.T, els []element, id uint32) element {
+func find(t *testing.T, els []element, id matroska.ID) element {
 	t.Helper()
 	for _, e := range els {
 		if e.id == id {
@@ -341,40 +343,40 @@ func TestMKVCloseFinalisesTheHeaderWhenSeekable(t *testing.T) {
 		t.Fatal(err)
 	}
 	top := children(t, b, 0)
-	if len(top) != 2 || top[0].id != idEBML || top[1].id != idSegment {
+	if len(top) != 2 || top[0].id != matroska.EBML || top[1].id != matroska.Segment {
 		t.Fatalf("top level %+v", top)
 	}
 	segStart := len(b) - len(top[1].payload)
 	seg := children(t, top[1].payload, segStart)
 	clusters := 0
 	for _, e := range seg {
-		if e.id == idCluster {
+		if e.id == matroska.Cluster {
 			clusters++
 		}
 	}
 	if clusters != 3 {
 		t.Errorf("%d clusters for three seconds, want 3", clusters)
 	}
-	seeks := children(t, find(t, seg, idSeekHead).payload, 0)
+	seeks := children(t, find(t, seg, matroska.SeekHead).payload, 0)
 	if len(seeks) != 3 {
 		t.Fatalf("%d seek entries, want 3", len(seeks))
 	}
 	for _, s := range seeks {
 		entry := children(t, s.payload, 0)
-		id := binary.BigEndian.Uint32(find(t, entry, idSeekID).payload)
+		id := matroska.ID(binary.BigEndian.Uint32(find(t, entry, matroska.SeekID).payload))
 		var pos uint64
-		for _, c := range find(t, entry, idSeekPosition).payload {
+		for _, c := range find(t, entry, matroska.SeekPosition).payload {
 			pos = pos<<8 | uint64(c)
 		}
 		if target := find(t, seg, id); uint64(target.at-segStart) != pos {
 			t.Errorf("seek entry for %x points at %d, the element is at %d", id, pos, target.at-segStart)
 		}
 	}
-	info := children(t, find(t, seg, idInfo).payload, 0)
-	if d := find(t, info, idDuration).payload; hex.EncodeToString(d) != "40a7700000000000" {
+	info := children(t, find(t, seg, matroska.Info).payload, 0)
+	if d := find(t, info, matroska.Duration).payload; hex.EncodeToString(d) != "40a7700000000000" {
 		t.Errorf("duration % x, want 3000 ms", d)
 	}
-	cues := children(t, find(t, seg, idCues).payload, 0)
+	cues := children(t, find(t, seg, matroska.Cues).payload, 0)
 	if len(cues) != 3 {
 		t.Errorf("%d cue points, want one per cluster", len(cues))
 	}

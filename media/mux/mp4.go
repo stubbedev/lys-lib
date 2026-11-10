@@ -7,14 +7,14 @@ import (
 	"math"
 
 	"github.com/stubbedev/lys-lib/intconv"
+	"github.com/stubbedev/lys-lib/internal/isobmff"
 )
 
 const (
 	mp4MovieHz     = 1000
-	mp4BaseIsMoof  = 0x020000
-	mp4RunFlags    = 0x000701
-	mp4SyncFlags   = 0x02000000
-	mp4DeltaFlags  = 0x01010000
+	mp4RunFlags    = isobmff.TrunDataOffset | isobmff.TrunSampleDuration | isobmff.TrunSampleSize | isobmff.TrunSampleFlags
+	mp4SyncFlags   = isobmff.SampleDependsOnNone
+	mp4DeltaFlags  = isobmff.SampleDependsOnOthers | isobmff.SampleNonSync
 	mp4UnityVolume = 0x0100
 )
 
@@ -336,7 +336,7 @@ func (m *MP4) flush(all bool) error {
 			continue
 		}
 		x.begin("traf")
-		x.full("tfhd", 0, mp4BaseIsMoof)
+		x.full("tfhd", 0, isobmff.TfhdDefaultBaseIsMoof)
 		x.u32(uint32(i + 1))
 		x.end()
 		x.full("tfdt", 1, 0)
