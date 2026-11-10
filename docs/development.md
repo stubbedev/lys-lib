@@ -71,3 +71,18 @@ Importable by tests here and in other family members.
 | `polkit/polkittest` | A fake polkitd Authority on a `dbustest` bus: scripted or held authorization checks, agent registrations, actions and temporary authorizations, every check and cancel recorded |
 | `peercred/peercredtest` | A socket peer that is another process, with its own pid and lifetime: the test binary run again through `Main` in the package's `TestMain` |
 | `sockdir` | A directory short enough for Unix socket paths (`sun_path` is 108 bytes) |
+| `testhome` | Runs a test binary against a scratch home and no session but its own: `Run` (or `Main`) in `TestMain` moves `HOME` and the XDG per-user directories, unsets the variables that advertise a compositor, display or media server, and pins the session bus, the system bus and the sound server to sockets only a test's own fake serves, keeping the go command's caches and a recipe's headless session (`LYS_TEST_HEADLESS`). `RequireNoHostSession`, called from one test per package, fails where a host endpoint is still within reach |
+
+A package whose tests build applications, dial a bus or connect to a display
+isolates itself with both halves:
+
+```go
+func TestMain(m *testing.M) { testhome.Run(m) }
+
+func TestTheTestsReachNoHostSession(t *testing.T) { testhome.RequireNoHostSession(t) }
+```
+
+A test that needs a bus starts its own (`dbustest`) and points the process at it
+(`UseAsSessionBus`, `UseAsSystemBus`). A test binary an isolated test starts
+again, as a helper or as the program under test, keeps the environment its
+parent gave it.
