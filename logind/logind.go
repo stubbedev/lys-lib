@@ -218,21 +218,12 @@ func (m Manager) Power(ctx context.Context, action PowerAction) error {
 }
 
 // Dial connects to the system bus, where logind is, giving up when ctx
-// ends first; once made, the connection outlives ctx and is the
-// caller's to close.
+// ends or after CallTimeout, whichever comes first, as every call does;
+// once made, the connection outlives ctx and is the caller's to close.
 func Dial(ctx context.Context) (*dbus.Conn, error) {
-	life, closeConn := context.WithCancel(context.Background())
-	giveUp := context.AfterFunc(ctx, closeConn)
-	conn, err := dbus.ConnectSystemBus(dbus.WithContext(life))
-	if !giveUp() {
-		closeConn()
-		if err == nil {
-			err = ctx.Err()
-		}
-	}
+	conn, err := dbusx.DialSystem(ctx, CallTimeout)
 	if err != nil {
-		closeConn()
-		return nil, fmt.Errorf("logind: connect to the system bus: %w", err)
+		return nil, fmt.Errorf("logind: %w", err)
 	}
 	return conn, nil
 }

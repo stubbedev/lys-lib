@@ -482,3 +482,18 @@ func TestDialEndsWithItsContextOnASilentBus(t *testing.T) {
 		t.Fatal("Dial outlived its context on a silent bus")
 	}
 }
+
+func TestDialWithoutABusNamesLogindAndTheSystemBus(t *testing.T) {
+	t.Setenv("DBUS_SYSTEM_BUS_ADDRESS", "unix:path="+filepath.Join(sockdir.Dir(t), "absent"))
+	conn, err := logind.Dial(t.Context())
+	if err == nil {
+		_ = conn.Close()
+		t.Fatal("Dial with no system bus connected")
+	}
+	if want := "logind: connect to the system bus: "; !strings.HasPrefix(err.Error(), want) {
+		t.Errorf("error %q, want it to start %q", err, want)
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		t.Errorf("error %q is the dial's timeout, want the dial's own failure at once", err)
+	}
+}
