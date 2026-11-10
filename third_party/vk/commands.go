@@ -312,6 +312,7 @@ func (c *Commands) LoadDevice(device Device) error {
 	c.cmdEndVideoCodingKHR = c.deviceProcAddr(device, "vkCmdEndVideoCodingKHR")
 	c.cmdControlVideoCodingKHR = c.deviceProcAddr(device, "vkCmdControlVideoCodingKHR")
 	c.cmdEncodeVideoKHR = c.deviceProcAddr(device, "vkCmdEncodeVideoKHR")
+	c.cmdDecodeVideoKHR = c.deviceProcAddr(device, "vkCmdDecodeVideoKHR")
 
 	// Swapchain functions (WSI)
 	c.createSwapchainKHR = c.deviceProcAddr(device, "vkCreateSwapchainKHR")

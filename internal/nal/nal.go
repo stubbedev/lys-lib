@@ -1,7 +1,10 @@
-// Package nal writes H.264 and H.265 NAL units: the bit writer with
-// Exp-Golomb codes the syntax uses, the escaping of start-code-like
-// byte runs, and the parameter sets an encoder that does not write its
-// own (VA-API's, given packed headers) puts in the stream.
+// Package nal writes and reads H.264 and H.265 NAL units: the bit
+// writer and reader with the Exp-Golomb codes the syntax uses, the
+// escaping of start-code-like byte runs and its removal, the parameter
+// sets an encoder that does not write its own (VA-API's, given packed
+// headers) puts in the stream, and the parsing of the parameter sets and
+// slice headers a decoder that manages its own reference pictures (Vulkan
+// Video's) needs.
 package nal
 
 import (

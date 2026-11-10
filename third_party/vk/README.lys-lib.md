@@ -201,3 +201,21 @@ A Nix-built `CGO_ENABLED=0` program then finds the loader without
 `LD_LIBRARY_PATH`, which a compositor would otherwise leak into every
 client it spawns. This is a lys-lib integration choice rather than an
 upstream bug.
+
+### Video decoding
+
+`commands.go`, `LoadDevice`: `vkCmdDecodeVideoKHR` loads (field and
+wrapper existed). `stdvideo_decode_lysui.go`: the H.264 and H.265
+decode picture and reference structures, H.264's scaling lists and the
+parameter set flag bits the decoder sets, laid out as
+`vulkan_video_codec_h264std_decode.h` and
+`vulkan_video_codec_h265std_decode.h` lay them out, their opaque arrays
+dropped from `types_gen.go`; `TestStdVideoDecodeH264Layouts` and
+`TestStdVideoDecodeH265Layouts` pin them. `const_gen.go`:
+`VideoDecodeH264PictureLayoutFlagBitsKHR` is a 32-bit enum, not
+vk-gen's 64 bits, which laid `VkVideoDecodeH264ProfileInfoKHR` out
+eight bytes long with the layout where the driver reads padding;
+`TestVideoDecodeStructSizes` pins the decode structures' sizes.
+`const_decode_lysui.go`: the core 1.1
+`StructureTypeImageViewUsageCreateInfo`, which the decoder's coding views
+of sampled pictures need.

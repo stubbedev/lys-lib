@@ -318,16 +318,12 @@ type (
 	StdVideoH264SliceType                  int32
 	StdVideoH264PictureType                int32
 	StdVideoH264NonVclNaluType             int32
-	StdVideoDecodeH264PictureInfo          [64]byte
-	StdVideoDecodeH264ReferenceInfo        [32]byte
 	StdVideoH265ProfileIdc                 int32
 	StdVideoH265LevelIdc                   int32
 	StdVideoH265ChromaFormatIdc            int32
 	StdVideoH265AspectRatioIdc             int32
 	StdVideoH265SliceType                  int32
 	StdVideoH265PictureType                int32
-	StdVideoDecodeH265PictureInfo          [64]byte
-	StdVideoDecodeH265ReferenceInfo        [32]byte
 	StdVideoAV1Profile                     int32
 	StdVideoAV1Level                       int32
 	StdVideoAV1SequenceHeader              [256]byte

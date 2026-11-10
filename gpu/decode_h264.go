@@ -1,0 +1,590 @@
+package gpu
+
+import (
+	"bytes"
+	"errors"
+	"fmt"
+	"image"
+	"unsafe"
+
+	"github.com/stubbedev/lys-lib/intconv"
+	"github.com/stubbedev/lys-lib/internal/nal"
+	"github.com/stubbedev/lys-lib/media/demux"
+	"github.com/stubbedev/lys-lib/third_party/vk"
+)
+
+// h264Decoder is H.264's part of a decoder: the parameter sets, the
+// reference state, and the structures the session and each picture are
+// coded with.
+type h264Decoder struct {
+	lengthSize int
+	sps        [32]*nal.H264SPS
+	pps        [256]*nal.H264PPS
+	spsRaw     [32][]byte
+	spsLevel   [32]vk.StdVideoH264LevelIdc
+	ppsRaw     [256][]byte
+	// paramsChanged marks parameter sets the session parameters lack.
+	paramsChanged bool
+	active        *nal.H264SPS
+	state         h264State
+	hdr           nal.H264SliceHeader
+	other         nal.H264SliceHeader
+	rbsp          []byte
+	slices        [][]byte
+	offsets       []uint32
+
+	candidates  []vk.StdVideoH264ProfileIdc
+	profileInfo vk.VideoDecodeH264ProfileInfoKHR
+	capsInfo    vk.VideoDecodeH264CapabilitiesKHR
+	stdSPS      []vk.StdVideoH264SequenceParameterSet
+	stdVUI      []vk.StdVideoH264SequenceParameterSetVui
+	stdSPSLists []vk.StdVideoH264ScalingLists
+	stdPPS      []vk.StdVideoH264PictureParameterSet
+	stdPPSLists []vk.StdVideoH264ScalingLists
+	add         vk.VideoDecodeH264SessionParametersAddInfoKHR
+	create      vk.VideoDecodeH264SessionParametersCreateInfoKHR
+
+	pic       vk.StdVideoDecodeH264PictureInfo
+	picInfo   vk.VideoDecodeH264PictureInfoKHR
+	setupStd  vk.StdVideoDecodeH264ReferenceInfo
+	setupInfo vk.VideoDecodeH264DpbSlotInfoKHR
+	refStd    [h264MaxSlots]vk.StdVideoDecodeH264ReferenceInfo
+	refInfo   [h264MaxSlots]vk.VideoDecodeH264DpbSlotInfoKHR
+	refSlots  [h264MaxSlots]int
+	refPtrs   [h264MaxSlots]unsafe.Pointer
+	req       decodePicture
+}
+
+// newH264Decoder reads config, the track's avcC
+// (AVCDecoderConfigurationRecord, ISO/IEC 14496-15 5.3.3.1): the NAL
+// unit length size and the parameter sets.
+func newH264Decoder(config []byte) (decodeCodec, error) {
+	c := &h264Decoder{candidates: make([]vk.StdVideoH264ProfileIdc, 0, 3)}
+	c.state.reset()
+	if len(config) < 7 || config[0] != 1 {
+		return nil, fmt.Errorf("avcC of %d bytes, version %v: %w", len(config), config[:min(len(config), 1)], demux.ErrMalformed)
+	}
+	c.lengthSize = int(config[4]&3) + 1
+	if c.lengthSize == 3 {
+		return nil, fmt.Errorf("avcC NAL unit length size 3: %w", demux.ErrMalformed)
+	}
+	b := config[5:]
+	for set := range 2 {
+		if len(b) < 1 {
+			return nil, fmt.Errorf("avcC ends before its parameter set count: %w", demux.ErrMalformed)
+		}
+		n := int(b[0])
+		if set == 0 {
+			n &= 0x1f
+		}
+		b = b[1:]
+		for range n {
+			if len(b) < 2 || len(b) < 2+int(b[0])<<8|int(b[1]) {
+				return nil, fmt.Errorf("avcC ends inside a parameter set: %w", demux.ErrMalformed)
+			}
+			size := int(b[0])<<8 | int(b[1])
+			if err := c.parameterSet(b[2 : 2+size]); err != nil {
+				return nil, fmt.Errorf("avcC: %w", err)
+			}
+			b = b[2+size:]
+		}
+	}
+	for _, s := range c.sps {
+		if s != nil {
+			return c, nil
+		}
+	}
+	return nil, fmt.Errorf("avcC holds no SPS: %w", demux.ErrMalformed)
+}
+
+// parameterSet keeps unit, an SPS or PPS, when it differs from the one
+// of its ID there is.
+func (c *h264Decoder) parameterSet(unit []byte) error {
+	if len(unit) < 2 {
+		return fmt.Errorf("%w parameter set of %d bytes", nal.ErrH264, len(unit))
+	}
+	c.rbsp = nal.Unescape(c.rbsp[:0], unit[1:])
+	switch nal.H264Type(unit) {
+	case nal.H264NALSPS:
+		s := &nal.H264SPS{}
+		if err := s.Parse(c.rbsp); err != nil {
+			return err
+		}
+		if bytes.Equal(c.spsRaw[s.ID], unit) {
+			return nil
+		}
+		level, err := h264LevelOf(s)
+		if err != nil {
+			return err
+		}
+		c.sps[s.ID], c.spsRaw[s.ID], c.spsLevel[s.ID] = s, bytes.Clone(unit), level
+	case nal.H264NALPPS:
+		p := &nal.H264PPS{}
+		if err := p.Parse(c.rbsp, &c.sps); err != nil {
+			return err
+		}
+		if bytes.Equal(c.ppsRaw[p.ID], unit) {
+			return nil
+		}
+		c.pps[p.ID], c.ppsRaw[p.ID] = p, bytes.Clone(unit)
+	default:
+		return fmt.Errorf("%w NAL unit type %d is no parameter set", nal.ErrH264, nal.H264Type(unit))
+	}
+	c.paramsChanged = true
+	return nil
+}
+
+// decode reads the packet's NAL units, length-prefixed, and decodes the
+// picture its slices make.
+func (c *h264Decoder) decode(v *VideoDecoder, p demux.Packet) error {
+	c.slices = c.slices[:0]
+	for data := p.Data; len(data) > 0; {
+		if len(data) < c.lengthSize {
+			return fmt.Errorf("%d bytes left for a %d-byte NAL unit length: %w", len(data), c.lengthSize, demux.ErrMalformed)
+		}
+		n := 0
+		for _, b := range data[:c.lengthSize] {
+			n = n<<8 | int(b)
+		}
+		data = data[c.lengthSize:]
+		if n > len(data) {
+			return fmt.Errorf("a %d-byte NAL unit in %d bytes: %w", n, len(data), demux.ErrMalformed)
+		}
+		unit := data[:n]
+		data = data[n:]
+		if n == 0 {
+			continue
+		}
+		switch nal.H264Type(unit) {
+		case nal.H264NALSPS, nal.H264NALPPS:
+			if err := c.parameterSet(unit); err != nil {
+				return err
+			}
+		case nal.H264NALSlice, nal.H264NALIDR:
+			c.slices = append(c.slices, unit)
+		}
+	}
+	if len(c.slices) == 0 {
+		return nil
+	}
+	return c.picture(v, p)
+}
+
+// header reads the slice header of unit into h, unescaping only as much
+// of the slice as the header needs.
+func (c *h264Decoder) header(h *nal.H264SliceHeader, unit []byte) error {
+	end := min(len(unit), 1+sliceHeaderBytes)
+	c.rbsp = nal.Unescape(c.rbsp[:0], unit[1:end])
+	err := h.Parse(c.rbsp, unit[0], &c.pps, &c.sps)
+	if err != nil && end < len(unit) {
+		c.rbsp = nal.Unescape(c.rbsp[:0], unit[1:])
+		err = h.Parse(c.rbsp, unit[0], &c.pps, &c.sps)
+	}
+	return err
+}
+
+// picture decodes the packet's slices, one frame.
+func (c *h264Decoder) picture(v *VideoDecoder, p demux.Packet) error {
+	first := c.slices[0]
+	if err := c.header(&c.hdr, first); err != nil {
+		return err
+	}
+	sps := c.sps[c.pps[c.hdr.PPSID].SPSID]
+	if err := h264Decodes(sps); err != nil {
+		return err
+	}
+	pic := h264Pic{hdr: &c.hdr, sps: sps, idr: nal.H264Type(first) == nal.H264NALIDR, ref: nal.H264RefIdc(first) != 0, intra: true}
+	for i, unit := range c.slices {
+		h := &c.hdr
+		if i > 0 {
+			end := min(len(unit), 17)
+			c.rbsp = nal.Unescape(c.rbsp[:0], unit[1:end])
+			if err := c.other.ParseType(c.rbsp); err != nil {
+				return err
+			}
+			if c.other.FirstMbInSlice == 0 {
+				return fmt.Errorf("%w: the packet holds more than one picture", nal.ErrH264)
+			}
+			h = &c.other
+		}
+		pic.intra = pic.intra && (h.SliceType == nal.H264SliceI || h.SliceType == nal.H264SliceSI)
+	}
+	shape, err := c.shape(sps)
+	if err != nil {
+		return err
+	}
+	c.state.slots = shape.slots
+	if err := c.state.begin(&pic); err != nil {
+		if errors.Is(err, errSkipPicture) {
+			return nil
+		}
+		return err
+	}
+	c.active = sps
+	if err := v.shapeFor(shape); err != nil {
+		return err
+	}
+	if c.paramsChanged {
+		if err := v.createParameters(); err != nil {
+			return err
+		}
+		c.paramsChanged = false
+	}
+	frame, err := v.frame()
+	if err != nil {
+		return err
+	}
+	total := 0
+	for _, unit := range c.slices {
+		total += 3 + len(unit)
+	}
+	buf, err := v.stream(total)
+	if err != nil {
+		return err
+	}
+	c.offsets = c.offsets[:0]
+	at := 0
+	for _, unit := range c.slices {
+		c.offsets = append(c.offsets, intconv.Must[uint32](at))
+		at += copy(buf[at:], startCode)
+		at += copy(buf[at:], unit)
+	}
+	c.fill(&pic)
+	c.req = decodePicture{frame: frame, bytes: total, info: unsafe.Pointer(&c.picInfo), setup: pic.slot, setupInfo: unsafe.Pointer(&c.setupInfo)}
+	n := 0
+	for slot := range c.state.slots {
+		r := &c.state.refs[slot]
+		if !r.used() {
+			continue
+		}
+		c.refStd[n] = vk.StdVideoDecodeH264ReferenceInfo{FrameNum: uint16(r.frameNum & 0xffff), PicOrderCnt: r.poc}
+		if r.long {
+			c.refStd[n].Flags, c.refStd[n].FrameNum = vk.StdVideoDecodeH264ReferenceUsedForLongTerm, uint16(r.longIdx&0xffff)
+		}
+		c.refInfo[n] = vk.VideoDecodeH264DpbSlotInfoKHR{SType: vk.StructureTypeVideoDecodeH264DpbSlotInfoKhr, PStdReferenceInfo: &c.refStd[n]}
+		c.refSlots[n], c.refPtrs[n] = slot, unsafe.Pointer(&c.refInfo[n])
+		n++
+	}
+	c.req.refs, c.req.refInfo = c.refSlots[:n], c.refPtrs[:n]
+	if err := v.submit(&c.req); err != nil {
+		return err
+	}
+	frame.pts, frame.duration = p.PTS, p.Duration
+	x0, y0, x1, y1 := sps.CropRect()
+	frame.rect = image.Rect(x0, y0, x1, y1)
+	c.state.finish(&pic)
+	v.queue(frame, pic.order(), pic.idr || pic.mmco5, pic.idr && c.hdr.NoOutputOfPriorPics)
+	return nil
+}
+
+// fill lays out pic's picture info and the reference info of the DPB
+// slot it sets up.
+func (c *h264Decoder) fill(pic *h264Pic) {
+	h := pic.hdr
+	var flags uint32
+	if pic.idr {
+		flags |= vk.StdVideoDecodeH264PictureIdr
+	}
+	if pic.intra {
+		flags |= vk.StdVideoDecodeH264PictureIsIntra
+	}
+	if pic.ref {
+		flags |= vk.StdVideoDecodeH264PictureIsReference
+	}
+	pps := c.pps[h.PPSID]
+	c.pic = vk.StdVideoDecodeH264PictureInfo{
+		Flags: flags, SeqParameterSetID: pps.SPSID, PicParameterSetID: pps.ID,
+		FrameNum: uint16(h.FrameNum & 0xffff), IdrPicID: h.IDRPicID, PicOrderCnt: pic.poc,
+	}
+	c.picInfo = vk.VideoDecodeH264PictureInfoKHR{
+		SType: vk.StructureTypeVideoDecodeH264PictureInfoKhr, PStdPictureInfo: &c.pic,
+		SliceCount: intconv.Must[uint32](len(c.offsets)), PSliceOffsets: &c.offsets[0],
+	}
+	c.setupStd = vk.StdVideoDecodeH264ReferenceInfo{FrameNum: uint16(h.FrameNum & 0xffff), PicOrderCnt: pic.poc}
+	if idx, long := h264LongTerm(pic); long {
+		c.setupStd.Flags, c.setupStd.FrameNum = vk.StdVideoDecodeH264ReferenceUsedForLongTerm, uint16(idx&0xffff)
+	}
+	c.setupInfo = vk.VideoDecodeH264DpbSlotInfoKHR{SType: vk.StructureTypeVideoDecodeH264DpbSlotInfoKhr, PStdReferenceInfo: &c.setupStd}
+}
+
+// h264LongTerm is the LongTermFrameIdx pic becomes a long-term
+// reference frame at, if it does.
+func h264LongTerm(pic *h264Pic) (uint32, bool) {
+	h := pic.hdr
+	if !pic.ref {
+		return 0, false
+	}
+	if pic.idr {
+		return 0, h.LongTermReference
+	}
+	for _, m := range h.MMCO[:h.NumMMCO] {
+		if m.Op == 6 {
+			return m.LongTermFrameIdx, true
+		}
+	}
+	return 0, false
+}
+
+// h264Decodes refuses a sequence outside what the decoder decodes:
+// interlaced coding, and anything but 8-bit 4:2:0.
+func h264Decodes(s *nal.H264SPS) error {
+	if !s.FrameMbsOnly {
+		return fmt.Errorf("%w: SPS %d codes interlaced fields or field-pair frames, which are not decoded", nal.ErrH264, s.ID)
+	}
+	if s.ChromaFormatIdc != 1 || s.BitDepthLumaMinus8 != 0 || s.BitDepthChromaMinus8 != 0 {
+		return fmt.Errorf("%w: SPS %d is chroma_format_idc %d at %d and %d bits; only 8-bit 4:2:0 is decoded", nal.ErrH264, s.ID, s.ChromaFormatIdc, 8+s.BitDepthLumaMinus8, 8+s.BitDepthChromaMinus8)
+	}
+	return nil
+}
+
+// h264MaxDpbMbs is MaxDpbMbs (Table A-1) of each level of h264Levels.
+var h264MaxDpbMbs = []int{396, 900, 2376, 2376, 2376, 4752, 8100, 8100, 18000, 20480, 32768, 32768, 34816, 110400, 184320, 184320, 696320, 696320, 696320}
+
+// h264LevelOf is s's level as a StdVideo level enumerant, an index of
+// h264Levels; level 1b counts as 1.1, the next above it.
+func h264LevelOf(s *nal.H264SPS) (vk.StdVideoH264LevelIdc, error) {
+	idc := int(s.LevelIdc)
+	if idc == 9 {
+		idc = 11
+	}
+	for i, l := range h264Levels {
+		if l.idc == idc {
+			return vk.StdVideoH264LevelIdc(i), nil
+		}
+	}
+	return 0, fmt.Errorf("%w: SPS %d names level_idc %d, no level", nal.ErrH264, s.ID, s.LevelIdc)
+}
+
+// shape is the session s decodes in, and the profiles the device may
+// decode it as: its own, then the ones above that contain it.
+func (c *h264Decoder) shape(s *nal.H264SPS) (decodeShape, error) {
+	level, err := h264LevelOf(s)
+	if err != nil {
+		return decodeShape{}, err
+	}
+	ycbcr, err := h264YCbCr(s)
+	if err != nil {
+		return decodeShape{}, err
+	}
+	c.candidates = c.candidates[:0]
+	switch s.ProfileIdc {
+	case 66:
+		c.candidates = append(c.candidates, vk.StdVideoH264ProfileIdcBaseline)
+		if s.Constraints&0x40 != 0 {
+			c.candidates = append(c.candidates, vk.StdVideoH264ProfileIdcMain, vk.StdVideoH264ProfileIdcHigh)
+		}
+	case 77:
+		c.candidates = append(c.candidates, vk.StdVideoH264ProfileIdcMain, vk.StdVideoH264ProfileIdcHigh)
+	case 100:
+		c.candidates = append(c.candidates, vk.StdVideoH264ProfileIdcHigh)
+	default:
+		return decodeShape{}, fmt.Errorf("%w: SPS %d is profile_idc %d; Baseline, Main and High are decoded", nal.ErrH264, s.ID, s.ProfileIdc)
+	}
+	refs := max(int(s.MaxNumRefFrames), 1)
+	mbs := s.WidthMbs * s.FrameHeightMbs()
+	reorder := min(h264MaxDpbMbs[level]/mbs, 16)
+	switch {
+	case s.VUIPresent && s.VUI.BitstreamRestriction:
+		reorder = min(int(s.VUI.MaxNumReorderFrames), 16)
+	case s.PicOrderCntType == 2:
+		reorder = 0
+	case s.Constraints&0x10 != 0 && (s.ProfileIdc == 44 || s.ProfileIdc == 86 || s.ProfileIdc == 100 || s.ProfileIdc == 110 || s.ProfileIdc == 122 || s.ProfileIdc == 244):
+		reorder = 0
+	}
+	return decodeShape{
+		profile: int(s.ProfileIdc), coded: [2]int{16 * s.WidthMbs, 16 * s.FrameHeightMbs()},
+		slots: refs + 1, refs: refs, reorder: reorder, ycbcr: ycbcr,
+	}, nil
+}
+
+// h264YCbCr is how s's pictures convert to RGB, as its VUI says.
+func h264YCbCr(s *nal.H264SPS) (YCbCr, error) {
+	_, y0, _, y1 := s.CropRect()
+	v := &s.VUI
+	c, err := videoSignal{
+		typed: s.VUIPresent && v.VideoSignalTypePresent, fullRange: v.FullRange,
+		described: v.ColourDescriptionPresent, matrix: v.MatrixCoefficients,
+		sited: s.VUIPresent && v.ChromaLocInfoPresent, siting: v.ChromaSampleLocTypeTop, lines: y1 - y0,
+	}.ycbcr()
+	if err != nil {
+		return YCbCr{}, fmt.Errorf("%w: SPS %d: %w", nal.ErrH264, s.ID, err)
+	}
+	return c, nil
+}
+
+func (c *h264Decoder) profiles() int { return len(c.candidates) }
+
+func (c *h264Decoder) profile(i int, next unsafe.Pointer) unsafe.Pointer {
+	c.profileInfo = vk.VideoDecodeH264ProfileInfoKHR{
+		SType: vk.StructureTypeVideoDecodeH264ProfileInfoKhr, PNext: (*uintptr)(next),
+		StdProfileIdc: c.candidates[i], PictureLayout: vk.VideoDecodeH264PictureLayoutProgressiveKhr,
+	}
+	return unsafe.Pointer(&c.profileInfo)
+}
+
+func (c *h264Decoder) caps() unsafe.Pointer {
+	c.capsInfo = vk.VideoDecodeH264CapabilitiesKHR{SType: vk.StructureTypeVideoDecodeH264CapabilitiesKhr}
+	return unsafe.Pointer(&c.capsInfo)
+}
+
+func (c *h264Decoder) checkCaps() error {
+	level := c.spsLevel[c.active.ID]
+	if level > c.capsInfo.MaxLevelIdc {
+		return fmt.Errorf("H.264 level %d.%d is past the device's (StdVideo level %d)", c.active.LevelIdc/10, c.active.LevelIdc%10, c.capsInfo.MaxLevelIdc)
+	}
+	return nil
+}
+
+func (c *h264Decoder) reset() { c.state.reset() }
+
+// parameters lays out every parameter set the stream has sent as the
+// session parameters' create chain.
+func (c *h264Decoder) parameters() unsafe.Pointer {
+	c.stdSPS, c.stdVUI, c.stdSPSLists = c.stdSPS[:0], c.stdVUI[:0], c.stdSPSLists[:0]
+	c.stdPPS, c.stdPPSLists = c.stdPPS[:0], c.stdPPSLists[:0]
+	for _, s := range c.sps {
+		if s == nil {
+			continue
+		}
+		c.stdVUI = append(c.stdVUI, h264StdVUI(&s.VUI))
+		c.stdSPSLists = append(c.stdSPSLists, h264StdLists(&s.Scaling, 0xff))
+	}
+	for _, p := range c.pps {
+		if p == nil {
+			continue
+		}
+		mask := uint16(0x3f)
+		if p.Transform8x8Mode {
+			mask = 0xff
+		}
+		c.stdPPSLists = append(c.stdPPSLists, h264StdLists(&p.Scaling, mask))
+	}
+	i := 0
+	for _, s := range c.sps {
+		if s == nil {
+			continue
+		}
+		c.stdSPS = append(c.stdSPS, h264StdSPS(s, c.spsLevel[s.ID], &c.stdVUI[i], &c.stdSPSLists[i]))
+		i++
+	}
+	i = 0
+	for _, p := range c.pps {
+		if p == nil {
+			continue
+		}
+		c.stdPPS = append(c.stdPPS, h264StdPPS(p, &c.stdPPSLists[i]))
+		i++
+	}
+	c.add = vk.VideoDecodeH264SessionParametersAddInfoKHR{
+		SType:       vk.StructureTypeVideoDecodeH264SessionParametersAddInfoKhr,
+		StdSPSCount: intconv.Must[uint32](len(c.stdSPS)), PStdSPSs: &c.stdSPS[0],
+		StdPPSCount: intconv.Must[uint32](len(c.stdPPS)),
+	}
+	if len(c.stdPPS) > 0 {
+		c.add.PStdPPSs = &c.stdPPS[0]
+	}
+	c.create = vk.VideoDecodeH264SessionParametersCreateInfoKHR{
+		SType: vk.StructureTypeVideoDecodeH264SessionParametersCreateInfoKhr, MaxStdSPSCount: c.add.StdSPSCount, MaxStdPPSCount: max(c.add.StdPPSCount, 1),
+		PParametersAddInfo: &c.add,
+	}
+	return unsafe.Pointer(&c.create)
+}
+
+// h264StdSPS lays s out as a StdVideo SPS at level, its VUI and scaling lists
+// in vui and lists.
+func h264StdSPS(s *nal.H264SPS, level vk.StdVideoH264LevelIdc, vui *vk.StdVideoH264SequenceParameterSetVui, lists *vk.StdVideoH264ScalingLists) vk.StdVideoH264SequenceParameterSet {
+	var flags uint32
+	for i := range 6 {
+		if s.Constraints>>(7-i)&1 != 0 {
+			flags |= vk.StdVideoH264SpsConstraintSet0 << i
+		}
+	}
+	flags |= bitfield(
+		flagBit{s.Direct8x8Inference, vk.StdVideoH264SpsDirect8x8Inference},
+		flagBit{s.MbAdaptiveFrameField, vk.StdVideoH264SpsMbAdaptiveFrameField},
+		flagBit{s.FrameMbsOnly, vk.StdVideoH264SpsFrameMbsOnly},
+		flagBit{s.DeltaPicOrderAlwaysZero, vk.StdVideoH264SpsDeltaPicOrderAlwaysZero},
+		flagBit{s.SeparateColourPlane, vk.StdVideoH264SpsSeparateColourPlane},
+		flagBit{s.GapsInFrameNumAllowed, vk.StdVideoH264SpsGapsInFrameNumAllowed},
+		flagBit{s.QpprimeYZeroTransformBypass, vk.StdVideoH264SpsQpprimeYZeroTransformBypass},
+		flagBit{s.FrameCropping, vk.StdVideoH264SpsFrameCropping},
+		flagBit{s.ScalingMatrixPresent, vk.StdVideoH264SpsSeqScalingMatrixPresent},
+		flagBit{s.VUIPresent, vk.StdVideoH264SpsVuiParametersPresent},
+	)
+	out := vk.StdVideoH264SequenceParameterSet{
+		Flags: flags, ProfileIdc: vk.StdVideoH264ProfileIdc(s.ProfileIdc), LevelIdc: level,
+		ChromaFormatIdc: vk.StdVideoH264ChromaFormatIdc(s.ChromaFormatIdc), SeqParameterSetID: s.ID,
+		BitDepthLumaMinus8: s.BitDepthLumaMinus8, BitDepthChromaMinus8: s.BitDepthChromaMinus8,
+		Log2MaxFrameNumMinus4: s.Log2MaxFrameNum - 4, PicOrderCntType: vk.StdVideoH264PocType(s.PicOrderCntType),
+		OffsetForNonRefPic: s.OffsetForNonRefPic, OffsetForTopToBottomField: s.OffsetForTopToBottomField,
+		NumRefFramesInPicOrderCntCycle: s.NumRefFramesInPicOrderCntCycle, MaxNumRefFrames: s.MaxNumRefFrames,
+		PicWidthInMbsMinus1: intconv.Must[uint32](s.WidthMbs - 1), PicHeightInMapUnitsMinus1: intconv.Must[uint32](s.HeightMapUnits - 1),
+		FrameCropLeftOffset: s.Crop[0], FrameCropRightOffset: s.Crop[1], FrameCropTopOffset: s.Crop[2], FrameCropBottomOffset: s.Crop[3],
+	}
+	if s.PicOrderCntType == 0 {
+		out.Log2MaxPicOrderCntLsbMinus4 = s.Log2MaxPicOrderCntLsb - 4
+	}
+	if s.NumRefFramesInPicOrderCntCycle > 0 {
+		out.POffsetForRefFrame = &s.OffsetForRefFrame[0]
+	}
+	if s.ScalingMatrixPresent {
+		out.PScalingLists = unsafe.Pointer(lists)
+	}
+	if s.VUIPresent {
+		out.PSequenceParameterSetVui = vui
+	}
+	return out
+}
+
+// h264StdVUI lays v out as a StdVideo VUI, its HRD parameters left out:
+// decoding reads none of them.
+func h264StdVUI(v *nal.H264VUI) vk.StdVideoH264SequenceParameterSetVui {
+	flags := bitfield(
+		flagBit{v.AspectRatioInfoPresent, vk.StdVideoH264VuiAspectRatioInfoPresent},
+		flagBit{v.OverscanInfoPresent, vk.StdVideoH264VuiOverscanInfoPresent},
+		flagBit{v.OverscanAppropriate, vk.StdVideoH264VuiOverscanAppropriate},
+		flagBit{v.VideoSignalTypePresent, vk.StdVideoH264VuiVideoSignalTypePresent},
+		flagBit{v.FullRange, vk.StdVideoH264VuiVideoFullRange},
+		flagBit{v.ColourDescriptionPresent, vk.StdVideoH264VuiColorDescriptionPresent},
+		flagBit{v.ChromaLocInfoPresent, vk.StdVideoH264VuiChromaLocInfoPresent},
+		flagBit{v.TimingInfoPresent, vk.StdVideoH264VuiTimingInfoPresent},
+		flagBit{v.FixedFrameRate, vk.StdVideoH264VuiFixedFrameRate},
+		flagBit{v.BitstreamRestriction, vk.StdVideoH264VuiBitstreamRestriction},
+	)
+	return vk.StdVideoH264SequenceParameterSetVui{
+		Flags: flags, AspectRatioIdc: vk.StdVideoH264AspectRatioIdc(v.AspectRatioIdc), SarWidth: v.SarWidth, SarHeight: v.SarHeight,
+		VideoFormat: v.VideoFormat, ColourPrimaries: v.ColourPrimaries, TransferCharacteristics: v.TransferCharacteristics, MatrixCoefficients: v.MatrixCoefficients,
+		NumUnitsInTick: v.NumUnitsInTick, TimeScale: v.TimeScale, MaxNumReorderFrames: v.MaxNumReorderFrames, MaxDecFrameBuffering: v.MaxDecFrameBuffering,
+		ChromaSampleLocTypeTopField: v.ChromaSampleLocTypeTop, ChromaSampleLocTypeBottomField: v.ChromaSampleLocTypeBot,
+	}
+}
+
+// h264StdLists lays l out as StdVideo scaling lists, the lists in
+// present marked so: each is resolved, so none falls back.
+func h264StdLists(l *nal.H264ScalingLists, present uint16) vk.StdVideoH264ScalingLists {
+	return vk.StdVideoH264ScalingLists{ScalingListPresentMask: present, ScalingList4x4: l.List4x4, ScalingList8x8: l.List8x8}
+}
+
+// h264StdPPS lays p out as a StdVideo PPS, its scaling lists in lists.
+func h264StdPPS(p *nal.H264PPS, lists *vk.StdVideoH264ScalingLists) vk.StdVideoH264PictureParameterSet {
+	flags := bitfield(
+		flagBit{p.Transform8x8Mode, vk.StdVideoH264PpsTransform8x8Mode},
+		flagBit{p.RedundantPicCntPresent, vk.StdVideoH264PpsRedundantPicCntPresent},
+		flagBit{p.ConstrainedIntraPred, vk.StdVideoH264PpsConstrainedIntraPred},
+		flagBit{p.DeblockingFilterControlPresent, vk.StdVideoH264PpsDeblockingFilterControl},
+		flagBit{p.WeightedPred, vk.StdVideoH264PpsWeightedPred},
+		flagBit{p.BottomFieldPicOrderInFramePresent, vk.StdVideoH264PpsBottomFieldPicOrderInFramePresent},
+		flagBit{p.EntropyCodingMode, vk.StdVideoH264PpsEntropyCodingMode},
+		flagBit{p.ScalingMatrixPresent, vk.StdVideoH264PpsPicScalingMatrixPresent},
+	)
+	out := vk.StdVideoH264PictureParameterSet{
+		Flags: flags, SeqParameterSetID: p.SPSID, PicParameterSetID: p.ID,
+		NumRefIdxL0DefaultActiveMinus1: p.NumRefIdxL0DefaultActiveMinus1, NumRefIdxL1DefaultActiveMinus1: p.NumRefIdxL1DefaultActiveMinus1,
+		WeightedBipredIdc: vk.StdVideoH264WeightedBipredIdc(p.WeightedBipredIdc), PicInitQpMinus26: p.PicInitQpMinus26, PicInitQsMinus26: p.PicInitQsMinus26,
+		ChromaQpIndexOffset: p.ChromaQpIndexOffset, SecondChromaQpIndexOffset: p.SecondChromaQpIndexOffset,
+	}
+	if p.ScalingMatrixPresent {
+		out.PScalingLists = unsafe.Pointer(lists)
+	}
+	return out
+}

@@ -28,6 +28,7 @@ import (
 	"github.com/stubbedev/lys-lib/debug"
 	"github.com/stubbedev/lys-lib/fourcc"
 	"github.com/stubbedev/lys-lib/intconv"
+	"github.com/stubbedev/lys-lib/media/demux"
 	"github.com/stubbedev/lys-lib/third_party/vk"
 )
 
@@ -79,6 +80,10 @@ type Device struct {
 	// none; videoWhy says why for each codec it does not encode.
 	video    *videoQueue
 	videoWhy map[Codec]error
+	// decode is the video decode queue, nil on a device that decodes
+	// none; decodeWhy says why for each codec it does not decode.
+	decode    *decodeQueue
+	decodeWhy map[demux.Codec]error
 	// va is what the VA-API driver encodes, probed on first use.
 	va *vaEncoders
 	// targets and buffers are the live ones, closed with the device.
@@ -87,6 +92,7 @@ type Device struct {
 	textures  map[*Texture]struct{}
 	linears   map[*Linear]struct{}
 	readbacks map[*Readback]struct{}
+	decoders  map[*VideoDecoder]struct{}
 	upload    *buffer
 	comp      compositor
 	active    *Pass
@@ -202,7 +208,7 @@ func open(node *drmNode) (*Device, error) {
 	if err != nil {
 		return nil, err
 	}
-	d := &Device{cmds: cmds, instance: instance, targets: map[*Target]struct{}{}, buffers: map[*Buffer]struct{}{}, textures: map[*Texture]struct{}{}, linears: map[*Linear]struct{}{}, readbacks: map[*Readback]struct{}{}}
+	d := &Device{cmds: cmds, instance: instance, targets: map[*Target]struct{}{}, buffers: map[*Buffer]struct{}{}, textures: map[*Texture]struct{}{}, linears: map[*Linear]struct{}{}, readbacks: map[*Readback]struct{}{}, decoders: map[*VideoDecoder]struct{}{}}
 	d.waitLimit = fenceTimeout
 	d.inflight = make([]inflight, 0, queryRing)
 	d.spareFences = make([]vk.Fence, 0, queryRing)
@@ -318,6 +324,7 @@ func (d *Device) pick(p vk.PhysicalDevice, exporting bool, node *drmNode) error 
 			d.mapsPlanesWhole = props.VendorID == nvidiaVendor
 			d.ycbcr = d.probeYCbCr(p)
 			d.video, d.videoWhy = d.probeVideo(p, d.sync2, have)
+			d.decode, d.decodeWhy = d.probeDecode(p, d.sync2, d.ycbcr, have)
 			return nil
 		}
 	}
@@ -325,11 +332,16 @@ func (d *Device) pick(p vk.PhysicalDevice, exporting bool, node *drmNode) error 
 }
 
 // open creates the logical device: its graphics queue, the video
-// encode queue where the device encodes, and synchronization2 where it
-// has it (the encoders record with it).
+// encode and decode queues where the device codes video, and
+// synchronization2 where it has it (video coding records with it).
 func (d *Device) open() error {
 	prio := float32(1)
 	qcis := []vk.DeviceQueueCreateInfo{{SType: vk.StructureTypeDeviceQueueCreateInfo, QueueFamilyIndex: d.family, QueueCount: 1, PQueuePriorities: &prio}}
+	addQueue := func(family uint32) {
+		if !slices.ContainsFunc(qcis, func(q vk.DeviceQueueCreateInfo) bool { return q.QueueFamilyIndex == family }) {
+			qcis = append(qcis, vk.DeviceQueueCreateInfo{SType: vk.StructureTypeDeviceQueueCreateInfo, QueueFamilyIndex: family, QueueCount: 1, PQueuePriorities: &prio})
+		}
+	}
 	dci := vk.DeviceCreateInfo{SType: vk.StructureTypeDeviceCreateInfo}
 	var exts []string
 	if d.exports {
@@ -345,11 +357,15 @@ func (d *Device) open() error {
 		dci.PNext = (*uintptr)(unsafe.Pointer(&f11))
 	}
 	if d.video != nil {
-		if d.video.family != d.family {
-			qcis = append(qcis, vk.DeviceQueueCreateInfo{SType: vk.StructureTypeDeviceQueueCreateInfo, QueueFamilyIndex: d.video.family, QueueCount: 1, PQueuePriorities: &prio})
-		}
+		addQueue(d.video.family)
 		exts = append(exts, d.video.extensions()...)
 	}
+	if d.decode != nil {
+		addQueue(d.decode.family)
+		exts = append(exts, d.decode.extensions()...)
+	}
+	slices.Sort(exts)
+	exts = slices.Compact(exts)
 	dci.QueueCreateInfoCount, dci.PQueueCreateInfos = count(qcis), &qcis[0]
 	var pin runtime.Pinner
 	defer pin.Unpin()
@@ -368,6 +384,9 @@ func (d *Device) open() error {
 	d.cmds.GetDeviceQueue(d.device, d.family, 0, &d.queue)
 	if d.video != nil {
 		d.cmds.GetDeviceQueue(d.device, d.video.family, 0, &d.video.queue)
+	}
+	if d.decode != nil {
+		d.cmds.GetDeviceQueue(d.device, d.decode.family, 0, &d.decode.queue)
 	}
 	d.cmds.GetPhysicalDeviceMemoryProperties(d.phys, &d.memProps)
 	pool, err := d.commandPool(d.family)
@@ -421,6 +440,9 @@ func (d *Device) Close() {
 	}
 	d.closed = true
 	d.stopPrepares()
+	for v := range d.decoders {
+		v.Close()
+	}
 	for t := range d.targets {
 		t.Close()
 	}

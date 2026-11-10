@@ -8,6 +8,7 @@ import (
 	"strings"
 	"unsafe"
 
+	"github.com/stubbedev/lys-lib/media/demux"
 	"github.com/stubbedev/lys-lib/third_party/vk"
 )
 
@@ -20,27 +21,51 @@ const (
 	H265
 )
 
-// codecs are every codec, each with its name, the device extension
-// encoding it needs and its encode operation bit.
+// codecs are every codec, each with its name and the encode operation
+// on a video queue that codes it.
 var codecs = []struct {
-	codec     Codec
-	name      string
-	extension string
-	operation vk.VideoCodecOperationFlagBitsKHR
+	codec Codec
+	name  string
+	op    videoOp
 }{
-	{H264, "H.264", "VK_KHR_video_encode_h264", vk.VideoCodecOperationEncodeH264BitKhr},
-	{H265, "H.265", "VK_KHR_video_encode_h265", vk.VideoCodecOperationEncodeH265BitKhr},
+	{H264, "H.264", videoOp{"VK_KHR_video_encode_h264", vk.VideoCodecOperationEncodeH264BitKhr}},
+	{H265, "H.265", videoOp{"VK_KHR_video_encode_h265", vk.VideoCodecOperationEncodeH265BitKhr}},
 }
 
 func (c Codec) String() string { return codecs[c].name }
 
-func (c Codec) extension() string { return codecs[c].extension }
+func (c Codec) extension() string { return codecs[c].op.extension }
 
-func (c Codec) operation() vk.VideoCodecOperationFlagBitsKHR { return codecs[c].operation }
+func (c Codec) operation() vk.VideoCodecOperationFlagBitsKHR { return codecs[c].op.operation }
+
+// decodeCodecs are the codecs the decoder reads, each with the decode
+// operation on a video queue that codes it and what reads its stream,
+// given the track's configuration record.
+var decodeCodecs = []decodeEntry{
+	{demux.H264, videoOp{"VK_KHR_video_decode_h264", vk.VideoCodecOperationDecodeH264BitKhr}, newH264Decoder},
+	{demux.H265, videoOp{"VK_KHR_video_decode_h265", vk.VideoCodecOperationDecodeH265BitKhr}, newH265Decoder},
+}
+
+// decodeEntry is a codec the decoder reads.
+type decodeEntry struct {
+	codec demux.Codec
+	op    videoOp
+	open  func(config []byte) (decodeCodec, error)
+}
+
+// videoOp is a codec operation of a video queue: the device extension
+// it needs and its operation bit.
+type videoOp struct {
+	extension string
+	operation vk.VideoCodecOperationFlagBitsKHR
+}
 
 // videoExtensions are what any video encoding needs, beside a codec's
-// own extension.
-var videoExtensions = []string{"VK_KHR_video_queue", "VK_KHR_video_encode_queue"}
+// own extension; decodeExtensions are decoding's.
+var (
+	videoExtensions  = []string{"VK_KHR_video_queue", "VK_KHR_video_encode_queue"}
+	decodeExtensions = []string{"VK_KHR_video_queue", "VK_KHR_video_decode_queue"}
+)
 
 // videoQueue is a device's video encode queue family and the codecs
 // it encodes.
@@ -48,6 +73,17 @@ type videoQueue struct {
 	family uint32
 	queue  vk.Queue
 	codecs []Codec
+}
+
+// decodeQueue is a device's video decode queue family and the codecs
+// it decodes.
+type decodeQueue struct {
+	family uint32
+	queue  vk.Queue
+	codecs []demux.Codec
+	// transfer is whether the family copies images, which a device
+	// that decodes only into its reference pictures needs.
+	transfer bool
 }
 
 // probeSync2 reports whether p has Vulkan 1.3's synchronization2,
@@ -69,24 +105,86 @@ func (d *Device) probeSync2(p vk.PhysicalDevice, apiVersion uint32) bool {
 // with, a missing extension, no queue family that encodes video, or
 // none that codes the codec.
 func (d *Device) probeVideo(p vk.PhysicalDevice, sync2 bool, have map[string]bool) (*videoQueue, map[Codec]error) {
-	why := map[Codec]error{}
-	none := func(err error) (*videoQueue, map[Codec]error) {
-		for _, c := range codecs {
-			why[c.codec] = err
-		}
-		return nil, why
+	ops := make([]videoOp, len(codecs))
+	for i, c := range codecs {
+		ops[i] = c.op
 	}
+	var missing error
 	if !sync2 {
-		return none(errors.New("no Vulkan 1.3 synchronization2"))
+		missing = errors.New("no Vulkan 1.3 synchronization2")
 	}
-	var missing []string
-	for _, ext := range videoExtensions {
+	family, _, offered, reasons := d.probeVideoFamily(p, have, missing, vk.QueueVideoEncodeBitKhr, videoExtensions, ops)
+	why := map[Codec]error{}
+	var found *videoQueue
+	for i, c := range codecs {
+		if !offered[i] {
+			why[c.codec] = reasons[i]
+			continue
+		}
+		if found == nil {
+			found = &videoQueue{family: family}
+		}
+		found.codecs = append(found.codecs, c.codec)
+	}
+	return found, why
+}
+
+// probeDecode finds p's video decode queue family and the codecs it
+// decodes, as probeVideo does for encoding; decoding also needs the
+// sampler YCbCr conversion the renderer samples its pictures through.
+func (d *Device) probeDecode(p vk.PhysicalDevice, sync2, ycbcr bool, have map[string]bool) (*decodeQueue, map[demux.Codec]error) {
+	ops := make([]videoOp, len(decodeCodecs))
+	for i, c := range decodeCodecs {
+		ops[i] = c.op
+	}
+	var missing error
+	switch {
+	case !sync2:
+		missing = errors.New("no Vulkan 1.3 synchronization2")
+	case !ycbcr:
+		missing = errors.New("no sampler YCbCr conversion to sample decoded pictures")
+	}
+	family, queueFlags, offered, reasons := d.probeVideoFamily(p, have, missing, vk.QueueVideoDecodeBitKhr, decodeExtensions, ops)
+	why := map[demux.Codec]error{}
+	var found *decodeQueue
+	for i, c := range decodeCodecs {
+		if !offered[i] {
+			why[c.codec] = reasons[i]
+			continue
+		}
+		if found == nil {
+			found = &decodeQueue{family: family, transfer: queueFlags&vk.QueueFlags(vk.QueueTransferBit) != 0}
+		}
+		found.codecs = append(found.codecs, c.codec)
+	}
+	return found, why
+}
+
+// probeVideoFamily finds the first of p's queue families with flag
+// that offers one of ops whose extension p has, beside every one of
+// queueExts, and its queue flags. offered says which of ops that family
+// codes, why why each
+// other one is not: missing (when not nil, for all of them), a missing
+// extension, no family with flag, or none with the operation.
+func (d *Device) probeVideoFamily(p vk.PhysicalDevice, have map[string]bool, missing error, flag vk.QueueFlagBits, queueExts []string, ops []videoOp) (family uint32, queueFlags vk.QueueFlags, offered []bool, why []error) {
+	offered, why = make([]bool, len(ops)), make([]error, len(ops))
+	none := func(err error) (uint32, vk.QueueFlags, []bool, []error) {
+		for i := range why {
+			why[i] = err
+		}
+		return 0, 0, offered, why
+	}
+	if missing != nil {
+		return none(missing)
+	}
+	var absent []string
+	for _, ext := range queueExts {
 		if !have[ext] {
-			missing = append(missing, ext)
+			absent = append(absent, ext)
 		}
 	}
-	if len(missing) > 0 {
-		return none(fmt.Errorf("no %s", strings.Join(missing, ", ")))
+	if len(absent) > 0 {
+		return none(fmt.Errorf("no %s", strings.Join(absent, ", ")))
 	}
 	var n uint32
 	d.cmds.GetPhysicalDeviceQueueFamilyProperties2(p, &n, nil)
@@ -101,43 +199,54 @@ func (d *Device) probeVideo(p vk.PhysicalDevice, sync2 bool, have map[string]boo
 	}
 	runtime.KeepAlive(vprops)
 	var families []string
-	var found *videoQueue
+	found := false
 	for i, fp := range props[:n] {
-		if fp.QueueFamilyProperties.QueueFlags&vk.QueueFlags(vk.QueueVideoEncodeBitKhr) == 0 {
+		if fp.QueueFamilyProperties.QueueFlags&flags[vk.QueueFlags](flag) == 0 {
 			continue
 		}
-		ops := vprops[i].VideoCodecOperations
-		families = append(families, fmt.Sprintf("%d (operations %#x)", i, ops))
-		var cs []Codec
-		for _, c := range codecs {
-			if have[c.extension] && ops&flags[vk.VideoCodecOperationFlagsKHR](c.operation) != 0 {
-				cs = append(cs, c.codec)
-			}
+		codecOps := vprops[i].VideoCodecOperations
+		families = append(families, fmt.Sprintf("%d (operations %#x)", i, codecOps))
+		if found {
+			continue
 		}
-		if found == nil && len(cs) > 0 {
-			found = &videoQueue{family: uint32(i), codecs: cs}
+		for j, op := range ops {
+			offered[j] = have[op.extension] && codecOps&flags[vk.VideoCodecOperationFlagsKHR](op.operation) != 0
+		}
+		if found = slices.Contains(offered, true); found {
+			family, queueFlags = uint32(i), fp.QueueFamilyProperties.QueueFlags
 		}
 	}
 	if len(families) == 0 {
-		return none(errors.New("no queue family encodes video"))
+		return none(fmt.Errorf("no queue family has flag %#x", flag))
 	}
-	for _, c := range codecs {
+	for i, op := range ops {
 		switch {
-		case found != nil && slices.Contains(found.codecs, c.codec):
-		case !have[c.extension]:
-			why[c.codec] = fmt.Errorf("no %s", c.extension)
+		case offered[i]:
+		case !have[op.extension]:
+			why[i] = fmt.Errorf("no %s", op.extension)
 		default:
-			why[c.codec] = fmt.Errorf("no encode queue family has operation %#x; families %s", c.operation, strings.Join(families, ", "))
+			why[i] = fmt.Errorf("no queue family with flag %#x has operation %#x; families %s", flag, op.operation, strings.Join(families, ", "))
 		}
 	}
-	return found, why
+	return family, queueFlags, offered, why
 }
 
 // extensions are the device extensions encoding on v needs.
 func (v *videoQueue) extensions() []string {
-	exts := append([]string(nil), videoExtensions...)
+	exts := slices.Clone(videoExtensions)
 	for _, c := range v.codecs {
 		exts = append(exts, c.extension())
+	}
+	return exts
+}
+
+// extensions are the device extensions decoding on q needs.
+func (q *decodeQueue) extensions() []string {
+	exts := slices.Clone(decodeExtensions)
+	for _, c := range decodeCodecs {
+		if slices.Contains(q.codecs, c.codec) {
+			exts = append(exts, c.op.extension)
+		}
 	}
 	return exts
 }

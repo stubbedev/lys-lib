@@ -99,32 +99,6 @@ func TestParameterSetsRejectTruncationAndWrongTypes(t *testing.T) {
 	}
 }
 
-func TestUnescapeRBSPDropsEmulationPrevention(t *testing.T) {
-	got := unescapeRBSP([]byte{1, 0, 0, 3, 0, 0, 0, 3, 3, 0, 3})
-	want := []byte{1, 0, 0, 0, 0, 0, 3, 0, 3}
-	if !bytes.Equal(got, want) {
-		t.Errorf("unescape % x, want % x", got, want)
-	}
-}
-
-func TestExpGolomb(t *testing.T) {
-	r := bitReader{b: []byte{0b1_010_011_0, 0b0100_0010, 0b1_0000000}}
-	got := []int64{int64(r.ue()), int64(r.ue()), int64(r.ue()), int64(r.ue()), int64(r.se())}
-	want := []int64{0, 1, 2, 3, -2}
-	for i := range want {
-		if got[i] != want[i] {
-			t.Fatalf("decoded %v, want %v", got, want)
-		}
-	}
-	if r.short {
-		t.Error("reader ran short")
-	}
-	r.ue()
-	if !r.short {
-		t.Error("reading past the end is not flagged")
-	}
-}
-
 func TestAnnexBSplitsOnBothStartCodes(t *testing.T) {
 	var got [][]byte
 	err := annexB([]byte{0, 0, 0, 1, 9, 0x10, 0, 0, 1, 0x65, 1, 2, 0, 0, 0, 0, 1, 0x41, 3}, func(nal []byte) error {

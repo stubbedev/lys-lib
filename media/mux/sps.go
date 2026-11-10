@@ -6,71 +6,8 @@ import (
 	"fmt"
 
 	"github.com/stubbedev/lys-lib/intconv"
+	"github.com/stubbedev/lys-lib/internal/nal"
 )
-
-type bitReader struct {
-	b     []byte
-	i     int
-	short bool
-}
-
-func (r *bitReader) u(n int) uint32 {
-	var v uint32
-	for range n {
-		if r.i >= 8*len(r.b) {
-			r.short = true
-			return 0
-		}
-		v = v<<1 | uint32(r.b[r.i>>3]>>(7-r.i&7)&1)
-		r.i++
-	}
-	return v
-}
-
-func (r *bitReader) skip(n int) {
-	r.i += n
-	if r.i > 8*len(r.b) {
-		r.short = true
-	}
-}
-
-func (r *bitReader) ue() uint32 {
-	zeros := 0
-	for r.u(1) == 0 {
-		if zeros++; zeros > 31 || r.short {
-			r.short = true
-			return 0
-		}
-	}
-	return 1<<zeros - 1 + r.u(zeros)
-}
-
-func (r *bitReader) se() int32 {
-	k := r.ue()
-	half := int32(k >> 1)
-	if k&1 == 1 {
-		return half + 1
-	}
-	return -half
-}
-
-func unescapeRBSP(nal []byte) []byte {
-	out := make([]byte, 0, len(nal))
-	zeros := 0
-	for _, c := range nal {
-		if zeros >= 2 && c == 3 {
-			zeros = 0
-			continue
-		}
-		if c == 0 {
-			zeros++
-		} else {
-			zeros = 0
-		}
-		out = append(out, c)
-	}
-	return out
-}
 
 type avcSPS struct {
 	profile, compat, level uint8
@@ -79,99 +16,24 @@ type avcSPS struct {
 	width, height          int
 }
 
-var avcHighProfiles = map[uint8]bool{100: true, 110: true, 122: true, 244: true, 44: true, 83: true, 86: true, 118: true, 128: true, 138: true, 139: true, 134: true, 135: true}
-
-func parseAVCSPS(nal []byte) (avcSPS, error) {
-	if len(nal) < 4 || nalTypeH264(nal) != nalH264SPS {
+func parseAVCSPS(unit []byte) (avcSPS, error) {
+	if len(unit) < 4 || nalTypeH264(unit) != nalH264SPS {
 		return avcSPS{}, errors.New("mux: H.264 SPS is not an SPS NAL unit")
 	}
-	r := bitReader{b: unescapeRBSP(nal[1:])}
-	s := avcSPS{profile: uint8(r.u(8) & 0xff), compat: uint8(r.u(8) & 0xff), level: uint8(r.u(8) & 0xff), chroma: 1}
-	r.ue()
-	separate := false
-	if avcHighProfiles[s.profile] {
-		if s.chroma = r.ue(); s.chroma == 3 {
-			separate = r.u(1) == 1
-		}
-		s.depthLuma, s.depthChroma = r.ue(), r.ue()
-		r.skip(1)
-		if r.u(1) == 1 {
-			lists := 8
-			if s.chroma == 3 {
-				lists = 12
-			}
-			for i := range lists {
-				size := 64
-				if i < 6 {
-					size = 16
-				}
-				if r.u(1) == 1 {
-					skipScalingList(&r, size)
-				}
-			}
-		}
+	var sps nal.H264SPS
+	if err := sps.Parse(nal.Unescape(nil, unit[1:])); err != nil {
+		return avcSPS{}, fmt.Errorf("mux: %w", err)
 	}
-	r.ue()
-	switch r.ue() {
-	case 0:
-		r.ue()
-	case 1:
-		r.skip(1)
-		r.se()
-		r.se()
-		for range r.ue() {
-			r.se()
-		}
-	}
-	r.ue()
-	r.skip(1)
-	mbsWide, mapUnitsHigh := int(r.ue())+1, int(r.ue())+1
-	frameMbsOnly := int(r.u(1))
-	if frameMbsOnly == 0 {
-		r.skip(1)
-	}
-	r.skip(1)
-	var crop [4]int
-	if r.u(1) == 1 {
-		for i := range crop {
-			crop[i] = int(r.ue())
-		}
-	}
-	if r.short {
-		return avcSPS{}, errors.New("mux: H.264 SPS ends before the frame size")
+	s := avcSPS{
+		profile: sps.ProfileIdc, compat: sps.Constraints, level: sps.LevelIdc,
+		chroma: uint32(sps.ChromaFormatIdc), depthLuma: uint32(sps.BitDepthLumaMinus8), depthChroma: uint32(sps.BitDepthChromaMinus8),
 	}
 	if err := checkFormat(s.chroma, s.depthLuma, s.depthChroma); err != nil {
 		return avcSPS{}, fmt.Errorf("mux: H.264 SPS %w", err)
 	}
-	cropX, cropY := 1, 2-frameMbsOnly
-	if !separate && s.chroma != 0 {
-		subW, subH := 2, 2
-		switch s.chroma {
-		case 2:
-			subH = 1
-		case 3:
-			subW, subH = 1, 1
-		}
-		cropX, cropY = subW, subH*(2-frameMbsOnly)
-	}
-	s.width = mbsWide*16 - cropX*(crop[0]+crop[1])
-	s.height = (2-frameMbsOnly)*mapUnitsHigh*16 - cropY*(crop[2]+crop[3])
-	if s.width <= 0 || s.height <= 0 {
-		return avcSPS{}, fmt.Errorf("mux: H.264 SPS frame size %dx%d is not positive", s.width, s.height)
-	}
+	x0, y0, x1, y1 := sps.CropRect()
+	s.width, s.height = x1-x0, y1-y0
 	return s, nil
-}
-
-func skipScalingList(r *bitReader, size int) {
-	last, next := int32(8), int32(8)
-	for range size {
-		if next != 0 {
-			next = (last + r.se() + 256) % 256
-		}
-		if next != 0 {
-			last = next
-		}
-	}
 }
 
 func checkFormat(chroma, depthLuma, depthChroma uint32) error {
@@ -198,7 +60,7 @@ func avcC(s avcSPS, sps, pps []byte) ([]byte, error) {
 	if b, err = appendNAL16(b, pps); err != nil {
 		return nil, fmt.Errorf("mux: H.264 PPS: %w", err)
 	}
-	if avcHighProfiles[s.profile] {
+	if nal.H264HighProfile(s.profile) {
 		chroma, luma, depthChroma := formatBytes(s.chroma, s.depthLuma, s.depthChroma)
 		b = append(b, chroma, luma, depthChroma, 0)
 	}
@@ -225,11 +87,11 @@ type hevcSPS struct {
 	width, height          int
 }
 
-func parseHEVCSPS(nal []byte) (hevcSPS, error) {
-	if len(nal) < 3+hevcPTLGeneral || nalTypeH265(nal) != nalH265SPS {
+func parseHEVCSPS(unit []byte) (hevcSPS, error) {
+	if len(unit) < 3+hevcPTLGeneral || nalTypeH265(unit) != nalH265SPS {
 		return hevcSPS{}, errors.New("mux: H.265 SPS is not an SPS NAL unit")
 	}
-	rbsp := unescapeRBSP(nal[2:])
+	rbsp := nal.Unescape(nil, unit[2:])
 	if len(rbsp) < 1+hevcPTLGeneral {
 		return hevcSPS{}, errors.New("mux: H.265 SPS ends inside its profile, tier and level")
 	}
@@ -237,36 +99,37 @@ func parseHEVCSPS(nal []byte) (hevcSPS, error) {
 	subLayers := int(rbsp[0] >> 1 & 7)
 	s.temporalLayers, s.temporalNested = uint8(subLayers+1), rbsp[0]&1 == 1
 	copy(s.ptl[:], rbsp[1:])
-	r := bitReader{b: rbsp, i: 8 * (1 + hevcPTLGeneral)}
+	r := nal.NewReader(rbsp)
+	r.Skip(8 * (1 + hevcPTLGeneral))
 	profile, level := make([]bool, subLayers), make([]bool, subLayers)
 	for i := range subLayers {
-		profile[i], level[i] = r.u(1) == 1, r.u(1) == 1
+		profile[i], level[i] = r.Flag(), r.Flag()
 	}
 	if subLayers > 0 {
-		r.skip(2 * (8 - subLayers))
+		r.Skip(2 * (8 - subLayers))
 	}
 	for i := range subLayers {
 		if profile[i] {
-			r.skip(88)
+			r.Skip(88)
 		}
 		if level[i] {
-			r.skip(8)
+			r.Skip(8)
 		}
 	}
-	r.ue()
+	r.UE()
 	separate := false
-	if s.chroma = r.ue(); s.chroma == 3 {
-		separate = r.u(1) == 1
+	if s.chroma = r.UE(); s.chroma == 3 {
+		separate = r.Flag()
 	}
-	width, height := int(r.ue()), int(r.ue())
+	width, height := int(r.UE()), int(r.UE())
 	var crop [4]int
-	if r.u(1) == 1 {
+	if r.Flag() {
 		for i := range crop {
-			crop[i] = int(r.ue())
+			crop[i] = int(r.UE())
 		}
 	}
-	s.depthLuma, s.depthChroma = r.ue(), r.ue()
-	if r.short {
+	s.depthLuma, s.depthChroma = r.UE(), r.UE()
+	if r.Short() {
 		return hevcSPS{}, errors.New("mux: H.265 SPS ends before the bit depths")
 	}
 	if err := checkFormat(s.chroma, s.depthLuma, s.depthChroma); err != nil {

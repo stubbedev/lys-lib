@@ -88,6 +88,111 @@ func main() {
   `ParameterSets` returns them as NAL units without start codes (SPS and PPS for
   H.264; VPS, SPS and PPS for H.265), the form `media/mux` takes.
 
+## Video decoding
+
+`gpu.VideoDecoder` decodes H.264 and H.265 on the device's Vulkan video decode
+queue, the device the renderer draws with. It takes [`demux`](#media-demux)
+packets in decode order and hands out frames in presentation order, each a
+`Texture` a `Pass` draws through its YCbCr conversion: the picture never leaves
+the GPU.
+
+```go
+package main
+
+import (
+	"errors"
+	"io"
+	"log"
+
+	"github.com/stubbedev/lys-lib/gpu"
+	"github.com/stubbedev/lys-lib/media/demux"
+)
+
+func main() {
+	dev, err := gpu.Open()
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer dev.Close()
+	file, err := demux.OpenFile("clip.mp4")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer file.Close()
+	track := file.Tracks()[0]
+	dec, err := dev.NewVideoDecoder(track)
+	if errors.Is(err, gpu.ErrNoVideoDecoder) {
+		log.Fatal(file.Unsupported(track.Index))
+	}
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer dec.Close()
+	if err := file.Select(track.Index); err != nil {
+		log.Fatal(err)
+	}
+	show := func() {
+		for {
+			frame, err := dec.Next()
+			if err != nil {
+				log.Fatal(err)
+			}
+			if frame == nil {
+				return
+			}
+			// Draw frame.Texture()'s frame.Rect() in a Pass at frame.PTS().
+			frame.Release()
+		}
+	}
+	for {
+		p, err := file.ReadPacket()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			log.Fatal(err)
+		}
+		if err := dec.Decode(p); err != nil {
+			log.Fatal(err)
+		}
+		show()
+	}
+	dec.Flush()
+	show()
+}
+```
+
+- `DecodeCodecs` lists what the device decodes. `NewVideoDecoder` fails with
+  `ErrNoVideoDecoder`, naming the codec and why, for any other; lavapipe
+  decodes nothing.
+- `Decode` takes one packet (an access unit). `Next` returns the next frame in
+  presentation order, or nil until more packets complete one; it waits for that
+  frame's decode. `Flush` at the end of the track hands out the frames held back
+  for reordering.
+- A frame carries its packet's `PTS` and `Duration`. `Texture` is larger than
+  the picture by the codec's padding: draw `Rect` of it. Its YCbCr matrix, range
+  and chroma siting come from the stream's VUI (an unnamed matrix is BT.709 from
+  720 lines up, BT.601 below).
+- The texture belongs to the decoder: `Release` hands the frame back, and the
+  decoder decodes into it again once the passes submitted so far, which may
+  sample it, have finished. Up to 8 frames may be held beside the ones held for
+  reordering; `Close` releases them all.
+- To seek, `Reset` the decoder, `Seek` the file and decode from the keyframe,
+  dropping frames before the target. Decoding starts at an IDR or I picture
+  (H.264) or an IRAP picture (H.265); pictures before it, and leading pictures
+  that predict from before it (open-GOP B-frames, RASL pictures), are dropped.
+- Streams decode bit-exactly as ffmpeg decodes them: H.264 Baseline, Main and
+  High (B-frames, reference marking, every picture order count type, scaling
+  matrices, slices) and H.265 Main (reference picture sets in the SPS or slice
+  headers, long-term pictures, CRA starts, slices, wavefronts, scaling lists),
+  8-bit 4:2:0 progressive only. Interlaced H.264, 10-bit and 4:2:2/4:4:4 streams
+  are errors that say so; AV1 and VP9 have no decoder yet.
+- A device whose decoder writes its output into its reference pictures (NVIDIA)
+  has each picture copied into its frame on the decode queue; one with distinct
+  output pictures decodes into the frame directly.
+- Decoding a frame allocates nothing once the decoder has made its frames.
+- A `VideoDecoder` belongs to its device's goroutine.
+
 ## media/mux
 
 `mux` writes timestamped H.264, H.265 and Opus samples into fragmented MP4

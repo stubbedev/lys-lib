@@ -2534,7 +2534,7 @@ const (
 type VideoSessionParametersCreateFlagBitsKHR int32
 
 // VkVideoDecodeH264PictureLayoutFlagBitsKHR
-type VideoDecodeH264PictureLayoutFlagBitsKHR int64
+type VideoDecodeH264PictureLayoutFlagBitsKHR int32
 
 const (
 	VideoDecodeH264PictureLayoutProgressiveKhr                   VideoDecodeH264PictureLayoutFlagBitsKHR = 0
