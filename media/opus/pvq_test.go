@@ -46,6 +46,7 @@ func TestPVQTableHoldsEveryCodebookThePulseCacheReaches(t *testing.T) {
 			}
 		}
 	}
+	u := &sharedTables().pvqU
 	books := reachableCodebooks()
 	if len(books) < 100 {
 		t.Fatalf("the pulse cache reaches %d codebooks, want the mode's hundreds", len(books))
@@ -60,20 +61,21 @@ func TestPVQTableHoldsEveryCodebookThePulseCacheReaches(t *testing.T) {
 			t.Errorf("%d pulses in %d dimensions are outside the table", b.k, b.n)
 			continue
 		}
-		if got := pvqSize(b.n, b.k); uint64(got) != size {
-			t.Errorf("%d pulses in %d dimensions: pvqSize %d, want %d", b.k, b.n, got, size)
+		if got := u.size(b.n, b.k); uint64(got) != size {
+			t.Errorf("%d pulses in %d dimensions: the table's size is %d, want %d", b.k, b.n, got, size)
 		}
 	}
 }
 
 func TestPVQIndexNumbersEveryVectorOnce(t *testing.T) {
+	u := &sharedTables().pvqU
 	for n := 2; n <= 7; n++ {
 		for k := 1; k <= 6; k++ {
-			size := pvqSize(n, k)
+			size := u.size(n, k)
 			seen := make(map[string]bool, size)
 			iy := make([]int, n)
 			for idx := range size {
-				yy := pvqVector(iy, k, idx)
+				yy := u.vector(iy, k, idx)
 				pulses, norm := 0, 0
 				key := make([]byte, n)
 				for d, v := range iy {
@@ -88,7 +90,7 @@ func TestPVQIndexNumbersEveryVectorOnce(t *testing.T) {
 					t.Fatalf("n %d k %d: index %d repeats %v", n, k, idx, iy)
 				}
 				seen[string(key)] = true
-				if got := pvqIndex(iy); got != idx {
+				if got := u.index(iy); got != idx {
 					t.Fatalf("n %d k %d: %v has index %d, want %d", n, k, iy, got, idx)
 				}
 			}
@@ -97,6 +99,7 @@ func TestPVQIndexNumbersEveryVectorOnce(t *testing.T) {
 }
 
 func TestPVQVectorInvertsIndexInEveryReachableCodebook(t *testing.T) {
+	u := &sharedTables().pvqU
 	seed := uint32(11)
 	random := func(n int) int {
 		seed = 1664525*seed + 1013904223
@@ -117,11 +120,11 @@ func TestPVQVectorInvertsIndexInEveryReachableCodebook(t *testing.T) {
 					want[d] = -v
 				}
 			}
-			idx := pvqIndex(want)
-			if size := pvqSize(b.n, b.k); idx >= size {
+			idx := u.index(want)
+			if size := u.size(b.n, b.k); idx >= size {
 				t.Fatalf("n %d k %d: index %d of %v is past the codebook's %d", b.n, b.k, idx, want, size)
 			}
-			if yy := pvqVector(got, b.k, idx); !slices.Equal(got, want) || yy != float32(norm) {
+			if yy := u.vector(got, b.k, idx); !slices.Equal(got, want) || yy != float32(norm) {
 				t.Fatalf("n %d k %d: index %d decodes to %v (squared norm %v), want %v (%d)", b.n, b.k, idx, got, yy, want, norm)
 			}
 		}

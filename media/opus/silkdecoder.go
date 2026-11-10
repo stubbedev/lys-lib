@@ -72,18 +72,18 @@ const silkNLSFVectors = 32
 var (
 	silkNLSFNBMB = silkNLSFCodebook{
 		order: 10, quantStepSize: 11796,
-		cb1: silkNLSFCB1NBMB[:], cb1Weights: silkNLSFCB1WghtNBMB[:], cb1ICDF: silkNLSFCB1ICDFNBMB[:],
-		pred: silkNLSFPredNBMB[:], ecSel: silkNLSFCB2SelectNBMB[:], ecICDF: silkNLSFCB2ICDFNBMB[:],
-		deltaMin: silkNLSFDeltaMinNBMB[:],
+		cb1: silkNLSFCB1NBMB, cb1Weights: silkNLSFCB1WghtNBMB, cb1ICDF: silkNLSFCB1ICDFNBMB,
+		pred: silkNLSFPredNBMB, ecSel: silkNLSFCB2SelectNBMB, ecICDF: silkNLSFCB2ICDFNBMB,
+		deltaMin: silkNLSFDeltaMinNBMB,
 	}
 	silkNLSFWB = silkNLSFCodebook{
 		order: 16, quantStepSize: 9830,
-		cb1: silkNLSFCB1WB[:], cb1Weights: silkNLSFCB1WghtWB[:], cb1ICDF: silkNLSFCB1ICDFWB[:],
-		pred: silkNLSFPredWB[:], ecSel: silkNLSFCB2SelectWB[:], ecICDF: silkNLSFCB2ICDFWB[:],
-		deltaMin: silkNLSFDeltaMinWB[:],
+		cb1: silkNLSFCB1WB, cb1Weights: silkNLSFCB1WghtWB, cb1ICDF: silkNLSFCB1ICDFWB,
+		pred: silkNLSFPredWB, ecSel: silkNLSFCB2SelectWB, ecICDF: silkNLSFCB2ICDFWB,
+		deltaMin: silkNLSFDeltaMinWB,
 	}
-	silkLTPGainICDFs = [3][]uint8{silkLTPGainICDF0[:], silkLTPGainICDF1[:], silkLTPGainICDF2[:]}
-	silkLTPVQs       = [3][]int8{silkLTPGainVQ0[:], silkLTPGainVQ1[:], silkLTPGainVQ2[:]}
+	silkLTPGainICDFs = [3][]uint8{silkLTPGainICDF0, silkLTPGainICDF1, silkLTPGainICDF2}
+	silkLTPVQs       = [3][]int8{silkLTPGainVQ0, silkLTPGainVQ1, silkLTPGainVQ2}
 	silkShellTables  = [4]*[152]uint8{&silkShellCodeTable0, &silkShellCodeTable1, &silkShellCodeTable2, &silkShellCodeTable3}
 )
 

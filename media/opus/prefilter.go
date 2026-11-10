@@ -365,7 +365,7 @@ func (e *Encoder) prefilter(enabled bool, tn tone, tfEstimate float32, available
 	for c := range pre {
 		out := e.in[c][overlap:]
 		before[c] = sumAbs(pre[c][combMaxPeriod:])
-		combFilter(out, pre[c][:], combMaxPeriod, neg(prev), neg(f), mdctWindow[:])
+		combFilter(out, pre[c][:], combMaxPeriod, neg(prev), neg(f), e.tables.window[:])
 		after[c] = sumAbs(out)
 	}
 	cancel := after[0] > before[0]
@@ -383,7 +383,7 @@ func (e *Encoder) prefilter(enabled bool, tn tone, tfEstimate float32, available
 		for c := range pre {
 			out := e.in[c][overlap:]
 			copy(out, pre[c][combMaxPeriod:])
-			combFilter(out[:overlap], pre[c][:], combMaxPeriod, neg(prev), off, mdctWindow[:])
+			combFilter(out[:overlap], pre[c][:], combMaxPeriod, neg(prev), off, e.tables.window[:])
 		}
 		f.gain = 0
 		qg = 0

@@ -580,18 +580,18 @@ func (s *streamDecoder) decodeFrame(data []byte, out []float32, frameSize int) i
 		s.celt.start = 0
 		s.celt.decodeFrame(redundant, 1, s.redundant[:f5*ch], false)
 		end := pcm[ch*(frameSize-f2p5):]
-		smoothFade(end, s.redundant[ch*f2p5:], end, ch)
+		s.celt.tables.smoothFade(end, s.redundant[ch*f2p5:], end, ch)
 	}
 	if redundancy && celtToSILK && (s.prevMode != modeSILK || s.prevRedundancy) {
 		copy(pcm[:f2p5*ch], s.redundant[:f2p5*ch])
-		smoothFade(s.redundant[ch*f2p5:], pcm[ch*f2p5:], pcm[ch*f2p5:], ch)
+		s.celt.tables.smoothFade(s.redundant[ch*f2p5:], pcm[ch*f2p5:], pcm[ch*f2p5:], ch)
 	}
 	if transition {
 		if audiosize >= f5 {
 			copy(pcm[:f2p5*ch], s.transition[:f2p5*ch])
-			smoothFade(s.transition[ch*f2p5:], pcm[ch*f2p5:], pcm[ch*f2p5:], ch)
+			s.celt.tables.smoothFade(s.transition[ch*f2p5:], pcm[ch*f2p5:], pcm[ch*f2p5:], ch)
 		} else {
-			smoothFade(s.transition[:], pcm, pcm, ch)
+			s.celt.tables.smoothFade(s.transition[:], pcm, pcm, ch)
 		}
 	}
 	s.prevMode = mode
@@ -614,8 +614,8 @@ func lmOf(n int) int {
 
 // smoothFade is smooth_fade over 2.5 ms: out cross-fades from in1 to
 // in2 with the squared CELT window.
-func smoothFade(in1, in2, out []float32, channels int) {
-	w := mdctWindow
+func (t *tables) smoothFade(in1, in2, out []float32, channels int) {
+	w := &t.window
 	for c := range channels {
 		for i := range f2p5 {
 			g := float32(w[i] * w[i])

@@ -15,21 +15,6 @@ const (
 	noGranule      = -1
 )
 
-var crcTable = func() (t [256]uint32) {
-	for i := range t {
-		r := uint32(i) << 24
-		for range 8 {
-			if r&0x80000000 != 0 {
-				r = r<<1 ^ 0x04c11db7
-			} else {
-				r <<= 1
-			}
-		}
-		t[i] = r
-	}
-	return t
-}()
-
 func pageCRC(page []byte) uint32 {
 	var crc uint32
 	for i, b := range page {

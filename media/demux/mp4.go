@@ -406,15 +406,28 @@ func (t *mp4Track) parseMdia(mdia []byte) error {
 	})
 }
 
-var mp4Codecs = map[string]Codec{
-	"avc1": H264, "avc3": H264,
-	"hvc1": H265, "hev1": H265,
-	"av01": AV1,
-	"vp08": VP8, "vp09": VP9,
-	"Opus": Opus,
-	"mp4a": AAC,
-	"fLaC": FLAC,
-	".mp3": MP3,
+func mp4Codec(sampleEntry string) Codec {
+	switch sampleEntry {
+	case "avc1", "avc3":
+		return H264
+	case "hvc1", "hev1":
+		return H265
+	case "av01":
+		return AV1
+	case "vp08":
+		return VP8
+	case "vp09":
+		return VP9
+	case "Opus":
+		return Opus
+	case "mp4a":
+		return AAC
+	case "fLaC":
+		return FLAC
+	case ".mp3":
+		return MP3
+	}
+	return Unknown
 }
 
 const (
@@ -424,7 +437,7 @@ const (
 
 func (t *mp4Track) parseSampleEntry(x box) error {
 	t.info.CodecName = x.typ
-	t.info.Codec = mp4Codecs[x.typ]
+	t.info.Codec = mp4Codec(x.typ)
 	var kids []byte
 	switch t.info.Kind {
 	case Video:
@@ -538,7 +551,17 @@ const (
 	tagDecoderInfo   = 5
 )
 
-var mp4ObjectTypes = map[uint8]Codec{0x40: AAC, 0x66: AAC, 0x67: AAC, 0x68: AAC, 0x69: MP3, 0x6b: MP3, 0xdd: Vorbis}
+func mp4ObjectTypeCodec(oti uint8) Codec {
+	switch oti {
+	case 0x40, 0x66, 0x67, 0x68:
+		return AAC
+	case 0x69, 0x6b:
+		return MP3
+	case 0xdd:
+		return Vorbis
+	}
+	return Unknown
+}
 
 func (t *mp4Track) parseESDS(b []byte) error {
 	f := fields{b: b}
@@ -569,13 +592,11 @@ func (t *mp4Track) parseESDS(b []byte) error {
 	if d.short {
 		return fmt.Errorf("esds: decoder config of %d bytes: %w", len(dc), ErrMalformed)
 	}
-	codec, ok := mp4ObjectTypes[oti]
-	if !ok {
-		t.info.Codec = Unknown
+	t.info.Codec = mp4ObjectTypeCodec(oti)
+	if t.info.Codec == Unknown {
 		t.info.CodecName = fmt.Sprintf("mp4a.%02x", oti)
 		return nil
 	}
-	t.info.Codec = codec
 	if len(d.b) > 0 {
 		if tag, info := descriptor(&d); !d.short && tag == tagDecoderInfo {
 			t.info.Config = info

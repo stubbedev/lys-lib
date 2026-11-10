@@ -16,8 +16,24 @@ import (
 	"github.com/stubbedev/lys-lib/testbuild"
 )
 
+func TestDecodersShareTheTables(t *testing.T) {
+	asc := []byte{0x12, 0x10}
+	first, err := NewDecoder(asc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := NewDecoder(asc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.tables == nil || first.tables != second.tables {
+		t.Errorf("two decoders hold the tables %p and %p, want the one built once", first.tables, second.tables)
+	}
+}
+
 func TestIMDCTMatchesTheDefinition(t *testing.T) {
-	for _, p := range []*imdctPlan{longPlan, shortPlan} {
+	tab := sharedTables()
+	for _, p := range []*imdctPlan{tab.longPlan, tab.shortPlan} {
 		n := p.n
 		in := make([]float32, n/2)
 		seed := uint32(3)

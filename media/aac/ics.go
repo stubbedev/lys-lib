@@ -52,66 +52,49 @@ type bandLayout struct {
 // numBands is the layout's scale factor band count.
 func (b *bandLayout) numBands() int { return len(b.offsets) - 1 }
 
+// The layouts per sampling frequency index, each with the most bands
+// TNS may span at that rate (table 4.139).
 var (
-	longLayouts = func() (l [rateIndices]bandLayout) {
-		offsets := [rateIndices][]uint16{
-			swbOffsetLong96[:], swbOffsetLong96[:], swbOffsetLong64[:], swbOffsetLong48[:], swbOffsetLong48[:],
-			swbOffsetLong32[:], swbOffsetLong24[:], swbOffsetLong24[:], swbOffsetLong16[:], swbOffsetLong16[:],
-			swbOffsetLong16[:], swbOffsetLong8[:], swbOffsetLong8[:],
-		}
-		for i := range l {
-			l[i] = bandLayout{offsets: offsets[i], tnsBands: int(tnsMaxBandsLong[i])}
-		}
-		return l
-	}()
-	shortLayouts = func() (l [rateIndices]bandLayout) {
-		offsets := [rateIndices][]uint16{
-			swbOffsetShort96[:], swbOffsetShort96[:], swbOffsetShort96[:], swbOffsetShort48[:], swbOffsetShort48[:],
-			swbOffsetShort48[:], swbOffsetShort24[:], swbOffsetShort24[:], swbOffsetShort16[:], swbOffsetShort16[:],
-			swbOffsetShort16[:], swbOffsetShort8[:], swbOffsetShort8[:],
-		}
-		for i := range l {
-			l[i] = bandLayout{offsets: offsets[i], tnsBands: int(tnsMaxBandsShort[i])}
-		}
-		return l
-	}()
-	tnsCoefs = [4][]float32{tnsCoef03[:], tnsCoef04[:], tnsCoef13[:], tnsCoef14[:]}
+	longLayouts = [rateIndices]bandLayout{
+		{offsets: swbOffsetLong96, tnsBands: 31},
+		{offsets: swbOffsetLong96, tnsBands: 31},
+		{offsets: swbOffsetLong64, tnsBands: 34},
+		{offsets: swbOffsetLong48, tnsBands: 40},
+		{offsets: swbOffsetLong48, tnsBands: 42},
+		{offsets: swbOffsetLong32, tnsBands: 51},
+		{offsets: swbOffsetLong24, tnsBands: 46},
+		{offsets: swbOffsetLong24, tnsBands: 46},
+		{offsets: swbOffsetLong16, tnsBands: 42},
+		{offsets: swbOffsetLong16, tnsBands: 42},
+		{offsets: swbOffsetLong16, tnsBands: 42},
+		{offsets: swbOffsetLong8, tnsBands: 39},
+		{offsets: swbOffsetLong8, tnsBands: 39},
+	}
+	shortLayouts = [rateIndices]bandLayout{
+		{offsets: swbOffsetShort96, tnsBands: 9},
+		{offsets: swbOffsetShort96, tnsBands: 9},
+		{offsets: swbOffsetShort96, tnsBands: 10},
+		{offsets: swbOffsetShort48, tnsBands: 14},
+		{offsets: swbOffsetShort48, tnsBands: 14},
+		{offsets: swbOffsetShort48, tnsBands: 14},
+		{offsets: swbOffsetShort24, tnsBands: 14},
+		{offsets: swbOffsetShort24, tnsBands: 14},
+		{offsets: swbOffsetShort16, tnsBands: 14},
+		{offsets: swbOffsetShort16, tnsBands: 14},
+		{offsets: swbOffsetShort16, tnsBands: 14},
+		{offsets: swbOffsetShort8, tnsBands: 14},
+		{offsets: swbOffsetShort8, tnsBands: 14},
+	}
+	tnsCoefs = [4][]float32{tnsCoef03, tnsCoef04, tnsCoef13, tnsCoef14}
 )
 
-// The codebooks: the scale factor differences and the 11 spectral
-// codebooks, with each spectral one's dimension, whether its values
-// are unsigned (signs follow) and its largest absolute value.
+// Each spectral codebook's dimension, whether its values are unsigned
+// (signs follow) and its largest absolute value.
 var (
-	sfHuffman       = newHuffman(sfCodes[:], sfBits[:], 9)
-	spectralHuffman = [12]*huffman{
-		1: newHuffman(spectralCodes1[:], spectralBits1[:], 8), 2: newHuffman(spectralCodes2[:], spectralBits2[:], 8),
-		3: newHuffman(spectralCodes3[:], spectralBits3[:], 8), 4: newHuffman(spectralCodes4[:], spectralBits4[:], 8),
-		5: newHuffman(spectralCodes5[:], spectralBits5[:], 8), 6: newHuffman(spectralCodes6[:], spectralBits6[:], 8),
-		7: newHuffman(spectralCodes7[:], spectralBits7[:], 8), 8: newHuffman(spectralCodes8[:], spectralBits8[:], 8),
-		9: newHuffman(spectralCodes9[:], spectralBits9[:], 8), 10: newHuffman(spectralCodes10[:], spectralBits10[:], 8),
-		11: newHuffman(spectralCodes11[:], spectralBits11[:], 8),
-	}
 	codebookDim      = [12]int{1: 4, 2: 4, 3: 4, 4: 4, 5: 2, 6: 2, 7: 2, 8: 2, 9: 2, 10: 2, 11: 2}
 	codebookUnsigned = [12]bool{3: true, 4: true, 7: true, 8: true, 9: true, 10: true, 11: true}
 	codebookMod      = [12]int32{1: 3, 2: 3, 3: 3, 4: 3, 5: 9, 6: 9, 7: 8, 8: 8, 9: 13, 10: 13, 11: 17}
 )
-
-// pow43 is |q|^(4/3) for every quantised magnitude a frame can carry.
-var pow43 = func() (t [maxQuant + pulseMaxAmp + 1]float32) {
-	for i := range t {
-		f := float64(i)
-		t[i] = float32(f * gomath.Cbrt(f))
-	}
-	return t
-}()
-
-// sfGain is 2^((sf-100)/4) for every scale factor.
-var sfGain = func() (t [256]float32) {
-	for i := range t {
-		t[i] = float32(gomath.Exp2(0.25 * float64(i-globalOffset)))
-	}
-	return t
-}()
 
 // icsInfo is ics_info (4.4.2.6): a frame's windows and grouping.
 type icsInfo struct {
@@ -211,7 +194,7 @@ func (d *Decoder) readStream(r *bitReader, cs *channelStream, common bool) error
 	if err := cs.readSections(r); err != nil {
 		return err
 	}
-	if err := cs.readScaleFactors(r); err != nil {
+	if err := cs.readScaleFactors(r, d.tables.sfHuffman); err != nil {
 		return err
 	}
 	clear(cs.q[:])
@@ -233,7 +216,7 @@ func (d *Decoder) readStream(r *bitReader, cs *channelStream, common bool) error
 	if r.bit() {
 		return fmt.Errorf("gain control data (AAC SSR): %w", ErrUnsupported)
 	}
-	if err := cs.readSpectrum(r); err != nil {
+	if err := cs.readSpectrum(r, &d.tables.spectralHuffman); err != nil {
 		return err
 	}
 	pulses.apply(&cs.q)
@@ -278,7 +261,7 @@ func (cs *channelStream) readSections(r *bitReader) error {
 
 // readScaleFactors reads scale_factor_data: each band's scale factor,
 // intensity position or noise energy.
-func (cs *channelStream) readScaleFactors(r *bitReader) error {
+func (cs *channelStream) readScaleFactors(r *bitReader, sfHuffman *huffman) error {
 	info := &cs.info
 	global, noise, is := cs.globalGain, cs.globalGain-noiseOffset, 0
 	firstNoise := true
@@ -401,7 +384,7 @@ func parcorToLPC(parcor *[maxTNSLong]float32, order int) (lpc [maxTNSLong]float3
 
 // readSpectrum reads spectral_data into the quantised values q, laid
 // out window by window.
-func (cs *channelStream) readSpectrum(r *bitReader) error {
+func (cs *channelStream) readSpectrum(r *bitReader, spectralHuffman *[12]*huffman) error {
 	info := &cs.info
 	offsets := info.layout.offsets
 	win := 0
@@ -479,7 +462,7 @@ func readEscape(r *bitReader) (int32, error) {
 // band's |q|^(4/3) scaled by its scale factor, noise for PNS bands. A
 // right channel of a common window passes its left channel and mask so
 // noise bands coded mid/side reuse the left channel's noise.
-func (cs *channelStream) dequantise(seed *uint32, left *channelStream, ms *msMask) {
+func (cs *channelStream) dequantise(tab *tables, seed *uint32, left *channelStream, ms *msMask) {
 	info := &cs.info
 	offsets := info.layout.offsets
 	coef := cs.coef
@@ -511,13 +494,13 @@ func (cs *channelStream) dequantise(seed *uint32, left *channelStream, ms *msMas
 					}
 					noiseBand(band, seed, cs.sf[i])
 				case cb != zeroHCB && cb < noiseHCB:
-					gain := sfGain[cs.sf[i]]
+					gain := tab.sfGain[cs.sf[i]]
 					for k, v := range q {
 						m := v
 						if m < 0 {
 							m = -m
 						}
-						x := pow43[m] * gain
+						x := tab.pow43[m] * gain
 						if v < 0 {
 							x = -x
 						}

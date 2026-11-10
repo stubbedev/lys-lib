@@ -27,12 +27,38 @@ var (
 // FrameSize is the samples per channel each frame decodes to.
 const FrameSize = 1024
 
-// objectTypeNames names the audio object types a stream may declare,
-// for the error refusing it.
-var objectTypeNames = map[int]string{
-	1: "AAC Main", 3: "AAC SSR", 4: "AAC LTP", 5: "SBR (HE-AAC)", 6: "AAC Scalable",
-	17: "ER AAC LC", 19: "ER AAC LTP", 20: "ER AAC Scalable", 22: "ER BSAC",
-	23: "ER AAC LD", 29: "PS (HE-AAC v2)", 39: "ER AAC ELD", 42: "USAC (xHE-AAC)",
+// objectTypeName names an audio object type a stream may declare, for
+// the error refusing it.
+func objectTypeName(aot int) string {
+	switch aot {
+	case 1:
+		return "AAC Main"
+	case 3:
+		return "AAC SSR"
+	case 4:
+		return "AAC LTP"
+	case 5:
+		return "SBR (HE-AAC)"
+	case 6:
+		return "AAC Scalable"
+	case 17:
+		return "ER AAC LC"
+	case 19:
+		return "ER AAC LTP"
+	case 20:
+		return "ER AAC Scalable"
+	case 22:
+		return "ER BSAC"
+	case 23:
+		return "ER AAC LD"
+	case 29:
+		return "PS (HE-AAC v2)"
+	case 39:
+		return "ER AAC ELD"
+	case 42:
+		return "USAC (xHE-AAC)"
+	}
+	return "unknown"
 }
 
 // rateIndices is the number of sampling frequency indices, each with
@@ -93,11 +119,7 @@ func ParseConfig(asc []byte) (Config, error) {
 		return Config{}, fmt.Errorf("aac: AudioSpecificConfig of %d bytes: %w", len(asc), ErrInvalid)
 	}
 	if aot != 2 {
-		name, ok := objectTypeNames[aot]
-		if !ok {
-			name = "unknown"
-		}
-		return Config{}, fmt.Errorf("aac: audio object type %d (%s): %w", aot, name, ErrUnsupported)
+		return Config{}, fmt.Errorf("aac: audio object type %d (%s): %w", aot, objectTypeName(aot), ErrUnsupported)
 	}
 	rate, ok := mp4audio.SampleRate(rateIndex)
 	if !ok {
@@ -147,6 +169,7 @@ func ParseConfig(asc []byte) (Config, error) {
 // belongs to one goroutine.
 type Decoder struct {
 	cfg      Config
+	tables   *tables
 	long     *bandLayout
 	short    *bandLayout
 	channels []channel
@@ -156,7 +179,9 @@ type Decoder struct {
 	imdct    imdct
 }
 
-// NewDecoder reads the stream's AudioSpecificConfig.
+// NewDecoder reads the stream's AudioSpecificConfig. The first one
+// builds the transform, window and codebook tables every Decoder
+// shares.
 func NewDecoder(asc []byte) (*Decoder, error) {
 	cfg, err := ParseConfig(asc)
 	if err != nil {
@@ -164,6 +189,7 @@ func NewDecoder(asc []byte) (*Decoder, error) {
 	}
 	d := &Decoder{
 		cfg:      cfg,
+		tables:   sharedTables(),
 		long:     &longLayouts[cfg.rateIndex],
 		short:    &shortLayouts[cfg.rateIndex],
 		channels: make([]channel, cfg.Channels),
@@ -245,7 +271,7 @@ func (d *Decoder) Decode(dst []int16, packet []byte) ([]int16, error) {
 		return dst, d.invalid(packet, "%d of %d channel elements", next, len(d.cfg.elements))
 	}
 	for c := range d.channels {
-		d.channels[c].synthesize(&d.imdct, &d.out[c])
+		d.channels[c].synthesize(d.tables, &d.imdct, &d.out[c])
 	}
 	d.seed = seed
 	n := len(d.channels)
@@ -274,7 +300,7 @@ func (d *Decoder) decodeSingle(r *bitReader, seed *uint32, ch int) error {
 	if err := d.readStream(r, cs, false); err != nil {
 		return err
 	}
-	cs.dequantise(seed, nil, nil)
+	cs.dequantise(d.tables, seed, nil, nil)
 	d.stage(cs, ch)
 	return nil
 }
@@ -309,12 +335,12 @@ func (d *Decoder) decodePair(r *bitReader, seed *uint32, ch int) error {
 	if err := d.readStream(r, rt, common); err != nil {
 		return fmt.Errorf("right channel: %w", err)
 	}
-	l.dequantise(seed, nil, nil)
+	l.dequantise(d.tables, seed, nil, nil)
 	if common {
-		rt.dequantise(seed, l, &ms)
+		rt.dequantise(d.tables, seed, l, &ms)
 		midSide(l, rt, &ms)
 	} else {
-		rt.dequantise(seed, nil, nil)
+		rt.dequantise(d.tables, seed, nil, nil)
 	}
 	intensity(l, rt, &ms)
 	d.stage(l, ch)

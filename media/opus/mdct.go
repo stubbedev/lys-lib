@@ -16,17 +16,6 @@ const (
 	longN4      = FrameSize / 2
 )
 
-var mdctWindow = newWindow()
-
-func newWindow() *[overlap]float32 {
-	var w [overlap]float32
-	for i := range w {
-		s := gomath.Sin(0.5 * math.Pi * (float64(i) + 0.5) / overlap)
-		w[i] = float32(gomath.Sin(0.5 * math.Pi * s * s))
-	}
-	return &w
-}
-
 type fft struct {
 	bitrev []uint16
 	stages []fftStage
@@ -224,27 +213,15 @@ func butterfly5(s *fftStage, x []complex64) {
 // the FFT of a quarter the size, rotated before and after by
 // cos(2π(i+1/8)/n) for i up to n/2.
 type mdct struct {
-	n     int
-	fft   *fft
-	trig  []float32
-	scale float32
+	n      int
+	fft    *fft
+	trig   []float32
+	scale  float32
+	window *[overlap]float32
 }
 
-// mdcts are the transforms per LM: 2.5 ms << LM long blocks; LM 0 is
-// also every short block's.
-var (
-	mdcts = [4]*mdct{
-		newMDCT(2*shortMdct, 4, 3, 5),
-		newMDCT(4*shortMdct, 4, 2, 3, 5),
-		newMDCT(8*shortMdct, 4, 4, 3, 5),
-		newMDCT(2*FrameSize, 4, 2, 4, 3, 5),
-	}
-	shortMDCT = mdcts[0]
-	longMDCT  = mdcts[len(mdcts)-1]
-)
-
-func newMDCT(n int, radices ...int) *mdct {
-	t := &mdct{n: n, fft: newFFT(n/4, radices...), trig: make([]float32, n/2), scale: 1 / float32(n/4)}
+func newMDCT(window *[overlap]float32, n int, radices ...int) *mdct {
+	t := &mdct{n: n, fft: newFFT(n/4, radices...), trig: make([]float32, n/2), scale: 1 / float32(n/4), window: window}
 	for i := range t.trig {
 		t.trig[i] = float32(gomath.Cos(2 * math.Pi * (float64(i) + 0.125) / float64(n)))
 	}
@@ -265,7 +242,7 @@ func (t *mdct) rotateIn(f []complex64, i int, re, im float32) {
 func (t *mdct) forward(in, out []float32, stride int, scratch *[longN4]complex64) {
 	n2, n4 := t.n/2, t.n/4
 	f := scratch[:n4]
-	w := mdctWindow
+	w := t.window
 	xp1 := overlap / 2
 	xp2 := n2 - 1 + overlap/2
 	wp1 := overlap / 2
@@ -334,7 +311,7 @@ func (t *mdct) backward(in []float32, stride int, out []float32, scratch *[longN
 		y[2*j] = yr
 		y[2*i+1] = yi
 	}
-	w := mdctWindow
+	w := t.window
 	for i := range overlap / 2 {
 		x1, x2 := out[overlap-1-i], out[i]
 		out[i] = float32(w[overlap-1-i]*x2) - float32(w[i]*x1)

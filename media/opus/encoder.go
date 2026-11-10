@@ -88,6 +88,7 @@ const silenceLevel = float32(0.5)
 // Encoder turns PCM frames into Opus packets. It keeps the signal's
 // history between frames, so one Encoder codes one stream in order.
 type Encoder struct {
+	tables   *tables
 	channels int
 	rate     RateControl
 	bitrate  int
@@ -149,7 +150,10 @@ func NewEncoder(channels, bitrate int, rate RateControl) (*Encoder, error) {
 	if bitrate < MinBitrate || bitrate > MaxBitrate {
 		return nil, fmt.Errorf("opus: bitrate %d b/s outside [%d, %d]", bitrate, MinBitrate, MaxBitrate)
 	}
+	tab := sharedTables()
 	e := &Encoder{
+		tables:       tab,
+		pvq:          pvq{u: &tab.pvqU},
 		channels:     channels,
 		rate:         rate,
 		bitrate:      bitrate,
@@ -466,10 +470,10 @@ func (e *Encoder) computeEnergies(short bool, logE *[2][nbBands]float32) {
 	for ch := range e.channels {
 		if short {
 			for b := range shortBlocks {
-				shortMDCT.forward(e.in[ch][b*shortMdct:], e.freq[ch][b:], shortBlocks, &e.fft)
+				e.tables.shortMDCT().forward(e.in[ch][b*shortMdct:], e.freq[ch][b:], shortBlocks, &e.fft)
 			}
 		} else {
-			longMDCT.forward(e.in[ch][:], e.freq[ch][:], 1, &e.fft)
+			e.tables.longMDCT().forward(e.in[ch][:], e.freq[ch][:], 1, &e.fft)
 		}
 		bandEnergies(e.freq[ch][:], e.norm[ch][:], &e.amp[ch], &logE[ch])
 	}

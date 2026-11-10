@@ -36,6 +36,7 @@ const (
 // background noise, the post-filter, the concealment's history and
 // the noise seed, for channels output channels.
 type celtDecoder struct {
+	tables         *tables
 	channels       int
 	streamChannels int
 	start, end     int
@@ -70,15 +71,15 @@ type celtDecoder struct {
 }
 
 func newCELTDecoder(channels int) *celtDecoder {
-	d := &celtDecoder{channels: channels, streamChannels: channels, end: nbBands}
+	d := &celtDecoder{tables: sharedTables(), channels: channels, streamChannels: channels, end: nbBands}
 	d.reset()
 	return d
 }
 
 // reset is OPUS_RESET_STATE: silence before the next frame, keeping
-// the channel counts and the coded band range.
+// the tables, the channel counts and the coded band range.
 func (d *celtDecoder) reset() {
-	*d = celtDecoder{channels: d.channels, streamChannels: d.streamChannels, start: d.start, end: d.end}
+	*d = celtDecoder{tables: d.tables, channels: d.channels, streamChannels: d.streamChannels, start: d.start, end: d.end}
 	for c := range 2 {
 		for i := range nbBands {
 			d.oldLogE[c][i], d.oldLogE2[c][i] = -28, -28
@@ -86,6 +87,7 @@ func (d *celtDecoder) reset() {
 	}
 	d.skipPLC = true
 	d.bands.disableInv = d.channels == 1
+	d.bands.pvq.u = &d.tables.pvqU
 }
 
 // decodeFrame decodes the CELT frame frame of 2.5 ms << lm, a frame of
@@ -307,9 +309,9 @@ func (d *celtDecoder) postfilter(n, lm int, pf pitchFilter) {
 		syn := d.mem[ch][decodeBufferSize-n:]
 		buf := d.mem[ch][:]
 		at := decodeBufferSize - n
-		combFilter(syn[:shortMdct], buf, at, d.pfOld, d.pf, mdctWindow[:])
+		combFilter(syn[:shortMdct], buf, at, d.pfOld, d.pf, d.tables.window[:])
 		if lm != 0 {
-			combFilter(syn[shortMdct:n], buf, at+shortMdct, d.pf, pf, mdctWindow[:])
+			combFilter(syn[shortMdct:n], buf, at+shortMdct, d.pf, pf, d.tables.window[:])
 		}
 	}
 	d.pfOld, d.pf = d.pf, pf
@@ -325,7 +327,7 @@ func (d *celtDecoder) foldPrefilter(n int) {
 	var etmp [overlap]float32
 	f0 := pitchFilter{period: d.pfOld.period, gain: -d.pfOld.gain, tapset: d.pfOld.tapset}
 	f1 := pitchFilter{period: d.pf.period, gain: -d.pf.gain, tapset: d.pf.tapset}
-	w := mdctWindow
+	w := &d.tables.window
 	for ch := range d.channels {
 		buf := d.mem[ch][:]
 		at := decodeBufferSize - n
@@ -401,7 +403,7 @@ func (d *celtDecoder) extrapolatePitch(n int) {
 		fade = 0.8
 	}
 	excLength := min(2*pitch, maxPeriod)
-	w := mdctWindow
+	w := &d.tables.window
 	for ch := range d.channels {
 		buf := d.mem[ch][:]
 		excBuf := d.exc[:]
@@ -576,9 +578,9 @@ func iir(x []float32, lpc *[celtLPCOrder]float32, mem *[celtLPCOrder]float32, y 
 // the stream's channels are not the output's.
 func (d *celtDecoder) synthesise(c, lm, start, end int, transient, silence bool) {
 	n := shortMdct << lm
-	blocks, nb, t := 1, n, mdcts[lm]
+	blocks, nb, t := 1, n, d.tables.mdcts[lm]
 	if transient {
-		blocks, nb, t = 1<<lm, shortMdct, shortMDCT
+		blocks, nb, t = 1<<lm, shortMdct, d.tables.shortMDCT()
 	}
 	inverse := func(freq []float32, ch int) {
 		syn := d.mem[ch][decodeBufferSize-n:]

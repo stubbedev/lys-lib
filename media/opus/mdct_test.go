@@ -15,7 +15,7 @@ func (n *testNoise) next() float32 {
 
 func TestFFTMatchesTheDefinition(t *testing.T) {
 	noise := testNoise(3)
-	for lm, m := range mdcts {
+	for lm, m := range sharedTables().mdcts {
 		n := m.n / 4
 		in := make([]complex128, n)
 		got := make([]complex64, n)
@@ -70,9 +70,9 @@ func windowedBlock(m *mdct, in []float32) []float64 {
 		w := 1.0
 		switch {
 		case j < overlap:
-			w = float64(mdctWindow[j])
+			w = float64(m.window[j])
 		case j >= n2:
-			w = float64(mdctWindow[n2+overlap-1-j])
+			w = float64(m.window[n2+overlap-1-j])
 		}
 		x[at+j] = w * float64(v)
 	}
@@ -82,7 +82,7 @@ func windowedBlock(m *mdct, in []float32) []float64 {
 func TestMDCTForwardMatchesTheDefinition(t *testing.T) {
 	noise := testNoise(5)
 	var scratch [longN4]complex64
-	for lm, m := range mdcts {
+	for lm, m := range sharedTables().mdcts {
 		n, n2 := m.n, m.n/2
 		in := make([]float32, n2+overlap)
 		for i := range in {
@@ -108,16 +108,17 @@ func TestMDCTForwardMatchesTheDefinition(t *testing.T) {
 }
 
 func TestMDCTBackwardInvertsForward(t *testing.T) {
+	tab := sharedTables()
 	for _, c := range []struct {
 		name   string
 		m      *mdct
 		blocks int
 	}{
-		{"2.5 ms", mdcts[0], 1},
-		{"5 ms", mdcts[1], 1},
-		{"10 ms", mdcts[2], 1},
-		{"20 ms", longMDCT, 1},
-		{"short blocks", shortMDCT, shortBlocks},
+		{"2.5 ms", tab.mdcts[0], 1},
+		{"5 ms", tab.mdcts[1], 1},
+		{"10 ms", tab.mdcts[2], 1},
+		{"20 ms", tab.longMDCT(), 1},
+		{"short blocks", tab.shortMDCT(), shortBlocks},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			const frames = 4
@@ -150,6 +151,7 @@ func TestMDCTBackwardInvertsForward(t *testing.T) {
 }
 
 func BenchmarkMDCT(b *testing.B) {
+	longMDCT := sharedTables().longMDCT()
 	noise := testNoise(1)
 	var scratch [longN4]complex64
 	in := make([]float32, FrameSize+overlap)

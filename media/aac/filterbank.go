@@ -28,20 +28,6 @@ type channel struct {
 	overlap   [FrameSize]float32
 }
 
-// Window halves, rising, by shape (0 sine, 1 KBD).
-var (
-	longWindows = func() (w [2][FrameSize]float32) {
-		sineWindow(w[0][:])
-		kbdWindow(w[1][:], 4)
-		return w
-	}()
-	shortWindows = func() (w [2][shortN2]float32) {
-		sineWindow(w[0][:])
-		kbdWindow(w[1][:], 6)
-		return w
-	}()
-)
-
 // sineWindow is the rising half of the sine window of 2n points.
 func sineWindow(w []float32) {
 	n := len(w)
@@ -84,16 +70,17 @@ func besselI0(x float64) float64 {
 
 // synthesize turns the staged spectrum into the frame's output samples
 // and the overlap for the next frame.
-func (c *channel) synthesize(t *imdct, out *[FrameSize]float32) {
+func (c *channel) synthesize(tab *tables, t *imdct, out *[FrameSize]float32) {
 	var buf [longN]float32
 	cur, prev := c.shape, c.prevShape
-	long, prevLong := &longWindows[cur], &longWindows[prev]
+	long, prevLong := &tab.longWindows[cur], &tab.longWindows[prev]
+	shortWindows := &tab.shortWindows
 	switch c.seq {
 	case eightShort:
 		var acc [longN]float32
 		var b [shortN]float32
 		for w := range maxWindows {
-			t.short(c.coef[w*shortN2:(w+1)*shortN2], b[:])
+			t.run(tab.shortPlan, c.coef[w*shortN2:(w+1)*shortN2], b[:])
 			left := &shortWindows[cur]
 			if w == 0 {
 				left = &shortWindows[prev]
@@ -110,7 +97,7 @@ func (c *channel) synthesize(t *imdct, out *[FrameSize]float32) {
 		}
 		copy(c.overlap[:], acc[FrameSize:])
 	default:
-		t.long(c.coef[:], buf[:])
+		t.run(tab.longPlan, c.coef[:], buf[:])
 		switch c.seq {
 		case longStop:
 			short := &shortWindows[prev]
@@ -160,11 +147,6 @@ type imdctPlan struct {
 	rev     []uint16
 }
 
-var (
-	longPlan  = newIMDCTPlan(longN)
-	shortPlan = newIMDCTPlan(shortN)
-)
-
 func newIMDCTPlan(n int) *imdctPlan {
 	n4 := n / 4
 	p := &imdctPlan{n: n, twiddle: make([]complex64, n4), rev: make([]uint16, n4)}
@@ -194,9 +176,6 @@ func newIMDCTPlan(n int) *imdctPlan {
 	}
 	return p
 }
-
-func (t *imdct) long(in, out []float32)  { t.run(longPlan, in, out) }
-func (t *imdct) short(in, out []float32) { t.run(shortPlan, in, out) }
 
 // run is the inverse MDCT of the n/2 coefficients in into the n
 // samples of out.

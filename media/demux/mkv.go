@@ -24,11 +24,15 @@ const (
 	laceHeaderBytes  = 4 << 10
 )
 
-// mkvLevel1 are the Segment's children: an unknown-size Cluster ends
-// at the next of them.
-var mkvLevel1 = map[matroska.ID]bool{
-	matroska.SeekHead: true, matroska.Info: true, matroska.Tracks: true, matroska.Cues: true,
-	matroska.Cluster: true, matroska.Chapters: true, matroska.Tags: true, matroska.Attachments: true,
+// mkvLevel1 reports the Segment's children: an unknown-size Cluster
+// ends at the next of them.
+func mkvLevel1(id matroska.ID) bool {
+	switch id {
+	case matroska.SeekHead, matroska.Info, matroska.Tracks, matroska.Cues,
+		matroska.Cluster, matroska.Chapters, matroska.Tags, matroska.Attachments:
+		return true
+	}
+	return false
 }
 
 // element is an EBML element in the file: its ID, where its header
@@ -393,21 +397,26 @@ func (m *mkvFile) parseInfo(b []byte) error {
 	return nil
 }
 
-var mkvCodecs = map[string]Codec{
-	matroska.CodecH264:   H264,
-	matroska.CodecH265:   H265,
-	matroska.CodecAV1:    AV1,
-	matroska.CodecVP8:    VP8,
-	matroska.CodecVP9:    VP9,
-	matroska.CodecOpus:   Opus,
-	matroska.CodecVorbis: Vorbis,
-	matroska.CodecFLAC:   FLAC,
-	matroska.CodecMP3:    MP3,
-}
-
 func mkvCodec(id string) Codec {
-	if c, ok := mkvCodecs[id]; ok {
-		return c
+	switch id {
+	case matroska.CodecH264:
+		return H264
+	case matroska.CodecH265:
+		return H265
+	case matroska.CodecAV1:
+		return AV1
+	case matroska.CodecVP8:
+		return VP8
+	case matroska.CodecVP9:
+		return VP9
+	case matroska.CodecOpus:
+		return Opus
+	case matroska.CodecVorbis:
+		return Vorbis
+	case matroska.CodecFLAC:
+		return FLAC
+	case matroska.CodecMP3:
+		return MP3
 	}
 	if strings.HasPrefix(id, matroska.CodecAAC) {
 		return AAC
@@ -523,12 +532,18 @@ func (m *mkvFile) parseTrackEntry(b []byte) (*mkvTrack, error) {
 	return t, nil
 }
 
-var legacyAACObjectTypes = map[string]uint64{
-	"MAIN":   1,
-	"LC":     2,
-	"LC/SBR": 2,
-	"SSR":    3,
-	"LTP":    4,
+func legacyAACObjectType(profile string) (objectType uint64, known bool) {
+	switch profile {
+	case "MAIN":
+		return 1, true
+	case "LC", "LC/SBR":
+		return 2, true
+	case "SSR":
+		return 3, true
+	case "LTP":
+		return 4, true
+	}
+	return 0, false
 }
 
 func legacyAACConfig(codecID string, rate, channels int) []byte {
@@ -536,7 +551,7 @@ func legacyAACConfig(codecID string, rate, channels int) []byte {
 	if !ok {
 		profile, ok = strings.CutPrefix(codecID, matroska.CodecAAC+"/MPEG2/")
 	}
-	objectType, known := legacyAACObjectTypes[profile]
+	objectType, known := legacyAACObjectType(profile)
 	if !ok || !known {
 		return nil
 	}
@@ -721,7 +736,7 @@ func (m *mkvFile) nextBlock(c *mkvCursor, b *mkvBlock, frames bool) error {
 		if err != nil {
 			return err
 		}
-		if c.cluster && c.end == unknownSize && mkvLevel1[e.id] {
+		if c.cluster && c.end == unknownSize && mkvLevel1(e.id) {
 			c.cluster = false
 		}
 		if !c.cluster {

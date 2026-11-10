@@ -302,6 +302,10 @@ frame: SILK's pitch and noise extrapolation with comfort noise bit-exactly,
 CELT's pitch or noise concealment within about 80 dB of libopus. Inband FEC
 (LBRR) is skipped; there is no call to conceal a whole lost packet.
 
+Importing the package runs nothing: the MDCT, window and pulse codebook tables
+are built by the first `NewEncoder` or `NewDecoder` and shared by every one
+after it, so coding a frame does no lookup for them.
+
 ```go
 package main
 
@@ -388,6 +392,9 @@ signed 16-bit samples per channel.
   config element instead of a channel configuration, or a coupling channel
   element. Implicitly signalled SBR decodes as its LC core at the core rate.
   Dynamic range control data is ignored. Malformed input wraps `ErrInvalid`.
+- Importing the package runs nothing: the transform, window and codebook
+  tables are built by the first `NewDecoder` and shared by every decoder after
+  it.
 - An MP4 edit list's encoder priming is in the first packet's negative
   timestamp: drop that many samples from the start.
 

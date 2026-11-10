@@ -17,8 +17,10 @@ const (
 // spreadFactor is each spreading level's rotation strength.
 var spreadFactor = [4]int{0, 15, 10, 5}
 
-// pvq holds the pulse search's scratch for the widest band.
+// pvq codes pulse vectors: the codebook sizes and the pulse search's
+// scratch for the widest band.
 type pvq struct {
+	u    *pvqTable
 	y    [FrameSize]float32
 	iy   [FrameSize]int
 	sign [FrameSize]bool
@@ -164,7 +166,7 @@ func (p *pvq) quant(rc *rangeEncoder, x []float32, k, spread, blocks int) {
 			iy[j] = -iy[j]
 		}
 	}
-	rc.uint(pvqIndex(iy), pvqSize(n, k))
+	rc.uint(p.u.index(iy), p.u.size(n, k))
 }
 
 const (
@@ -172,26 +174,27 @@ const (
 	pvqMaxDim = 22 << frameLM
 )
 
-var pvqU = newPVQTable()
+// pvqTable is U(N,K), the number of pulse vectors of N dimensions and
+// K pulses whose first pulse is positive, for the smaller of the two
+// below pvqRows.
+type pvqTable [pvqRows][pvqMaxDim + 1]uint32
 
-func newPVQTable() *[pvqRows][pvqMaxDim + 1]uint32 {
-	var u [pvqRows][pvqMaxDim + 1]uint32
+func (u *pvqTable) fill() {
 	u[0][0] = 1
 	for n := 1; n < pvqRows; n++ {
 		for k := 1; k <= pvqMaxDim; k++ {
 			u[n][k] = u[n-1][k] + u[n][k-1] + u[n-1][k-1]
 		}
 	}
-	return &u
 }
 
-func pvqCount(n, k int) uint32 { return pvqU[min(n, k)][max(n, k)] }
+func (u *pvqTable) count(n, k int) uint32 { return u[min(n, k)][max(n, k)] }
 
-func pvqSize(n, k int) uint32 { return pvqCount(n, k) + pvqCount(n, k+1) }
+func (u *pvqTable) size(n, k int) uint32 { return u.count(n, k) + u.count(n, k+1) }
 
-// pvqIndex is icwrs: the index of the pulse vector iy, of at least two
+// index is icwrs: the index of the pulse vector iy, of at least two
 // dimensions, in its codebook.
-func pvqIndex(iy []int) uint32 {
+func (u *pvqTable) index(iy []int) uint32 {
 	n := len(iy)
 	j := n - 1
 	var idx uint32
@@ -201,10 +204,10 @@ func pvqIndex(iy []int) uint32 {
 	k := abs(iy[j])
 	for j > 0 {
 		j--
-		idx += pvqCount(n-j, k)
+		idx += u.count(n-j, k)
 		k += abs(iy[j])
 		if iy[j] < 0 {
-			idx += pvqCount(n-j, k+1)
+			idx += u.count(n-j, k+1)
 		}
 	}
 	return idx
@@ -217,16 +220,16 @@ func signed(v int, negative bool) int {
 	return v
 }
 
-// pvqVector is cwrsi: it writes the k-pulse vector of index idx into
-// iy, of at least two dimensions, and returns its squared norm.
-func pvqVector(iy []int, k int, idx uint32) float32 {
+// vector is cwrsi: it writes the k-pulse vector of index idx into iy,
+// of at least two dimensions, and returns its squared norm.
+func (u *pvqTable) vector(iy []int, k int, idx uint32) float32 {
 	var yy float32
 	n := len(iy)
 	for ; n > 2; n-- {
 		var v int
 		switch {
 		case k >= n:
-			row := &pvqU[n]
+			row := &u[n]
 			p := row[k+1]
 			negative := idx >= p
 			if negative {
@@ -234,7 +237,7 @@ func pvqVector(iy []int, k int, idx uint32) float32 {
 			}
 			k0 := k
 			if row[n] > idx {
-				for k, p = n-1, pvqU[n-1][n]; p > idx; p = pvqU[k][n] {
+				for k, p = n-1, u[n-1][n]; p > idx; p = u[k][n] {
 					k--
 				}
 			} else {
@@ -245,7 +248,7 @@ func pvqVector(iy []int, k int, idx uint32) float32 {
 			idx -= p
 			v = signed(k0-k, negative)
 		default:
-			p, q := pvqU[k][n], pvqU[k+1][n]
+			p, q := u[k][n], u[k+1][n]
 			if p <= idx && idx < q {
 				idx -= p
 				break
@@ -255,7 +258,7 @@ func pvqVector(iy []int, k int, idx uint32) float32 {
 				idx -= q
 			}
 			k0 := k
-			for k, p = k-1, pvqU[k-1][n]; p > idx; p = pvqU[k][n] {
+			for k, p = k-1, u[k-1][n]; p > idx; p = u[k][n] {
 				k--
 			}
 			idx -= p
@@ -264,14 +267,14 @@ func pvqVector(iy []int, k int, idx uint32) float32 {
 		iy[len(iy)-n] = v
 		yy += float32(v * v)
 	}
-	p := pvqCount(2, k+1)
+	p := u.count(2, k+1)
 	negative := idx >= p
 	if negative {
 		idx -= p
 	}
 	k0 := k
 	k = int((idx + 1) >> 1)
-	idx -= pvqCount(2, k)
+	idx -= u.count(2, k)
 	v := signed(k0-k, negative)
 	iy[len(iy)-2] = v
 	yy += float32(v * v)
@@ -286,7 +289,7 @@ func pvqVector(iy []int, k int, idx uint32) float32 {
 func (p *pvq) unquant(rc *rangeDecoder, x []float32, k, spread, blocks int, gain float32) uint {
 	n := len(x)
 	iy := p.iy[:n]
-	ryy := pvqVector(iy, k, rc.uint(pvqSize(n, k)))
+	ryy := p.u.vector(iy, k, rc.uint(p.u.size(n, k)))
 	g := gain / float32(math.Sqrt(float64(ryy)))
 	for i, v := range iy {
 		x[i] = g * float32(v)

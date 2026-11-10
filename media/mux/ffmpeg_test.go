@@ -43,15 +43,22 @@ const (
 	clipGOP      = 15
 )
 
-var videoEncoders = map[codec][]string{
-	codecH264: {"-c:v", "libx264", "-bf", "0", "-g", strconv.Itoa(clipGOP), "-bsf:v", "h264_metadata=aud=insert", "-f", "h264"},
-	codecH265: {"-c:v", "libx265", "-x265-params", "bframes=0:keyint=" + strconv.Itoa(clipGOP) + ":log-level=error", "-bsf:v", "hevc_metadata=aud=insert", "-f", "hevc"},
+func videoEncoder(t *testing.T, c codec) []string {
+	t.Helper()
+	switch c {
+	case codecH264:
+		return []string{"-c:v", "libx264", "-bf", "0", "-g", strconv.Itoa(clipGOP), "-bsf:v", "h264_metadata=aud=insert", "-f", "h264"}
+	case codecH265:
+		return []string{"-c:v", "libx265", "-x265-params", "bframes=0:keyint=" + strconv.Itoa(clipGOP) + ":log-level=error", "-bsf:v", "hevc_metadata=aud=insert", "-f", "hevc"}
+	}
+	t.Fatalf("no ffmpeg encoder for codec %d", c)
+	return nil
 }
 
 func encodeVideo(t *testing.T, c codec) [][]byte {
 	t.Helper()
 	src := []string{"-f", "lavfi", "-i", "testsrc2=s=" + strconv.Itoa(clipW) + "x" + strconv.Itoa(clipH) + ":r=60", "-frames:v", strconv.Itoa(clipFrames), "-pix_fmt", "yuv420p"}
-	stream := ffmpegOutput(t, append(src, videoEncoders[c]...)...)
+	stream := ffmpegOutput(t, append(src, videoEncoder(t, c)...)...)
 	aud := []byte{0, 0, 0, 1, 0x09}
 	if c == codecH265 {
 		aud = []byte{0, 0, 0, 1, nal.HEVCNALAUD << 1}

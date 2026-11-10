@@ -20,10 +20,16 @@ const (
 	mkvDurationLen = 2 + 1 + 8
 )
 
-var mkvCodecIDs = map[codec]string{
-	codecH264: matroska.CodecH264,
-	codecH265: matroska.CodecH265,
-	codecOpus: matroska.CodecOpus,
+func (c codec) mkvID() string {
+	switch c {
+	case codecH264:
+		return matroska.CodecH264
+	case codecH265:
+		return matroska.CodecH265
+	case codecOpus:
+		return matroska.CodecOpus
+	}
+	panic(fmt.Sprintf("mux: codec %d has no Matroska codec ID", c))
 }
 
 type ebml struct {
@@ -200,7 +206,7 @@ func (m *MKV) tracksElement() []byte {
 		e.uint(matroska.TrackNumber, uint64(i+1))
 		e.uint(matroska.TrackUID, uint64(i+1))
 		e.uint(matroska.FlagLacing, 0)
-		e.bytes(matroska.CodecID, []byte(mkvCodecIDs[t.codec]))
+		e.bytes(matroska.CodecID, []byte(t.codec.mkvID()))
 		e.bytes(matroska.CodecPrivate, t.config)
 		if t.video() {
 			e.uint(matroska.TrackType, matroska.TrackVideo)
