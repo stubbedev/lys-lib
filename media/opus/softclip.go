@@ -7,10 +7,18 @@ package opus
 // instead of clipping. mem carries each channel's curve into the next
 // packet.
 func softClip(x []float32, channels int, mem *[2]float32) {
-	n := len(x) / channels
+	clean := mem[0] == 0 && mem[1] == 0
 	for i, v := range x {
+		if v >= -1 && v <= 1 {
+			continue
+		}
 		x[i] = max(-2, min(2, v))
+		clean = false
 	}
+	if clean {
+		return
+	}
+	n := len(x) / channels
 	for c := range channels {
 		at := func(i int) *float32 { return &x[i*channels+c] }
 		bend := func(i int, a float32) {
