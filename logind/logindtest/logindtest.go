@@ -5,6 +5,7 @@ package logindtest
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"slices"
@@ -63,6 +64,12 @@ type Call struct {
 // Logind is the fake. Its manager resolves "auto" to Own, else Display,
 // and "self" to Own; the /session/auto and /session/self aliases and
 // /user/self are served likewise. Sessions start active and unlocked.
+//
+// The methods that have logind announce something (SetLockedHint,
+// SetActive, PrepareForSleep, Lock, Unlock, PauseDevice, ResumeDevice)
+// report a failure with t.Errorf and return false. Unlike t.Fatalf that
+// is allowed on any goroutine of the test, so an OnLock hook may call
+// them.
 type Logind struct {
 	// Bus is the private bus logind owns its name on.
 	Bus *dbustest.Bus
@@ -74,7 +81,9 @@ type Logind struct {
 	// Inhibitors counts the inhibitors held now.
 	Inhibitors dbustest.Var[int]
 	// OnLock runs after a Lock is recorded, as the lock screen answering
-	// logind's Lock signal would; nil does nothing.
+	// logind's Lock signal would, on a goroutine of its own; nil does
+	// nothing. The fake waits for the hooks still running before its
+	// connection closes at the end of the test.
 	OnLock dbustest.Var[func()]
 
 	cfg  Config
@@ -84,6 +93,32 @@ type Logind struct {
 	sessions map[logind.SessionID]*session
 	refusals map[string]*dbus.Error
 	sleeping bool
+	hooks    hooks
+}
+
+// hooks are the OnLock hooks running now. Once the test is ending no
+// more start, and those running are waited for while the fake's
+// connection is still open: a hook that outlived its test would report
+// to a testing.TB that has completed.
+type hooks struct {
+	mu      sync.Mutex
+	ended   bool
+	running sync.WaitGroup
+}
+
+func (h *hooks) run(hook func()) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if !h.ended {
+		h.running.Go(hook)
+	}
+}
+
+func (h *hooks) wait() {
+	h.mu.Lock()
+	h.ended = true
+	h.mu.Unlock()
+	h.running.Wait()
 }
 
 type session struct {
@@ -118,6 +153,7 @@ func StartUnit(t testing.TB, cfg Config) *Logind {
 func Serve(t testing.TB, bus *dbustest.Bus, cfg Config) *Logind {
 	t.Helper()
 	l := &Logind{Bus: bus, cfg: cfg, conn: bus.Conn(t), sessions: map[logind.SessionID]*session{}, refusals: map[string]*dbus.Error{}}
+	t.Cleanup(l.hooks.wait)
 	for _, id := range []logind.SessionID{cfg.Own, cfg.Display} {
 		if id != "" {
 			l.sessions[id] = &session{id: id, path: logind.SessionPath(id), active: true}
@@ -195,13 +231,24 @@ func (l *Logind) resolve(name logind.SessionID) *session {
 	return l.sessions[name]
 }
 
-func (l *Logind) session(t testing.TB, id logind.SessionID) *session {
+// announce has the fake send what logind announces about session id,
+// and reports whether it did.
+func (l *Logind) announce(t testing.TB, id logind.SessionID, send func(*session) error) bool {
 	t.Helper()
 	s := l.sessions[id]
 	if s == nil {
-		t.Fatalf("logindtest: no session %q", id)
+		t.Errorf("logindtest: no session %q", id)
+		return false
 	}
-	return s
+	return sent(t, send(s))
+}
+
+func sent(t testing.TB, err error) bool {
+	t.Helper()
+	if err != nil {
+		t.Errorf("logindtest: %v", err)
+	}
+	return err == nil
 }
 
 // Refuse makes every later call of method (such as Manager.Suspend)
@@ -252,11 +299,9 @@ func (l *Logind) record(event Event) {
 
 // SetLockedHint changes session id's LockedHint and announces it with
 // PropertiesChanged, as logind does when the lock screen sets it.
-func (l *Logind) SetLockedHint(t testing.TB, id logind.SessionID, locked bool) {
+func (l *Logind) SetLockedHint(t testing.TB, id logind.SessionID, locked bool) bool {
 	t.Helper()
-	if err := l.setLockedHint(l.session(t, id), locked); err != nil {
-		t.Fatalf("logindtest: %v", err)
-	}
+	return l.announce(t, id, func(s *session) error { return l.setLockedHint(s, locked) })
 }
 
 func (l *Logind) setLockedHint(s *session, locked bool) error {
@@ -273,11 +318,9 @@ func (l *Logind) setLockedHint(s *session, locked bool) error {
 
 // SetActive changes whether session id is in the foreground and
 // announces it with PropertiesChanged, as logind does on a VT switch.
-func (l *Logind) SetActive(t testing.TB, id logind.SessionID, active bool) {
+func (l *Logind) SetActive(t testing.TB, id logind.SessionID, active bool) bool {
 	t.Helper()
-	if err := l.setActive(l.session(t, id), active); err != nil {
-		t.Fatalf("logindtest: %v", err)
-	}
+	return l.announce(t, id, func(s *session) error { return l.setActive(s, active) })
 }
 
 func (l *Logind) setActive(s *session, active bool) error {
@@ -288,59 +331,57 @@ func (l *Logind) setActive(s *session, active bool) error {
 }
 
 func (l *Logind) propertyChanged(s *session, name string, v bool) error {
-	return l.conn.Emit(s.path, "org.freedesktop.DBus.Properties.PropertiesChanged", logind.SessionInterface, map[string]dbus.Variant{name: dbus.MakeVariant(v)}, []string{})
+	return dbusx.PropertiesChanged.Emit(l.conn, s.path, dbusx.ChangedProperties{
+		Interface:   logind.SessionInterface,
+		Changed:     map[string]dbus.Variant{name: dbus.MakeVariant(v)},
+		Invalidated: []string{},
+	})
 }
 
 // PrepareForSleep emits the manager's PrepareForSleep(start), as logind
 // does around a sleep someone else asked for.
-func (l *Logind) PrepareForSleep(t testing.TB, start bool) {
+func (l *Logind) PrepareForSleep(t testing.TB, start bool) bool {
 	t.Helper()
 	l.mu.Lock()
 	l.sleeping = start
 	l.mu.Unlock()
-	if err := logind.PrepareForSleep.Emit(l.conn, logind.ManagerPath, logind.Sleep{Start: start}); err != nil {
-		t.Fatalf("logindtest: %v", err)
-	}
+	return sent(t, logind.PrepareForSleep.Emit(l.conn, logind.ManagerPath, logind.Sleep{Start: start}))
 }
 
 // Lock emits session id's Lock signal, as `loginctl lock-session` has
 // logind do.
-func (l *Logind) Lock(t testing.TB, id logind.SessionID) {
+func (l *Logind) Lock(t testing.TB, id logind.SessionID) bool {
 	t.Helper()
-	if err := logind.Lock.Emit(l.conn, l.session(t, id).path, logind.Locked{}); err != nil {
-		t.Fatalf("logindtest: %v", err)
-	}
+	return l.announce(t, id, func(s *session) error { return logind.Lock.Emit(l.conn, s.path, logind.Locked{}) })
 }
 
 // Unlock emits session id's Unlock signal, as `loginctl unlock-session`
 // has logind do.
-func (l *Logind) Unlock(t testing.TB, id logind.SessionID) {
+func (l *Logind) Unlock(t testing.TB, id logind.SessionID) bool {
 	t.Helper()
-	if err := logind.Unlock.Emit(l.conn, l.session(t, id).path, logind.Unlocked{}); err != nil {
-		t.Fatalf("logindtest: %v", err)
-	}
+	return l.announce(t, id, func(s *session) error { return logind.Unlock.Emit(l.conn, s.path, logind.Unlocked{}) })
 }
 
 // PauseDevice emits session id's PauseDevice for d.
-func (l *Logind) PauseDevice(t testing.TB, id logind.SessionID, d logind.Device, kind logind.PauseKind) {
+func (l *Logind) PauseDevice(t testing.TB, id logind.SessionID, d logind.Device, kind logind.PauseKind) bool {
 	t.Helper()
-	if err := logind.PauseDevice.Emit(l.conn, l.session(t, id).path, logind.DevicePaused{Major: d.Major, Minor: d.Minor, Kind: kind}); err != nil {
-		t.Fatalf("logindtest: %v", err)
-	}
+	return l.announce(t, id, func(s *session) error {
+		return logind.PauseDevice.Emit(l.conn, s.path, logind.DevicePaused{Major: d.Major, Minor: d.Minor, Kind: kind})
+	})
 }
 
 // ResumeDevice emits session id's ResumeDevice for d, carrying a
 // descriptor of /dev/null.
-func (l *Logind) ResumeDevice(t testing.TB, id logind.SessionID, d logind.Device) {
+func (l *Logind) ResumeDevice(t testing.TB, id logind.SessionID, d logind.Device) bool {
 	t.Helper()
-	f, err := os.Open(os.DevNull)
-	if err != nil {
-		t.Fatalf("logindtest: open the device stand-in: %v", err)
-	}
-	defer func() { _ = f.Close() }()
-	if err := logind.ResumeDevice.Emit(l.conn, l.session(t, id).path, logind.DeviceResumed{Major: d.Major, Minor: d.Minor, FD: dbus.UnixFD(intconv.Must[int32](f.Fd()))}); err != nil {
-		t.Fatalf("logindtest: %v", err)
-	}
+	return l.announce(t, id, func(s *session) error {
+		f, err := os.Open(os.DevNull)
+		if err != nil {
+			return fmt.Errorf("open the device stand-in: %w", err)
+		}
+		defer func() { _ = f.Close() }()
+		return logind.ResumeDevice.Emit(l.conn, s.path, logind.DeviceResumed{Major: d.Major, Minor: d.Minor, FD: dbus.UnixFD(intconv.Must[int32](f.Fd()))})
+	})
 }
 
 func failed(err error) *dbus.Error { return dbus.MakeFailedError(err) }
@@ -476,7 +517,7 @@ func (l *Logind) lock(s *session) *dbus.Error {
 		return failed(err)
 	}
 	if hook := l.OnLock.Load(); hook != nil {
-		go hook()
+		l.hooks.run(hook)
 	}
 	return nil
 }
