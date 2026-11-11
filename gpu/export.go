@@ -6,8 +6,9 @@ import (
 	"image"
 	"runtime"
 	"slices"
-	"syscall"
 	"unsafe"
+
+	"golang.org/x/sys/unix"
 
 	"github.com/stubbedev/lys-lib/dmabuf"
 	"github.com/stubbedev/lys-lib/fourcc"
@@ -217,9 +218,13 @@ func (e *exported) create(d *Device, width, height int, vf vk.Format, planes int
 	if r := d.cmds.GetMemoryFdKHR(d.device, &gfi, &fd); r != vk.Success {
 		return fmt.Errorf("gpu: vkGetMemoryFdKHR: %w", resultError(r))
 	}
+	if err := closeOnExec(int(fd)); err != nil {
+		_ = unix.Close(int(fd))
+		return err
+	}
 	mod := vk.ImageDrmFormatModifierPropertiesEXT{SType: vk.StructureTypeImageDrmFormatModifierPropertiesExt}
 	if r := d.cmds.GetImageDrmFormatModifierPropertiesEXT(d.device, e.image, &mod); r != vk.Success {
-		_ = syscall.Close(int(fd))
+		_ = unix.Close(int(fd))
 		return fmt.Errorf("gpu: vkGetImageDrmFormatModifierPropertiesEXT: %w", resultError(r))
 	}
 	e.buf = dmabuf.Buffer{Width: width, Height: height, Modifier: fourcc.Modifier(mod.DrmFormatModifier)}
@@ -236,15 +241,15 @@ func (e *exported) create(d *Device, width, height int, vf vk.Format, planes int
 		stride, errStride := intconv.Exact[uint32](lay.RowPitch)
 		if err := errors.Join(errOffset, errStride); err != nil {
 			if i == 0 {
-				_ = syscall.Close(int(fd))
+				_ = unix.Close(int(fd))
 			}
 			return fmt.Errorf("gpu: %s lays memory plane %d at offset %d, stride %d, past a dmabuf plane's 32 bits: %w", d.name, i, lay.Offset, lay.RowPitch, err)
 		}
 		planeFD := int(fd)
 		if i > 0 {
-			dup, err := syscall.Dup(int(fd))
+			dup, err := unix.FcntlInt(uintptr(planeFD), unix.F_DUPFD_CLOEXEC, 0)
 			if err != nil {
-				return fmt.Errorf("gpu: dup the dmabuf for plane %d: %w", i, err)
+				return fmt.Errorf("gpu: dup dmabuf %d for plane %d: %w", fd, i, err)
 			}
 			planeFD = dup
 		}
@@ -253,10 +258,20 @@ func (e *exported) create(d *Device, width, height int, vf vk.Format, planes int
 	return nil
 }
 
+// closeOnExec keeps a descriptor a driver handed over out of the
+// processes this one starts: Vulkan leaves the flag to the driver, and
+// NVIDIA's sets none.
+func closeOnExec(fd int) error {
+	if _, err := unix.FcntlInt(uintptr(fd), unix.F_SETFD, unix.FD_CLOEXEC); err != nil {
+		return fmt.Errorf("gpu: set close-on-exec on the driver's descriptor %d: %w", fd, err)
+	}
+	return nil
+}
+
 // close releases the image, its memory and the dmabuf's fds.
 func (e *exported) close(d *Device) {
 	for _, p := range e.buf.Planes {
-		_ = syscall.Close(p.FD)
+		_ = unix.Close(p.FD)
 	}
 	e.buf.Planes = nil
 	if e.image != 0 {
@@ -372,7 +387,7 @@ func (b *Buffer) Close() {
 	d := b.d
 	delete(d.buffers, b)
 	for _, p := range b.e.buf.Planes {
-		_ = syscall.Close(p.FD)
+		_ = unix.Close(p.FD)
 	}
 	b.e.buf.Planes = nil
 	d.retire(b)

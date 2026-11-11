@@ -345,7 +345,15 @@ func (d *Device) exportSemaphore(s vk.Semaphore) (int, error) {
 	if r := d.cmds.GetSemaphoreFdKHR(d.device, gi, &d.args.fd); r != vk.Success {
 		return -1, fmt.Errorf("gpu: vkGetSemaphoreFdKHR (sync_file): %w", resultError(r))
 	}
-	return int(d.args.fd), nil
+	fd := int(d.args.fd)
+	if fd < 0 {
+		return fd, nil
+	}
+	if err := closeOnExec(fd); err != nil {
+		_ = unix.Close(fd)
+		return -1, err
+	}
+	return fd, nil
 }
 
 // exportFrameSignal exports the newest pass's signal, and files its semaphore with the

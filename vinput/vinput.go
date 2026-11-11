@@ -12,7 +12,6 @@ import (
 	"math"
 	"os"
 	"sync"
-	"syscall"
 	"time"
 
 	"github.com/stubbedev/lys-lib/intconv"
@@ -479,14 +478,20 @@ func (g *listener) HandleOutputDone(wl.OutputDoneEvent)   {}
 func (g *listener) HandleOutputScale(wl.OutputScaleEvent) {}
 
 // HandleKeyboardKeymap relays the seat's keymap to the virtual
-// keyboard and keeps its text. The received fd belongs to this
-// connection's loop, so it is dup'ed for the re-send (the wire layer
-// closes what it sends). Format 0 is NO_KEYMAP, a virtual-only seat's
-// stub: relaying it mmaps zero bytes compositor side and kills the
-// connection, so it is skipped.
+// keyboard and keeps its text. The event hands its fd over, so it is
+// closed here whatever becomes of it; the wire layer sends a
+// close-on-exec duplicate of its own, taken before the request
+// returns, so the relay needs no copy. Format 0 is NO_KEYMAP, a
+// virtual-only seat's stub: relaying it mmaps zero bytes compositor
+// side and kills the connection, so it is skipped.
 func (g *listener) HandleKeyboardKeymap(ev wl.KeyboardKeymapEvent) {
 	v := g.v
-	if ev.Format == 0 || ev.Size == 0 || ev.FdError != nil || ev.Fd == 0 || v.vk == nil {
+	if ev.FdError != nil {
+		v.keymapErr = fmt.Errorf("the seat's keymap fd: %w", ev.FdError)
+		return
+	}
+	defer keymapfd.Close(ev.Fd)
+	if ev.Format == 0 || ev.Size == 0 || v.vk == nil {
 		return
 	}
 	text, err := keymapfd.Read(ev.Fd, ev.Size)
@@ -494,13 +499,8 @@ func (g *listener) HandleKeyboardKeymap(ev wl.KeyboardKeymapEvent) {
 		v.keymapErr = err
 		return
 	}
-	dup, err := syscall.Dup(int(ev.Fd))
-	if err != nil {
-		v.keymapErr = err
-		return
-	}
-	if err := v.vk.Keymap(ev.Format, uintptr(dup), ev.Size); err != nil {
-		v.keymapErr = err
+	if err := v.vk.Keymap(ev.Format, ev.Fd, ev.Size); err != nil {
+		v.keymapErr = fmt.Errorf("relay the seat's %d-byte keymap: %w", ev.Size, err)
 		return
 	}
 	v.keymap, v.keymapArmed = text, true
