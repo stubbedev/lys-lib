@@ -392,6 +392,57 @@ func TestDecodeH264FieldsResetAtAKeyframe(t *testing.T) {
 	checkFrames(t, cut.reference(fieldsW, fieldsH), decodeAll(t, v, pkts[key-3:]), key/2)
 }
 
+// A packet of a frame's two fields whose second field finds every frame
+// held fails, leaving the decoder as it was before the packet: retried
+// once the frames are released, it decodes as though it had not failed,
+// and so do the packets after it, though its first field had decoded.
+func TestDecodeH264RetriesAPacketWhoseSecondFieldFailed(t *testing.T) {
+	d := decodingDevice(t, demux.H264)
+	cut := fieldCuts[0].cut(t)
+	pkts := cut.packets(false)
+	v, err := d.NewVideoDecoder(cut.track())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	var (
+		out  []decoded
+		held []*VideoFrame
+	)
+	failed := -1
+	for i := 0; i < len(pkts); i++ {
+		err := v.Decode(pkts[i])
+		if err == nil {
+			if failed >= 0 {
+				out = takeFrames(t, v, out)
+				continue
+			}
+			for f := v.Next(); f != nil; f = v.Next() {
+				held = append(held, f)
+			}
+			continue
+		}
+		if failed >= 0 || !strings.Contains(err.Error(), "frames are held") {
+			t.Fatalf("packet %d: %v", i, err)
+		}
+		if part := v.codec.(*h264Decoder).part; part != 2 {
+			t.Fatalf("packet %d failed at its picture %d, want its second field: %v", i, part, err)
+		}
+		failed = i
+		for _, f := range held {
+			out = append(out, decoded{f.PTS(), f.Size(), readPicture(t, f)})
+			f.Release()
+		}
+		held = nil
+		i--
+	}
+	if failed < 0 {
+		t.Fatalf("holding every frame, all %d packets decoded", len(pkts))
+	}
+	v.Flush()
+	checkFrames(t, cut.reference(fieldsW, fieldsH), takeFrames(t, v, out), 0)
+}
+
 // Decoding fields, handing their frames out and releasing them
 // allocates nothing once the decoder has its frames.
 func TestDecodeH264FieldsDoNotAllocate(t *testing.T) {

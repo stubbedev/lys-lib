@@ -28,9 +28,14 @@ type h264Decoder struct {
 	paramsChanged bool
 	active        *nal.H264SPS
 	state         h264State
-	hdr           nal.H264SliceHeader
-	other         nal.H264SliceHeader
-	rbsp          []byte
+	// before is the reference state before the first of the packet's
+	// pictures took its place, once kept is set: what a packet that fails
+	// returns to.
+	before h264State
+	kept   bool
+	hdr    nal.H264SliceHeader
+	other  nal.H264SliceHeader
+	rbsp   []byte
 	// slices are the slices read of the packet's part-th picture; whole
 	// is whether the picture before it in the packet is a frame.
 	slices []h264Slice
@@ -161,9 +166,24 @@ func h264Intra(h *nal.H264SliceHeader) bool {
 // decode reads the packet's NAL units, length-prefixed, and decodes the
 // pictures its slices make: a frame, a field, or a frame's two fields,
 // each with the parameter sets that come before it, which a stream may
-// change between the two fields.
+// change between the two fields. A packet that fails leaves the
+// reference state as it was before its first picture, so the packet
+// decodes again from its start: a frame's first field decoded before
+// its second failed is forgotten, its slot free again. The frames a gap
+// in frame_num before the packet infers stay, each a picture complete
+// in its own right that may have taken the slot of a reference frame it
+// slid out.
 func (c *h264Decoder) decode(v *VideoDecoder, p demux.Packet) error {
-	c.slices, c.part = c.slices[:0], 0
+	c.slices, c.part, c.kept = c.slices[:0], 0, false
+	err := c.pictures(v, p)
+	if err != nil && c.kept {
+		c.state = c.before
+	}
+	return err
+}
+
+// pictures decodes the pictures of p, one at a time.
+func (c *h264Decoder) pictures(v *VideoDecoder, p demux.Packet) error {
 	for data := p.Data; len(data) > 0; {
 		if len(data) < c.lengthSize {
 			return fmt.Errorf("%d bytes left for a %d-byte NAL unit length: %w", len(data), c.lengthSize, demux.ErrMalformed)
@@ -261,6 +281,9 @@ func (c *h264Decoder) picture(v *VideoDecoder, p demux.Packet) error {
 	gap, err := c.state.begin(&pic)
 	if err == nil && gap > 0 {
 		err = c.inferGap(v, sps, shape, gap)
+	}
+	if err == nil && !c.kept {
+		c.before, c.kept = c.state, true
 	}
 	if err == nil {
 		err = c.state.place(&pic)

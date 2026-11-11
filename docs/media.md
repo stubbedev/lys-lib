@@ -248,7 +248,9 @@ func main() {
   field never comes is decoded for the pictures that predict from it and never
   shown, as ffmpeg shows none. Reference marking is by field (8.2.5): the
   sliding window, and memory management control operations that name single
-  fields.
+  fields. A packet of both fields whose second fails (every frame held, say)
+  leaves the reference state as it was before the packet, its first field
+  forgotten, so the packet decodes again from its start.
 - Of interlaced H.264 the decoder refuses, saying what: a sequence of fields
   on a device with output pictures apart from its reference pictures (the
   fields meet in the reference picture before the frame is copied out, the one
