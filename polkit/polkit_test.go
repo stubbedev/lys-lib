@@ -319,6 +319,35 @@ func TestActionsAreEnumerated(t *testing.T) {
 	}
 }
 
+func TestChangedIsReadAsEveryPolkitdSendsIt(t *testing.T) {
+	t.Parallel()
+	bus := dbustest.Start(t)
+	fake := polkittest.New()
+	fake.Serve(t, bus.Conn(t))
+	changes := make(chan struct{}, 4)
+	watch, err := dbusx.WatchSignals(t.Context(), bus.Conn(t), dbusx.FromOwner(polkit.BusName), func(err error) { t.Errorf("Changed: %v", err) },
+		dbusx.On(polkit.Changed, polkit.AuthorityPath, func(polkit.AuthorityChanged, dbus.Sequence) error {
+			changes <- struct{}{}
+			return nil
+		}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = watch.Stop() })
+	for form, sender := range map[polkittest.ChangedForm]string{
+		polkittest.ChangedBare:     "polkitd up to 125, without arguments",
+		polkittest.ChangedWithKind: "polkitd 126 and later, with what changed",
+	} {
+		if err := fake.EmitChangedAs(form); err != nil {
+			t.Fatal(err)
+		}
+		await(t, changes, "Changed as sent by "+sender)
+	}
+	if err := fake.EmitChangedAs(polkittest.ChangedBare + 1); err == nil {
+		t.Error("the fake sent Changed in a form no polkitd has")
+	}
+}
+
 func TestTemporaryAuthorizationsAreListedAndRevoked(t *testing.T) {
 	t.Parallel()
 	bus := dbustest.Start(t)

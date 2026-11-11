@@ -412,7 +412,6 @@ func TestAuthWatchFailsOnASignalOutsideTheContract(t *testing.T) {
 		{"identity without a uid", "AuthenticationIdentity", []any{"/r/1"}},
 		{"identity with a string uid", "AuthenticationIdentity", []any{"/r/1", "0"}},
 		{"identity with a signed uid", "AuthenticationIdentity", []any{"/r/1", int32(0)}},
-		{"cancel with an extra argument", "AuthenticationCancelled", []any{"/r/1", uint32(0)}},
 		{"an undefined signal", "AuthenticationRestarted", []any{"/r/1"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -437,6 +436,18 @@ func TestAuthWatchFailsOnASignalOutsideTheContract(t *testing.T) {
 				t.Errorf("/r/2 watch got %#v, want its cancel after another request's bad signal", got)
 			}
 		})
+	}
+}
+
+func TestAuthWatchReadsASignalWithAnArgumentAppended(t *testing.T) {
+	f := startAuth(t)
+	w := f.watch(t, context.Background(), "/r/1")
+	defer w.Close()
+	if err := f.conn.Emit(ServicePath, iface+".AuthenticationCancelled", "/r/1", uint32(0)); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := receive(t, w); got != (AuthCancel{}) {
+		t.Errorf("the watch got %#v, want the cancel: a host that says more than the contract's arguments still cancelled", got)
 	}
 }
 

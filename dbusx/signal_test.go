@@ -89,13 +89,25 @@ func TestExportRefusesASignalOfAnotherInterface(t *testing.T) {
 	}
 }
 
-func TestNewSignalRefusesANonStruct(t *testing.T) {
-	defer func() {
-		if recover() == nil {
-			t.Error("a signal carrying a string was declared")
-		}
-	}()
-	dbusx.NewSignal[string](iface, "Bad")
+func TestASignalCarryingANonStructCannotBeUsed(t *testing.T) {
+	bad := dbusx.NewSignal[string](iface, "Bad")
+	conn := dbustest.Start(t).Conn(t)
+	for what, use := range map[string]func(){
+		"decoded": func() { _, _ = bad.Decode(&dbus.Signal{Name: bad.Name()}) },
+		"emitted": func() { _ = bad.Emit(conn, path, "text") },
+		"declared": func() {
+			_, _ = dbusx.Export(conn, path, dbusx.Interface{Name: iface, Methods: echo{}, Signals: []dbusx.SignalDecl{bad}})
+		},
+	} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("a signal carrying a string was %s", what)
+				}
+			}()
+			use()
+		}()
+	}
 }
 
 func TestSignalEmitsAndDecodes(t *testing.T) {
@@ -135,7 +147,6 @@ func TestSignalDecodeRefusesAnotherBody(t *testing.T) {
 	for _, body := range [][]any{
 		nil,
 		good[:5],
-		append(append([]any{}, good...), "extra"),
 		{"/r/1", uint32(1), int32(2), []string{}, []any{"k", uint32(7)}, "n"},
 		{"/r/1", int32(1), int32(2), []int32{}, []any{"k", uint32(7)}, "n"},
 		{"/r/1", int32(1), int32(2), []string{}, []any{"k", "seven"}, "n"},
@@ -147,6 +158,26 @@ func TestSignalDecodeRefusesAnotherBody(t *testing.T) {
 	}
 	if _, err := movedSignal.Decode(&dbus.Signal{Name: name, Body: good}); err != nil {
 		t.Errorf("decode the well-formed body: %v", err)
+	}
+}
+
+func TestSignalDecodesWithArgumentsAppended(t *testing.T) {
+	want := moved{Handle: "/r/1", X: 1, Y: 2, Tags: []string{}, Pair: pair{"k", 7}, Note: "n"}
+	body := []any{"/r/1", int32(1), int32(2), []string{}, []any{"k", uint32(7)}, "n", "appended", uint16(3)}
+	got, err := movedSignal.Decode(&dbus.Signal{Name: movedSignal.Name(), Body: body})
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Errorf("Decode with two arguments appended = %+v, %v; want %+v: an interface grows by appending", got, err, want)
+	}
+}
+
+func TestASignalWithoutArgumentsDecodesAnyBody(t *testing.T) {
+	for _, body := range [][]any{nil, {uint16(0)}, {"a", []any{"k", uint32(7)}, map[string]dbus.Variant{"x": dbus.MakeVariant(true)}}} {
+		if _, err := endedSignal.Decode(&dbus.Signal{Name: endedSignal.Name(), Body: body}); err != nil {
+			t.Errorf("Decode(%#v) = %v, want it read: the signal declares no argument to refuse", body, err)
+		}
+	}
+	if _, err := endedSignal.Decode(&dbus.Signal{Name: movedSignal.Name()}); err == nil {
+		t.Error("another signal decoded as Ended")
 	}
 }
 

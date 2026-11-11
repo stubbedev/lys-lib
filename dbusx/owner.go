@@ -70,7 +70,7 @@ func OwnerMatch(name string) []dbus.MatchOption {
 // that one. Another peer sending NameOwnerChanged is not the bus, so
 // its signal is not that one.
 func NameOwnerChange(sig *dbus.Signal, name string) (oldOwner, newOwner string, ok bool) {
-	if sig.Sender != bus || sig.Name != nameOwnerChanged.Name() || len(sig.Body) == 0 || sig.Body[0] != name {
+	if sig.Sender != bus || !nameOwnerChanged.named(sig.Name) || len(sig.Body) == 0 || sig.Body[0] != name {
 		return "", "", false
 	}
 	change, err := nameOwnerChanged.Decode(sig)

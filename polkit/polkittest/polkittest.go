@@ -182,12 +182,41 @@ func (a *Authority) count(method string) {
 	a.calls[method]++
 }
 
-// EmitChanged sends the Authority's Changed signal.
-func (a *Authority) EmitChanged() error {
+// ChangedForm is what a polkitd sends with the Authority's Changed
+// signal.
+type ChangedForm uint8
+
+const (
+	// ChangedWithKind is polkitd 126 and later: one uint16, 0 for
+	// actions, authorizations or agents changing and 1 for sessions
+	// (polkitbackendauthority.c, changed_dbus_call_handler). The
+	// daemon's introspection data declares no argument.
+	ChangedWithKind ChangedForm = iota
+	// ChangedBare is polkitd up to 125: no argument.
+	ChangedBare
+)
+
+// EmitChanged sends the Authority's Changed signal as polkitd 127
+// does, which is how the fake sends it after a revocation too.
+func (a *Authority) EmitChanged() error { return a.EmitChangedAs(ChangedWithKind) }
+
+// EmitChangedAs sends the Authority's Changed signal in form.
+func (a *Authority) EmitChangedAs(form ChangedForm) error {
 	a.mu.Lock()
 	conn := a.conn
 	a.mu.Unlock()
-	return polkit.Changed.Emit(conn, polkit.AuthorityPath, polkit.AuthorityChanged{})
+	var body []any
+	switch form {
+	case ChangedWithKind:
+		body = []any{uint16(0)}
+	case ChangedBare:
+	default:
+		return fmt.Errorf("polkittest: emit Changed: unknown form %d", form)
+	}
+	if err := conn.Emit(polkit.AuthorityPath, polkit.Changed.Name(), body...); err != nil {
+		return fmt.Errorf("polkittest: emit Changed: %w", err)
+	}
+	return nil
 }
 
 // Wire is subject as it travels, for the TemporaryAuthorization a test

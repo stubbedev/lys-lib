@@ -38,11 +38,15 @@ const (
 // and is bounded by its context alone.
 const CallTimeout = 5 * time.Second
 
-// Changed is the Authority's signal that actions, authorizations or
-// agents changed.
+// Changed is the Authority's signal that actions, authorizations,
+// agents or sessions changed.
 var Changed = dbusx.NewSignal[AuthorityChanged](AuthorityInterface, "Changed")
 
-// AuthorityChanged is what Changed carries: nothing.
+// AuthorityChanged is what is read of Changed: nothing. polkitd up to
+// 125 sends it without arguments and polkitd 126 and later with one, a
+// uint16 saying whether it was the sessions that changed (1) or
+// anything else (0), which its introspection data does not declare;
+// either decodes.
 type AuthorityChanged struct{}
 
 // ChangedMatch matches Changed from polkitd's Authority.

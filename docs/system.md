@@ -145,6 +145,7 @@ func main() {
 | A well-known name alone | `Own`; `ErrNameTaken` if owned |
 | Computed and writable properties | `Getters`, `Setters` |
 | A signal declared once | `NewSignal`; `Signal[T]` declares, emits and decodes it |
+| A signal whose arguments are not read | `NewSignal` with a `T` without fields: it decodes whatever the signal carries |
 | Methods run one at a time in arrival order | `Interface.Ordered` |
 | Following a service that starts or restarts | `WatchOwner`, `NameOwner` |
 | One peer's signals, decoded | `WatchSignals` with an `On` route per signal, from `FromOwner(name)` or `FromBus()` |
@@ -156,6 +157,14 @@ func main() {
 A D-Bus method is an exported method whose last result is `*dbus.Error`;
 `Failed` and `InvalidArgs` build common errors. Introspection is generated on
 demand.
+
+A `Signal[T]` decodes a body that starts with its arguments: a missing or
+mistyped one is an error, and arguments after them are not read, since an
+interface grows by appending arguments and a daemon may send more than an
+older client, or its own introspection data, declares (polkitd 126's `Changed`
+gained one). A `T` without fields therefore decodes any body. A package-level
+`NewSignal` runs no code at import; its `T` is read on first use, which is
+where a `T` that is no struct panics.
 
 `WatchSignals` runs each route's handler in arrival order on one goroutine and
 tells `failed` of a signal that does not decode. It takes signals only from its
@@ -254,7 +263,7 @@ func mayApply(ctx context.Context, conn *net.UnixConn) (polkit.Verdict, error) {
 | An authentication agent's registration | `Authority.RegisterAuthenticationAgent`, `UnregisterAuthenticationAgent`, with `AgentInterface` |
 | The registered actions | `Authority.EnumerateActions` |
 | Retained authorizations | `Authority.EnumerateTemporaryAuthorizations`, `RevokeTemporaryAuthorizations`, `RevokeTemporaryAuthorizationByID` |
-| polkitd's `Changed` signal | `Changed`, `ChangedMatch` |
+| polkitd's `Changed` signal, with or without the argument polkitd 126 added | `Changed`, `ChangedMatch` |
 
 A `UnixProcess` always carries pid, start time and uid; with a pidfd, polkit 124
 and later decide about that very process, and an older polkitd ignores it.
@@ -265,7 +274,9 @@ a check's context ends first, the check is cancelled at polkitd
 
 `polkit/polkittest` is a fake Authority: it answers checks with the result the
 test sets, or holds them until they are cancelled, and records registrations,
-checks (with the process a pidfd names) and cancels.
+checks (with the process a pidfd names) and cancels. It sends `Changed` as
+polkitd 127 does, with one `uint16`; `EmitChangedAs(ChangedBare)` sends it as
+polkitd up to 125 did, without arguments.
 
 ## portaldialogs
 

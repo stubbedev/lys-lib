@@ -86,14 +86,16 @@ type Route struct {
 // message a connection reads has one, in the order it was read, so a
 // signal sequenced before a call's reply (dbus.Call.ResponseSequence)
 // was sent before the peer answered. An error handle returns is
-// reported as the watch reports a signal it could not decode.
+// reported as the watch reports a signal it could not decode. The
+// signal may carry arguments after those s declares (Signal.Decode);
+// their descriptors are closed.
 func On[T any](s Signal[T], path dbus.ObjectPath, handle func(T, dbus.Sequence) error) Route {
 	return Route{path: path, iface: s.iface, member: s.member, name: s.Name(), deliver: func(sig *dbus.Signal) error {
 		v, err := s.Decode(sig)
 		if err != nil {
 			return errors.Join(err, sig.CloseFDs())
 		}
-		return handle(v, sig.Sequence)
+		return errors.Join(handle(v, sig.Sequence), s.closeUndeclared(sig))
 	}}
 }
 

@@ -169,3 +169,38 @@ func TestAWatchThatEndsClosesTheDescriptorsItNeverRead(t *testing.T) {
 	}
 	awaitEveryCopyClosed(t, read, "the watch ended")
 }
+
+func TestAWatchClosesTheDescriptorsInArgumentsItsSignalDoesNotDeclare(t *testing.T) {
+	w := startWatched(t)
+	ticked := make(chan uint32, 2)
+	watch, err := dbusx.WatchSignals(t.Context(), w.client, dbusx.FromOwner(watchedName), func(err error) { t.Errorf("the watch failed: %v", err) },
+		dbusx.On(tickSignal, watchedPath, func(c counted, _ dbus.Sequence) error {
+			ticked <- c.N
+			return nil
+		}))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = watch.Stop() })
+
+	read, write := watchPipe(t)
+	before := openDescriptors(t)
+	if err := w.service.Emit(watchedPath, tickSignal.Name(), uint32(1), write, []dbus.UnixFD{write}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tickSignal.Emit(w.service, watchedPath, counted{N: 2}); err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []uint32{1, 2} {
+		if got := awaitWatch(t, ticked, "Tick, the first with two arguments appended"); got != want {
+			t.Fatalf("Tick %d, want %d", got, want)
+		}
+	}
+	if got := openDescriptors(t); got != before {
+		t.Errorf("%d descriptors open with the Tick handled, want the %d before: those in the arguments Tick does not declare belong to nobody", got, before)
+	}
+	if err := unix.Close(int(write)); err != nil {
+		t.Fatal(err)
+	}
+	awaitEveryCopyClosed(t, read, "the watch closed the appended descriptors")
+}
