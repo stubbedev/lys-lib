@@ -84,6 +84,67 @@ func TestOfAClosedConnectionFails(t *testing.T) {
 	}
 }
 
+func socketpair(t *testing.T) int {
+	t.Helper()
+	fds, err := unix.Socketpair(unix.AF_UNIX, unix.SOCK_STREAM|unix.SOCK_CLOEXEC, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = unix.Close(fds[0])
+		_ = unix.Close(fds[1])
+	})
+	return fds[0]
+}
+
+func TestOfFDIsTheProcessAtTheRawSocketsOtherEnd(t *testing.T) {
+	fd := socketpair(t)
+	got, err := OfFD(fd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := Credentials{UID: uint32(os.Getuid()), GID: uint32(os.Getgid()), PID: int32(os.Getpid())}
+	if got != want {
+		t.Errorf("OfFD = %+v, want %+v", got, want)
+	}
+	pidfd, err := PIDFDOfFD(fd)
+	if errors.Is(err, ErrNoPIDFD) {
+		t.Skipf("this kernel predates Linux 6.5: %v", err)
+	}
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = pidfd.Close() })
+	if pidfd.Credentials() != want {
+		t.Errorf("PIDFDOfFD's credentials = %+v, want %+v", pidfd.Credentials(), want)
+	}
+	pfd, err := pidfd.FD()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := pidOf(t, pfd); got != os.Getpid() {
+		t.Errorf("PIDFDOfFD names pid %d, want %d", got, os.Getpid())
+	}
+}
+
+func TestOfFDOfANonSocketFailsNamingTheFD(t *testing.T) {
+	var p [2]int
+	if err := unix.Pipe2(p[:], unix.O_CLOEXEC); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		_ = unix.Close(p[0])
+		_ = unix.Close(p[1])
+	})
+	want := "fd " + strconv.Itoa(p[0])
+	if got, err := OfFD(p[0]); !errors.Is(err, unix.ENOTSOCK) || !strings.Contains(err.Error(), want) {
+		t.Errorf("OfFD of a pipe = %+v, %v; want ENOTSOCK naming %q", got, err, want)
+	}
+	if pidfd, err := PIDFDOfFD(p[0]); !errors.Is(err, unix.ENOTSOCK) || errors.Is(err, ErrNoPIDFD) {
+		t.Errorf("PIDFDOfFD of a pipe = %v, %v; want ENOTSOCK", pidfd, err)
+	}
+}
+
 func TestPIDFDNamesThePeerUntilItExits(t *testing.T) {
 	peer := peercredtest.Start(t)
 	cred, err := Of(peer.Conn)

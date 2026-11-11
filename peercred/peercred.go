@@ -27,16 +27,19 @@ type Credentials struct {
 func Of(conn *net.UnixConn) (Credentials, error) {
 	var cred Credentials
 	err := control(conn, func(fd int) (err error) {
-		cred, err = credentials(fd)
+		cred, err = OfFD(fd)
 		return err
 	})
 	return cred, err
 }
 
-func credentials(fd int) (Credentials, error) {
+// OfFD reads the credentials of the process at the other end of the
+// connected Unix socket fd, for a caller that holds the raw descriptor
+// rather than a net.UnixConn.
+func OfFD(fd int) (Credentials, error) {
 	cred, err := unix.GetsockoptUcred(fd, unix.SOL_SOCKET, unix.SO_PEERCRED)
 	if err != nil {
-		return Credentials{}, fmt.Errorf("SO_PEERCRED: %w", err)
+		return Credentials{}, fmt.Errorf("peercred: SO_PEERCRED on fd %d: %w", fd, err)
 	}
 	return Credentials{UID: cred.Uid, GID: cred.Gid, PID: cred.Pid}, nil
 }
@@ -57,20 +60,23 @@ type PIDFD struct {
 // caller to Close. A kernel without SO_PEERPIDFD is ErrNoPIDFD: there
 // Of still says who the peer is.
 func PIDFDOf(conn *net.UnixConn) (*PIDFD, error) {
-	var (
-		pidfd int
-		cred  Credentials
-	)
-	if err := control(conn, func(fd int) (err error) {
-		if cred, err = credentials(fd); err != nil {
-			return err
-		}
-		if pidfd, err = unix.GetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_PEERPIDFD); err != nil {
-			return fmt.Errorf("SO_PEERPIDFD: %w", noPIDFD(err))
-		}
-		return nil
-	}); err != nil {
+	var pidfd *PIDFD
+	err := control(conn, func(fd int) (err error) {
+		pidfd, err = PIDFDOfFD(fd)
+		return err
+	})
+	return pidfd, err
+}
+
+// PIDFDOfFD is PIDFDOf for the connected Unix socket fd.
+func PIDFDOfFD(fd int) (*PIDFD, error) {
+	cred, err := OfFD(fd)
+	if err != nil {
 		return nil, err
+	}
+	pidfd, err := unix.GetsockoptInt(fd, unix.SOL_SOCKET, unix.SO_PEERPIDFD)
+	if err != nil {
+		return nil, fmt.Errorf("peercred: SO_PEERPIDFD on fd %d: %w", fd, noPIDFD(err))
 	}
 	return &PIDFD{file: os.NewFile(intconv.Must[uintptr](pidfd), "pidfd"), cred: cred}, nil
 }
@@ -91,10 +97,7 @@ func control(conn *net.UnixConn, read func(fd int) error) error {
 	if err := raw.Control(func(fd uintptr) { readErr = read(intconv.Must[int](fd)) }); err != nil {
 		return fmt.Errorf("peercred: %w", err)
 	}
-	if readErr != nil {
-		return fmt.Errorf("peercred: %w", readErr)
-	}
-	return nil
+	return readErr
 }
 
 // Credentials are the ids of the process the pidfd names, as Of reads
