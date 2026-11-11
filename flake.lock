@@ -22,11 +22,11 @@
     },
     "lys-ci": {
       "locked": {
-        "lastModified": 1794435133,
-        "narHash": "sha256-CPji0zmtd1YYv8AIanunP78Olgvlx/SQUa9ofCxqgQM=",
+        "lastModified": 1794439677,
+        "narHash": "sha256-fbq2RmSN96Nf0otLvMtnvL0NVwcid2cs9pGBsXWemcc=",
         "owner": "stubbedev",
         "repo": "lys-ci",
-        "rev": "b2ee196237f6837d1bd2f8c2042809c4fb9a3157",
+        "rev": "1671c1fac890f77310b49feaf3021ffa65cf1bc4",
         "type": "github"
       },
       "original": {
