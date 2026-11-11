@@ -177,6 +177,13 @@ func fakeGo(t *testing.T, script string) (marker string) {
 func TestIsolateKeepsTheGoCommandsCachesWhereTheyWere(t *testing.T) {
 	restoreAfter(t)
 	real := t.TempDir()
+	telemetry := filepath.Join(real, "config", "go", "telemetry")
+	if err := os.MkdirAll(telemetry, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(telemetry, "mode"), []byte("off"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	for k, v := range map[string]string{"HOME": real, "XDG_CONFIG_HOME": real + "/config", "XDG_CACHE_HOME": real + "/cache", "GOENV": "", "GOCACHE": "", "GOMODCACHE": "", "GOPATH": real + "/gopath"} {
 		t.Setenv(k, v)
 	}
