@@ -4,6 +4,7 @@ import (
 	"testing"
 
 	"github.com/stubbedev/lys-lib/appearance"
+	"github.com/stubbedev/lys-lib/dbusx"
 	dbus "github.com/stubbedev/lys-lib/third_party/godbus"
 )
 
@@ -58,16 +59,16 @@ func TestMonitorSignalRouting(t *testing.T) {
 	m.OnContrastChange(func(appearance.Contrast) { contrasts++ })
 
 	settingSignal := func(ns, key string, value any) *dbus.Signal {
-		return &dbus.Signal{Name: changedSig, Path: portalPath, Body: []any{ns, key, value}}
+		return &dbus.Signal{Name: settingChanged.Name(), Path: portalPath, Body: []any{ns, key, value}}
 	}
-	m.signal(settingSignal(schemeNamespace, schemeKey, dbus.MakeVariant(uint32(1))))
-	m.signal(settingSignal(schemeNamespace, schemeKey, dbus.MakeVariant(uint32(1)))) // duplicate drops
-	m.signal(settingSignal(interfaceNamespace, iconThemeKey, dbus.MakeVariant("Papirus")))
-	m.signal(settingSignal(schemeNamespace, accentKey, dbus.MakeVariant([]float64{0.2, 0.4, 0.9})))
-	m.signal(settingSignal(schemeNamespace, contrastKey, dbus.MakeVariant(uint32(1))))
-	m.signal(settingSignal(schemeNamespace, "gtk-theme", dbus.MakeVariant("Adwaita")))
-	m.signal(settingSignal("org.other", schemeKey, dbus.MakeVariant(uint32(2))))
-	m.signal(&dbus.Signal{Name: changedSig, Path: "/somewhere/else", Body: []any{schemeNamespace, schemeKey, dbus.MakeVariant(uint32(2))}})
+	feed(t, m, settingSignal(schemeNamespace, schemeKey, dbus.MakeVariant(uint32(1))))
+	feed(t, m, settingSignal(schemeNamespace, schemeKey, dbus.MakeVariant(uint32(1)))) // duplicate drops
+	feed(t, m, settingSignal(interfaceNamespace, iconThemeKey, dbus.MakeVariant("Papirus")))
+	feed(t, m, settingSignal(schemeNamespace, accentKey, dbus.MakeVariant([]float64{0.2, 0.4, 0.9})))
+	feed(t, m, settingSignal(schemeNamespace, contrastKey, dbus.MakeVariant(uint32(1))))
+	feed(t, m, settingSignal(schemeNamespace, "gtk-theme", dbus.MakeVariant("Adwaita")))
+	feed(t, m, settingSignal("org.other", schemeKey, dbus.MakeVariant(uint32(2))))
+	feed(t, m, &dbus.Signal{Name: settingChanged.Name(), Path: "/somewhere/else", Body: []any{schemeNamespace, schemeKey, dbus.MakeVariant(uint32(2))}})
 
 	if scheme != 1 || icons != 1 || accents != 1 || contrasts != 1 {
 		t.Errorf("fired scheme=%d icons=%d accents=%d contrasts=%d, want 1 each",
@@ -95,7 +96,7 @@ func TestSettingUnregisterTombstones(t *testing.T) {
 	off := m.OnAccentChange(func(appearance.Accent) { first++ })
 	m.OnAccentChange(func(appearance.Accent) { second++ })
 	off()
-	m.signal(&dbus.Signal{Name: changedSig, Path: portalPath, Body: []any{
+	feed(t, m, &dbus.Signal{Name: settingChanged.Name(), Path: portalPath, Body: []any{
 		schemeNamespace, accentKey, dbus.MakeVariant([]float64{0.9, 0.1, 0.1}),
 	}})
 	if first != 0 || second != 1 {
@@ -121,7 +122,7 @@ func TestMonitorFollowsReducedMotion(t *testing.T) {
 	var seen []appearance.Motion
 	m.OnMotionChange(func(v appearance.Motion) { seen = append(seen, v) })
 	signal := func(ns, key string, v uint32) {
-		m.signal(&dbus.Signal{Name: changedSig, Path: portalPath, Body: []any{ns, key, dbus.MakeVariant(v)}})
+		feed(t, m, &dbus.Signal{Name: settingChanged.Name(), Path: portalPath, Body: []any{ns, key, dbus.MakeVariant(v)}})
 	}
 	signal(schemeNamespace, contrastKey, 1)
 	if m.Motion() != appearance.MotionUnknown || len(seen) != 0 {
@@ -135,5 +136,20 @@ func TestMonitorFollowsReducedMotion(t *testing.T) {
 	signal(schemeNamespace, motionKey, 0)
 	if m.Motion() != appearance.MotionUnknown || len(seen) != 2 {
 		t.Fatalf("motion %v, heard %v", m.Motion(), seen)
+	}
+}
+
+// feed hands the monitor a signal as its watch does one from the
+// portal, run on the spot.
+func feed(t *testing.T, m *Monitor, sig *dbus.Signal) {
+	t.Helper()
+	const portal = ":1.5"
+	sig.Sender = portal
+	routes := m.routes(nil, func(run func()) error {
+		run()
+		return nil
+	})
+	if err := dbusx.Dispatch(sig, portal, routes); err != nil {
+		t.Errorf("dispatch %s at %s: %v", sig.Name, sig.Path, err)
 	}
 }

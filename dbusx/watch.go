@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strings"
 	"time"
 
 	dbus "github.com/stubbedev/lys-lib/third_party/godbus"
@@ -66,7 +67,9 @@ func (s Sender) current(ctx context.Context, conn *dbus.Conn) (unique string, as
 }
 
 // Route is one signal of a watch: which signal, from which object, and
-// the handler it is decoded for.
+// the handler it is decoded for. One made by OnOthers is every signal
+// of an interface instead, and one made by OnOwnerChange is the bus's
+// whoever the watch's sender is.
 type Route struct {
 	path    dbus.ObjectPath
 	iface   string
@@ -74,6 +77,7 @@ type Route struct {
 	name    string
 	arg0    string
 	byArg0  bool
+	fromBus bool
 	deliver func(*dbus.Signal) error
 }
 
@@ -93,6 +97,15 @@ func On[T any](s Signal[T], path dbus.ObjectPath, handle func(T, dbus.Sequence) 
 	}}
 }
 
+// OnOthers routes every signal of iface, sent from the object at path,
+// that no route before it takes to handle, as it arrived: handle owns
+// the descriptors it carries. A watch that must understand everything
+// its peer says about an object lists it last and fails on what
+// reaches it.
+func OnOthers(iface string, path dbus.ObjectPath, handle func(*dbus.Signal) error) Route {
+	return Route{path: path, iface: iface, deliver: handle}
+}
+
 // WithArg0 narrows the route to signals whose first argument is the
 // string value: the name a NameOwnerChanged is about, the interface of
 // a PropertiesChanged.
@@ -101,8 +114,24 @@ func (r Route) WithArg0(value string) Route {
 	return r
 }
 
+// sentBy is the peer whose signals the route takes in a watch
+// following sender: the bus for an owner change, sender for the rest.
+func (r *Route) sentBy(sender string) string {
+	if r.fromBus {
+		return bus
+	}
+	return sender
+}
+
 func (r *Route) takes(sig *dbus.Signal) bool {
-	if sig.Path != r.path || sig.Name != r.name {
+	if sig.Path != r.path {
+		return false
+	}
+	if r.member != "" {
+		if sig.Name != r.name {
+			return false
+		}
+	} else if iface, _, ok := strings.CutLast(sig.Name, "."); !ok || iface != r.iface {
 		return false
 	}
 	if !r.byArg0 || len(sig.Body) == 0 {
@@ -112,37 +141,44 @@ func (r *Route) takes(sig *dbus.Signal) bool {
 	return !isString || first == r.arg0
 }
 
-func (r *Route) match(sender string, wholeInterface bool) []dbus.MatchOption {
-	match := []dbus.MatchOption{dbus.WithMatchSender(sender), dbus.WithMatchObjectPath(r.path), dbus.WithMatchInterface(r.iface)}
-	if wholeInterface {
-		return match
-	}
-	match = append(match, dbus.WithMatchMember(r.member))
-	if r.byArg0 {
-		match = append(match, dbus.WithMatchArg(0, r.arg0))
-	}
-	return match
-}
-
 // matches are the match rules that bring routes' signals from sender:
-// one per signal, except that the signals of one interface of one
-// object share a rule for that whole interface.
+// one for the routes of each interface of each object, narrowed to the
+// member when they are of one signal, and to the first argument when
+// they all name the same one.
 func matches(sender string, routes []Route) [][]dbus.MatchOption {
 	out := make([][]dbus.MatchOption, 0, len(routes))
 	for i := range routes {
 		r := &routes[i]
-		sameInterface := func(o Route) bool { return o.path == r.path && o.iface == r.iface }
+		sameInterface := func(o Route) bool { return o.fromBus == r.fromBus && o.path == r.path && o.iface == r.iface }
 		if slices.IndexFunc(routes, sameInterface) != i {
 			continue
 		}
-		shared := slices.ContainsFunc(routes[i+1:], sameInterface)
-		out = append(out, r.match(sender, shared))
+		member, byArg0 := r.member, r.byArg0
+		for _, o := range routes[i+1:] {
+			if !sameInterface(o) {
+				continue
+			}
+			if o.member != member {
+				member = ""
+			}
+			byArg0 = byArg0 && o.byArg0 && o.arg0 == r.arg0
+		}
+		match := []dbus.MatchOption{dbus.WithMatchSender(r.sentBy(sender)), dbus.WithMatchObjectPath(r.path), dbus.WithMatchInterface(r.iface)}
+		if member != "" {
+			match = append(match, dbus.WithMatchMember(member))
+		}
+		if byArg0 {
+			match = append(match, dbus.WithMatchArg(0, r.arg0))
+		}
+		out = append(out, match)
 	}
 	return out
 }
 
 // Dispatch hands sig to the route it belongs to, decoded, when sender,
 // a unique name or the bus's, sent it; no signal is from the sender "".
+// A route for a name's owner changing takes the bus's signal whoever
+// sender is.
 // It takes over the descriptors sig carries, which are the
 // caller's own (each signal channel of a connection is handed
 // duplicates of its own): a handler that gets the signal owns them,
@@ -151,11 +187,9 @@ func matches(sender string, routes []Route) [][]dbus.MatchOption {
 // the handler's, or says why the signal was not decoded or a
 // descriptor not closed.
 func Dispatch(sig *dbus.Signal, sender string, routes []Route) error {
-	if sender == "" || sig.Sender != sender {
-		return sig.CloseFDs()
-	}
 	for i := range routes {
-		if r := &routes[i]; r.takes(sig) {
+		r := &routes[i]
+		if from := r.sentBy(sender); from != "" && sig.Sender == from && r.takes(sig) {
 			return r.deliver(sig)
 		}
 	}
@@ -204,7 +238,8 @@ func WatchSignals(ctx context.Context, conn *dbus.Conn, from Sender, failed func
 	setup, cancelSetup := context.WithTimeout(ctx, watchTimeout)
 	defer cancelSetup()
 	rules := matches(from.name, routes)
-	if from.owned {
+	ownerRouted := func(r Route) bool { return r.fromBus && r.arg0 == from.name }
+	if from.owned && !slices.ContainsFunc(routes, ownerRouted) {
 		rules = append(rules, OwnerMatch(from.name))
 	}
 	signals := make(chan *dbus.Signal, signalBuffer)
@@ -243,10 +278,10 @@ func WatchSignals(ctx context.Context, conn *dbus.Conn, from Sender, failed func
 				}
 				if from.owned {
 					if _, owner, changed := NameOwnerChange(sig, from.name); changed {
-						if sig.Sequence > asOf {
-							sender = owner
+						if sig.Sequence <= asOf {
+							continue
 						}
-						continue
+						sender = owner
 					}
 				}
 				if err := Dispatch(sig, sender, routes); err != nil {

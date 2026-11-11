@@ -6,11 +6,13 @@ package portalsettings
 
 import (
 	"context"
+	"errors"
 	"log/slog"
 	"sync"
 	"time"
 
 	"github.com/stubbedev/lys-lib/appearance"
+	"github.com/stubbedev/lys-lib/dbusx"
 	"github.com/stubbedev/lys-lib/logutil"
 	dbus "github.com/stubbedev/lys-lib/third_party/godbus"
 )
@@ -24,11 +26,7 @@ const (
 	portalPath  = dbus.ObjectPath("/org/freedesktop/portal/desktop")
 	portalIface = "org.freedesktop.portal.Settings"
 
-	readAll    = portalIface + ".ReadAll"
-	changedSig = portalIface + ".SettingChanged"
-
-	busName          = "org.freedesktop.DBus"
-	nameOwnerChanged = busName + ".NameOwnerChanged"
+	readAll = portalIface + ".ReadAll"
 
 	schemeNamespace = "org.freedesktop.appearance"
 	schemeKey       = "color-scheme"
@@ -43,13 +41,6 @@ const (
 
 	schemeDark  uint32 = 1
 	schemeLight uint32 = 2
-
-	// signalBuffer rides out two failure modes: a slow OnChange handler
-	// must not wedge the bus's reader (godbus falls back to spawning a
-	// delivery goroutine per signal once the buffer is full), and a
-	// burst of signals queued behind one handler's Invoke must not drop
-	// events. 32 is far beyond any human flipping dark/light by hand.
-	signalBuffer = 32
 
 	// probeTimeout bounds the is-the-portal-here check against the bus
 	// daemon (which answers fast or is broken); readTimeout bounds the
@@ -149,8 +140,8 @@ func newMonitor(dial func() (*dbus.Conn, error), retry time.Duration) *Monitor {
 // disconnected is still delivered.
 func startOn(m *Monitor, conn *dbus.Conn) *Monitor {
 	owned := m.dial != nil
-	ch := m.subscribe(conn)
-	if ch == nil {
+	sub := m.subscribe(conn)
+	if sub == nil {
 		// The connection was already dying: fail silent like no bus.
 		if owned {
 			_ = conn.Close()
@@ -158,7 +149,7 @@ func startOn(m *Monitor, conn *dbus.Conn) *Monitor {
 		return m
 	}
 	m.refresh(conn, false)
-	go m.run(conn, ch, owned)
+	go m.run(conn, sub, owned)
 	return m
 }
 
@@ -198,8 +189,9 @@ func (m *Monitor) OnColorSchemeChange(fn func(appearance.ColorScheme)) (off func
 }
 
 // Close stops the monitor: the loop goroutine exits, the subscription
-// is removed, and a monitor-owned connection is closed (NewOn callers
-// keep theirs). Idempotent, safe from any goroutine. A callback already
+// and its match rules are removed, and a monitor-owned connection is
+// closed (NewOn callers keep theirs, as it was). Idempotent, safe from
+// any goroutine. A callback already
 // running finishes first; Close does not wait for it. Appearance stays
 // readable with the last known value.
 func (m *Monitor) Close() {
@@ -215,9 +207,9 @@ func (m *Monitor) Close() {
 // run is the monitor goroutine: listen on one connection until it or
 // the monitor dies, then — only for connections this monitor dialed —
 // reconnect, resubscribe, and refresh.
-func (m *Monitor) run(conn *dbus.Conn, ch chan *dbus.Signal, owned bool) {
+func (m *Monitor) run(conn *dbus.Conn, sub *subscription, owned bool) {
 	for {
-		if m.listen(conn, ch, owned) {
+		if m.listen(conn, sub, owned) {
 			return
 		}
 		// The connection died under us (bus or portal restart). An
@@ -232,8 +224,9 @@ func (m *Monitor) run(conn *dbus.Conn, ch chan *dbus.Signal, owned bool) {
 		if conn == nil {
 			return
 		}
-		ch = m.subscribe(conn)
-		if ch == nil {
+		sub = m.subscribe(conn)
+		if sub == nil {
+			_ = conn.Close()
 			return
 		}
 		// A reconnect is a fresh read of a possibly-changed world: the
@@ -244,90 +237,103 @@ func (m *Monitor) run(conn *dbus.Conn, ch chan *dbus.Signal, owned bool) {
 	}
 }
 
-// subscribe installs the bus match rule and the local signal channel —
-// in that order, before any read, so nothing between construction and
-// the loop start can be missed. nil means the connection refused the
-// rule (already dying); the caller treats it as a dead connection.
-func (m *Monitor) subscribe(conn *dbus.Conn) chan *dbus.Signal {
-	// The match rule is what makes the daemon forward SettingChanged to
-	// this connection at all; conn.Signal only registers the local
-	// channel that receives what the rule lets through.
-	err := conn.AddMatchSignal(
-		dbus.WithMatchInterface(portalIface),
-		dbus.WithMatchMember("SettingChanged"),
-		dbus.WithMatchObjectPath(portalPath),
-	)
-	if err != nil {
-		return nil
-	}
-	err = conn.AddMatchSignal(
-		dbus.WithMatchSender(busName),
-		dbus.WithMatchInterface(busName),
-		dbus.WithMatchMember("NameOwnerChanged"),
-		dbus.WithMatchArg(0, portalName),
-	)
-	if err != nil {
-		return nil
-	}
-	ch := make(chan *dbus.Signal, signalBuffer)
-	conn.Signal(ch)
-	return ch
+// subscription is the monitor's watch on one connection, and what the
+// watch has the monitor's goroutine do, in the order the signals came.
+type subscription struct {
+	watch  *dbusx.Watch
+	events chan func()
+	cancel context.CancelFunc
 }
 
-// listen consumes the signal channel until the connection dies (returns
-// false) or Close fires (returns true). The deferred cleanup runs
-// whichever way it ends: deregister, and close the connection if this
-// monitor owns it.
-func (m *Monitor) listen(conn *dbus.Conn, ch chan *dbus.Signal, owned bool) (stopped bool) {
+// end stops the watch, which removes its match rules from a connection
+// that is still open, leaving one shared with others as it was.
+func (s *subscription) end() {
+	s.cancel()
+	if err := s.watch.Stop(); err != nil && !errors.Is(err, dbusx.ErrDisconnected) {
+		logutil.L().Debug("appearance: stop watching the portal", slog.Any("err", err))
+	}
+}
+
+// routes are the signals a monitor follows on conn: the portal's
+// SettingChanged and the bus's word that the portal's name has an
+// owner. Each hands post what the monitor's goroutine then does.
+func (m *Monitor) routes(conn *dbus.Conn, post func(func()) error) []dbusx.Route {
+	return []dbusx.Route{
+		dbusx.On(settingChanged, portalPath, func(c settingChange, _ dbus.Sequence) error {
+			return post(func() { m.changed(c) })
+		}),
+		dbusx.OnOwnerChange(portalName, func(_, owner string, _ dbus.Sequence) error {
+			if owner == "" {
+				return nil
+			}
+			return post(func() { m.refresh(conn, true) })
+		}),
+	}
+}
+
+// subscribe watches the portal's signals on conn — before any read, so
+// nothing between construction and the loop start can be missed. Only
+// the owner of the portal's name is heard, across its restarts, and
+// the descriptors of every signal the connection is sent are closed.
+// nil means the connection refused the watch (already dying); the
+// caller treats it as a dead connection.
+func (m *Monitor) subscribe(conn *dbus.Conn) *subscription {
+	ctx, cancel := context.WithCancel(context.Background())
+	// Unbuffered: a signal waits in the watch until the monitor's
+	// goroutine is done with the one before, so listeners run in the
+	// order the portal signalled, and never two at once.
+	events := make(chan func())
+	post := func(run func()) error {
+		select {
+		case events <- run:
+		case <-ctx.Done():
+		}
+		return nil
+	}
+	undecoded := func(err error) {
+		logutil.L().Debug("appearance: a portal signal was not read", slog.Any("err", err))
+	}
+	watch, err := dbusx.WatchSignals(ctx, conn, dbusx.FromOwner(portalName), undecoded, m.routes(conn, post)...)
+	if err != nil {
+		cancel()
+		return nil
+	}
+	return &subscription{watch: watch, events: events, cancel: cancel}
+}
+
+// listen runs what the watch hands over until the connection dies
+// (returns false) or Close fires (returns true). The deferred cleanup
+// runs whichever way it ends: the connection is closed if this monitor
+// owns it, and the watch ended.
+func (m *Monitor) listen(conn *dbus.Conn, sub *subscription, owned bool) (stopped bool) {
 	defer func() {
-		conn.RemoveSignal(ch)
 		if owned {
 			_ = conn.Close()
 		}
+		sub.end()
 	}()
 	for {
 		select {
-		case sig, ok := <-ch:
-			if !ok {
-				// godbus closes registered signal channels when the
-				// connection dies — our disconnect signal.
-				return false
-			}
-			if portalAppeared(sig) {
-				m.refresh(conn, true)
-				continue
-			}
-			m.signal(sig)
+		case run := <-sub.events:
+			run()
+		case <-sub.watch.Done():
+			return false
 		case <-m.done:
 			return true
 		}
 	}
 }
 
-// signal dispatches one SettingChanged to whichever tracked setting it
-// names; every other signal is not ours.
-func (m *Monitor) signal(sig *dbus.Signal) {
-	if v, ok := settingChanged(sig, schemeNamespace, schemeKey, schemeValue, appearance.Unknown); ok {
-		m.scheme.update(m, v, true)
-	}
-	if v, ok := settingChanged(sig, interfaceNamespace, iconThemeKey, stringValue, ""); ok {
-		m.icons.update(m, v, true)
-	}
-	if v, ok := settingChanged(sig, schemeNamespace, accentKey, accentValue, appearance.Accent{}); ok {
-		m.accent.update(m, v, true)
-	}
-	if v, ok := settingChanged(sig, schemeNamespace, contrastKey, contrastValue, appearance.ContrastUnknown); ok {
-		m.contrast.update(m, v, true)
-	}
-	if v, ok := settingChanged(sig, schemeNamespace, motionKey, motionValue, appearance.MotionUnknown); ok {
-		m.motion.update(m, v, true)
-	}
-	if v, ok := settingChanged(sig, interfaceNamespace, fontNameKey, stringValue, ""); ok {
-		m.font.update(m, v, true)
-	}
-	if v, ok := settingChanged(sig, interfaceNamespace, textScaleKey, scaleValue, 0); ok {
-		m.scale.update(m, v, true)
-	}
+// changed moves whichever tracked setting a SettingChanged names;
+// every other setting is not ours.
+func (m *Monitor) changed(c settingChange) {
+	applyChange(m, &m.scheme, c, schemeNamespace, schemeKey, schemeValue)
+	applyChange(m, &m.icons, c, interfaceNamespace, iconThemeKey, stringValue)
+	applyChange(m, &m.accent, c, schemeNamespace, accentKey, accentValue)
+	applyChange(m, &m.contrast, c, schemeNamespace, contrastKey, contrastValue)
+	applyChange(m, &m.motion, c, schemeNamespace, motionKey, motionValue)
+	applyChange(m, &m.font, c, interfaceNamespace, fontNameKey, stringValue)
+	applyChange(m, &m.scale, c, interfaceNamespace, textScaleKey, scaleValue)
 }
 
 // redial reconnects with exponential backoff (retry doubling to

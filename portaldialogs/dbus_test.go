@@ -3,7 +3,8 @@ package portaldialogs
 import (
 	"context"
 	"errors"
-	"fmt"
+	"io"
+	"os"
 	"reflect"
 	"slices"
 	"strings"
@@ -11,6 +12,7 @@ import (
 	"time"
 
 	"github.com/stubbedev/lys-lib/dbustest"
+	"github.com/stubbedev/lys-lib/dbusx"
 	dbus "github.com/stubbedev/lys-lib/third_party/godbus"
 	"github.com/stubbedev/lys-lib/third_party/godbus/introspect"
 )
@@ -450,11 +452,11 @@ func TestAuthWatchReportsTheConnectionClosing(t *testing.T) {
 	}
 	ended(t, w)
 	err = w.Close()
-	if err == nil || !strings.Contains(err.Error(), "connection closed") {
-		t.Errorf("Close = %v, want the connection closing", err)
+	if err == nil || !strings.Contains(err.Error(), "connection closed") || !strings.Contains(err.Error(), "/r/1") {
+		t.Errorf("Close = %v, want the connection closing, for the handle", err)
 	}
-	if !strings.Contains(fmt.Sprint(err), "remove match rule") || !errors.Is(err, dbus.ErrClosed) {
-		t.Errorf("Close = %v, want the failure to remove the match rule", err)
+	if !errors.Is(err, dbusx.ErrDisconnected) {
+		t.Errorf("Close = %v, want dbusx.ErrDisconnected", err)
 	}
 }
 
@@ -567,6 +569,53 @@ func TestAuthWatchFailsWhenTheHostGoes(t *testing.T) {
 				t.Errorf("Close = %v, want an error naming the host %s and the handle", err, host)
 			}
 		})
+	}
+}
+
+// A signal the watch does not deliver, here the host's about another
+// request sent straight to the client, has its descriptors closed: the
+// watch's channel was handed copies of its own, which nobody else can
+// close.
+func TestAuthWatchClosesTheDescriptorsOfSignalsItDoesNotDeliver(t *testing.T) {
+	f := startAuth(t)
+	before := dbustest.MatchRules(t, f.client.conn)
+	w := f.watch(t, context.Background(), "/r/1")
+	r, wr, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	body := []any{"/r/2", dbus.UnixFD(wr.Fd())}
+	msg := &dbus.Message{Type: dbus.TypeSignal, Headers: map[dbus.HeaderField]dbus.Variant{
+		dbus.FieldDestination: dbus.MakeVariant(f.client.conn.Names()[0]),
+		dbus.FieldPath:        dbus.MakeVariant(ServicePath),
+		dbus.FieldInterface:   dbus.MakeVariant(iface),
+		dbus.FieldMember:      dbus.MakeVariant("AuthenticationHandover"),
+		dbus.FieldSignature:   dbus.MakeVariant(dbus.SignatureOf(body...)),
+	}, Body: body}
+	if err := f.conn.Send(msg, nil).Err; err != nil {
+		t.Fatal(err)
+	}
+	if err := f.emitter.AuthAction("/r/1", AuthCancel{}); err != nil {
+		t.Fatal(err)
+	}
+	if got, open := receive(t, w); !open || got != (AuthCancel{}) {
+		t.Fatalf("watch got %#v (open %v), want the cancel sent after the other request's signal", got, open)
+	}
+	if err := wr.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := r.Read(make([]byte, 1)); n != 0 || !errors.Is(err, io.EOF) {
+		t.Errorf("read the pipe = %d, %v; want end of file: the watch closed its copy of the descriptor", n, err)
+	}
+	if err := w.Close(); err != nil {
+		t.Errorf("Close = %v", err)
+	}
+	if got := dbustest.MatchRules(t, f.client.conn); !slices.Equal(got, before) {
+		t.Errorf("after Close the connection holds %q, want %q", got, before)
 	}
 }
 

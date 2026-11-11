@@ -27,8 +27,19 @@ type ownerChange struct {
 
 var nameOwnerChanged = NewSignal[ownerChange](bus, "NameOwnerChanged")
 
-func ownerChanges(name string, handle func(ownerChange, dbus.Sequence) error) Route {
-	return On(nameOwnerChanged, busPath, handle).WithArg0(name)
+// OnOwnerChange routes the bus's announcement that name changed owner,
+// from old to new ("" for none), to handle, with the announcement's
+// sequence. The bus sends it whoever the watch's own signals are from,
+// so a watch following the owner of name (FromOwner) learns here, in
+// order with that owner's signals, that the owner came, went or was
+// replaced; it is not told of a change the bus had already announced
+// when it answered who owns the name as the watch began.
+func OnOwnerChange(name string, handle func(old, new string, announced dbus.Sequence) error) Route {
+	r := On(nameOwnerChanged, busPath, func(change ownerChange, announced dbus.Sequence) error {
+		return handle(change.OldOwner, change.NewOwner, announced)
+	}).WithArg0(name)
+	r.fromBus = true
+	return r
 }
 
 // NameOwner returns the unique name of name's current owner; a name
@@ -51,8 +62,7 @@ func nameOwner(ctx context.Context, conn *dbus.Conn, name string) (owner string,
 // OwnerMatch matches the NameOwnerChanged signals the bus sends about
 // name.
 func OwnerMatch(name string) []dbus.MatchOption {
-	r := ownerChanges(name, nil)
-	return r.match(bus, false)
+	return matches(bus, []Route{OnOwnerChange(name, nil)})[0]
 }
 
 // NameOwnerChange reads a NameOwnerChanged signal the bus sent about
@@ -87,8 +97,8 @@ func WatchOwner(ctx context.Context, conn *dbus.Conn, name string, appeared func
 	var undecoded []error
 	w, err := WatchSignals(ctx, conn, FromBus(),
 		func(err error) { undecoded = append(undecoded, err) },
-		ownerChanges(name, func(change ownerChange, announced dbus.Sequence) error {
-			if change.NewOwner != "" {
+		OnOwnerChange(name, func(_, owner string, announced dbus.Sequence) error {
+			if owner != "" {
 				appeared(announced)
 			}
 			return nil

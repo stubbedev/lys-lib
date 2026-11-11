@@ -3,6 +3,7 @@ package portalsettings
 import (
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -929,5 +930,81 @@ func TestInterfaceFontStream(t *testing.T) {
 	case got := <-scales:
 		t.Errorf("an extra scale event %v", got)
 	case <-time.After(100 * time.Millisecond):
+	}
+}
+
+// Only the portal is heard: any peer can broadcast a SettingChanged
+// from the portal's path, and before the monitor followed the owner of
+// the portal's name such a signal moved the preference.
+func TestASettingChangedFromAnotherPeerIsNotThePortals(t *testing.T) {
+	bus := dbustest.Start(t)
+	mock := publishMockSaying(t, bus, 1)
+	m := NewOn(bus.Conn(t))
+	t.Cleanup(m.Close)
+	onChange, snapshot := collect()
+	m.OnColorSchemeChange(onChange)
+
+	forger := bus.Conn(t)
+	emitSetting(t, forger, schemeNamespace, schemeKey, uint32(2))
+	if err := forger.BusObject().Call("org.freedesktop.DBus.GetId", 0).Err; err != nil {
+		t.Fatal(err)
+	}
+	mock.emit(t, uint32(0))
+	wantEvents(t, snapshot, appearance.Unknown)
+	if got := m.ColorScheme(); got != appearance.Unknown {
+		t.Errorf("ColorScheme() = %v, want what the portal signalled", got)
+	}
+}
+
+// A monitor on a shared connection leaves it as it found it, and closes
+// the descriptors of whatever signals the connection is sent meanwhile:
+// its channel is handed copies of its own, which nobody else can close.
+func TestAMonitorLeavesASharedConnectionAsItWas(t *testing.T) {
+	bus := dbustest.Start(t)
+	mock := publishMockSaying(t, bus, 1)
+	shared := bus.Conn(t)
+	before := dbustest.MatchRules(t, shared)
+	m := NewOn(shared)
+	if got := dbustest.MatchRules(t, shared); len(got) != len(before)+2 {
+		t.Errorf("the monitor holds %q, want two rules more than %q: the portal's SettingChanged and its name changing owner", got, before)
+	}
+	onChange, snapshot := collect()
+	m.OnColorSchemeChange(onChange)
+
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	body := []any{schemeNamespace, dbus.UnixFD(w.Fd())}
+	msg := &dbus.Message{Type: dbus.TypeSignal, Headers: map[dbus.HeaderField]dbus.Variant{
+		dbus.FieldDestination: dbus.MakeVariant(shared.Names()[0]),
+		dbus.FieldPath:        dbus.MakeVariant(portalPath),
+		dbus.FieldInterface:   dbus.MakeVariant(portalIface),
+		dbus.FieldMember:      dbus.MakeVariant("SettingHanded"),
+		dbus.FieldSignature:   dbus.MakeVariant(dbus.SignatureOf(body...)),
+	}, Body: body}
+	if err := mock.conn.Send(msg, nil).Err; err != nil {
+		t.Fatal(err)
+	}
+	mock.emit(t, uint32(2))
+	wantEvents(t, snapshot, appearance.Light)
+	if err := w.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := r.Read(make([]byte, 1)); n != 0 || !errors.Is(err, io.EOF) {
+		t.Errorf("read the pipe = %d, %v; want end of file: the monitor closed its copy of the descriptor", n, err)
+	}
+
+	m.Close()
+	deadline := time.Now().Add(5 * time.Second)
+	for !slices.Equal(dbustest.MatchRules(t, shared), before) {
+		if time.Now().After(deadline) {
+			t.Fatalf("after Close the connection holds %q, want %q", dbustest.MatchRules(t, shared), before)
+		}
+		time.Sleep(time.Millisecond)
 	}
 }

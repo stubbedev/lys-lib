@@ -5,6 +5,7 @@ import (
 	"slices"
 	"sync"
 
+	"github.com/stubbedev/lys-lib/dbusx"
 	dbus "github.com/stubbedev/lys-lib/third_party/godbus"
 )
 
@@ -114,33 +115,22 @@ func refreshSetting[T comparable](m *Monitor, s *setting[T], values map[string]m
 	s.update(m, v, deliver)
 }
 
-// portalAppeared reports whether sig says the portal's name has just
-// gained an owner.
-func portalAppeared(sig *dbus.Signal) bool {
-	if sig == nil || sig.Name != nameOwnerChanged || len(sig.Body) != 3 {
-		return false
-	}
-	name, _ := sig.Body[0].(string)
-	owner, _ := sig.Body[2].(string)
-	return name == portalName && owner != ""
+// settingChange is what SettingChanged carries: the namespace and key
+// of a setting and its new value.
+type settingChange struct {
+	Namespace string       `dbus:"namespace"`
+	Key       string       `dbus:"key"`
+	Value     dbus.Variant `dbus:"value"`
 }
 
-// settingChanged reports whether sig is the SettingChanged for one
-// namespace/key pair, and the mapped new value. Signals for other
-// settings and namespaces are not ours.
-func settingChanged[T any](sig *dbus.Signal, namespace, key string, mapFn func(any) T, zero T) (T, bool) {
-	if sig == nil || sig.Name != changedSig || sig.Path != portalPath {
-		return zero, false
+var settingChanged = dbusx.NewSignal[settingChange](portalIface, "SettingChanged")
+
+// applyChange moves one setting to the value a SettingChanged carries
+// when it is the one for that setting's namespace and key.
+func applyChange[T comparable](m *Monitor, s *setting[T], c settingChange, namespace, key string, mapFn func(any) T) {
+	if c.Namespace == namespace && c.Key == key {
+		s.update(m, mapFn(c.Value), true)
 	}
-	if len(sig.Body) != 3 {
-		return zero, false
-	}
-	ns, _ := sig.Body[0].(string)
-	k, _ := sig.Body[1].(string)
-	if ns != namespace || k != key {
-		return zero, false
-	}
-	return mapFn(sig.Body[2]), true
 }
 
 // portalOwned is the bounded name-ownership probe every refresh starts

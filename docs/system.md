@@ -148,6 +148,8 @@ func main() {
 | Methods run one at a time in arrival order | `Interface.Ordered` |
 | Following a service that starts or restarts | `WatchOwner`, `NameOwner` |
 | One peer's signals, decoded | `WatchSignals` with an `On` route per signal, from `FromOwner(name)` or `FromBus()` |
+| That peer's name changing owner, in order with its signals | an `OnOwnerChange` route in the same watch |
+| Every other signal of an interface, to fail on what a contract does not define | an `OnOthers` route, listed last |
 | Ordering a signal against a call's reply | the `dbus.Sequence` every `On` handler and `WatchOwner`'s `appeared` get, against `dbus.Call.ResponseSequence` |
 | The system or session bus, without hanging on a silent one | `DialSystem`, `DialSession` with a timeout |
 
@@ -165,13 +167,19 @@ carrying descriptors reaches every watch of a connection with duplicates of its
 own, so several watches may route the same signal: the handler that gets it owns
 them, and the watch closes those of every signal no handler gets and of the
 signals still unread when it ends (`dbus.Signal.CloseFDs`, on the
-[patched godbus](/third-party/godbus)). The watch holds one match rule per signal, or one for the whole
-interface where several signals of an object share it, and removes them when its
+[patched godbus](/third-party/godbus)). The watch holds one match rule for the routes of each
+interface of each object, narrowed to the member when they are of one signal and
+to the first argument when they all name the same one, and removes them when its
 context ends, `Watch.Stop` is called, or the connection closes
 (`ErrDisconnected`). `Route.WithArg0` narrows a route to one first argument, as
-for `PropertiesChanged` of one interface. `Dispatch` is the watch without the
-bus: it routes one signal, for a caller that reads its own signal channel, and
-closes the descriptors of a signal it hands to no handler.
+for `PropertiesChanged` of one interface. `OnOwnerChange(name, …)` is the bus's
+announcement that a name changed owner, taken from the bus whoever the watch's
+sender is: a watch following `FromOwner(name)` learns there, between the old
+owner's signals and the new one's, that the owner came, went or was replaced.
+`OnOthers(iface, path, …)` takes every signal of an interface that no route
+before it does, undecoded. `Dispatch` is the watch without the bus: it routes
+one signal, for a caller that reads its own signal channel, and closes the
+descriptors of a signal it hands to no handler.
 
 ## pulse/native
 
@@ -269,7 +277,7 @@ prompt and administrator authentication.
 | --- | --- |
 | `Host` | Implemented by a shell; each call blocks until the user answers or the request is dismissed |
 | `Daemon` | Serves a `Host`: `NewDaemon`, then `Export` |
-| `Client` | Calls the service, bounded only by its `ctx`; `WatchAuthentication` follows an authentication |
+| `Client` | Calls the service, bounded only by its `ctx`; `WatchAuthentication` follows an authentication through a `dbusx` watch: it hears only the host owning the name, fails when that host loses the name or signals what the contract does not define, and leaves the connection's match rules as they were |
 | `Emitter` | Sends the authentication signals |
 | `Caller`, `Choice` | The request context every dialog receives |
 
@@ -299,7 +307,10 @@ lys-wm's tests hold those views to its own JSON.
 `appearance` holds the color scheme, accent and contrast as values.
 `portalsettings.Monitor` follows them, the icon theme and the fonts over the
 xdg-desktop-portal Settings interface. Without a session bus every value reads
-unknown. Bus and portal restarts reconnect with backoff.
+unknown. Bus and portal restarts reconnect with backoff. Only the owner of the
+portal's name is heard (a `dbusx` watch), so another peer's `SettingChanged`
+changes nothing, and a monitor on a shared connection (`NewOn`) removes its
+match rules when closed.
 
 ## icons, icontheme
 
