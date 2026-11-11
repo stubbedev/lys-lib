@@ -23,23 +23,34 @@ const socketEnv = "LYS_PEERCREDTEST_SOCKET"
 // connectTimeout bounds the wait for the peer to connect.
 const connectTimeout = 10 * time.Second
 
-// Main is the TestMain of a package whose tests call Start:
+// Run is the TestMain of a package whose tests call Start:
 //
-//	func TestMain(m *testing.M) { peercredtest.Main(m) }
+//	func TestMain(m *testing.M) { peercredtest.Run(m) }
 //
-// It runs the tests, except in the process Start runs, where it is the
-// peer: it connects to the test's socket and stays until its standard
-// input closes.
-func Main(m *testing.M) {
+// It runs the tests and exits with their code, except in the process
+// Start runs, where it is the peer. See Main.
+func Run(m *testing.M) { os.Exit(Main(m.Run)) }
+
+// Main is Run for a TestMain with work of its own around the tests,
+// such as testhome's isolation:
+//
+//	func TestMain(m *testing.M) {
+//		os.Exit(testhome.Main(func() int { return peercredtest.Main(m.Run) }))
+//	}
+//
+// It calls run and returns its code, except in the process Start runs,
+// where it is the peer: it connects to the test's socket, stays until
+// its standard input closes, and returns the peer's exit code.
+func Main(run func() int) int {
 	path := os.Getenv(socketEnv)
 	if path == "" {
-		os.Exit(m.Run())
+		return run()
 	}
 	if err := stay(path); err != nil {
 		fmt.Fprintln(os.Stderr, "peercredtest:", err)
-		os.Exit(1)
+		return 1
 	}
-	os.Exit(0)
+	return 0
 }
 
 func stay(path string) error {
@@ -70,7 +81,7 @@ type Peer struct {
 func Start(t testing.TB) *Peer {
 	t.Helper()
 	if os.Getenv(socketEnv) != "" {
-		t.Fatal("peercredtest: this is the peer process running tests: the package's TestMain does not call peercredtest.Main")
+		t.Fatal("peercredtest: this is the peer process running tests: the package's TestMain calls neither peercredtest.Run nor peercredtest.Main")
 	}
 	l, err := net.ListenUnix("unix", &net.UnixAddr{Name: filepath.Join(sockdir.Dir(t), "peer"), Net: "unix"})
 	if err != nil {

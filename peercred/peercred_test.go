@@ -14,9 +14,14 @@ import (
 
 	"github.com/stubbedev/lys-lib/peercred/peercredtest"
 	"github.com/stubbedev/lys-lib/sockdir"
+	"github.com/stubbedev/lys-lib/testhome"
 )
 
-func TestMain(m *testing.M) { peercredtest.Main(m) }
+func TestMain(m *testing.M) {
+	os.Exit(testhome.Main(func() int { return peercredtest.Main(m.Run) }))
+}
+
+func TestTheTestsReachNoHostSession(t *testing.T) { testhome.RequireNoHostSession(t) }
 
 func connect(t *testing.T) *net.UnixConn {
 	t.Helper()

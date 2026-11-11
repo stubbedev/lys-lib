@@ -69,7 +69,7 @@ Importable by tests here and in other family members.
 | `pulse/pulsetest` | A fake PulseAudio server speaking the native protocol, with scriptable devices, streams and failures; a client's own streams go with its connection |
 | `logind/logindtest` | A fake systemd-logind on a `dbustest` bus that records every call and emits logind's signals; its helpers report with `t.Errorf`, so hooks on other goroutines may call them |
 | `polkit/polkittest` | A fake polkitd Authority on a `dbustest` bus: scripted or held authorization checks, agent registrations, actions and temporary authorizations, every check and cancel recorded |
-| `peercred/peercredtest` | A socket peer that is another process, with its own pid and lifetime: the test binary run again through `Main` in the package's `TestMain` |
+| `peercred/peercredtest` | A socket peer that is another process, with its own pid and lifetime: the test binary run again through `Run` in the package's `TestMain`, or `Main` inside `testhome.Main` |
 | `sockdir` | A directory short enough for Unix socket paths (`sun_path` is 108 bytes) |
 | `testhome` | Runs a test binary against a scratch home and no session but its own: `Run` (or `Main`) in `TestMain` moves `HOME` and the XDG per-user directories, unsets the variables that advertise a compositor, display or media server, and pins the session bus, the system bus and the sound server to sockets only a test's own fake serves, keeping the go command's caches and a recipe's headless session (`LYS_TEST_HEADLESS`). `RequireNoHostSession`, called from one test per package, fails where a host endpoint is still within reach |
 

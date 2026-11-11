@@ -17,6 +17,7 @@ import (
 	"github.com/stubbedev/lys-lib/polkit"
 	"github.com/stubbedev/lys-lib/polkit/polkittest"
 	"github.com/stubbedev/lys-lib/sockdir"
+	"github.com/stubbedev/lys-lib/testhome"
 	dbus "github.com/stubbedev/lys-lib/third_party/godbus"
 )
 
@@ -153,7 +154,11 @@ func TestDialErrorsNamePolkit(t *testing.T) {
 	}
 }
 
-func TestMain(m *testing.M) { peercredtest.Main(m) }
+func TestMain(m *testing.M) {
+	os.Exit(testhome.Main(func() int { return peercredtest.Main(m.Run) }))
+}
+
+func TestTheTestsReachNoHostSession(t *testing.T) { testhome.RequireNoHostSession(t) }
 
 func peerPIDFD(t *testing.T) (*peercredtest.Peer, *peercred.PIDFD) {
 	t.Helper()
