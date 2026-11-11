@@ -13,6 +13,12 @@ type decoder struct {
 	pos   int
 	fds   []int
 
+	// lys-lib patch (lys_received_fds.go): which of fds the body has
+	// referenced, and the duplicates made for the references to one
+	// after its first.
+	taken []bool
+	dups  []UnixFD
+
 	// The following fields are used to reduce memory allocs.
 	conv *stringConverter
 	buf  []byte
@@ -26,7 +32,7 @@ func newDecoder(in io.Reader, order binary.ByteOrder, fds []int) *decoder {
 	dec := new(decoder)
 	dec.in = in
 	dec.order = order
-	dec.fds = fds
+	dec.setFDs(fds)
 	dec.conv = newStringConverter(stringConverterBufferSize)
 	return dec
 }
@@ -36,7 +42,7 @@ func (dec *decoder) Reset(in io.Reader, order binary.ByteOrder, fds []int) {
 	dec.in = in
 	dec.order = order
 	dec.pos = 0
-	dec.fds = fds
+	dec.setFDs(fds)
 
 	if dec.conv == nil {
 		dec.conv = newStringConverter(stringConverterBufferSize)
@@ -65,15 +71,10 @@ func (dec *decoder) Decode(sig Signature) (vs []any, err error) {
 		if v == nil {
 			return
 		}
-		e, ok := v.(error)
-		if !ok {
-			// Not ours; re-panic.
-			panic(v)
-		}
-		if e == io.EOF || e == io.ErrUnexpectedEOF {
-			e = FormatError("unexpected EOF")
-		}
-		err = e
+		// lys-lib patch (lys_received_fds.go): no panic leaves Decode,
+		// and a body that did not decode holds no descriptor.
+		dec.closeDups()
+		vs, err = nil, decodeFailure(sig, v)
 	}()
 	vs = make([]any, 0)
 	s := sig.str
@@ -241,15 +242,20 @@ func (dec *decoder) decode(s string, depth int) any {
 		return variant
 	case 'h':
 		idx := dec.decodeU()
-		if int(idx) < len(dec.fds) {
-			return UnixFD(dec.fds[idx])
+		// lys-lib patch (lys_received_fds.go): with descriptors at hand
+		// every 'h' is one of them, at any depth.
+		if len(dec.fds) == 0 {
+			return UnixFDIndex(idx)
 		}
-		return UnixFDIndex(idx)
+		return dec.takeFD(idx)
 	case 'a':
 		if len(s) > 1 && s[1] == '{' {
 			ksig := s[2:3]
 			vsig := s[3 : len(s)-1]
-			v := reflect.MakeMap(reflect.MapOf(typeFor(ksig), typeFor(vsig)))
+			// lys-lib patch: the types follow what 'h' decodes to, and
+			// a key is any basic type (sig.go, dbus.go's isKeyType),
+			// where upstream refused booleans and signatures here.
+			v := reflect.MakeMap(dec.typeFor(s))
 			if depth >= 63 {
 				panic(FormatError("input exceeds container depth limit"))
 			}
@@ -262,9 +268,6 @@ func (dec *decoder) decode(s string, depth int) any {
 			spos := dec.pos
 			for dec.pos < spos+int(length) {
 				dec.align(8)
-				if !isKeyType(v.Type().Key()) {
-					panic(InvalidTypeError{v.Type()})
-				}
 				kv := dec.decode(ksig, depth+2)
 				vv := dec.decode(vsig, depth+2)
 				v.SetMapIndex(reflect.ValueOf(kv), reflect.ValueOf(vv))
@@ -290,14 +293,8 @@ func (dec *decoder) decode(s string, depth int) any {
 			}
 			capacity /= s
 		}
-		elem := typeFor(sig)
-		if sig == "h" && dec.fds != nil {
-			// lys-lib patch: with the message's fds at hand, decode's 'h' case
-			// yields UnixFD, which a []UnixFDIndex cannot hold; the append
-			// panicked and the whole body decoded empty.
-			elem = unixFDType
-		}
-		v := reflect.MakeSlice(reflect.SliceOf(elem), 0, capacity)
+		// lys-lib patch: the element type follows what 'h' decodes to.
+		v := reflect.MakeSlice(dec.typeFor(s), 0, capacity)
 		// Even for empty arrays, the correct padding must be included
 		align := sigAlignment(s[1:])
 		if len(s) > 1 && s[1] == '(' {
@@ -309,12 +306,7 @@ func (dec *decoder) decode(s string, depth int) any {
 		dec.align(align)
 		spos := dec.pos
 		for dec.pos < spos+int(length) {
-			ev := reflect.ValueOf(dec.decode(s[1:], depth+1))
-			if ev.Type() != elem && sig == "h" {
-				// lys-lib patch: an index past the message's fds.
-				panic(InvalidMessageError("invalid index for unix fd"))
-			}
-			v = reflect.Append(v, ev)
+			v = reflect.Append(v, reflect.ValueOf(dec.decode(s[1:], depth+1)))
 		}
 		return v.Interface()
 	case '(':

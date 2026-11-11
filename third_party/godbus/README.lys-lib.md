@@ -1,8 +1,8 @@
 # github.com/godbus/dbus/v5 v5.2.4, patched for lys-lib
 
 A copy of github.com/godbus/dbus/v5 v5.2.4 (4e46d5e, BSD 2-Clause,
-LICENSE; the fd-array bug is unfixed there and on master, which is
-v5.2.4 as of 2026-10-28), its
+LICENSE; the descriptor decoding bugs are unfixed there and on master,
+which is v5.2.4 as of 2026-10-28), its
 non-test sources and lys-lib's own tests, carried as packages of the
 lys-lib module and imported as
 `github.com/stubbedev/lys-lib/third_party/godbus` (package `dbus`),
@@ -22,14 +22,103 @@ application importing lys-lib, with no `replace`.
 
 Drop the copy once upstream carries every fix below.
 
-- `decoder.go`, case `'a'`: an `ah` decoded with the message's fds made a
-  `[]UnixFDIndex` and appended `UnixFD` values to it. The reflect panic is
-  a string, which `Decode`'s recover does not turn into an error: up to
-  v5.2.2 every message carrying an fd array (xdg-desktop-portal's Email
-  `attachment_fds`) arrived with an empty body, and since v5.2.3, which
-  re-panics what is not an error, it crashes the read loop. The slice is now
-  `[]UnixFD`, and an index past the fds is an InvalidMessageError.
-  Pinned by `lys_fd_array_test.go`.
+- `lys_received_fds.go` (with `decoder.go`, `sig.go`'s `typeWithFDs`):
+  with the message's descriptors at hand every `h` decodes to its
+  `UnixFD`, and the containers around it are built for that type, at any
+  depth. Upstream resolved an `h` as it met one but built arrays and dicts
+  for `UnixFDIndex`: an `ah` (xdg-desktop-portal's Email `attachment_fds`)
+  arrived with an empty body up to v5.2.2, and since v5.2.3, which
+  re-panics what is not an error, the reflect panic crashed the read loop
+  and the process. A first patch fixed the bare `ah` only; a dict or a
+  nested array of descriptors (`a{sh}`, `a{sah}`, `aah`, `a{hs}`) still
+  did it, and any bus peer can send one. An index past the descriptors is
+  an InvalidMessageError. A body naming one descriptor twice decodes to
+  that descriptor and a duplicate (`F_DUPFD_CLOEXEC`, -1 when the process
+  has no room), where upstream decoded one descriptor held twice, which
+  its receiver closed twice. Without descriptors (`DecodeMessage`) an `h`
+  stays a `UnixFDIndex`, in every container alike. Pinned by
+  `lys_fd_array_test.go`, `TestDescriptorsDecodeInsideEveryContainer`,
+  `TestADescriptorNamedTwiceIsDecodedAsTwoDescriptors`,
+  `TestDescriptorsStayIndicesWithoutTheMessagesDescriptors` and
+  `TestADictOfDescriptorsArrives`.
+- `lys_received_fds_unix.go` (with `transport_unix.go`'s `readMessage`,
+  `conn.go`'s read loop and call tracker, `export.go`'s `handleCall`):
+  every descriptor that comes with a message is the decoded body's or is
+  closed. Upstream closed none: those a body did not name, those of a
+  message that failed to decode or was invalid, those attached to a
+  message declaring none, those of a reply nobody waits for, of a message
+  for a name the connection does not own, and of a call no method is run
+  for (no such object, interface or method, arguments of other types)
+  stayed open, so a peer could fill a process's descriptor table. A
+  message that comes with another number of descriptors than its header
+  declares is an InvalidMessageError; upstream indexed the descriptors it
+  had received by the count the header promised and panicked when there
+  were fewer. Control data received by a read that then failed or was
+  truncated is kept so that its descriptors are closed too. Pinned by
+  `TestTheDescriptorsOfAReadMessageAreTheBodysOrClosed` and
+  `TestTheDescriptorsOfACallNoMethodRunsForAreClosed`.
+- `decoder.go`, `Decode`, and `lys_received_fds.go`'s `decodeFailure`: no
+  panic leaves `Decode`. One that is not the decoder's own error or its
+  reader's (a reflect panic, a runtime error) is an InvalidMessageError,
+  for which the read loop drops the message and keeps the connection;
+  upstream re-panicked it, so a decoder defect met on a message a peer
+  chose took the process down. A header that does not decode is never an
+  InvalidMessageError (`headerError`): its body is unread, and reading on
+  would take the body for the next message. Pinned by
+  `TestAPanicWhileDecodingIsThatMessagesError`,
+  `TestAnUndecodableHeaderIsNotASkippedMessage` and
+  `FuzzDecodeBodyWithDescriptors`, which decodes bodies with descriptors
+  attached and stores, re-encodes and closes what they decode to.
+- `sig.go`, `validSingle`, and `dbus.go`, `isKeyType`: an empty struct is
+  no signature, and a dict entry's key is a basic type, any of them.
+  Upstream accepted `()`, and decoding an `a()` never ended, since no
+  element takes a byte of the array's length; it accepted a variant as a
+  key, a dict type nothing can encode or name the signature of
+  (`SignatureOf` panicked on the decoded value); and it refused boolean
+  and signature keys, so a peer's `a{bs}` ended the connection. Pinned by
+  `TestAnEmptyStructIsNoSignature` and `TestEveryBasicTypeKeysADict`.
+- `transport_unix.go` and `message.go`: the header and body lengths are
+  summed in 64 bits. A header length near 2^32 wrapped below the 128 MiB
+  message limit, and the unix transport then read up to 4 GiB of header
+  into memory. Pinned by `TestTheTransportRefusesLengthsNearTheWrap` and
+  `TestLengthsNearTheWrapAreTooLong`.
+- `conn.go`, `handleSignal`: a `NameLost` or `NameAcquired` without its
+  name is ignored. Upstream panicked on one, and on a connection to a
+  peer rather than a bus the peer chooses the sender and the body. Pinned
+  by `TestAnOwnershipSignalWithoutItsNameIsIgnored`.
+- `conn.go`, `getSessionBusAddress`: an address found in the runtime
+  directory is returned, not also written into
+  `DBUS_SESSION_BUS_ADDRESS`. Upstream set the variable, so connecting to
+  the session bus changed the environment of the whole process and of
+  every child it started afterwards. Pinned by
+  `TestFindingTheSessionBusLeavesTheEnvironmentAsItWas`.
+- `lys_close.go` (with `conn.go`, `auth.go`, `export.go`,
+  `lys_ordered.go`): `Close` returns once the goroutines the connection
+  runs its own code on have ended: the read loop, the watcher of its
+  context, the watcher of each pending call's context (which now ends
+  with the connection too, where upstream's stayed until the call's
+  context ended), each dispatched method call and each ordered lane.
+  Upstream's `Close` returned with all of them winding down, so a
+  closed connection's goroutines were still running in the next test
+  of a program that counts them. A goroutine is not counted while it
+  runs the application's code (an exported method, an interceptor, a
+  signal handler other than this package's two), so that code may take
+  its time and may itself close the connection; the connection's own
+  goroutines close it through the non-waiting `close`. Pinned by
+  `TestCloseWaitsForTheGoroutinesOfTheConnection`,
+  `TestAMethodMayCloseItsOwnConnection` and
+  `TestAConnectionClosedByItsContextLeavesNoGoroutine`, by goroutine id.
+- No initialisation: importing the package runs no code. Upstream built
+  maps (`sigToType`, `varTypeMap`, the variant parser's signature sets,
+  `transports`, which each transport's file filled from an `init`), a
+  table of header field types, a variable for the reflect type of each
+  D-Bus type (`reflect.TypeFor` where one is used now, which costs a
+  load) and the machine's byte order when the
+  package was imported. They are switches (`basicTypeOf`, `varTypeSig`,
+  `fieldType`, `transportFor`, with `lys_transport_absent_*.go` naming
+  the transports a build leaves out) and functions called on use
+  (`nativeEndian`, the signature sets). Pinned by
+  `TestImportingCostsNothing`.
 - `encoder.go`, case `variantType`, and `lys_encode_as.go`: a Variant's
   value is encoded by the Variant's signature. `decode` returns a struct as
   `[]any`, which the Go-type encoder wrote as an array of variants under the

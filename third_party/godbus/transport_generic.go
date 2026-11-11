@@ -7,18 +7,14 @@ import (
 	"unsafe"
 )
 
-var nativeEndian binary.ByteOrder
-
-func detectEndianness() binary.ByteOrder {
+// nativeEndian is the byte order of this machine (lys-lib patch: found
+// on use, where upstream stored it when the package was imported).
+func nativeEndian() binary.ByteOrder {
 	var x uint32 = 0x01020304
 	if *(*byte)(unsafe.Pointer(&x)) == 0x01 {
 		return binary.BigEndian
 	}
 	return binary.LittleEndian
-}
-
-func init() {
-	nativeEndian = detectEndianness()
 }
 
 type genericTransport struct {
@@ -48,5 +44,5 @@ func (t genericTransport) SendMessage(msg *Message) error {
 	if fds != 0 {
 		return errors.New("dbus: unix fd passing not enabled")
 	}
-	return msg.EncodeTo(t, nativeEndian)
+	return msg.EncodeTo(t, nativeEndian())
 }

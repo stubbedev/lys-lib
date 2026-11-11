@@ -38,13 +38,15 @@ type oobReader struct {
 
 func (o *oobReader) Read(b []byte) (n int, err error) {
 	n, oobn, flags, _, err := o.conn.ReadMsgUnix(b, o.buf[:])
+	// lys-lib patch: what a failed or truncated read did receive is
+	// kept, so that its descriptors are closed.
+	o.oob = append(o.oob, o.buf[:oobn]...)
 	if err != nil {
 		return n, err
 	}
 	if flags&syscall.MSG_CTRUNC != 0 {
 		return n, errors.New("dbus: control data truncated (too many fds received)")
 	}
-	o.oob = append(o.oob, o.buf[:oobn]...)
 	return n, nil
 }
 
@@ -88,15 +90,13 @@ func newUnixTransport(keys string) (transport, error) {
 	}
 }
 
-func init() {
-	transports["unix"] = newUnixTransport
-}
-
 func (t *unixTransport) EnableUnixFDs() {
 	t.hasUnixFDs = true
 }
 
-func (t *unixTransport) ReadMessage() (*Message, error) {
+// readMessage reads one message; ReadMessage (lys_received_fds_unix.go,
+// lys-lib patch) closes the descriptors of one it fails on.
+func (t *unixTransport) readMessage() (*Message, error) {
 	// To be sure that all bytes of out-of-band data are read, we use a special
 	// reader that uses ReadUnix on the underlying connection instead of Read
 	// and gathers the out-of-band data in a buffer.
@@ -146,11 +146,13 @@ func (t *unixTransport) ReadMessage() (*Message, error) {
 		serial: t.rdr.Serial,
 	}
 	// Length of header fields (without alignment).
-	hlen := t.rdr.HeaderLen
+	// lys-lib patch: in 64 bits, as a length near 2^32 wrapped past the
+	// limit below and had 4 GiB read into memory.
+	hlen := uint64(t.rdr.HeaderLen)
 	if hlen%8 != 0 {
 		hlen += 8 - (hlen % 8)
 	}
-	if hlen+t.rdr.BodyLen+16 > 1<<27 {
+	if hlen+uint64(t.rdr.BodyLen)+16 > 1<<27 {
 		return nil, InvalidMessageError("message is too long")
 	}
 
@@ -166,7 +168,7 @@ func (t *unixTransport) ReadMessage() (*Message, error) {
 	dec.pos = 12
 	vs, err := dec.Decode(Signature{"a(yv)"})
 	if err != nil {
-		return nil, err
+		return nil, headerError(err)
 	}
 	if err = Store(vs, &t.rdr.headers); err != nil {
 		return nil, err
@@ -190,53 +192,21 @@ func (t *unixTransport) ReadMessage() (*Message, error) {
 	}
 	r.Reset(body)
 
-	if unixfds != 0 {
-		if !t.hasUnixFDs {
-			return nil, errors.New("dbus: got unix fds on unsupported transport")
-		}
-		// read the fds from the OOB data
-		scms, err := syscall.ParseSocketControlMessage(t.rdr.oob)
-		if err != nil {
-			return nil, err
-		}
-		if len(scms) != 1 {
-			return nil, errors.New("dbus: received more than one socket control message")
-		}
-		fds, err := syscall.ParseUnixRights(&scms[0])
-		if err != nil {
-			return nil, err
-		}
-		dec.Reset(r, order, fds)
-		if err = decodeMessageBody(msg, dec); err != nil {
-			return nil, err
-		}
-		// substitute the values in the message body (which are indices for the
-		// array receiver via OOB) with the actual values
-		for i, v := range msg.Body {
-			switch index := v.(type) {
-			case UnixFDIndex:
-				if uint32(index) >= unixfds {
-					return nil, InvalidMessageError("invalid index for unix fd")
-				}
-				msg.Body[i] = UnixFD(fds[index])
-			case []UnixFDIndex:
-				fdArray := make([]UnixFD, len(index))
-				for k, j := range index {
-					if uint32(j) >= unixfds {
-						return nil, InvalidMessageError("invalid index for unix fd")
-					}
-					fdArray[k] = UnixFD(fds[j])
-				}
-				msg.Body[i] = fdArray
-			}
-		}
-		return msg, nil
+	if unixfds != 0 && !t.hasUnixFDs {
+		return nil, errors.New("dbus: got unix fds on unsupported transport")
 	}
-
-	dec.Reset(r, order, nil)
+	// lys-lib patch (lys_received_fds_unix.go): the decoder resolves
+	// every 'h' of the body, and a descriptor the body does not take is
+	// closed.
+	fds, err := receivedFDs(t.rdr.oob, unixfds)
+	if err != nil {
+		return nil, err
+	}
+	dec.Reset(r, order, fds)
 	if err = decodeMessageBody(msg, dec); err != nil {
 		return nil, err
 	}
+	dec.closeUnreferencedFDs()
 	return msg, nil
 }
 
@@ -266,7 +236,7 @@ func (t *unixTransport) SendMessage(msg *Message) error {
 		}
 		msg.Headers[FieldUnixFDs] = MakeVariant(uint32(fdcnt))
 		buf := new(bytes.Buffer)
-		fds, err := msg.EncodeToWithFDs(buf, nativeEndian)
+		fds, err := msg.EncodeToWithFDs(buf, nativeEndian())
 		if err != nil {
 			return err
 		}
@@ -279,7 +249,7 @@ func (t *unixTransport) SendMessage(msg *Message) error {
 			return io.ErrShortWrite
 		}
 	} else {
-		if err := msg.EncodeTo(t, nativeEndian); err != nil {
+		if err := msg.EncodeTo(t, nativeEndian()); err != nil {
 			return err
 		}
 	}

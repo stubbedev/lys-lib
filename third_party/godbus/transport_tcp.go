@@ -7,10 +7,6 @@ import (
 	"net"
 )
 
-func init() {
-	transports["tcp"] = newTcpTransport
-}
-
 func tcpFamily(keys string) (string, error) {
 	switch getKey(keys, "family") {
 	case "":

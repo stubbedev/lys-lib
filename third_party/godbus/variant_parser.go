@@ -72,7 +72,7 @@ func varMakeNode(p *varParser) (varNode, error) {
 			if t.val[0] == '@' {
 				sig.str = t.val[1:]
 			} else {
-				sig.str = varTypeMap[t.val]
+				sig.str, _ = varTypeSig(t.val)
 			}
 		case tokByteString:
 			if sig.str != "" && sig.str != "ay" {
@@ -137,15 +137,18 @@ type numNode struct {
 	val any
 }
 
-var numSigSet = sigSet{
-	Signature{"y"}: true,
-	Signature{"n"}: true,
-	Signature{"q"}: true,
-	Signature{"i"}: true,
-	Signature{"u"}: true,
-	Signature{"x"}: true,
-	Signature{"t"}: true,
-	Signature{"d"}: true,
+// lys-lib patch: built on use, not when the package is imported.
+func numSigSet() sigSet {
+	return sigSet{
+		Signature{"y"}: true,
+		Signature{"n"}: true,
+		Signature{"q"}: true,
+		Signature{"i"}: true,
+		Signature{"u"}: true,
+		Signature{"x"}: true,
+		Signature{"t"}: true,
+		Signature{"d"}: true,
+	}
 }
 
 func (n numNode) Infer() (Signature, error) {
@@ -166,7 +169,7 @@ func (n numNode) Sigs() sigSet {
 	if strings.ContainsAny(n.str, ".e") {
 		return sigSet{Signature{"d"}: true}
 	}
-	return numSigSet
+	return numSigSet()
 }
 
 func (n numNode) Value(sig Signature) (any, error) {
@@ -264,10 +267,13 @@ type stringNode struct {
 	val any    // has correct type
 }
 
-var stringSigSet = sigSet{
-	Signature{"s"}: true,
-	Signature{"g"}: true,
-	Signature{"o"}: true,
+// lys-lib patch: built on use, not when the package is imported.
+func stringSigSet() sigSet {
+	return sigSet{
+		Signature{"s"}: true,
+		Signature{"g"}: true,
+		Signature{"o"}: true,
+	}
 }
 
 func (n stringNode) Infer() (Signature, error) {
@@ -282,7 +288,7 @@ func (n stringNode) Sigs() sigSet {
 	if n.sig.str != "" {
 		return sigSet{n.sig: true}
 	}
-	return stringSigSet
+	return stringSigSet()
 }
 
 func (n stringNode) Value(sig Signature) (any, error) {
@@ -388,7 +394,8 @@ func varParseString(s string) (string, error) {
 	return buf.String(), nil
 }
 
-var boolSigSet = sigSet{Signature{"b"}: true}
+// lys-lib patch: built on use, not when the package is imported.
+func boolSigSet() sigSet { return sigSet{Signature{"b"}: true} }
 
 type boolNode bool
 
@@ -404,7 +411,7 @@ func (b boolNode) String() string {
 }
 
 func (boolNode) Sigs() sigSet {
-	return boolSigSet
+	return boolSigSet()
 }
 
 func (b boolNode) Value(sig Signature) (any, error) {
@@ -521,8 +528,11 @@ type variantNode struct {
 	n varNode
 }
 
-var variantSet = sigSet{
-	Signature{"v"}: true,
+// lys-lib patch: built on use, not when the package is imported.
+func variantSet() sigSet {
+	return sigSet{
+		Signature{"v"}: true,
+	}
 }
 
 func (variantNode) Infer() (Signature, error) {
@@ -534,7 +544,7 @@ func (n variantNode) String() string {
 }
 
 func (variantNode) Sigs() sigSet {
-	return variantSet
+	return variantSet()
 }
 
 func (n variantNode) Value(sig Signature) (any, error) {
@@ -733,8 +743,11 @@ Loop:
 
 type byteStringNode []byte
 
-var byteStringSet = sigSet{
-	Signature{"ay"}: true,
+// lys-lib patch: built on use, not when the package is imported.
+func byteStringSet() sigSet {
+	return sigSet{
+		Signature{"ay"}: true,
+	}
 }
 
 func (byteStringNode) Infer() (Signature, error) {
@@ -746,7 +759,7 @@ func (b byteStringNode) String() string {
 }
 
 func (b byteStringNode) Sigs() sigSet {
-	return byteStringSet
+	return byteStringSet()
 }
 
 func (b byteStringNode) Value(sig Signature) (any, error) {

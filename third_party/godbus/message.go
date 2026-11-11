@@ -82,17 +82,31 @@ func (e InvalidMessageError) Error() string {
 	return "dbus: invalid message: " + string(e)
 }
 
-// fieldType are the types of the various header fields.
-var fieldTypes = [fieldMax]reflect.Type{
-	FieldPath:        objectPathType,
-	FieldInterface:   stringType,
-	FieldMember:      stringType,
-	FieldErrorName:   stringType,
-	FieldReplySerial: uint32Type,
-	FieldDestination: stringType,
-	FieldSender:      stringType,
-	FieldSignature:   signatureType,
-	FieldUnixFDs:     uint32Type,
+// fieldType is the type of a header field, nil for one that has none
+// (lys-lib patch: a switch, where upstream filled a table when the
+// package was imported).
+func fieldType(field HeaderField) reflect.Type {
+	switch field {
+	case FieldPath:
+		return reflect.TypeFor[ObjectPath]()
+	case FieldInterface:
+		return reflect.TypeFor[string]()
+	case FieldMember:
+		return reflect.TypeFor[string]()
+	case FieldErrorName:
+		return reflect.TypeFor[string]()
+	case FieldReplySerial:
+		return reflect.TypeFor[uint32]()
+	case FieldDestination:
+		return reflect.TypeFor[string]()
+	case FieldSender:
+		return reflect.TypeFor[string]()
+	case FieldSignature:
+		return reflect.TypeFor[Signature]()
+	case FieldUnixFDs:
+		return reflect.TypeFor[uint32]()
+	}
+	return nil
 }
 
 // requiredFields lists the header fields that are required by the different
@@ -139,7 +153,7 @@ func DecodeMessageWithFDs(rd io.Reader, fds []int) (msg *Message, err error) {
 		return nil, InvalidMessageError("invalid byte order")
 	}
 
-	dec := newDecoder(rd, order, fds)
+	dec := newDecoder(rd, order, nil)
 	dec.pos = 1
 
 	msg = new(Message)
@@ -162,14 +176,18 @@ func DecodeMessageWithFDs(rd io.Reader, fds []int) (msg *Message, err error) {
 	if err := binary.Read(bytes.NewBuffer(b), order, &hlength); err != nil {
 		return nil, err
 	}
-	if hlength+length+16 > 1<<27 {
+	// lys-lib patch: in 64 bits, as lengths near 2^32 wrapped past the
+	// limit.
+	if uint64(hlength)+uint64(length)+16 > 1<<27 {
 		return nil, InvalidMessageError("message is too long")
 	}
-	dec = newDecoder(io.MultiReader(bytes.NewBuffer(b), rd), order, fds)
+	// lys-lib patch: the header holds no descriptor, so it is decoded
+	// without the message's, which the body alone takes.
+	dec = newDecoder(io.MultiReader(bytes.NewBuffer(b), rd), order, nil)
 	dec.pos = 12
 	vs, err = dec.Decode(Signature{"a(yv)"})
 	if err != nil {
-		return nil, err
+		return nil, headerError(err)
 	}
 	if err = Store(vs, &headers); err != nil {
 		return nil, err
@@ -214,7 +232,7 @@ func DecodeMessageWithFDs(rd io.Reader, fds []int) (msg *Message, err error) {
 // The possibly returned error can be an error of the underlying reader, an
 // InvalidMessageError or a FormatError.
 func DecodeMessage(rd io.Reader) (msg *Message, err error) {
-	return DecodeMessageWithFDs(rd, make([]int, 0))
+	return DecodeMessageWithFDs(rd, nil)
 }
 
 type nullwriter struct{}
@@ -227,7 +245,7 @@ func (msg *Message) CountFds() (int, error) {
 	if len(msg.Body) == 0 {
 		return 0, nil
 	}
-	enc := newEncoder(nullwriter{}, nativeEndian, make([]int, 0))
+	enc := newEncoder(nullwriter{}, nativeEndian(), make([]int, 0))
 	err := enc.Encode(msg.Body...)
 	return len(enc.fds), err
 }
@@ -294,7 +312,7 @@ func (msg *Message) EncodeTo(out io.Writer, order binary.ByteOrder) (err error) 
 // IsValid checks whether msg is a valid message and returns an
 // InvalidMessageError or FormatError if it is not.
 func (msg *Message) IsValid() error {
-	return msg.EncodeTo(io.Discard, nativeEndian)
+	return msg.EncodeTo(io.Discard, nativeEndian())
 }
 
 func (msg *Message) validateHeader() error {
@@ -308,7 +326,7 @@ func (msg *Message) validateHeader() error {
 		if k == 0 || k >= fieldMax {
 			return InvalidMessageError("invalid header")
 		}
-		if reflect.TypeOf(v.value) != fieldTypes[k] {
+		if reflect.TypeOf(v.value) != fieldType(k) {
 			return InvalidMessageError("invalid type of header field")
 		}
 	}

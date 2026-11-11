@@ -8,10 +8,6 @@ import (
 	"os"
 )
 
-func init() {
-	transports["nonce-tcp"] = newNonceTcpTransport
-}
-
 func newNonceTcpTransport(keys string) (transport, error) {
 	host := getKey(keys, "host")
 	port := getKey(keys, "port")

@@ -115,7 +115,7 @@ func (enc *encoder) encode(v reflect.Value, depth int) {
 		enc.binwrite(uint16(v.Uint()))
 		enc.pos += 2
 	case reflect.Int, reflect.Int32:
-		if v.Type() == unixFDType {
+		if v.Type() == reflect.TypeFor[UnixFD]() {
 			fd := v.Int()
 			idx := len(enc.fds)
 			enc.fds = append(enc.fds, int(fd))
@@ -144,7 +144,7 @@ func (enc *encoder) encode(v reflect.Value, depth int) {
 		if strings.IndexByte(str, byte(0)) != -1 {
 			panic(FormatError("input has a null char('\\000') in string"))
 		}
-		if v.Type() == objectPathType {
+		if v.Type() == reflect.TypeFor[ObjectPath]() {
 			if !ObjectPath(str).IsValid() {
 				panic(FormatError("invalid object path"))
 			}
@@ -159,7 +159,7 @@ func (enc *encoder) encode(v reflect.Value, depth int) {
 		}
 		enc.pos += n
 	case reflect.Pointer:
-		if v.Type() == fileType {
+		if v.Type() == fileType() {
 			// lys-lib patch: the file's descriptor, as a UnixFD.
 			enc.encode(reflect.ValueOf(UnixFD(v.Interface().(*os.File).Fd())), depth)
 			break
@@ -192,7 +192,7 @@ func (enc *encoder) encode(v reflect.Value, depth int) {
 		enc.pos += length
 	case reflect.Struct:
 		switch t := v.Type(); t {
-		case signatureType:
+		case reflect.TypeFor[Signature]():
 			str := v.Field(0)
 			enc.encode(reflect.ValueOf(byte(str.Len())), depth)
 			b := make([]byte, str.Len()+1)
@@ -203,7 +203,7 @@ func (enc *encoder) encode(v reflect.Value, depth int) {
 				panic(err)
 			}
 			enc.pos += n
-		case variantType:
+		case reflect.TypeFor[Variant]():
 			variant := v.Interface().(Variant)
 			enc.encode(reflect.ValueOf(variant.sig), depth+1)
 			// lys-lib patch: by the signature (lys_encode_as.go).

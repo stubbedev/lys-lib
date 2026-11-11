@@ -187,5 +187,5 @@ func holdsFDs(t reflect.Type) bool {
 	case reflect.Interface:
 		return true
 	}
-	return t == unixFDType || t == variantType
+	return t == reflect.TypeFor[UnixFD]() || t == reflect.TypeFor[Variant]()
 }

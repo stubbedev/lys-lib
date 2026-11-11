@@ -153,7 +153,7 @@ func (m exportedMethod) Call(args ...any) ([]any, error) {
 			nilErr = ret[t.NumOut()-1].IsNil()
 			ret = ret[:t.NumOut()-1]
 			err = e
-		} else if ret[t.NumOut()-1].Type().Implements(errType) { // Go error
+		} else if ret[t.NumOut()-1].Type().Implements(reflect.TypeFor[error]()) { // Go error
 			i := ret[t.NumOut()-1].Interface()
 			if i == nil {
 				nilErr = ret[t.NumOut()-1].IsNil()

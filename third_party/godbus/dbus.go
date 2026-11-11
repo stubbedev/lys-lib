@@ -7,27 +7,6 @@ import (
 	"strings"
 )
 
-var (
-	byteType        = reflect.TypeFor[byte]()
-	boolType        = reflect.TypeOf(false)
-	int16Type       = reflect.TypeFor[int16]()
-	uint16Type      = reflect.TypeFor[uint16]()
-	int32Type       = reflect.TypeFor[int32]()
-	uint32Type      = reflect.TypeFor[uint32]()
-	int64Type       = reflect.TypeFor[int64]()
-	uint64Type      = reflect.TypeFor[uint64]()
-	float64Type     = reflect.TypeFor[float64]()
-	stringType      = reflect.TypeFor[string]()
-	signatureType   = reflect.TypeFor[Signature]()
-	objectPathType  = reflect.TypeFor[ObjectPath]()
-	variantType     = reflect.TypeFor[Variant]()
-	interfacesType  = reflect.TypeFor[[]any]()
-	interfaceType   = reflect.TypeFor[any]()
-	unixFDType      = reflect.TypeFor[UnixFD]()
-	unixFDIndexType = reflect.TypeFor[UnixFDIndex]()
-	errType         = reflect.TypeFor[error]()
-)
-
 // An InvalidTypeError signals that a value which cannot be represented in the
 // D-Bus wire format was passed to a function.
 type InvalidTypeError struct {
@@ -123,7 +102,7 @@ func isConvertibleTo(dest, src reflect.Type) bool {
 		dest = dest.Elem()
 		return isConvertibleTo(dest, src)
 	case dest.Kind() == reflect.Struct:
-		return src == interfacesType || dest.Kind() == src.Kind()
+		return src == reflect.TypeFor[[]any]() || dest.Kind() == src.Kind()
 	default:
 		return src.ConvertibleTo(dest)
 	}
@@ -166,7 +145,7 @@ func storeMapIntoInterface(dest, src reflect.Value) error {
 		// Convert variants to interface{} recursively when converting
 		// to interface{}
 		dv = reflect.MakeMap(
-			reflect.MapOf(src.Type().Key(), interfaceType))
+			reflect.MapOf(src.Type().Key(), reflect.TypeFor[any]()))
 	} else {
 		dv = reflect.MakeMap(src.Type())
 	}
@@ -196,7 +175,7 @@ func storeMapIntoMap(dest, src reflect.Value) error {
 
 func storeSlice(dest, src reflect.Value) error {
 	switch {
-	case src.Type() == interfacesType && dest.Kind() == reflect.Struct:
+	case src.Type() == reflect.TypeFor[[]any]() && dest.Kind() == reflect.Struct:
 		// The decoder always decodes structs as slices of interface{}
 		return storeStruct(dest, src)
 	case !kindsAreCompatible(dest.Type(), src.Type()):
@@ -259,7 +238,7 @@ func storeSliceIntoInterface(dest, src reflect.Value) error {
 	if isVariant(src.Type().Elem()) {
 		// Convert variants to interface{} recursively when converting
 		// to interface{}
-		dv = reflect.MakeSlice(reflect.SliceOf(interfaceType),
+		dv = reflect.MakeSlice(reflect.SliceOf(reflect.TypeFor[any]()),
 			src.Len(), src.Cap())
 	} else {
 		dv = reflect.MakeSlice(src.Type(), src.Len(), src.Cap())
@@ -294,7 +273,7 @@ func getVariantValue(in reflect.Value) reflect.Value {
 }
 
 func isVariant(t reflect.Type) bool {
-	return t == variantType
+	return t == reflect.TypeFor[Variant]()
 }
 
 // An ObjectPath is an object path as defined by the D-Bus spec.
@@ -340,15 +319,15 @@ type UnixFDIndex uint32
 // alignment returns the alignment of values of type t.
 func alignment(t reflect.Type) int {
 	switch t {
-	case variantType:
+	case reflect.TypeFor[Variant]():
 		return 1
-	case objectPathType:
+	case reflect.TypeFor[ObjectPath]():
 		return 4
-	case signatureType:
+	case reflect.TypeFor[Signature]():
 		return 1
-	case interfacesType:
+	case reflect.TypeFor[[]any]():
 		return 4
-	case fileType:
+	case fileType():
 		return 4 // lys-lib patch: an 'h'
 	}
 	switch t.Kind() {
@@ -367,15 +346,18 @@ func alignment(t reflect.Type) int {
 }
 
 // isKeyType returns whether t is a valid type for a D-Bus dict.
+//
+// lys-lib patch: booleans and signatures are basic types too. Upstream
+// refused them, so a peer sending an a{bs} ended the connection.
 func isKeyType(t reflect.Type) bool {
 	switch t.Kind() {
 	case reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
 		reflect.Int16, reflect.Int32, reflect.Int64, reflect.Float64,
-		reflect.String, reflect.Uint, reflect.Int:
+		reflect.String, reflect.Uint, reflect.Int, reflect.Bool:
 
 		return true
 	}
-	return false
+	return t == reflect.TypeFor[Signature]()
 }
 
 // isValidInterface returns whether s is a valid name for an interface.

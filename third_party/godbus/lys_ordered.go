@@ -45,7 +45,7 @@ func (conn *Conn) DispatchInOrder(iface string, members ...string) {
 	if !fresh {
 		return
 	}
-	go func() {
+	conn.own.start(func() {
 		for {
 			select {
 			case <-conn.ctx.Done():
@@ -54,7 +54,7 @@ func (conn *Conn) DispatchInOrder(iface string, members ...string) {
 				conn.handleCall(msg)
 			}
 		}
-	}()
+	})
 }
 
 // dispatchCall hands a method call to its ordered lane, or to a
@@ -66,7 +66,7 @@ func (conn *Conn) dispatchCall(msg *Message) {
 	lane := conn.ordered.lanes[orderedKey{iface, member}]
 	conn.ordered.mu.RUnlock()
 	if lane == nil {
-		go conn.handleCall(msg)
+		conn.own.start(func() { conn.handleCall(msg) })
 		return
 	}
 	select {

@@ -57,6 +57,9 @@ type Conn struct {
 
 	// lys-lib patch: the methods dispatched in arrival order.
 	ordered orderedLanes
+
+	// lys-lib patch: what Close waits for (lys_close.go).
+	own ownGoroutines
 }
 
 // SessionBus returns a shared connection to the session bus, connecting to it
@@ -77,11 +80,14 @@ func SessionBus() (conn *Conn, err error) {
 	return
 }
 
+// lys-lib patch: an address found in the runtime directory is returned,
+// not also written into DBUS_SESSION_BUS_ADDRESS as upstream does:
+// connecting to the bus changed the environment of the whole process
+// and of every child it started afterwards.
 func getSessionBusAddress(autolaunch bool) (string, error) {
 	if address := os.Getenv("DBUS_SESSION_BUS_ADDRESS"); address != "" && address != "autolaunch:" {
 		return address, nil
 	} else if address := tryDiscoverDbusSessionBusAddress(); address != "" {
-		os.Setenv("DBUS_SESSION_BUS_ADDRESS", address)
 		return address, nil
 	}
 	if !autolaunch {
@@ -295,6 +301,7 @@ func newConn(tr transport, opts ...ConnOption) (*Conn, error) {
 		conn.ctx = context.Background()
 	}
 	conn.ctx, conn.cancelCtx = context.WithCancel(conn.ctx)
+	conn.own.stopped.L = &conn.own.mu
 
 	conn.calls = newCallTracker()
 	if conn.handler == nil {
@@ -310,10 +317,12 @@ func newConn(tr transport, opts ...ConnOption) (*Conn, error) {
 	conn.names = newNameTracker()
 	conn.busObj = conn.Object("org.freedesktop.DBus", "/org/freedesktop/DBus")
 
-	go func() {
+	// lys-lib patch: on a goroutine Close waits for, closing without
+	// waiting for itself.
+	conn.own.start(func() {
 		<-conn.ctx.Done()
-		conn.Close()
-	}()
+		_ = conn.close()
+	})
 	return conn, nil
 }
 
@@ -323,10 +332,10 @@ func (conn *Conn) BusObject() BusObject {
 	return conn.busObj
 }
 
-// Close closes the connection. Any blocked operations will return with errors
-// and the channels passed to Eavesdrop and Signal are closed. This method must
-// not be called on shared connections.
-func (conn *Conn) Close() error {
+// close closes the connection without waiting for the goroutines it
+// runs, which is how those goroutines close it; Close (lys_close.go,
+// lys-lib patch) waits for them.
+func (conn *Conn) close() error {
 	conn.closeOnce.Do(func() {
 		conn.outHandler.close()
 		if term, ok := conn.signalHandler.(Terminator); ok {
@@ -405,7 +414,8 @@ func (conn *Conn) inWorker() {
 				// Some read error occurred (usually EOF); we can't really do
 				// anything but to shut down all stuff and returns errors to all
 				// pending replies.
-				conn.Close()
+				// lys-lib patch: without waiting for this goroutine.
+				_ = conn.close()
 				conn.calls.finalizeAllWithError(sequenceGen, err)
 				return
 			}
@@ -417,6 +427,8 @@ func (conn *Conn) inWorker() {
 			select {
 			case conn.eavesdropped <- msg:
 			default:
+				// lys-lib patch: nobody takes its descriptors.
+				msg.closeFDs()
 			}
 			conn.eavesdroppedLck.Unlock()
 			continue
@@ -429,11 +441,14 @@ func (conn *Conn) inWorker() {
 		if !found {
 			// Eavesdropped a message, but no channel for it is registered.
 			// Ignore it.
+			// lys-lib patch: and close its descriptors.
+			msg.closeFDs()
 			continue
 		}
 
 		if conn.inInt != nil {
-			conn.inInt(msg)
+			// lys-lib patch: the application's code (lys_close.go).
+			conn.own.outside(func() { conn.inInt(msg) })
 		}
 		sequence := sequenceGen.next()
 		switch msg.Type {
@@ -459,22 +474,21 @@ func (conn *Conn) handleSignal(sequence Sequence, msg *Message) {
 	sender, _ := msg.Headers[FieldSender].value.(string)
 	if iface == "org.freedesktop.DBus" && sender == "org.freedesktop.DBus" {
 		switch member {
+		// lys-lib patch: one without its name is ignored. Upstream
+		// panicked on it, and on a connection to a peer rather than a
+		// bus the peer chooses the sender and the body.
 		case "NameLost":
 			// If we lost the name on the bus, remove it from our
 			// tracking list.
-			name, ok := msg.Body[0].(string)
-			if !ok {
-				panic("Unable to read the lost name")
+			if name, ok := firstString(msg.Body); ok {
+				conn.names.loseName(name)
 			}
-			conn.names.loseName(name)
 		case "NameAcquired":
 			// If we acquired the name on the bus, add it to our
 			// tracking list.
-			name, ok := msg.Body[0].(string)
-			if !ok {
-				panic("Unable to read the acquired name")
+			if name, ok := firstString(msg.Body); ok {
+				conn.names.acquireName(name)
 			}
-			conn.names.acquireName(name)
 		}
 	}
 	// lys-lib patch: whether descriptors came with it (lys_signal_fds.go).
@@ -487,7 +501,7 @@ func (conn *Conn) handleSignal(sequence Sequence, msg *Message) {
 		Sequence: sequence,
 		bare:     fds == 0,
 	}
-	conn.signalHandler.DeliverSignal(iface, member, signal)
+	conn.deliverSignal(iface, member, signal)
 }
 
 // Names returns the list of all names that are currently owned by this
@@ -589,10 +603,15 @@ func (conn *Conn) send(ctx context.Context, msg *Message, ch chan *Call) *Call {
 			conn.calls.handleSendError(msg, ctx.Err())
 			return call
 		}
-		go func() {
-			<-ctx.Done()
-			conn.calls.handleSendError(msg, ctx.Err())
-		}()
+		// lys-lib patch: on a goroutine Close waits for, which ends with
+		// the connection too; the read loop then fails the call.
+		conn.own.start(func() {
+			select {
+			case <-ctx.Done():
+				conn.calls.handleSendError(msg, ctx.Err())
+			case <-conn.ctx.Done():
+			}
+		})
 		// error is handled in handleSendError
 		_ = conn.sendMessageAndIfClosed(msg, func() {
 			conn.calls.handleSendError(msg, ErrClosed)
@@ -789,7 +808,22 @@ type transport interface {
 	SendMessage(*Message) error
 }
 
-var transports = make(map[string]func(string) (transport, error))
+// transportFor is what connects to an address of scheme, nil when this
+// build has no such transport (lys-lib patch: a switch, where upstream
+// had each transport's file register itself in a map when the package
+// was imported; lys_transport_absent_*.go name the ones a build leaves
+// out).
+func transportFor(scheme string) func(string) (transport, error) {
+	switch scheme {
+	case "unix":
+		return newUnixTransport
+	case "tcp":
+		return newTcpTransport
+	case "nonce-tcp":
+		return newNonceTcpTransport
+	}
+	return nil
+}
 
 func getTransport(address string) (transport, error) {
 	var err error
@@ -802,7 +836,7 @@ func getTransport(address string) (transport, error) {
 			err = errors.New("dbus: invalid bus address (no transport)")
 			continue
 		}
-		f := transports[v[:i]]
+		f := transportFor(v[:i])
 		if f == nil {
 			err = errors.New("dbus: invalid bus address (invalid or unsupported transport)")
 			continue
@@ -965,6 +999,9 @@ func (tracker *callTracker) handleReply(sequence Sequence, msg *Message) uint32 
 	tracker.lck.RUnlock()
 	if ok {
 		tracker.finalizeWithBody(serial, sequence, msg.Body)
+	} else {
+		// lys-lib patch: a reply nobody waits for any more.
+		msg.closeFDs()
 	}
 	return serial
 }
@@ -977,6 +1014,9 @@ func (tracker *callTracker) handleDBusError(sequence Sequence, msg *Message) uin
 	if ok {
 		name, _ := msg.Headers[FieldErrorName].value.(string)
 		tracker.finalizeWithError(serial, sequence, Error{name, msg.Body})
+	} else {
+		// lys-lib patch: an error nobody waits for any more.
+		msg.closeFDs()
 	}
 	return serial
 }

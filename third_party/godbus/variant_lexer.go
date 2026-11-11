@@ -169,19 +169,37 @@ func varLexNormal(l *varLexer) lexState {
 	}
 }
 
-var varTypeMap = map[string]string{
-	"boolean":    "b",
-	"byte":       "y",
-	"int16":      "n",
-	"uint16":     "q",
-	"int32":      "i",
-	"uint32":     "u",
-	"int64":      "x",
-	"uint64":     "t",
-	"double":     "f",
-	"string":     "s",
-	"objectpath": "o",
-	"signature":  "g",
+// varTypeSig is the signature of the type a variant text names (lys-lib
+// patch: a switch, where upstream built a map when the package was
+// imported).
+func varTypeSig(name string) (string, bool) {
+	switch name {
+	case "boolean":
+		return "b", true
+	case "byte":
+		return "y", true
+	case "int16":
+		return "n", true
+	case "uint16":
+		return "q", true
+	case "int32":
+		return "i", true
+	case "uint32":
+		return "u", true
+	case "int64":
+		return "x", true
+	case "uint64":
+		return "t", true
+	case "double":
+		return "f", true
+	case "string":
+		return "s", true
+	case "objectpath":
+		return "o", true
+	case "signature":
+		return "g", true
+	}
+	return "", false
 }
 
 func varLexByteString(l *varLexer) lexState {
@@ -273,7 +291,7 @@ func varLexType(l *varLexer) lexState {
 			return l.errorf("%s", err)
 		}
 	} else {
-		if _, ok := varTypeMap[l.input[l.start:l.pos]]; ok {
+		if _, ok := varTypeSig(l.input[l.start:l.pos]); ok {
 			l.emit(tokType)
 			return varLexNormal
 		}

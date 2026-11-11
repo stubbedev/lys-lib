@@ -115,7 +115,8 @@ func (conn *Conn) Auth(methods []Auth) error {
 					if err != nil {
 						return err
 					}
-					go conn.inWorker()
+					// lys-lib patch: on a goroutine Close waits for.
+					conn.own.start(conn.inWorker)
 					return nil
 				}
 			}

@@ -165,6 +165,16 @@ func (conn *Conn) handleCall(msg *Message) {
 	sender, hasSender := msg.Headers[FieldSender].value.(string)
 	serial := msg.serial
 
+	// lys-lib patch: a call no method is run for (no such object,
+	// interface or method, arguments of other types) leaves its
+	// descriptors with nobody, so they are closed.
+	called := false
+	defer func() {
+		if !called {
+			msg.closeFDs()
+		}
+	}()
+
 	if len(name) == 0 {
 		conn.sendError(ErrMsgUnknownMethod, sender, serial)
 	}
@@ -204,7 +214,10 @@ func (conn *Conn) handleCall(msg *Message) {
 		return
 	}
 
-	ret, err := m.Call(args...)
+	called = true
+	// lys-lib patch: the application's code (lys_close.go).
+	var ret []any
+	conn.own.outside(func() { ret, err = m.Call(args...) })
 	// lys-lib patch: replied files are closed after the send below.
 	defer closeReplyFiles(ret)
 	if err != nil {

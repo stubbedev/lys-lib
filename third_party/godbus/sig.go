@@ -6,21 +6,41 @@ import (
 	"strings"
 )
 
-var sigToType = map[byte]reflect.Type{
-	'y': byteType,
-	'b': boolType,
-	'n': int16Type,
-	'q': uint16Type,
-	'i': int32Type,
-	'u': uint32Type,
-	'x': int64Type,
-	't': uint64Type,
-	'd': float64Type,
-	's': stringType,
-	'g': signatureType,
-	'o': objectPathType,
-	'v': variantType,
-	'h': unixFDIndexType,
+// basicTypeOf is the type a basic type's signature byte decodes to
+// (lys-lib patch: a switch, where upstream built a map when the package
+// was imported).
+func basicTypeOf(sig byte) (reflect.Type, bool) {
+	switch sig {
+	case 'y':
+		return reflect.TypeFor[byte](), true
+	case 'b':
+		return reflect.TypeFor[bool](), true
+	case 'n':
+		return reflect.TypeFor[int16](), true
+	case 'q':
+		return reflect.TypeFor[uint16](), true
+	case 'i':
+		return reflect.TypeFor[int32](), true
+	case 'u':
+		return reflect.TypeFor[uint32](), true
+	case 'x':
+		return reflect.TypeFor[int64](), true
+	case 't':
+		return reflect.TypeFor[uint64](), true
+	case 'd':
+		return reflect.TypeFor[float64](), true
+	case 's':
+		return reflect.TypeFor[string](), true
+	case 'g':
+		return reflect.TypeFor[Signature](), true
+	case 'o':
+		return reflect.TypeFor[ObjectPath](), true
+	case 'v':
+		return reflect.TypeFor[Variant](), true
+	case 'h':
+		return reflect.TypeFor[UnixFDIndex](), true
+	}
+	return nil, false
 }
 
 // Signature represents a correct type signature as specified by the D-Bus
@@ -55,7 +75,7 @@ func getSignature(t reflect.Type, depth depthCounter) (sig string) {
 			panic("signature exceeds the length limitation")
 		}
 	}()
-	if t == fileType {
+	if t == fileType() {
 		return "h" // lys-lib patch (lys_file_reply.go)
 	}
 	// handle simple types first
@@ -69,12 +89,12 @@ func getSignature(t reflect.Type, depth depthCounter) (sig string) {
 	case reflect.Uint16:
 		return "q"
 	case reflect.Int, reflect.Int32:
-		if t == unixFDType {
+		if t == reflect.TypeFor[UnixFD]() {
 			return "h"
 		}
 		return "i"
 	case reflect.Uint, reflect.Uint32:
-		if t == unixFDIndexType {
+		if t == reflect.TypeFor[UnixFDIndex]() {
 			return "h"
 		}
 		return "u"
@@ -87,15 +107,15 @@ func getSignature(t reflect.Type, depth depthCounter) (sig string) {
 	case reflect.Pointer:
 		return getSignature(t.Elem(), depth)
 	case reflect.String:
-		if t == objectPathType {
+		if t == reflect.TypeFor[ObjectPath]() {
 			return "o"
 		}
 		return "s"
 	case reflect.Struct:
 		switch t {
-		case variantType:
+		case reflect.TypeFor[Variant]():
 			return "v"
-		case signatureType:
+		case reflect.TypeFor[Signature]():
 			return "g"
 		}
 		var s strings.Builder
@@ -227,8 +247,11 @@ func validSingle(s string, depth depthCounter) (err error, rem string) { //nolin
 			if len(s) == 0 {
 				return SignatureError{Sig: s, Reason: "empty dict"}, ""
 			}
-			if err, _ = validSingle(s[:1], depth.EnterArray().EnterDictEntry()); err != nil {
-				return err, ""
+			// lys-lib patch: a key is a basic type. Upstream took a
+			// variant for one too, a type nothing can then encode,
+			// name the signature of or hash.
+			if !strings.Contains(basicTypes, s[:1]) {
+				return SignatureError{Sig: s, Reason: "dict entry key is not a basic type"}, ""
 			}
 			err, nr := validSingle(s[1:], depth.EnterArray().EnterDictEntry())
 			if err != nil {
@@ -247,6 +270,11 @@ func validSingle(s string, depth depthCounter) (err error, rem string) { //nolin
 		}
 		rem = s[i+1:]
 		s = s[1:i]
+		if s == "" {
+			// lys-lib patch: the specification allows no empty struct,
+			// and an array of them never ends, as none takes a byte.
+			return SignatureError{Sig: "()", Reason: "empty struct"}, ""
+		}
 		for err == nil && s != "" {
 			err, s = validSingle(s, depth.EnterStruct())
 		}
@@ -277,24 +305,37 @@ func findMatching(s string, left, right rune) int {
 // typeFor returns the type of the given signature. It ignores any left over
 // characters and panics if s doesn't start with a valid type signature.
 func typeFor(s string) (t reflect.Type) {
+	return typeWithFDs(s, reflect.TypeFor[UnixFDIndex]())
+}
+
+// basicTypes are the types a dict entry's key can be.
+const basicTypes = "ybnqiuxtdsogh"
+
+// typeWithFDs is typeFor with fd as the type of an 'h', at any depth
+// (lys-lib patch): UnixFDIndex as the wire carries it, UnixFD once a
+// decoder holding the message's descriptors has resolved it.
+func typeWithFDs(s string, fd reflect.Type) (t reflect.Type) {
 	err, _ := validSingle(s, depthCounter{})
 	if err != nil {
 		panic(err)
 	}
 
-	if t, ok := sigToType[s[0]]; ok {
+	if s[0] == 'h' {
+		return fd
+	}
+	if t, ok := basicTypeOf(s[0]); ok {
 		return t
 	}
 	switch s[0] {
 	case 'a':
 		if s[1] == '{' {
 			i := strings.LastIndex(s, "}")
-			t = reflect.MapOf(sigToType[s[2]], typeFor(s[3:i]))
+			t = reflect.MapOf(typeWithFDs(s[2:3], fd), typeWithFDs(s[3:i], fd))
 		} else {
-			t = reflect.SliceOf(typeFor(s[1:]))
+			t = reflect.SliceOf(typeWithFDs(s[1:], fd))
 		}
 	case '(':
-		t = interfacesType
+		t = reflect.TypeFor[[]any]()
 	}
 	return
 }
