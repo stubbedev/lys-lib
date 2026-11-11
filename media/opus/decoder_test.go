@@ -3,7 +3,6 @@ package opus
 import (
 	"bytes"
 	"errors"
-	"math"
 	"testing"
 
 	"github.com/stubbedev/lys-lib/testbuild"
@@ -377,31 +376,5 @@ func BenchmarkDecode(b *testing.B) {
 		if _, err := d.Decode(dst[:0], packets[i%len(packets)]); err != nil {
 			b.Fatal(err)
 		}
-	}
-}
-
-func TestToInt16RoundsHalvesToEvenAndSaturates(t *testing.T) {
-	want := func(v float32) int16 {
-		return int16(math.RoundToEven(float64(max(-32768, min(32767, v)))))
-	}
-	values := []float32{
-		0, float32(math.Copysign(0, -1)), 0.5, -0.5, 1.5, -1.5, 2.5, -2.5, 0.49999997, -0.49999997, 0.50000006,
-		32766.5, 32766.498, 32767, 32767.002, 32768, 40000, -32767.5, -32767.502, -32768, -32768.004, -40000,
-		float32(math.Inf(1)), float32(math.Inf(-1)), math.MaxFloat32, -math.MaxFloat32, math.SmallestNonzeroFloat32,
-	}
-	for i := -65536; i <= 65536; i++ {
-		values = append(values, float32(i)/2, float32(i)/2+0.25, math.Nextafter32(float32(i)/2, 0))
-	}
-	noise := testNoise(21)
-	for range 1 << 16 {
-		values = append(values, 40000*noise.next())
-	}
-	for _, v := range values {
-		if got := toInt16(v); got != want(v) {
-			t.Fatalf("toInt16(%v) = %d, want %d", v, got, want(v))
-		}
-	}
-	if got := toInt16(float32(math.NaN())); got != 0 {
-		t.Errorf("toInt16(NaN) = %d, want 0", got)
 	}
 }

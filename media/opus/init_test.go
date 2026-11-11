@@ -28,3 +28,14 @@ func TestCodersShareTheTables(t *testing.T) {
 		d.Reset()
 	}
 }
+
+func TestTheResamplerTapsMirrorAcrossThePhases(t *testing.T) {
+	for phase, taps := range silkResamplerFIR {
+		mirrored := silkResamplerFIR[len(silkResamplerFIR)-1-phase]
+		for k := range silkFIROrder / 2 {
+			if taps[1][k] != mirrored[0][silkFIROrder/2-1-k] {
+				t.Errorf("phase %d tap %d is %d, want %d: the reference's row for phase %d, reversed", phase, silkFIROrder/2+k, taps[1][k], mirrored[0][silkFIROrder/2-1-k], len(silkResamplerFIR)-1-phase)
+			}
+		}
+	}
+}

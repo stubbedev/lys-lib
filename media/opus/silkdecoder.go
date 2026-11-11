@@ -711,19 +711,37 @@ func lpcAnalysisFilter(out, in []int16, b []int16, n int) {
 	clear(out[:d])
 }
 
-// lpcSynthesis runs the Q12 short-term predictor a over n samples of
-// the Q14 state s (whose first silkMaxLPCOrder entries are history),
-// adding each prediction to s, which is silk_decode_core's, PLC's and
-// CNG's inner loop.
-func lpcSynthesis(s []int32, a []int16, n int) {
-	half := intconv.Must[int32](len(a) >> 1)
-	for i := range n {
+// lpcSynthesis runs the Q12 short-term predictor a, of SILK's order
+// silkMinLPCOrder or silkMaxLPCOrder, over n samples of the Q14 state s
+// (whose first silkMaxLPCOrder entries are history), adding each
+// prediction to s, which is silk_decode_core's, PLC's and CNG's inner
+// loop. The taps are written out, as the reference's are, so that each
+// is one load from the sample's window with no bounds check.
+func lpcSynthesis(s []int32, a *[silkMaxLPCOrder]int16, order, n int) {
+	s = s[:n+silkMaxLPCOrder]
+	half := intconv.Must[int32](order >> 1)
+	wide := order == silkMaxLPCOrder
+	for i := range len(s) - silkMaxLPCOrder {
 		pred := half
-		hist := s[i : i+silkMaxLPCOrder]
-		for j, c := range a {
-			pred = smlawb(pred, hist[silkMaxLPCOrder-1-j], int32(c))
+		pred = smlawb(pred, s[i+15], int32(a[0]))
+		pred = smlawb(pred, s[i+14], int32(a[1]))
+		pred = smlawb(pred, s[i+13], int32(a[2]))
+		pred = smlawb(pred, s[i+12], int32(a[3]))
+		pred = smlawb(pred, s[i+11], int32(a[4]))
+		pred = smlawb(pred, s[i+10], int32(a[5]))
+		pred = smlawb(pred, s[i+9], int32(a[6]))
+		pred = smlawb(pred, s[i+8], int32(a[7]))
+		pred = smlawb(pred, s[i+7], int32(a[8]))
+		pred = smlawb(pred, s[i+6], int32(a[9]))
+		if wide {
+			pred = smlawb(pred, s[i+5], int32(a[10]))
+			pred = smlawb(pred, s[i+4], int32(a[11]))
+			pred = smlawb(pred, s[i+3], int32(a[12]))
+			pred = smlawb(pred, s[i+2], int32(a[13]))
+			pred = smlawb(pred, s[i+1], int32(a[14]))
+			pred = smlawb(pred, s[i], int32(a[15]))
 		}
-		s[silkMaxLPCOrder+i] = addSat32(s[silkMaxLPCOrder+i], lshiftSat32(pred, 4))
+		s[i+silkMaxLPCOrder] = addSat32(s[i+silkMaxLPCOrder], lshiftSat32(pred, 4))
 	}
 }
 
@@ -817,7 +835,7 @@ func (ch *silkChannel) decodeCore(ctl *silkControl, xq []int16, pulses []int32) 
 			}
 		}
 		copy(sLPC[silkMaxLPCOrder:], res)
-		lpcSynthesis(sLPC, a[:order], ch.subfrLength)
+		lpcSynthesis(sLPC, &a, order, ch.subfrLength)
 		out := xq[k*ch.subfrLength : (k+1)*ch.subfrLength]
 		for i := range out {
 			out[i] = sat16(rshiftRound(smulww(sLPC[silkMaxLPCOrder+i], gainQ10), 8))

@@ -385,7 +385,9 @@ families 0 (mono, stereo), 1 (Vorbis order, up to 8 channels: surround) and
 one byte (discontinuous transmission) is concealed as libopus conceals a lost
 frame: SILK's pitch and noise extrapolation with comfort noise bit-exactly,
 CELT's pitch or noise concealment within about 80 dB of libopus. Inband FEC
-(LBRR) is skipped; there is no call to conceal a whole lost packet.
+(LBRR) is skipped; there is no call to conceal a whole lost packet. Like the
+Vorbis and AAC decoders it rounds each sample to 16 bits to nearest, halves to
+even, saturating, through the one conversion the three share.
 
 Importing the package runs nothing: the MDCT, window and pulse codebook tables
 are built by the first `NewEncoder` or `NewDecoder` and shared by every one

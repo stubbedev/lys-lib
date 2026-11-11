@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/stubbedev/lys-lib/media/demux"
+	"github.com/stubbedev/lys-lib/media/internal/pcm"
 	"github.com/stubbedev/lys-lib/testbuild"
 )
 
@@ -146,7 +147,7 @@ func ffmpegDecode(t testing.TB, path string) []int16 {
 	b := runFFmpeg(t, "-i", path, "-f", "f32le", "-")
 	s := make([]int16, len(b)/4)
 	for i := range s {
-		s[i] = toInt16(32768 * math.Float32frombits(binary.LittleEndian.Uint32(b[4*i:])))
+		s[i] = pcm.Int16(32768 * math.Float32frombits(binary.LittleEndian.Uint32(b[4*i:])))
 	}
 	return s
 }

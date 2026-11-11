@@ -16,8 +16,13 @@ type silkResampler struct {
 	invRatio   int32
 	fsInKHz    int
 	inputDelay int
-	buf        [2*10*silkMaxFsKHz + silkFIROrder]int16
+	buf        [silkResamplerWindows + silkFIROrder]int16
 }
+
+// silkResamplerWindows is a power of two no smaller than the 2x
+// upsampled batch, 2*10*silkMaxFsKHz samples, so that the index of an
+// FIR window masked by it is one the compiler knows to lie within buf.
+const silkResamplerWindows = 512
 
 // init is silk_resampler_init(fsKHz*1000, 48000, decoder).
 func (r *silkResampler) init(fsKHz int32) {
@@ -47,34 +52,38 @@ func (r *silkResampler) resample(out, in []int16) {
 
 // iirFIR is silk_resampler_private_IIR_FIR.
 func (r *silkResampler) iirFIR(out, in []int16) {
-	buf := r.buf[:]
-	copy(buf, r.sFIR[:])
+	buf := &r.buf
+	copy(buf[:silkFIROrder], r.sFIR[:])
 	inc := r.invRatio
 	var nIn int
 	for {
 		nIn = min(len(in), r.batchSize)
 		up2HQ(&r.sIIR, buf[silkFIROrder:silkFIROrder+2*nIn], in[:nIn])
 		maxIndex := intconv.Must[int32](nIn) << 17
-		for index := int32(0); index < maxIndex; index += inc {
+		batch := out[:(maxIndex+inc-1)/inc]
+		index := int32(0)
+		for k := range batch {
 			phase := smulwb(index&0xffff, 12)
-			b := (*[silkFIROrder]int16)(buf[index>>16:])
-			lo, hi := &silkResamplerFracFIR12[phase], &silkResamplerFracFIR12[11-phase]
+			i := int(index>>16) & (silkResamplerWindows - 1)
+			b := *(*[silkFIROrder]int16)(buf[i : i+silkFIROrder])
+			lo, hi := silkResamplerFIR[phase][0], silkResamplerFIR[phase][1]
 			acc := int32(b[0]) * int32(lo[0])
 			acc += int32(b[1]) * int32(lo[1])
 			acc += int32(b[2]) * int32(lo[2])
 			acc += int32(b[3]) * int32(lo[3])
-			acc += int32(b[4]) * int32(hi[3])
-			acc += int32(b[5]) * int32(hi[2])
-			acc += int32(b[6]) * int32(hi[1])
-			acc += int32(b[7]) * int32(hi[0])
-			out[0] = sat16(rshiftRound(acc, 15))
-			out = out[1:]
+			acc += int32(b[4]) * int32(hi[0])
+			acc += int32(b[5]) * int32(hi[1])
+			acc += int32(b[6]) * int32(hi[2])
+			acc += int32(b[7]) * int32(hi[3])
+			batch[k] = sat16(rshiftRound(acc, 15))
+			index += inc
 		}
+		out = out[len(batch):]
 		in = in[nIn:]
 		if len(in) == 0 {
 			break
 		}
-		copy(buf, buf[nIn<<1:nIn<<1+silkFIROrder])
+		copy(buf[:silkFIROrder], buf[nIn<<1:nIn<<1+silkFIROrder])
 	}
 	copy(r.sFIR[:], buf[nIn<<1:nIn<<1+silkFIROrder])
 }

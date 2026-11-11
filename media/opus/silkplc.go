@@ -220,7 +220,7 @@ func (ch *silkChannel) conceal(ctl *silkControl, frame []int16) {
 	}
 	s := sLTPQ14[ltpMem-silkMaxLPCOrder:]
 	copy(s, ch.sLPC[:])
-	lpcSynthesis(s, a[:order], ch.frameLength)
+	lpcSynthesis(s, &a, order, ch.frameLength)
 	for i := range frame {
 		frame[i] = sat16(rshiftRound(smulww(s[silkMaxLPCOrder+i], prevGainQ10[1]), 8))
 	}
@@ -328,7 +328,7 @@ func (ch *silkChannel) comfortNoise(ctl *silkControl, frame []int16) {
 	var a [silkMaxLPCOrder]int16
 	nlsf2A(a[:order], c.smthNLSF[:order])
 	copy(sig[:silkMaxLPCOrder], c.synthState[:])
-	lpcSynthesis(sig[:], a[:order], len(frame))
+	lpcSynthesis(sig[:], &a, order, len(frame))
 	for i, v := range noise {
 		frame[i] = sat16(int32(frame[i]) + int32(sat16(rshiftRound(smulww(v, gainQ10), 8))))
 	}

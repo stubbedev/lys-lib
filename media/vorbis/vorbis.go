@@ -20,6 +20,7 @@ import (
 	"math"
 	"slices"
 
+	"github.com/stubbedev/lys-lib/media/internal/pcm"
 	"github.com/stubbedev/lys-lib/third_party/gomath"
 )
 
@@ -498,32 +499,21 @@ func (d *decoder) overlap(long bool, n int, out []int16) []int16 {
 		}
 		k := ch
 		for i := range lead {
-			frame[k] = toPCM(saved[i])
+			frame[k] = pcm.FullScale(saved[i])
 			k += d.channels
 		}
 		wn := len(w)
 		for i := range wn {
-			frame[k] = toPCM(float32(saved[lead+i]*w[wn-1-i]) + float32(p[from+i]*w[i]))
+			frame[k] = pcm.FullScale(float32(saved[lead+i]*w[wn-1-i]) + float32(p[from+i]*w[i]))
 			k += d.channels
 		}
 		for i := from + wn; i < from+wn+(frames-lead-wn); i++ {
-			frame[k] = toPCM(p[i])
+			frame[k] = pcm.FullScale(p[i])
 			k += d.channels
 		}
 		copy(saved, p[half:n])
 	}
 	return out
-}
-
-func toPCM(x float32) int16 {
-	v := math.RoundToEven(float64(x * 32768))
-	switch {
-	case v > math.MaxInt16:
-		return math.MaxInt16
-	case v < math.MinInt16:
-		return math.MinInt16
-	}
-	return int16(v)
 }
 
 // Decoder decodes a Vorbis stream packet by packet, for a container

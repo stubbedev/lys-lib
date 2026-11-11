@@ -7,10 +7,10 @@ package aac
 import (
 	"errors"
 	"fmt"
-	"math"
 	"slices"
 
 	"github.com/stubbedev/lys-lib/media/internal/mp4audio"
+	"github.com/stubbedev/lys-lib/media/internal/pcm"
 )
 
 // Decoding fails with these, wrapped with what was being decoded.
@@ -281,7 +281,7 @@ func (d *Decoder) Decode(dst []int16, packet []byte) ([]int16, error) {
 	for c := range n {
 		src := &d.out[c]
 		for i, v := range src {
-			out[i*n+c] = toInt16(v)
+			out[i*n+c] = pcm.Int16(v)
 		}
 	}
 	return dst, nil
@@ -355,10 +355,6 @@ func (d *Decoder) stage(cs *channelStream, ch int) {
 	c := &d.channels[ch]
 	c.seq = cs.info.seq
 	c.shape = cs.info.shape
-}
-
-func toInt16(v float32) int16 {
-	return int16(math.RoundToEven(float64(max(-32768, min(32767, v)))))
 }
 
 func b2i(b bool) int {

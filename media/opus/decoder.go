@@ -7,6 +7,7 @@ import (
 	"slices"
 
 	"github.com/stubbedev/lys-lib/intconv"
+	"github.com/stubbedev/lys-lib/media/internal/pcm"
 	"github.com/stubbedev/lys-lib/third_party/gomath"
 )
 
@@ -243,27 +244,10 @@ func (d *Decoder) Decode(dst []int16, packet []byte) ([]int16, error) {
 		st := &d.streams[s]
 		src, step, width := st.pcm[sc:], st.channels, d.channels
 		for i, o := 0, c; o < len(out); i, o = i+step, o+width {
-			out[o] = toInt16(src[i] * 32768)
+			out[o] = pcm.FullScale(src[i])
 		}
 	}
 	return dst, nil
-}
-
-// toInt16 rounds v to the nearest int16, halves to even, saturating;
-// NaN is 0. Adding 1.5·2²³ to a value within int16 leaves a float32
-// with no fraction bits, which rounds it as the conversion must; v is
-// converted first so that a product passed in cannot fuse into the sum.
-func toInt16(v float32) int16 {
-	const integral = 3 << 22
-	switch {
-	case v > -32768 && v < 32767:
-		return int16(float32(float32(v)+integral) - integral)
-	case v >= 32767:
-		return 32767
-	case v <= -32768:
-		return -32768
-	}
-	return 0
 }
 
 // streamDecoder is OpusDecoder: one elementary stream of one or two
