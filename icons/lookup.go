@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 
 	"github.com/stubbedev/lys-lib/assetfile"
@@ -245,10 +246,40 @@ type themeIndex struct {
 	resolved map[resolveKey]string
 }
 
+// listConcurrency bounds the directory reads an index build has in
+// flight. A build is a thousand listings of directories that hold an
+// icon or two, latency-bound on the file system, which serves a slow
+// mount's round trips (a VM's shared store) in parallel.
+const listConcurrency = 16
+
+// forEachConcurrently runs f for every index below n, at most
+// listConcurrency at once, and returns once all have.
+func forEachConcurrently(n int, f func(i int)) {
+	var next atomic.Int64
+	var wg sync.WaitGroup
+	for range min(n, listConcurrency) {
+		wg.Go(func() {
+			for i := int(next.Add(1) - 1); i < n; i = int(next.Add(1) - 1) {
+				f(i)
+			}
+		})
+	}
+	wg.Wait()
+}
+
+// plannedSlot is a slot of an index being built, and which of the
+// build's listings holds its entries.
+type plannedSlot struct {
+	slot    slot
+	listing int
+}
+
 // buildThemeIndex parses the chain of theme under baseDirs and lists
 // each of its directories once. A theme root missing from a base
 // directory skips all its directories there, and a directory whose top
-// component the root does not list is never opened.
+// component the root does not list is never opened. The roots, and
+// then the directories, are read concurrently; the index holds them in
+// lookup order whatever order the reads end in.
 func buildThemeIndex(fsys themeFS, theme string, baseDirs []string) *themeIndex {
 	ix := &themeIndex{
 		fsys:     fsys,
@@ -256,14 +287,24 @@ func buildThemeIndex(fsys themeFS, theme string, baseDirs []string) *themeIndex 
 		stems:    map[string][]hit{},
 		resolved: map[resolveKey]string{},
 	}
-	listings := map[string][]fs.DirEntry{}
-	list := func(path string) []fs.DirEntry {
-		des, ok := listings[path]
+	roots := make([]themeRootListing, len(ix.chain)*len(baseDirs))
+	forEachConcurrently(len(roots), func(i int) {
+		t, base := ix.chain[i/len(baseDirs)], baseDirs[i%len(baseDirs)]
+		roots[i] = themeRoot(fsys, filepath.Join(base, t.DirName))
+	})
+	var (
+		planned []plannedSlot
+		paths   []string
+	)
+	listing := map[string]int{}
+	plan := func(s slot) {
+		n, ok := listing[s.path]
 		if !ok {
-			des, _ = fsys.ReadDir(path)
-			listings[path] = des
+			n = len(paths)
+			listing[s.path] = n
+			paths = append(paths, s.path)
 		}
-		return des
+		planned = append(planned, plannedSlot{slot: s, listing: n})
 	}
 	for ti, t := range ix.chain {
 		var scales []int
@@ -273,46 +314,57 @@ func buildThemeIndex(fsys themeFS, theme string, baseDirs []string) *themeIndex 
 			}
 		}
 		ix.scales = append(ix.scales, scales)
-		for _, base := range baseDirs {
-			top, prune, skip := themeRoot(fsys, filepath.Join(base, t.DirName))
-			if skip {
+		for bi, base := range baseDirs {
+			root := roots[ti*len(baseDirs)+bi]
+			if root.skip {
 				continue
 			}
 			for i := range t.Dirs {
 				d := &t.Dirs[i]
-				if first, ok := topComponent(d.Path); prune && ok && !top[first] {
+				if first, ok := topComponent(d.Path); root.prune && ok && !root.top[first] {
 					continue
 				}
-				path := filepath.Join(base, t.DirName, d.Path)
-				ix.add(slot{path: path, dir: d, theme: ti}, list(path))
+				plan(slot{path: filepath.Join(base, t.DirName, d.Path), dir: d, theme: ti})
 			}
 		}
-		ix.themeEnd = append(ix.themeEnd, int32(len(ix.slots))) //nolint:gosec // slots are directories, far below 2^31
+		ix.themeEnd = append(ix.themeEnd, int32(len(planned))) //nolint:gosec // slots are directories, far below 2^31
 	}
 	for _, base := range baseDirs {
-		path := filepath.Join(base, "", "")
-		ix.add(slot{path: path, theme: len(ix.chain)}, list(path))
+		plan(slot{path: filepath.Join(base, "", ""), theme: len(ix.chain)})
+	}
+	listings := make([][]fs.DirEntry, len(paths))
+	forEachConcurrently(len(paths), func(i int) {
+		listings[i], _ = fsys.ReadDir(paths[i])
+	})
+	ix.slots = make([]slot, 0, len(planned))
+	for _, p := range planned {
+		ix.add(p.slot, listings[p.listing])
 	}
 	return ix
 }
 
-// themeRoot lists a theme's root directory under one base directory.
-// skip reports that it does not exist there; prune that top holds its
-// entries, so a directory whose top component is missing need not be
-// opened. An unreadable root prunes nothing.
-func themeRoot(fsys themeFS, root string) (top map[string]bool, prune, skip bool) {
+// themeRootListing is a theme's root directory under one base
+// directory: skip reports that it does not exist there; prune that top
+// holds its entries, so a directory whose top component is missing need
+// not be opened. An unreadable root prunes nothing.
+type themeRootListing struct {
+	top         map[string]bool
+	prune, skip bool
+}
+
+func themeRoot(fsys themeFS, root string) themeRootListing {
 	des, err := fsys.ReadDir(root)
 	if errors.Is(err, fs.ErrNotExist) || errors.Is(err, syscall.ENOTDIR) {
-		return nil, false, true
+		return themeRootListing{skip: true}
 	}
 	if err != nil {
-		return nil, false, false
+		return themeRootListing{}
 	}
-	top = make(map[string]bool, len(des))
+	top := make(map[string]bool, len(des))
 	for _, de := range des {
 		top[de.Name()] = true
 	}
-	return top, true, false
+	return themeRootListing{top: top, prune: true}
 }
 
 // topComponent returns the first path component of a theme directory;

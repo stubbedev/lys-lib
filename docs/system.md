@@ -329,8 +329,10 @@ match rules when closed.
 `icons` is the freedesktop icon theme spec in pure Go: `index.theme`
 inheritance, directory lookup with hicolor fallback, a raster cache per name,
 size and scale, and bundled [Lucide](https://lucide.dev) icons as the last tier.
-`icontheme` is its narrow form for programs that only rasterize named icons,
-such as a compositor.
+A cache's first lookup lists every directory of the theme chain, sixteen at a
+time, since a slow mount answers them in parallel; later lookups list nothing
+until a reset. `icontheme` is its narrow form for programs that only rasterize
+named icons, such as a compositor.
 
 ## i18n
 

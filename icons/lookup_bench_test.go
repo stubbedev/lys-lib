@@ -135,3 +135,25 @@ func BenchmarkLookup72(b *testing.B) {
 		})
 	}
 }
+
+// BenchmarkFirstLookup is a process's first icon: a fresh cache indexes
+// the theme chain for it, on the benchmark tree and on the themes this
+// machine has installed, for a name found in the first theme and for
+// one no theme holds, which is what an application's own icons are.
+func BenchmarkFirstLookup(b *testing.B) {
+	paths, _ := benchTree(b)
+	for _, tree := range []struct {
+		name  string
+		paths []string
+	}{{"tree", paths}, {"installed", nil}} {
+		for _, name := range []string{"glyph00-symbolic", "absent00"} {
+			b.Run(tree.name+"/"+name, func(b *testing.B) {
+				for b.Loop() {
+					c := New(DefaultTheme)
+					c.SetSearchPaths(tree.paths)
+					_, _ = c.Lookup(name, 16, 120)
+				}
+			})
+		}
+	}
+}

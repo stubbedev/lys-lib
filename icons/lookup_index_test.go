@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"maps"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -11,6 +12,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/stubbedev/lys-lib/testbuild"
 	"github.com/stubbedev/lys-lib/xdg"
@@ -337,5 +339,59 @@ func TestResolutionMemoIsBounded(t *testing.T) {
 	}
 	if path := mustLookup(t, c, "flag", 16, 120); filepath.Base(path) != "flag.png" {
 		t.Errorf("flag after the memo restarted = %q, want flag.png", path)
+	}
+}
+
+// overlapFS holds every directory listing until another is in flight
+// beside it, or for at most overlapWait, so a build that lists one
+// directory at a time is seen never to overlap.
+type overlapFS struct {
+	countingFS
+	mu         sync.Mutex
+	inFlight   int
+	overlapped bool
+	released   chan struct{}
+	once       sync.Once
+}
+
+const overlapWait = 10 * time.Second
+
+func (f *overlapFS) ReadDir(name string) ([]fs.DirEntry, error) {
+	f.mu.Lock()
+	f.inFlight++
+	if f.inFlight > 1 {
+		f.overlapped = true
+		f.once.Do(func() { close(f.released) })
+	}
+	f.mu.Unlock()
+	defer func() {
+		f.mu.Lock()
+		f.inFlight--
+		f.mu.Unlock()
+	}()
+	select {
+	case <-f.released:
+	case <-time.After(overlapWait):
+		f.once.Do(func() { close(f.released) })
+	}
+	return f.countingFS.ReadDir(name)
+}
+
+// The index lists the theme chain's directories concurrently, and
+// holds the same slots and stems whatever order the listings end in.
+func TestTheIndexListsItsDirectoriesConcurrently(t *testing.T) {
+	paths := equivTree(t)
+	fsys := &overlapFS{released: make(chan struct{})}
+	ix := buildThemeIndex(fsys, "testtheme", paths)
+	fsys.mu.Lock()
+	overlapped := fsys.overlapped
+	fsys.mu.Unlock()
+	if !overlapped {
+		t.Fatal("no two listings were in flight at once")
+	}
+	want := buildThemeIndex(osFS{}, "testtheme", paths)
+	sameSlot := func(a, b slot) bool { return a.path == b.path && a.theme == b.theme }
+	if !slices.EqualFunc(ix.slots, want.slots, sameSlot) || !maps.EqualFunc(ix.stems, want.stems, slices.Equal) {
+		t.Errorf("a build whose listings overlapped indexed %d slots and %d stems, another %d and %d", len(ix.slots), len(ix.stems), len(want.slots), len(want.stems))
 	}
 }
