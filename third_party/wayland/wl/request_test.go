@@ -171,6 +171,47 @@ func TestAFlushLargerThanTheSocketBufferFinishes(t *testing.T) {
 	}
 }
 
+func TestWaitWritableSeesRoomMadeBeforeItWaits(t *testing.T) {
+	ctx, peer := requestContext(t)
+	defer peer.Close()
+	raw, err := ctx.conn.SyscallConn()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := raw.Control(func(fd uintptr) {
+		if err := syscall.SetsockoptInt(int(fd), syscall.SOL_SOCKET, syscall.SO_SNDBUF, 2048); err != nil {
+			t.Error(err)
+		}
+	}); err != nil {
+		t.Fatal(err)
+	}
+	s := NewSurface(ctx)
+	const damageSize = 24
+	queued := 0
+	for ctx.Backlog() == 0 {
+		if queued > 1<<20 {
+			t.Fatal("the socket never filled")
+		}
+		if err := s.Damage(0, 0, 1, 1); err != nil {
+			t.Fatal(err)
+		}
+		queued += damageSize
+	}
+	if _, err := io.ReadFull(peer, make([]byte, queued-ctx.Backlog())); err != nil {
+		t.Fatal(err)
+	}
+	woke := make(chan error, 1)
+	go func() { woke <- ctx.WaitWritable() }()
+	select {
+	case err := <-woke:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("WaitWritable slept on a socket the compositor had already drained")
+	}
+}
+
 func TestStringAndArrayWireForm(t *testing.T) {
 	ctx, peer := requestContext(t)
 	defer peer.Close()

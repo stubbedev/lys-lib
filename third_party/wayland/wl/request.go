@@ -8,6 +8,8 @@ import (
 	"syscall"
 	"unsafe"
 
+	"golang.org/x/sys/unix"
+
 	"github.com/stubbedev/lys-lib/third_party/wayland/os"
 )
 
@@ -287,11 +289,10 @@ func (ctx *Context) WaitWritable() error {
 	if err != nil {
 		return err
 	}
-	polled := false
-	err = raw.Write(func(uintptr) bool {
-		done := polled
-		polled = true
-		return done
+	err = raw.Write(func(fd uintptr) bool {
+		ready := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLOUT}}
+		n, err := unix.Poll(ready, 0)
+		return err != nil || n > 0
 	})
 	if err != nil {
 		return fmt.Errorf("wl: wait for room in the socket: %w", err)
