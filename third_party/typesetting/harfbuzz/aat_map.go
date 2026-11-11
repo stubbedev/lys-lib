@@ -162,7 +162,7 @@ func (mb *aatMapBuilder) addFeature(feature Feature) {
 		return
 	}
 
-	if feature.Tag == ot.NewTag('a', 'a', 'l', 't') {
+	if feature.Tag == ot.Tag('a'<<24|'a'<<16|'l'<<8|'t') {
 		if fn := feat.GetFeature(aatLayoutFeatureTypeCharacterAlternatives); fn == nil || len(fn.SettingTable) == 0 {
 			return
 		}

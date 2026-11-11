@@ -59,7 +59,7 @@ type otComplexShaper interface {
  * For lack of a better place, put Zawgyi script hack here.
  * https://github.com/harfbuzz/harfbuzz/issues/1162
  */
-var scriptMyanmarZawgyi = language.Script(ot.NewTag('Q', 'a', 'a', 'g'))
+var scriptMyanmarZawgyi = language.Script(ot.Tag('Q'<<24 | 'a'<<16 | 'a'<<8 | 'g'))
 
 // categorizeComplex choose the complex shaper implementation
 func categorizeComplex(script language.Script, direction Direction, gsubScript ot.Tag) otComplexShaper {
@@ -87,8 +87,8 @@ func categorizeComplex(script language.Script, direction Direction, gsubScript o
 		 * Otherwise, use the specific shaper.
 		 *
 		 * If it's indy3 tag, send to USE. */
-		if gsubScript == ot.NewTag('D', 'F', 'L', 'T') ||
-			gsubScript == ot.NewTag('l', 'a', 't', 'n') {
+		if gsubScript == ot.Tag('D'<<24|'F'<<16|'L'<<8|'T') ||
+			gsubScript == ot.Tag('l'<<24|'a'<<16|'t'<<8|'n') {
 			return complexShaperDefault{}
 		} else if (gsubScript & 0x000000FF) == '3' {
 			return &complexShaperUSE{}
@@ -104,9 +104,9 @@ func categorizeComplex(script language.Script, direction Direction, gsubScript o
 		 * If designer designed for 'mymr' tag, also send to default
 		 * shaper.  That's tag used from before Myanmar shaping spec
 		 * was developed.  The shaping spec uses 'mym2' tag. */
-		if gsubScript == ot.NewTag('D', 'F', 'L', 'T') ||
-			gsubScript == ot.NewTag('l', 'a', 't', 'n') ||
-			gsubScript == ot.NewTag('m', 'y', 'm', 'r') {
+		if gsubScript == ot.Tag('D'<<24|'F'<<16|'L'<<8|'T') ||
+			gsubScript == ot.Tag('l'<<24|'a'<<16|'t'<<8|'n') ||
+			gsubScript == ot.Tag('m'<<24|'y'<<16|'m'<<8|'r') {
 			return complexShaperDefault{}
 		}
 		return complexShaperMyanmar{}
@@ -165,8 +165,8 @@ func categorizeComplex(script language.Script, direction Direction, gsubScript o
 		 * Otherwise, use the specific shaper.
 		 * Note that for some simple scripts, there may not be *any*
 		 * GSUB/GPOS needed, so there may be no scripts found! */
-		if gsubScript == ot.NewTag('D', 'F', 'L', 'T') ||
-			gsubScript == ot.NewTag('l', 'a', 't', 'n') {
+		if gsubScript == ot.Tag('D'<<24|'F'<<16|'L'<<8|'T') ||
+			gsubScript == ot.Tag('l'<<24|'a'<<16|'t'<<8|'n') {
 			return complexShaperDefault{}
 		}
 		return &complexShaperUSE{}

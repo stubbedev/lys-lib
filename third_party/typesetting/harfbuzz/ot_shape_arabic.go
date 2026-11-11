@@ -3,6 +3,7 @@ package harfbuzz
 import (
 	"fmt"
 	"sort"
+	"sync"
 
 	"github.com/stubbedev/lys-lib/third_party/typesetting/font"
 	ot "github.com/stubbedev/lys-lib/third_party/typesetting/font/opentype"
@@ -73,8 +74,22 @@ const (
 	joiningTypeC = joiningTypeD
 )
 
+var arabicJoinings struct {
+	once   sync.Once
+	byRune map[rune]arabicJoining
+}
+
+// arabicJoiningOf is the joining of u in arabicJoiningTable (lys-lib
+// patch: the map is built for the first Arabic text shaped, where
+// upstream built it when the package was imported).
+func arabicJoiningOf(u rune) (arabicJoining, bool) {
+	arabicJoinings.once.Do(func() { arabicJoinings.byRune = arabicJoiningTable() })
+	j, ok := arabicJoinings.byRune[u]
+	return j, ok
+}
+
 func getJoiningType(u rune, genCat generalCategory) uint8 {
-	if jType, ok := arabicJoinings[u]; ok {
+	if jType, ok := arabicJoiningOf(u); ok {
 		switch jType {
 		case ajU:
 			return joiningTypeU
@@ -107,13 +122,13 @@ func featureIsSyriac(tag ot.Tag) bool {
 }
 
 var arabicFeatures = [...]ot.Tag{
-	ot.NewTag('i', 's', 'o', 'l'),
-	ot.NewTag('f', 'i', 'n', 'a'),
-	ot.NewTag('f', 'i', 'n', '2'),
-	ot.NewTag('f', 'i', 'n', '3'),
-	ot.NewTag('m', 'e', 'd', 'i'),
-	ot.NewTag('m', 'e', 'd', '2'),
-	ot.NewTag('i', 'n', 'i', 't'),
+	ot.Tag('i'<<24 | 's'<<16 | 'o'<<8 | 'l'),
+	ot.Tag('f'<<24 | 'i'<<16 | 'n'<<8 | 'a'),
+	ot.Tag('f'<<24 | 'i'<<16 | 'n'<<8 | '2'),
+	ot.Tag('f'<<24 | 'i'<<16 | 'n'<<8 | '3'),
+	ot.Tag('m'<<24 | 'e'<<16 | 'd'<<8 | 'i'),
+	ot.Tag('m'<<24 | 'e'<<16 | 'd'<<8 | '2'),
+	ot.Tag('i'<<24 | 'n'<<16 | 'i'<<8 | 't'),
 }
 
 /* Same order as the feature array */
@@ -198,11 +213,11 @@ func (cs *complexShaperArabic) collectFeatures(plan *otShapePlanner) {
 	* pause for Arabic, not other scripts.
 	 */
 
-	map_.enableFeature(ot.NewTag('s', 't', 'c', 'h'))
+	map_.enableFeature(ot.Tag('s'<<24 | 't'<<16 | 'c'<<8 | 'h'))
 	map_.addGSUBPause(recordStch)
 
-	map_.enableFeatureExt(ot.NewTag('c', 'c', 'm', 'p'), ffManualZWJ, 1)
-	map_.enableFeatureExt(ot.NewTag('l', 'o', 'c', 'l'), ffManualZWJ, 1)
+	map_.enableFeatureExt(ot.Tag('c'<<24|'c'<<16|'m'<<8|'p'), ffManualZWJ, 1)
+	map_.enableFeatureExt(ot.Tag('l'<<24|'o'<<16|'c'<<8|'l'), ffManualZWJ, 1)
 
 	map_.addGSUBPause(nil)
 
@@ -220,19 +235,19 @@ func (cs *complexShaperArabic) collectFeatures(plan *otShapePlanner) {
 	* however, it says a ZWJ should also mean "don't ligate". So we run
 	* the main ligating features as MANUAL_ZWJ. */
 
-	map_.enableFeatureExt(ot.NewTag('r', 'l', 'i', 'g'), ffManualZWJ|ffHasFallback, 1)
+	map_.enableFeatureExt(ot.Tag('r'<<24|'l'<<16|'i'<<8|'g'), ffManualZWJ|ffHasFallback, 1)
 
 	if plan.props.Script == language.Arabic {
 		map_.addGSUBPause(arabicFallbackShape)
 	}
-	map_.enableFeatureExt(ot.NewTag('c', 'a', 'l', 't'), ffManualZWJ, 1)
+	map_.enableFeatureExt(ot.Tag('c'<<24|'a'<<16|'l'<<8|'t'), ffManualZWJ, 1)
 	/* https://github.com/harfbuzz/harfbuzz/issues/1573 */
-	if !map_.hasFeature(ot.NewTag('r', 'c', 'l', 't')) {
+	if !map_.hasFeature(ot.Tag('r'<<24 | 'c'<<16 | 'l'<<8 | 't')) {
 		map_.addGSUBPause(nil)
 	}
 
-	map_.enableFeatureExt(ot.NewTag('l', 'i', 'g', 'a'), ffManualZWJ, 1)
-	map_.enableFeatureExt(ot.NewTag('c', 'l', 'i', 'g'), ffManualZWJ, 1)
+	map_.enableFeatureExt(ot.Tag('l'<<24|'i'<<16|'g'<<8|'a'), ffManualZWJ, 1)
+	map_.enableFeatureExt(ot.Tag('c'<<24|'l'<<16|'i'<<8|'g'), ffManualZWJ, 1)
 
 	/* The spec includes 'cswh'.  Earlier versions of Windows
 	* used to enable this by default, but testing suggests
@@ -243,7 +258,7 @@ func (cs *complexShaperArabic) collectFeatures(plan *otShapePlanner) {
 	* to fixup broken glyph sequences.  Oh well...
 	* Test case: U+0643,U+0640,U+0631. */
 	//map_.enable_feature (newTag('c','s','w','h'));
-	map_.enableFeatureExt(ot.NewTag('m', 's', 'e', 't'), ffManualZWJ, 1)
+	map_.enableFeatureExt(ot.Tag('m'<<24|'s'<<16|'e'<<8|'t'), ffManualZWJ, 1)
 }
 
 type arabicShapePlan struct {
@@ -261,7 +276,7 @@ func newArabicPlan(plan *otShapePlan) arabicShapePlan {
 	var arabicPlan arabicShapePlan
 
 	arabicPlan.doFallback = plan.props.Script == language.Arabic
-	arabicPlan.hasStch = plan.otMap.getMask1(ot.NewTag('s', 't', 'c', 'h')) != 0
+	arabicPlan.hasStch = plan.otMap.getMask1(ot.Tag('s'<<24|'t'<<16|'c'<<8|'h')) != 0
 	for i, arabFeat := range arabicFeatures {
 		arabicPlan.maskArray[i] = plan.otMap.getMask1(arabFeat)
 		arabicPlan.doFallback = arabicPlan.doFallback &&
@@ -684,13 +699,13 @@ func (cs *complexShaperArabic) reorderMarks(_ *otShapePlan, buffer *Buffer, star
 // We currently support one subtable per lookup, and one lookup
 // per feature.  But we allow duplicate features, so we use that!
 var arabicFallbackFeatures = [...]ot.Tag{
-	ot.NewTag('i', 'n', 'i', 't'),
-	ot.NewTag('m', 'e', 'd', 'i'),
-	ot.NewTag('f', 'i', 'n', 'a'),
-	ot.NewTag('i', 's', 'o', 'l'),
-	ot.NewTag('r', 'l', 'i', 'g'),
-	ot.NewTag('r', 'l', 'i', 'g'),
-	ot.NewTag('r', 'l', 'i', 'g'),
+	ot.Tag('i'<<24 | 'n'<<16 | 'i'<<8 | 't'),
+	ot.Tag('m'<<24 | 'e'<<16 | 'd'<<8 | 'i'),
+	ot.Tag('f'<<24 | 'i'<<16 | 'n'<<8 | 'a'),
+	ot.Tag('i'<<24 | 's'<<16 | 'o'<<8 | 'l'),
+	ot.Tag('r'<<24 | 'l'<<16 | 'i'<<8 | 'g'),
+	ot.Tag('r'<<24 | 'l'<<16 | 'i'<<8 | 'g'),
+	ot.Tag('r'<<24 | 'l'<<16 | 'i'<<8 | 'g'),
 }
 
 // used to sort both array at the same time
@@ -855,7 +870,7 @@ func (fbPlan *arabicFallbackPlan) initWin1256(plan *otShapePlan, font *Font) boo
 	}
 
 	var j int
-	for _, man := range arabicWin1256GsubLookups {
+	for _, man := range arabicWin1256GsubLookups() {
 		fbPlan.maskArray[j] = plan.otMap.getMask1(man.tag)
 		if fbPlan.maskArray[j] != 0 {
 			if man.lookup != nil {

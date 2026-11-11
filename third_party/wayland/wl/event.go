@@ -47,7 +47,7 @@ const (
 	headerSize          = 8
 )
 
-var controlLen = os.CmsgSpace(libwaylandMaxFDsOut * 4)
+func controlLen() int { return os.CmsgSpace(libwaylandMaxFDsOut * 4) }
 
 // eventPool holds the Event each dispatch decodes from. A handler may run
 // a nested dispatch, so the context cannot keep just one.
@@ -182,7 +182,7 @@ func (ctx *Context) pollReadable(fd uintptr) {
 
 func (ctx *Context) read(b []byte) (int, error) {
 	if ctx.control == nil {
-		ctx.control = make([]byte, controlLen)
+		ctx.control = make([]byte, controlLen())
 	}
 	n, oobn, flags, err := ctx.socketRecv(b, ctx.control)
 	if oobn > 0 {

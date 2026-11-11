@@ -38,7 +38,7 @@ const (
 )
 
 // errorText is pa_strerror's table.
-var errorText = map[Error]string{
+var errorText = [...]string{
 	ErrAccess:               "Access denied",
 	ErrCommand:              "Unknown command",
 	ErrInvalid:              "Invalid argument",
@@ -68,8 +68,8 @@ var errorText = map[Error]string{
 }
 
 func (e Error) Error() string {
-	if text, ok := errorText[e]; ok {
-		return "pulse: " + text
+	if e < Error(len(errorText)) && errorText[e] != "" {
+		return "pulse: " + errorText[e]
 	}
 	return "pulse: error code " + strconv.FormatUint(uint64(e), 10)
 }

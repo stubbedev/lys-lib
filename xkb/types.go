@@ -325,7 +325,13 @@ func (info *typesInfo) setLevelName(t *typeInfo, l lhs, value expr) error {
 	return nil
 }
 
-var requiredTypes = map[string]bool{"ONE_LEVEL": true, "TWO_LEVEL": true, "ALPHABETIC": true, "KEYPAD": true}
+func requiredType(name string) bool {
+	switch name {
+	case "ONE_LEVEL", "TWO_LEVEL", "ALPHABETIC", "KEYPAD":
+		return true
+	}
+	return false
+}
 
 func (m *Keymap) compileTypes(f *xkbFile, ctx *session) error {
 	info := newTypesInfo(ctx, 0, &m.mods)
@@ -345,7 +351,7 @@ func (m *Keymap) compileTypes(f *xkbFile, ctx *session) error {
 				numLevels:  t.numLevels,
 				levelNames: t.levelNames,
 				entries:    t.entries,
-				required:   t.numLevels <= 2 && requiredTypes[t.name],
+				required:   t.numLevels <= 2 && requiredType(t.name),
 			}
 		}
 	}

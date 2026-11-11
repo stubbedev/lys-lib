@@ -319,7 +319,7 @@ func File(fd dbus.UnixFD, name string) (*os.File, error) {
 // and read only: a service may export thousands of objects of one type.
 var (
 	introspectedMu      sync.RWMutex
-	introspectedMethods = map[reflect.Type][]introspect.Method{}
+	introspectedMethods map[reflect.Type][]introspect.Method
 )
 
 func methodsOf(v any) []introspect.Method {
@@ -332,6 +332,9 @@ func methodsOf(v any) []introspect.Method {
 	}
 	m = introspect.Methods(v)
 	introspectedMu.Lock()
+	if introspectedMethods == nil {
+		introspectedMethods = map[reflect.Type][]introspect.Method{}
+	}
 	introspectedMethods[t] = m
 	introspectedMu.Unlock()
 	return m

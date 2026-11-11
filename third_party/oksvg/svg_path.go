@@ -58,11 +58,11 @@ func (svgp *SvgPath) DrawTransformed(r *rasterx.Dasher, opacity float64, t raste
 		svgp.mAdder.Adder = r
 		lineGap := svgp.LineGap
 		if lineGap == nil {
-			lineGap = DefaultStyle.LineGap
+			lineGap = DefaultStyle().LineGap
 		}
 		lineCap := svgp.LineCap
 		if lineCap == nil {
-			lineCap = DefaultStyle.LineCap
+			lineCap = DefaultStyle().LineCap
 		}
 		leadLineCap := lineCap
 		if svgp.LeadLineCap != nil {

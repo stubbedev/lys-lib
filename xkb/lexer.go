@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strconv"
 	"strings"
+	"sync"
 	"unicode/utf8"
 )
 
@@ -75,52 +76,64 @@ const (
 	tokAlternateGroup
 )
 
-var keywords = map[string]tokenKind{
-	"action":                tokAction,
-	"alias":                 tokAlias,
-	"alphanumeric_keys":     tokAlphanumericKeys,
-	"alternate_group":       tokAlternateGroup,
-	"alternate":             tokAlternate,
-	"augment":               tokAugment,
-	"default":               tokDefault,
-	"function_keys":         tokFunctionKeys,
-	"group":                 tokGroup,
-	"hidden":                tokHidden,
-	"include":               tokInclude,
-	"indicator":             tokIndicator,
-	"interpret":             tokInterpret,
-	"keypad_keys":           tokKeypadKeys,
-	"key":                   tokKey,
-	"keys":                  tokKeys,
-	"logo":                  tokLogo,
-	"modifier_keys":         tokModifierKeys,
-	"modifier_map":          tokModifierMap,
-	"mod_map":               tokModifierMap,
-	"modmap":                tokModifierMap,
-	"outline":               tokOutline,
-	"overlay":               tokOverlay,
-	"override":              tokOverride,
-	"partial":               tokPartial,
-	"replace":               tokReplace,
-	"row":                   tokRow,
-	"section":               tokSection,
-	"shape":                 tokShape,
-	"solid":                 tokSolid,
-	"text":                  tokText,
-	"type":                  tokType,
-	"virtual_modifiers":     tokVirtualMods,
-	"virtual":               tokVirtual,
-	"xkb_compatibility_map": tokCompat,
-	"xkb_compatibility":     tokCompat,
-	"xkb_compat_map":        tokCompat,
-	"xkb_compat":            tokCompat,
-	"xkb_geometry":          tokGeometry,
-	"xkb_keycodes":          tokKeycodes,
-	"xkb_keymap":            tokKeymap,
-	"xkb_layout":            tokLayout,
-	"xkb_semantics":         tokSemantics,
-	"xkb_symbols":           tokSymbols,
-	"xkb_types":             tokTypes,
+var keywords struct {
+	once   sync.Once
+	byName map[string]tokenKind
+}
+
+// keywordKinds is the token kind of each keyword, built for the first
+// keymap the process compiles.
+func keywordKinds() map[string]tokenKind {
+	keywords.once.Do(func() {
+		keywords.byName = map[string]tokenKind{
+			"action":                tokAction,
+			"alias":                 tokAlias,
+			"alphanumeric_keys":     tokAlphanumericKeys,
+			"alternate_group":       tokAlternateGroup,
+			"alternate":             tokAlternate,
+			"augment":               tokAugment,
+			"default":               tokDefault,
+			"function_keys":         tokFunctionKeys,
+			"group":                 tokGroup,
+			"hidden":                tokHidden,
+			"include":               tokInclude,
+			"indicator":             tokIndicator,
+			"interpret":             tokInterpret,
+			"keypad_keys":           tokKeypadKeys,
+			"key":                   tokKey,
+			"keys":                  tokKeys,
+			"logo":                  tokLogo,
+			"modifier_keys":         tokModifierKeys,
+			"modifier_map":          tokModifierMap,
+			"mod_map":               tokModifierMap,
+			"modmap":                tokModifierMap,
+			"outline":               tokOutline,
+			"overlay":               tokOverlay,
+			"override":              tokOverride,
+			"partial":               tokPartial,
+			"replace":               tokReplace,
+			"row":                   tokRow,
+			"section":               tokSection,
+			"shape":                 tokShape,
+			"solid":                 tokSolid,
+			"text":                  tokText,
+			"type":                  tokType,
+			"virtual_modifiers":     tokVirtualMods,
+			"virtual":               tokVirtual,
+			"xkb_compatibility_map": tokCompat,
+			"xkb_compatibility":     tokCompat,
+			"xkb_compat_map":        tokCompat,
+			"xkb_compat":            tokCompat,
+			"xkb_geometry":          tokGeometry,
+			"xkb_keycodes":          tokKeycodes,
+			"xkb_keymap":            tokKeymap,
+			"xkb_layout":            tokLayout,
+			"xkb_semantics":         tokSemantics,
+			"xkb_symbols":           tokSymbols,
+			"xkb_types":             tokTypes,
+		}
+	})
+	return keywords.byName
 }
 
 type token struct {
@@ -156,7 +169,7 @@ func lookupKeyword(text string) (tokenKind, bool) {
 		}
 		buf[i] = c
 	}
-	kind, ok := keywords[string(buf[:len(text)])]
+	kind, ok := keywordKinds()[string(buf[:len(text)])]
 	return kind, ok
 }
 
@@ -346,11 +359,31 @@ func (l *lexer) stringToken() (token, error) {
 	return token{kind: tokString, text: b.String(), line: l.line}, nil
 }
 
-var simpleEscapes = map[byte]byte{'\\': '\\', '"': '"', 'n': '\n', 't': '\t', 'r': '\r', 'b': '\b', 'f': '\f', 'v': '\v', 'e': 0x1b}
+func simpleEscape(c byte) (byte, bool) {
+	switch c {
+	case '\\', '"':
+		return c, true
+	case 'n':
+		return '\n', true
+	case 't':
+		return '\t', true
+	case 'r':
+		return '\r', true
+	case 'b':
+		return '\b', true
+	case 'f':
+		return '\f', true
+	case 'v':
+		return '\v', true
+	case 'e':
+		return 0x1b, true
+	}
+	return 0, false
+}
 
 func (l *lexer) escape(b *strings.Builder) {
 	c := l.peekByte()
-	if out, ok := simpleEscapes[c]; ok {
+	if out, ok := simpleEscape(c); ok {
 		l.pos++
 		b.WriteByte(out)
 		return

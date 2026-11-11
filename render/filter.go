@@ -347,7 +347,7 @@ func (f *Filters) Steps(steps []FilterStep, shape FilterShape, num, denom int) [
 }
 
 // Inv255 is 1/255 in float32, what re-premultiplying scales by.
-var Inv255 = Reciprocal(float32(255))
+const Inv255 float32 = 0x1.010102p-08
 
 // applyMatrixRegion maps region's pixels through the color matrix,
 // un-premultiplying before and re-premultiplying after. A matrix that

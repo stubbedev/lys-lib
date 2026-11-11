@@ -3,7 +3,7 @@ package wl
 import "sync"
 import "weak"
 
-var userDataMap = new(sync.Map)
+var userDataMap sync.Map
 
 type userDataKey1 weak.Pointer[Context]
 type userDataKey2 ProxyId

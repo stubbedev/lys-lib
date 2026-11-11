@@ -191,7 +191,7 @@ const (
 
 // bidiCache is the process-wide resolution cache, hit on the loop
 // goroutine and mutex-guarded regardless, like the render caches.
-var bidiCache = &bidiLRU{entries: map[bidiKey]*list.Element{}, budget: bidiCacheBudget}
+var bidiCache = bidiLRU{budget: bidiCacheBudget}
 
 func bidiCost(r resolution, runes int) int {
 	return bidiCostBase + bidiCostPerRune*runes + 24*len(r.runs)
@@ -236,6 +236,7 @@ func (c *bidiLRU) put(key bidiKey, val resolution, cost int) {
 	defer c.mu.Unlock()
 	if c.order == nil {
 		c.order = list.New()
+		c.entries = map[bidiKey]*list.Element{}
 	}
 	if el, ok := c.entries[key]; ok {
 		c.order.MoveToFront(el)

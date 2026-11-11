@@ -48,7 +48,7 @@ const (
 	CmdSetSourceOutputMute   = 99
 )
 
-var commandNames = map[uint32]string{
+var commandNames = [...]string{
 	CmdError: "ERROR", CmdReply: "REPLY",
 	CmdCreatePlaybackStream: "CREATE_PLAYBACK_STREAM", CmdDeletePlaybackStream: "DELETE_PLAYBACK_STREAM",
 	CmdCorkPlaybackStream: "CORK_PLAYBACK_STREAM", CmdRequest: "REQUEST", CmdPlaybackStreamKilled: "PLAYBACK_STREAM_KILLED",
@@ -68,13 +68,14 @@ var commandNames = map[uint32]string{
 	CmdMoveSinkInput: "MOVE_SINK_INPUT", CmdMoveSourceOutput: "MOVE_SOURCE_OUTPUT",
 	CmdSetSinkInputMute: "SET_SINK_INPUT_MUTE", CmdSetSinkPort: "SET_SINK_PORT",
 	CmdSetSourcePort: "SET_SOURCE_PORT", CmdSetSourceOutputVolume: "SET_SOURCE_OUTPUT_VOLUME",
-	CmdSetSourceOutputMute: "SET_SOURCE_OUTPUT_MUTE",
+	CmdSetSourceOutputMute: "SET_SOURCE_OUTPUT_MUTE", CmdGetCardInfo: "GET_CARD_INFO",
+	CmdGetCardInfoList: "GET_CARD_INFO_LIST", CmdSetCardProfile: "SET_CARD_PROFILE",
 }
 
 // CommandName is the PA_COMMAND_* name, for error messages.
 func CommandName(cmd uint32) string {
-	if name, ok := commandNames[cmd]; ok {
-		return name
+	if cmd < uint32(len(commandNames)) && commandNames[cmd] != "" {
+		return commandNames[cmd]
 	}
 	return fmt.Sprintf("command %d", cmd)
 }

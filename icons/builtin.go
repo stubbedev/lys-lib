@@ -29,68 +29,68 @@ const builtinPrefix = "builtin:"
 // freedesktopLucide maps the freedesktop (Adwaita) names applications
 // ask for onto the bundled Lucide icons. A Lucide name resolves as
 // itself too.
-var freedesktopLucide = map[string]string{
-	"list-add":             "plus",
-	"list-remove":          "minus",
-	"window-close":         "x",
-	"process-stop":         "x",
-	"application-exit":     "x",
-	"window-minimize":      "minus",
-	"window-maximize":      "square",
-	"window-restore":       "copy",
-	"system-search":        "search",
-	"edit-find":            "search",
-	"folder":               "folder",
-	"document-open":        "folder-open",
-	"document-save":        "save",
-	"text-x-generic":       "file",
-	"document-new":         "file-plus",
-	"edit-copy":            "copy",
-	"edit-paste":           "clipboard",
-	"edit-cut":             "scissors",
-	"user-trash":           "trash-2",
-	"edit-delete":          "trash-2",
-	"edit-undo":            "undo-2",
-	"edit-redo":            "redo-2",
-	"edit-clear":           "circle-x",
-	"view-refresh":         "refresh-cw",
-	"go-previous":          "arrow-left",
-	"go-next":              "arrow-right",
-	"go-up":                "arrow-up",
-	"go-down":              "arrow-down",
-	"pan-down":             "chevron-down",
-	"pan-up":               "chevron-up",
-	"pan-start":            "chevron-left",
-	"pan-end":              "chevron-right",
-	"object-select":        "check",
-	"open-menu":            "menu",
-	"view-more":            "ellipsis-vertical",
-	"view-more-horizontal": "ellipsis",
-	"emblem-system":        "settings",
-	"preferences-system":   "settings",
-	"dialog-information":   "info",
-	"help-about":           "info",
-	"dialog-warning":       "triangle-alert",
-	"dialog-error":         "circle-alert",
-	"emblem-important":     "circle-alert",
-	"emblem-ok":            "circle-check",
-	"emblem-default":       "circle-check",
-	"starred":              "star",
-	"non-starred":          "star",
-	"emblem-favorite":      "star",
-	"user-home":            "house",
-	"go-home":              "house",
-	"avatar-default":       "user",
-	"media-playback-start": "play",
-	"media-playback-pause": "pause",
-	"media-playback-stop":  "square",
-	"audio-volume-high":    "volume-2",
-	"audio-volume-muted":   "volume-x",
-	"view-reveal":          "eye",
-	"view-conceal":         "eye-off",
-	"view-list":            "list",
-	"view-grid":            "layout-grid",
-	"image-missing":        "image-off",
+var freedesktopLucide = [...]struct{ name, lucide string }{
+	{"list-add", "plus"},
+	{"list-remove", "minus"},
+	{"window-close", "x"},
+	{"process-stop", "x"},
+	{"application-exit", "x"},
+	{"window-minimize", "minus"},
+	{"window-maximize", "square"},
+	{"window-restore", "copy"},
+	{"system-search", "search"},
+	{"edit-find", "search"},
+	{"folder", "folder"},
+	{"document-open", "folder-open"},
+	{"document-save", "save"},
+	{"text-x-generic", "file"},
+	{"document-new", "file-plus"},
+	{"edit-copy", "copy"},
+	{"edit-paste", "clipboard"},
+	{"edit-cut", "scissors"},
+	{"user-trash", "trash-2"},
+	{"edit-delete", "trash-2"},
+	{"edit-undo", "undo-2"},
+	{"edit-redo", "redo-2"},
+	{"edit-clear", "circle-x"},
+	{"view-refresh", "refresh-cw"},
+	{"go-previous", "arrow-left"},
+	{"go-next", "arrow-right"},
+	{"go-up", "arrow-up"},
+	{"go-down", "arrow-down"},
+	{"pan-down", "chevron-down"},
+	{"pan-up", "chevron-up"},
+	{"pan-start", "chevron-left"},
+	{"pan-end", "chevron-right"},
+	{"object-select", "check"},
+	{"open-menu", "menu"},
+	{"view-more", "ellipsis-vertical"},
+	{"view-more-horizontal", "ellipsis"},
+	{"emblem-system", "settings"},
+	{"preferences-system", "settings"},
+	{"dialog-information", "info"},
+	{"help-about", "info"},
+	{"dialog-warning", "triangle-alert"},
+	{"dialog-error", "circle-alert"},
+	{"emblem-important", "circle-alert"},
+	{"emblem-ok", "circle-check"},
+	{"emblem-default", "circle-check"},
+	{"starred", "star"},
+	{"non-starred", "star"},
+	{"emblem-favorite", "star"},
+	{"user-home", "house"},
+	{"go-home", "house"},
+	{"avatar-default", "user"},
+	{"media-playback-start", "play"},
+	{"media-playback-pause", "pause"},
+	{"media-playback-stop", "square"},
+	{"audio-volume-high", "volume-2"},
+	{"audio-volume-muted", "volume-x"},
+	{"view-reveal", "eye"},
+	{"view-conceal", "eye-off"},
+	{"view-list", "list"},
+	{"view-grid", "layout-grid"},
+	{"image-missing", "image-off"},
 }
 
 // lookupBuiltin resolves name - a freedesktop name with or without
@@ -98,8 +98,11 @@ var freedesktopLucide = map[string]string{
 // none.
 func lookupBuiltin(name string) string {
 	stem := strings.TrimSuffix(name, symbolicSuffix)
-	if l, ok := freedesktopLucide[stem]; ok {
-		stem = l
+	for _, icon := range freedesktopLucide {
+		if icon.name == stem {
+			stem = icon.lucide
+			break
+		}
 	}
 	file := path.Join("lucide", stem+".svg")
 	if _, err := fs.Stat(lucideFS, file); err != nil {
@@ -120,8 +123,8 @@ func readIcon(fsys themeFS, p string) ([]byte, error) {
 // sorted; the Lucide names themselves resolve too.
 func BuiltinNames() []string {
 	out := make([]string, 0, len(freedesktopLucide))
-	for name := range freedesktopLucide {
-		out = append(out, name)
+	for _, icon := range freedesktopLucide {
+		out = append(out, icon.name)
 	}
 	slices.Sort(out)
 	return out

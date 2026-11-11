@@ -204,12 +204,12 @@ func NewFont(ld *ot.Loader) (*Font, error) {
 	out.Flavor = ld.Type
 
 	// 'cmap' handling depend on os2
-	raw, _ := ld.RawTable(ot.MustNewTag("OS/2"))
+	raw, _ := ld.RawTable(ot.Tag('O'<<24 | 'S'<<16 | '/'<<8 | '2'))
 	os2, _, _ := tables.ParseOs2(raw)
 	fontPage := os2.FontPage()
 	out.os2, _ = newOs2(os2)
 
-	raw, err = ld.RawTable(ot.MustNewTag("cmap"))
+	raw, err = ld.RawTable(ot.Tag('c'<<24 | 'm'<<16 | 'a'<<8 | 'p'))
 	if err != nil {
 		return nil, err
 	}
@@ -227,7 +227,7 @@ func NewFont(ld *ot.Loader) (*Font, error) {
 		return nil, err
 	}
 
-	raw, err = ld.RawTable(ot.MustNewTag("maxp"))
+	raw, err = ld.RawTable(ot.Tag('m'<<24 | 'a'<<16 | 'x'<<8 | 'p'))
 	if err != nil {
 		return nil, err
 	}
@@ -244,17 +244,17 @@ func NewFont(ld *ot.Loader) (*Font, error) {
 	// Ignoring the errors on `RawTable` is OK : it will trigger an error on the next tables.ParseXXX,
 	// which in turn will return a zero value
 
-	raw, _ = ld.RawTable(ot.MustNewTag("fvar"))
+	raw, _ = ld.RawTable(ot.Tag('f'<<24 | 'v'<<16 | 'a'<<8 | 'r'))
 	fvar, _, _ := tables.ParseFvar(raw)
 	out.fvar = newFvar(fvar)
 
-	raw, _ = ld.RawTable(ot.MustNewTag("avar"))
+	raw, _ = ld.RawTable(ot.Tag('a'<<24 | 'v'<<16 | 'a'<<8 | 'r'))
 	out.avar, _, _ = tables.ParseAvar(raw)
 
 	out.upem = out.head.Upem()
 
-	raw, _ = ld.RawTable(ot.MustNewTag("glyf"))
-	locaRaw, _ := ld.RawTable(ot.MustNewTag("loca"))
+	raw, _ = ld.RawTable(ot.Tag('g'<<24 | 'l'<<16 | 'y'<<8 | 'f'))
+	locaRaw, _ := ld.RawTable(ot.Tag('l'<<24 | 'o'<<16 | 'c'<<8 | 'a'))
 	loca, err := tables.ParseLoca(locaRaw, out.nGlyphs, out.head.IndexToLocFormat == 1)
 	if err == nil {
 		out.glyf, _ = tables.ParseGlyf(raw, loca)
@@ -262,26 +262,26 @@ func NewFont(ld *ot.Loader) (*Font, error) {
 
 	out.bitmap = selectBitmapTable(ld)
 
-	raw, _ = ld.RawTable(ot.MustNewTag("sbix"))
+	raw, _ = ld.RawTable(ot.Tag('s'<<24 | 'b'<<16 | 'i'<<8 | 'x'))
 	sbix, _, _ := tables.ParseSbix(raw, out.nGlyphs)
 	out.sbix = newSbix(sbix)
 
 	out.cff, _ = loadCff(ld, out.nGlyphs)
 	out.cff2, _ = loadCff2(ld, out.nGlyphs, len(out.fvar))
 
-	raw, _ = ld.RawTable(ot.MustNewTag("post"))
+	raw, _ = ld.RawTable(ot.Tag('p'<<24 | 'o'<<16 | 's'<<8 | 't'))
 	post, _, _ := tables.ParsePost(raw)
 	out.post = newPost(post)
 
-	raw, _ = ld.RawTable(ot.MustNewTag("SVG "))
+	raw, _ = ld.RawTable(ot.Tag('S'<<24 | 'V'<<16 | 'G'<<8 | ' '))
 	svg, _, _ := tables.ParseSVG(raw)
 	out.svg, _ = newSvg(svg)
 
-	raw, _ = ld.RawTable(ot.MustNewTag("COLR"))
+	raw, _ = ld.RawTable(ot.Tag('C'<<24 | 'O'<<16 | 'L'<<8 | 'R'))
 	if colr, err := tables.ParseCOLR(raw); err == nil {
 		out.COLR = &colr
 		// color table without CPAL is broken
-		raw, _ = ld.RawTable(ot.MustNewTag("CPAL"))
+		raw, _ = ld.RawTable(ot.Tag('C'<<24 | 'P'<<16 | 'A'<<8 | 'L'))
 		cpal, _, _ := tables.ParseCPAL(raw)
 		out.CPAL, err = newCPAL(cpal)
 		if err != nil {
@@ -289,7 +289,7 @@ func NewFont(ld *ot.Loader) (*Font, error) {
 		}
 	}
 
-	raw, _ = ld.RawTable(ot.MustNewTag("STAT"))
+	raw, _ = ld.RawTable(ot.Tag('S'<<24 | 'T'<<16 | 'A'<<8 | 'T'))
 	stat, _, err := tables.ParseSTAT(raw)
 	if err == nil {
 		out.STAT = &stat
@@ -299,46 +299,46 @@ func NewFont(ld *ot.Loader) (*Font, error) {
 	out.vhea, out.vmtx, _ = loadVmtx(ld, out.nGlyphs)
 
 	if axisCount := len(out.fvar); axisCount != 0 {
-		raw, _ = ld.RawTable(ot.MustNewTag("MVAR"))
+		raw, _ = ld.RawTable(ot.Tag('M'<<24 | 'V'<<16 | 'A'<<8 | 'R'))
 		mvar, _, _ := tables.ParseMVAR(raw)
 		out.mvar, _ = newMvar(mvar, axisCount)
 
-		raw, _ = ld.RawTable(ot.MustNewTag("gvar"))
+		raw, _ = ld.RawTable(ot.Tag('g'<<24 | 'v'<<16 | 'a'<<8 | 'r'))
 		gvar, _, _ := tables.ParseGvar(raw)
 		out.gvar, _ = newGvar(gvar, out.glyf)
 
-		raw, _ = ld.RawTable(ot.MustNewTag("HVAR"))
+		raw, _ = ld.RawTable(ot.Tag('H'<<24 | 'V'<<16 | 'A'<<8 | 'R'))
 		hvar, _, err := tables.ParseHVAR(raw)
 		if err == nil {
 			out.hvar = &hvar
 		}
 
-		raw, _ = ld.RawTable(ot.MustNewTag("VVAR"))
+		raw, _ = ld.RawTable(ot.Tag('V'<<24 | 'V'<<16 | 'A'<<8 | 'R'))
 		vvar, _, err := tables.ParseVVAR(raw)
 		if err == nil {
 			out.vvar = &vvar
 		}
 	}
 
-	raw, _ = ld.RawTable(ot.MustNewTag("VORG"))
+	raw, _ = ld.RawTable(ot.Tag('V'<<24 | 'O'<<16 | 'R'<<8 | 'G'))
 	vorg, _, err := tables.ParseVORG(raw)
 	if err == nil {
 		out.vorg = &vorg
 	}
 
-	raw, _ = ld.RawTable(ot.MustNewTag("name"))
+	raw, _ = ld.RawTable(ot.Tag('n'<<24 | 'a'<<16 | 'm'<<8 | 'e'))
 	out.names, _, _ = tables.ParseName(raw)
 
 	// layout tables
 
-	gsubRaw, _ := ld.RawTable(ot.MustNewTag("GSUB"))
+	gsubRaw, _ := ld.RawTable(ot.Tag('G'<<24 | 'S'<<16 | 'U'<<8 | 'B'))
 	layout, _, err := tables.ParseLayout(gsubRaw)
 	// harfbuzz relies on GSUB.Loookups being nil when the table is absent
 	if err == nil {
 		out.GSUB, _ = newGSUB(layout)
 	}
 
-	gposRaw, _ := ld.RawTable(ot.MustNewTag("GPOS"))
+	gposRaw, _ := ld.RawTable(ot.Tag('G'<<24 | 'P'<<16 | 'O'<<8 | 'S'))
 	layout, _, err = tables.ParseLayout(gposRaw)
 	// harfbuzz relies on GPOS.Loookups being nil when the table is absent
 	if err == nil {
@@ -347,28 +347,28 @@ func NewFont(ld *ot.Loader) (*Font, error) {
 
 	out.GDEF, _ = loadGDEF(ld, len(out.fvar), gsubRaw, gposRaw)
 
-	raw, _ = ld.RawTable(ot.MustNewTag("morx"))
+	raw, _ = ld.RawTable(ot.Tag('m'<<24 | 'o'<<16 | 'r'<<8 | 'x'))
 	morx, _, _ := tables.ParseMorx(raw, out.nGlyphs)
 	out.Morx = newMorx(morx)
 
-	raw, _ = ld.RawTable(ot.MustNewTag("kerx"))
+	raw, _ = ld.RawTable(ot.Tag('k'<<24 | 'e'<<16 | 'r'<<8 | 'x'))
 	kerx, _, _ := tables.ParseKerx(raw, out.nGlyphs)
 	out.Kerx = newKernxFromKerx(kerx)
 
-	raw, _ = ld.RawTable(ot.MustNewTag("kern"))
+	raw, _ = ld.RawTable(ot.Tag('k'<<24 | 'e'<<16 | 'r'<<8 | 'n'))
 	kern, _, _ := tables.ParseKern(raw)
 	out.Kern = newKernxFromKern(kern)
 
-	raw, _ = ld.RawTable(ot.MustNewTag("ankr"))
+	raw, _ = ld.RawTable(ot.Tag('a'<<24 | 'n'<<16 | 'k'<<8 | 'r'))
 	out.Ankr, _, _ = tables.ParseAnkr(raw, out.nGlyphs)
 
-	raw, _ = ld.RawTable(ot.MustNewTag("trak"))
+	raw, _ = ld.RawTable(ot.Tag('t'<<24 | 'r'<<16 | 'a'<<8 | 'k'))
 	out.Trak, _, _ = tables.ParseTrak(raw)
 
-	raw, _ = ld.RawTable(ot.MustNewTag("feat"))
+	raw, _ = ld.RawTable(ot.Tag('f'<<24 | 'e'<<16 | 'a'<<8 | 't'))
 	out.Feat, _, _ = tables.ParseFeat(raw)
 
-	raw, _ = ld.RawTable(ot.MustNewTag("ltag"))
+	raw, _ = ld.RawTable(ot.Tag('l'<<24 | 't'<<16 | 'a'<<8 | 'g'))
 	out.Ltag, _, _ = tables.ParseLtag(raw)
 
 	return &out, nil
@@ -466,7 +466,7 @@ func isGDEFBlocklisted(gdef, gsub, gpos []byte) bool {
 	return false
 }
 
-var bhedTag = ot.MustNewTag("bhed")
+var bhedTag = ot.Tag('b'<<24 | 'h'<<16 | 'e'<<8 | 'd')
 
 // LoadHeadTable loads the 'head' or the 'bhed' table.
 //
@@ -481,7 +481,7 @@ func LoadHeadTable(ld *ot.Loader, buffer []byte) (tables.Head, []byte, error) {
 	if ld.HasTable(bhedTag) {
 		buffer, err = ld.RawTableTo(bhedTag, buffer)
 	} else {
-		buffer, err = ld.RawTableTo(ot.MustNewTag("head"), buffer)
+		buffer, err = ld.RawTableTo(ot.Tag('h'<<24|'e'<<16|'a'<<8|'d'), buffer)
 	}
 	if err != nil {
 		return tables.Head{}, nil, errors.New("missing required head (or bhed) table")
@@ -492,17 +492,17 @@ func LoadHeadTable(ld *ot.Loader, buffer []byte) (tables.Head, []byte, error) {
 
 // return nil if no table is valid (or present)
 func selectBitmapTable(ld *ot.Loader) bitmap {
-	color, err := loadBitmap(ld, ot.MustNewTag("CBLC"), ot.MustNewTag("CBDT"))
+	color, err := loadBitmap(ld, ot.Tag('C'<<24|'B'<<16|'L'<<8|'C'), ot.Tag('C'<<24|'B'<<16|'D'<<8|'T'))
 	if err == nil {
 		return color
 	}
 
-	gray, err := loadBitmap(ld, ot.MustNewTag("EBLC"), ot.MustNewTag("EBDT"))
+	gray, err := loadBitmap(ld, ot.Tag('E'<<24|'B'<<16|'L'<<8|'C'), ot.Tag('E'<<24|'B'<<16|'D'<<8|'T'))
 	if err == nil {
 		return gray
 	}
 
-	apple, err := loadBitmap(ld, ot.MustNewTag("bloc"), ot.MustNewTag("bdat"))
+	apple, err := loadBitmap(ld, ot.Tag('b'<<24|'l'<<16|'o'<<8|'c'), ot.Tag('b'<<24|'d'<<16|'a'<<8|'t'))
 	if err == nil {
 		return apple
 	}
@@ -512,7 +512,7 @@ func selectBitmapTable(ld *ot.Loader) bitmap {
 
 // return nil if the table is missing or invalid
 func loadCff(ld *ot.Loader, numGlyphs int) (*cff.CFF, error) {
-	raw, err := ld.RawTable(ot.MustNewTag("CFF "))
+	raw, err := ld.RawTable(ot.Tag('C'<<24 | 'F'<<16 | 'F'<<8 | ' '))
 	if err != nil {
 		return nil, err
 	}
@@ -529,7 +529,7 @@ func loadCff(ld *ot.Loader, numGlyphs int) (*cff.CFF, error) {
 
 // return nil if the table is missing or invalid
 func loadCff2(ld *ot.Loader, numGlyphs, axisCount int) (*cff.CFF2, error) {
-	raw, err := ld.RawTable(ot.MustNewTag("CFF2"))
+	raw, err := ld.RawTable(ot.Tag('C'<<24 | 'F'<<16 | 'F'<<8 | '2'))
 	if err != nil {
 		return nil, err
 	}
@@ -562,12 +562,12 @@ func loadHVtmx(hheaRaw, htmxRaw []byte, numGlyphs int) (*tables.Hhea, tables.Hmt
 }
 
 func loadHmtx(ld *ot.Loader, numGlyphs int) (*tables.Hhea, tables.Hmtx, error) {
-	rawHead, err := ld.RawTable(ot.MustNewTag("hhea"))
+	rawHead, err := ld.RawTable(ot.Tag('h'<<24 | 'h'<<16 | 'e'<<8 | 'a'))
 	if err != nil {
 		return nil, tables.Hmtx{}, err
 	}
 
-	rawMetrics, err := ld.RawTable(ot.MustNewTag("hmtx"))
+	rawMetrics, err := ld.RawTable(ot.Tag('h'<<24 | 'm'<<16 | 't'<<8 | 'x'))
 	if err != nil {
 		return nil, tables.Hmtx{}, err
 	}
@@ -576,12 +576,12 @@ func loadHmtx(ld *ot.Loader, numGlyphs int) (*tables.Hhea, tables.Hmtx, error) {
 }
 
 func loadVmtx(ld *ot.Loader, numGlyphs int) (*tables.Hhea, tables.Hmtx, error) {
-	rawHead, err := ld.RawTable(ot.MustNewTag("vhea"))
+	rawHead, err := ld.RawTable(ot.Tag('v'<<24 | 'h'<<16 | 'e'<<8 | 'a'))
 	if err != nil {
 		return nil, tables.Hmtx{}, err
 	}
 
-	rawMetrics, err := ld.RawTable(ot.MustNewTag("vmtx"))
+	rawMetrics, err := ld.RawTable(ot.Tag('v'<<24 | 'm'<<16 | 't'<<8 | 'x'))
 	if err != nil {
 		return nil, tables.Hmtx{}, err
 	}
@@ -590,7 +590,7 @@ func loadVmtx(ld *ot.Loader, numGlyphs int) (*tables.Hhea, tables.Hmtx, error) {
 }
 
 func loadGDEF(ld *ot.Loader, axisCount int, gsub, gpos []byte) (tables.GDEF, error) {
-	raw, err := ld.RawTable(ot.MustNewTag("GDEF"))
+	raw, err := ld.RawTable(ot.Tag('G'<<24 | 'D'<<16 | 'E'<<8 | 'F'))
 	if err != nil {
 		return tables.GDEF{}, err
 	}

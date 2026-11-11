@@ -17,7 +17,6 @@ import (
 	"golang.org/x/image/math/fixed"
 
 	"github.com/stubbedev/lys-lib/text"
-	"github.com/stubbedev/lys-lib/third_party/gomath"
 	"github.com/stubbedev/lys-lib/third_party/typesetting/di"
 	"github.com/stubbedev/lys-lib/third_party/typesetting/font"
 	ot "github.com/stubbedev/lys-lib/third_party/typesetting/font/opentype"
@@ -197,7 +196,7 @@ func (t *Typeface) Tabular() *Typeface {
 // syntheticSlant is a synthetic oblique's shear, tan(14°): CSS's
 // default oblique angle, what a browser slants an italic request to
 // when the family has no italic face.
-var syntheticSlant = gomath.Tan(14 * math.Pi / 180)
+const syntheticSlant float64 = 0x1.fe9fae1181f54p-03
 
 // Oblique returns the face slanted as a synthetic italic, for a family
 // that has no italic face of its own: the same glyphs and advances, the

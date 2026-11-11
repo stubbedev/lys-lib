@@ -154,3 +154,7 @@ this. The scanner's `-reuse` names the interfaces to generate this for
 destroyed, as with libwayland's `wl_proxy_destroy`; a client that also
 unregisters ids on `delete_id` itself turns them back into zombies.
 `wl/reuse_test.go` holds the tests.
+
+No initialisation: importing `wl` runs no code (`TestImportingCostsNothing`).
+`userDataMap` is a `sync.Map` value, where upstream allocated one at import,
+and `controlLen` a function, where upstream called `os.CmsgSpace` at import.

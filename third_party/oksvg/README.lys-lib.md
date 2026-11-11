@@ -50,6 +50,13 @@ does so on arm64 and not on amd64. Each such product is now converted first, as 
 Pinned by the family's goldens and by `just no-fused`. Imports `third_party/rasterx`
 in place of github.com/srwiley/rasterx.
 
+No initialisation: importing the package runs no code
+(`TestImportingCostsNothing`). Upstream built the `drawFuncs` map when the
+package was imported and added `use` to it from an `init` function, to get
+around the cycle between the map and `useF`; here `drawFunc` is a switch and
+`useF` a function. `DefaultStyle` is a function returning the style, where
+upstream's variable was built at import.
+
 ## Upstream status
 
 Each patch is offered upstream; once one is merged, the copy is

@@ -45,10 +45,10 @@ func isConsonantMyanmar(info *GlyphInfo) bool {
  * These features are applied in order, one at a time, after reordering.
  */
 var myanmarBasicFeatures = [...]tables.Tag{
-	ot.NewTag('r', 'p', 'h', 'f'),
-	ot.NewTag('p', 'r', 'e', 'f'),
-	ot.NewTag('b', 'l', 'w', 'f'),
-	ot.NewTag('p', 's', 't', 'f'),
+	ot.Tag('r'<<24 | 'p'<<16 | 'h'<<8 | 'f'),
+	ot.Tag('p'<<24 | 'r'<<16 | 'e'<<8 | 'f'),
+	ot.Tag('b'<<24 | 'l'<<16 | 'w'<<8 | 'f'),
+	ot.Tag('p'<<24 | 's'<<16 | 't'<<8 | 'f'),
 }
 
 /*
@@ -56,10 +56,10 @@ var myanmarBasicFeatures = [...]tables.Tag{
 * These features are applied all at once, after clearing syllables.
  */
 var myanmarOtherFeatures = [...]tables.Tag{
-	ot.NewTag('p', 'r', 'e', 's'),
-	ot.NewTag('a', 'b', 'v', 's'),
-	ot.NewTag('b', 'l', 'w', 's'),
-	ot.NewTag('p', 's', 't', 's'),
+	ot.Tag('p'<<24 | 'r'<<16 | 'e'<<8 | 's'),
+	ot.Tag('a'<<24 | 'b'<<16 | 'v'<<8 | 's'),
+	ot.Tag('b'<<24 | 'l'<<16 | 'w'<<8 | 's'),
+	ot.Tag('p'<<24 | 's'<<16 | 't'<<8 | 's'),
 }
 
 func (complexShaperMyanmar) collectFeatures(plan *otShapePlanner) {
@@ -68,10 +68,10 @@ func (complexShaperMyanmar) collectFeatures(plan *otShapePlanner) {
 	/* Do this before any lookups have been applied. */
 	map_.addGSUBPause(setupSyllablesMyanmar)
 
-	map_.enableFeature(ot.NewTag('l', 'o', 'c', 'l'))
+	map_.enableFeature(ot.Tag('l'<<24 | 'o'<<16 | 'c'<<8 | 'l'))
 	/* The Indic specs do not require ccmp, but we apply it here since if
 	* there is a use of it, it's typically at the beginning. */
-	map_.enableFeature(ot.NewTag('c', 'c', 'm', 'p'))
+	map_.enableFeature(ot.Tag('c'<<24 | 'c'<<16 | 'm'<<8 | 'p'))
 
 	map_.addGSUBPause(reorderMyanmar)
 

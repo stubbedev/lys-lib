@@ -28,9 +28,14 @@ type PathStyle struct {
 // styleAttribute describes draw options, such as {"fill":"black"; "stroke":"white"}.
 type styleAttribute = map[string]string
 
-// DefaultStyle sets the default PathStyle to fill black, winding rule,
+// DefaultStyle is the default PathStyle: fill black, winding rule,
 // full opacity, no stroke, a 1-unit pen, ButtCap line end and Miter
-// line connect: SVG's initial values.
-var DefaultStyle = PathStyle{1.0, 1.0, 1.0, 0.0, 4.0, nil, true,
-	color.NRGBA{0x00, 0x00, 0x00, 0xff}, nil,
-	nil, nil, rasterx.ButtCap, rasterx.Miter, rasterx.MatrixAdder{M: rasterx.Identity}}
+// line connect: SVG's initial values. A function (lys-lib
+// patch): upstream's variable was built when the package was imported.
+func DefaultStyle() PathStyle {
+	return PathStyle{
+		1.0, 1.0, 1.0, 0.0, 4.0, nil, true,
+		color.NRGBA{0x00, 0x00, 0x00, 0xff}, nil,
+		nil, nil, rasterx.ButtCap, rasterx.Miter, rasterx.MatrixAdder{M: rasterx.Identity},
+	}
+}

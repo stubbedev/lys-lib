@@ -43,6 +43,24 @@ architecture, so one golden serves all. Two rules enforce this:
   `Pow`, `Cbrt`, `Hypot`, `Erf` and `Erfc`. The linter rejects `math`'s versions
   outside tests.
 
+## No work at import
+
+Importing a package runs no code: a program pays for what it uses, not for what
+it links. A package that lys-ui links, vendored copies included, carries
+
+```go
+func TestImportingCostsNothing(t *testing.T) { testbuild.RequireNoInit(t) }
+```
+
+which fails when the package, or a test file in it, has an init function or a
+package-level variable the compiler cannot lay out statically: a map, a call
+(`regexp.MustCompile`, `fmt.Errorf`, `reflect.TypeFor`, `maphash.MakeSeed`), a
+computed table, a slice of another variable. Write a switch or a static array
+in place of a small map, a constant in place of a computed one (with a test
+holding it to its formula), and build the rest on first use behind a
+`sync.Once` in a struct beside its value. `gpu` and the packages under it do
+not carry the test yet.
+
 ## CI
 
 - `ci.yml` runs `just gates` in the dev shell on amd64 and arm64 runners.

@@ -46,33 +46,37 @@ const scale = 1 << 20
 
 // One hash per function, with no per-architecture variant: this file's
 // whole point is that one table holds on all of them.
-var results = []struct {
+type result struct {
 	name string
 	got  func() []float64
 	want string
-}{
-	{"Sin", unary(Sin, -1000*scale, 1000*scale), "d88a6c430e19545c"},
-	{"Cos", unary(Cos, -1000*scale, 1000*scale), "0d89b2212f289b34"},
-	{"Tan", unary(Tan, -1000*scale, 1000*scale), "aefd93fd9e323335"},
-	{"Sincos", unary(func(x float64) float64 { s, c := Sincos(x); return s + c }, -1000*scale, 1000*scale), "789b41bc07accce7"},
-	{"Atan", unary(Atan, -1000*scale, 1000*scale), "6a6a51ed09b1acab"},
-	{"Atan2", binaryOf(Atan2, -1000*scale, 1000*scale), "90328429196e9ca4"},
-	{"Asin", unary(Asin, -scale, scale), "7bc3e58939662c0e"},
-	{"Acos", unary(Acos, -scale, scale), "a9490ecb1bdf983b"},
-	{"Exp", unary(Exp, -700*scale, 700*scale), "354892341ff4a51c"},
-	{"Exp2", unary(Exp2, -1000*scale, 1000*scale), "0da5551d1aac141e"},
-	{"Log", unary(Log, 1, 1000000*scale), "71c5e764cb0dd8c7"},
-	{"Log2", unary(Log2, 1, 1000000*scale), "2d697ada0c42f775"},
-	{"Log10", unary(Log10, 1, 1000000*scale), "1b3d5c1eebbeaee8"},
-	{"Pow", binaryOf(Pow, 1, 64*scale), "40fed3dad2504d26"},
-	{"Cbrt", unary(Cbrt, -1000000*scale, 1000000*scale), "1a3c96b1f5fd78e0"},
-	{"Hypot", binaryOf(Hypot, -1000000*scale, 1000000*scale), "96c90e6ba0914703"},
-	{"Erf", unary(Erf, -8*scale, 8*scale), "e17c5ae3e5b7299f"},
-	{"Erfc", unary(Erfc, -8*scale, 8*scale), "2fd33bd76387219e"},
+}
+
+func results() []result {
+	return []result{
+		{"Sin", unary(Sin, -1000*scale, 1000*scale), "d88a6c430e19545c"},
+		{"Cos", unary(Cos, -1000*scale, 1000*scale), "0d89b2212f289b34"},
+		{"Tan", unary(Tan, -1000*scale, 1000*scale), "aefd93fd9e323335"},
+		{"Sincos", unary(func(x float64) float64 { s, c := Sincos(x); return s + c }, -1000*scale, 1000*scale), "789b41bc07accce7"},
+		{"Atan", unary(Atan, -1000*scale, 1000*scale), "6a6a51ed09b1acab"},
+		{"Atan2", binaryOf(Atan2, -1000*scale, 1000*scale), "90328429196e9ca4"},
+		{"Asin", unary(Asin, -scale, scale), "7bc3e58939662c0e"},
+		{"Acos", unary(Acos, -scale, scale), "a9490ecb1bdf983b"},
+		{"Exp", unary(Exp, -700*scale, 700*scale), "354892341ff4a51c"},
+		{"Exp2", unary(Exp2, -1000*scale, 1000*scale), "0da5551d1aac141e"},
+		{"Log", unary(Log, 1, 1000000*scale), "71c5e764cb0dd8c7"},
+		{"Log2", unary(Log2, 1, 1000000*scale), "2d697ada0c42f775"},
+		{"Log10", unary(Log10, 1, 1000000*scale), "1b3d5c1eebbeaee8"},
+		{"Pow", binaryOf(Pow, 1, 64*scale), "40fed3dad2504d26"},
+		{"Cbrt", unary(Cbrt, -1000000*scale, 1000000*scale), "1a3c96b1f5fd78e0"},
+		{"Hypot", binaryOf(Hypot, -1000000*scale, 1000000*scale), "96c90e6ba0914703"},
+		{"Erf", unary(Erf, -8*scale, 8*scale), "e17c5ae3e5b7299f"},
+		{"Erfc", unary(Erfc, -8*scale, 8*scale), "2fd33bd76387219e"},
+	}
 }
 
 func TestResultsAreTheSameBitsEverywhere(t *testing.T) {
-	for _, r := range results {
+	for _, r := range results() {
 		h := sha256.New()
 		var b [8]byte
 		for _, v := range r.got() {

@@ -146,10 +146,13 @@ func fitViewBox(vx, vy, vw, vh, x, y, w, h float64) rasterx.Matrix2D {
 	return rasterx.Identity.Translate(x-float64(vx*sx), y-float64(vy*sy)).Scale(sx, sy)
 }
 
-// svgShapes are the elements oksvg draws as one path each.
-var svgShapes = map[string]bool{
-	"path": true, "rect": true, "circle": true, "ellipse": true,
-	"polygon": true, "polyline": true, "line": true,
+// svgShape reports whether name is one of the elements oksvg draws as one path each.
+func svgShape(name string) bool {
+	switch name {
+	case "path", "rect", "circle", "ellipse", "polygon", "polyline", "line":
+		return true
+	}
+	return false
 }
 
 // svgLayout is what oksvg does not read from a document: the drawn
@@ -250,7 +253,7 @@ func layoutSVG(data []byte) (*svgLayout, error) {
 			use = true
 		case name == "defs":
 			defs++
-		case defs == 0 && svgShapes[name]:
+		case defs == 0 && svgShape(name):
 			l.shapes = append(l.shapes, f)
 		}
 	}
@@ -402,11 +405,14 @@ func (l *svgLayout) clipRegion(icon *oksvg.SvgIcon, u *svgClipUse) (*oksvg.SvgIc
 // every coordinate to 1/64 of the box.
 const bboxUnitScale = 1024.0
 
-// svgLengthAttrs are the shape attributes that are lengths or
-// coordinates in user units.
-var svgLengthAttrs = map[string]bool{
-	"x": true, "y": true, "width": true, "height": true, "rx": true, "ry": true,
-	"cx": true, "cy": true, "r": true, "x1": true, "y1": true, "x2": true, "y2": true,
+// svgLengthAttr reports whether name is a shape attribute that is a length or
+// a coordinate in user units.
+func svgLengthAttr(name string) bool {
+	switch name {
+	case "x", "y", "width", "height", "rx", "ry", "cx", "cy", "r", "x1", "y1", "x2", "y2":
+		return true
+	}
+	return false
 }
 
 // scaleSVGGeometry rewrites the markup content with its geometry
@@ -480,7 +486,7 @@ func scaleSVGAttrs(attrs []xml.Attr, k float64) ([]xml.Attr, error) {
 				parts[i] = strconv.FormatFloat(v*k, 'g', -1, 64)
 			}
 			a.Value = strings.Join(parts, " ")
-		case svgLengthAttrs[name]:
+		case svgLengthAttr(name):
 			v, err := strconv.ParseFloat(strings.TrimSpace(a.Value), 64)
 			if err != nil {
 				return nil, fmt.Errorf("%s %q is not a number in bounding-box units", name, a.Value)

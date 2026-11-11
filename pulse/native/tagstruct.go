@@ -61,7 +61,7 @@ const (
 	SampleInvalid   SampleFormat = 0xFF
 )
 
-var sampleFormatNames = map[SampleFormat]string{
+var sampleFormatNames = [...]string{
 	SampleU8: "U8", SampleALaw: "ALaw", SampleULaw: "ULaw",
 	SampleS16LE: "S16LE", SampleS16BE: "S16BE",
 	SampleFloat32LE: "F32LE", SampleFloat32BE: "F32BE",
@@ -73,16 +73,15 @@ var sampleFormatNames = map[SampleFormat]string{
 // String names the format like wayle-audio's SampleFormat variants;
 // anything else is "Unknown" (conversion/format.rs's fallback).
 func (f SampleFormat) String() string {
-	if name, ok := sampleFormatNames[f]; ok {
-		return name
+	if f.Known() {
+		return sampleFormatNames[f]
 	}
 	return "Unknown"
 }
 
 // Known reports whether the format is one PulseAudio defines.
 func (f SampleFormat) Known() bool {
-	_, ok := sampleFormatNames[f]
-	return ok
+	return int(f) < len(sampleFormatNames) && sampleFormatNames[f] != ""
 }
 
 // BytesPerSample is the width of one sample, 0 for unknown formats.
@@ -138,7 +137,7 @@ const (
 	ChannelTopRearCenter      ChannelPosition = 50
 )
 
-var channelNames = map[ChannelPosition]string{
+var channelNames = [...]string{
 	ChannelMono: "Mono", ChannelFrontLeft: "FrontLeft", ChannelFrontRight: "FrontRight",
 	ChannelFrontCenter: "FrontCenter", ChannelRearCenter: "RearCenter",
 	ChannelRearLeft: "RearLeft", ChannelRearRight: "RearRight", ChannelLFE: "LFE",
@@ -154,8 +153,8 @@ var channelNames = map[ChannelPosition]string{
 // aux positions and anything unassigned are "Unknown"
 // (conversion/format.rs's fallback).
 func (p ChannelPosition) String() string {
-	if name, ok := channelNames[p]; ok {
-		return name
+	if int(p) < len(channelNames) && channelNames[p] != "" {
+		return channelNames[p]
 	}
 	return "Unknown"
 }

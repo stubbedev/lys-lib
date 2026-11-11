@@ -144,7 +144,7 @@ type GradientMap struct {
 func Reciprocal[F float32 | float64](v F) F { return F(1 / float64(v)) }
 
 // inv360 is 1/360, the conic turn's reciprocal.
-var inv360 = Reciprocal(float32(360))
+const inv360 float32 = 0x1.6c16c2p-09
 
 // DeviceMap is g's mapping over the box r at device scale num/denom,
 // as PaintGradient maps it; false when it is degenerate.

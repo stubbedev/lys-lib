@@ -33,3 +33,6 @@ bits for `Sin`, `Cos`, `Tan`, `Atan`, `Asin`, `Acos`, `Exp2`, `Log`, `Log2`, `Lo
 `Cbrt` and `Hypot`. `Exp` differs on 16% of inputs, `Pow` on 12% and `Erfc` on 7%, by
 the last bits, because the assembly `Exp` is gone. Pinned by `gomath_test.go`, whose
 single table of hashes holds on every architecture.
+
+The test's table of hashes is built by a function, so that the test binary runs
+no initialisation of the package either (`TestImportingCostsNothing`).

@@ -465,20 +465,28 @@ func cLogBind() {
 	purego.RegisterLibFunc(&cVsnprintf, c, "vsnprintf")
 }
 
-var cLogCallback = sync.OnceValue(func() uintptr {
-	return purego.NewCallback(func(_ uintptr, level int32, format, args unsafe.Pointer) uintptr {
-		var buf [2048]byte
-		n := cVsnprintf(&buf[0], uintptr(len(buf)), format, args)
-		if n > 0 {
-			cLogMu.Lock()
-			cLogMessages = append(cLogMessages, itoa(int(level))+" "+string(buf[:min(int(n), len(buf)-1)]))
-			cLogMu.Unlock()
-		}
-		return 0
-	})
-})
+var cLog struct {
+	once     sync.Once
+	callback uintptr
+}
 
-var logCodeRE = regexp.MustCompile(`\[XKB-\d+\]`)
+func cLogCallback() uintptr {
+	cLog.once.Do(func() {
+		cLog.callback = purego.NewCallback(func(_ uintptr, level int32, format, args unsafe.Pointer) uintptr {
+			var buf [2048]byte
+			n := cVsnprintf(&buf[0], uintptr(len(buf)), format, args)
+			if n > 0 {
+				cLogMu.Lock()
+				cLogMessages = append(cLogMessages, itoa(int(level))+" "+string(buf[:min(int(n), len(buf)-1)]))
+				cLogMu.Unlock()
+			}
+			return 0
+		})
+	})
+	return cLog.callback
+}
+
+func logCodeRE() *regexp.Regexp { return regexp.MustCompile(`\[XKB-\d+\]`) }
 
 // parserLogged are the codes the parser logs. A file included twice is parsed
 // once here and logs them once, so only their presence is compared, as with
@@ -489,7 +497,7 @@ func logSummary(messages []string) map[string]int {
 	out := map[string]int{}
 	for _, m := range messages {
 		level, rest, _ := strings.Cut(m, " ")
-		code := logCodeRE.FindString(rest)
+		code := logCodeRE().FindString(rest)
 		if level == "20" || slices.Contains(parserLogged, code) {
 			out[level+" "+code] = 1
 			continue

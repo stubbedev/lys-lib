@@ -7,7 +7,9 @@ import (
 	"testing"
 )
 
-var cFunction = regexp.MustCompile(`(?m)^(r?xkb_[a-z0-9_]+)\(|#define (xkb_keycode_is_legal_[a-z0-9]+)\(`)
+func cFunction() *regexp.Regexp {
+	return regexp.MustCompile(`(?m)^(r?xkb_[a-z0-9_]+)\(|#define (xkb_keycode_is_legal_[a-z0-9]+)\(`)
+}
 
 // TestCoverageTableListsEveryFunction fails when libxkbcommon's headers declare
 // a function the published coverage table does not map to Go.
@@ -26,7 +28,7 @@ func TestCoverageTableListsEveryFunction(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		for _, m := range cFunction.FindAllSubmatch(src, -1) {
+		for _, m := range cFunction().FindAllSubmatch(src, -1) {
 			name := string(m[1]) + string(m[2])
 			if !regexp.MustCompile("`" + name + "`").Match(table) {
 				t.Errorf("%s from %s is not in docs/xkb.md", name, header)

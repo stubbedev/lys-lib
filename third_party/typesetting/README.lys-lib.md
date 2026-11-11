@@ -271,6 +271,24 @@ the font `LYS_TEST_DEJAVU_SANS` names, which the dev shell sets, and
 skip without it; the variable-font tests read render's
 `testdata/Quicksand-VF.ttf`.
 
+No initialisation: importing a package of the copy that lys-ui links runs no
+code, which `TestImportingCostsNothing` pins in each (`testbuild.RequireNoInit`).
+Upstream's `fontscan` normalized its substitution table in an `init` function
+(56 KB and 3053 allocations in every program that links it), `harfbuzz` built
+the 834-entry `arabicJoinings` map and the Windows-1256 fallback lookups,
+`language` the `ScriptToLang` and `scriptToTag` maps, `font` its style, weight
+and stretch name tables and a `strings.Replacer`, and every package-level tag
+was a call. Here a tag written from four constant characters is the constant
+expression `ot.Tag('a'<<24 | 'b'<<16 | 'c'<<8 | 'd')` wherever
+`ot.NewTag('a', 'b', 'c', 'd')` or `ot.MustNewTag("abcd")` stood (the functions
+remain, for bytes read from a font); `fontscan`'s table is normalized for the
+first family looked up (`substitutions`); the joining map and the fallback
+lookups are built for the first Arabic text (`arabicJoiningOf`,
+`arabicWin1256GsubLookups`); `language.ScriptToLang` is a function over a map
+built on first use, and `scriptToTag` a function; `font`'s name tables and
+replacer are made on first use (`constNames`, `rp`); and the CFF interpreter
+names `binary.BigEndian` where it had a variable for it.
+
 ## Verified against upstream
 
 With the patches applied, upstream's v0.3.5 test suite passed (its

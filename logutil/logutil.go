@@ -34,13 +34,17 @@ import (
 )
 
 var (
-	mu     sync.RWMutex
-	logger = discard()
+	mu          sync.RWMutex
+	logger      *slog.Logger
+	discardOnce sync.Once
+	discarding  *slog.Logger
 )
 
-// discard returns the default sink: a handler that drops everything.
+// discard is the default sink: a logger that drops everything, made
+// when a logger is first asked for while none is set.
 func discard() *slog.Logger {
-	return slog.New(slog.DiscardHandler)
+	discardOnce.Do(func() { discarding = slog.New(slog.DiscardHandler) })
+	return discarding
 }
 
 // Set installs l as the library-wide logger. A nil l selects the
@@ -49,9 +53,6 @@ func discard() *slog.Logger {
 func Set(l *slog.Logger) {
 	mu.Lock()
 	defer mu.Unlock()
-	if l == nil {
-		l = discard()
-	}
 	logger = l
 }
 
@@ -61,5 +62,8 @@ func Set(l *slog.Logger) {
 func L() *slog.Logger {
 	mu.RLock()
 	defer mu.RUnlock()
+	if logger == nil {
+		return discard()
+	}
 	return logger
 }

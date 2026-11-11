@@ -2,7 +2,6 @@ package render
 
 import (
 	"math"
-	"regexp"
 	"strconv"
 	"strings"
 
@@ -35,7 +34,7 @@ func ParsePathData(d string) (*Path, bool) {
 		} else if cmd == 0 {
 			return nil, false
 		}
-		if pathArity[upper(cmd)] == 0 {
+		if pathArity(upper(cmd)) == 0 {
 			// Z takes no arguments and has no implicit repeat.
 			p.Close()
 			cur = start
@@ -44,7 +43,7 @@ func ParsePathData(d string) (*Path, bool) {
 		}
 		rel := cmd >= 'a' && cmd <= 'z'
 		up := upper(cmd)
-		args, ni, ok := pathNumbers(d, i, pathArity[up])
+		args, ni, ok := pathNumbers(d, i, pathArity(up))
 		if !ok {
 			return nil, false
 		}
@@ -253,11 +252,27 @@ func arcToCubics(p *Path, cur [2]float64, rx, ry, rot float64, large, sweep bool
 }
 
 // pathData matches a d="..." attribute.
-var pathData = regexp.MustCompile(`\sd\s*=\s*("[^"]*"|'[^']*')`)
+var pathData = lazyRegexp{pattern: `\sd\s*=\s*("[^"]*"|'[^']*')`}
 
-// pathArity is each path command's parameter count.
-var pathArity = map[byte]int{
-	'M': 2, 'L': 2, 'H': 1, 'V': 1, 'C': 6, 'S': 4, 'Q': 4, 'T': 2, 'A': 7, 'Z': 0,
+// pathCommands are the path command letters, in upper case.
+const pathCommands = "MLHVCSQTAZ"
+
+// pathArity is the parameter count of the path command cmd, an upper
+// case letter; 0 for Z and for a letter that is no command.
+func pathArity(cmd byte) int {
+	switch cmd {
+	case 'H', 'V':
+		return 1
+	case 'M', 'L', 'T':
+		return 2
+	case 'S', 'Q':
+		return 4
+	case 'C':
+		return 6
+	case 'A':
+		return 7
+	}
+	return 0
 }
 
 // normalizePaths rewrites every path's data into the explicit form
@@ -268,7 +283,7 @@ var pathArity = map[byte]int{
 // use them (Lucide's arcs). The output repeats every letter and spaces
 // every number.
 func normalizePaths(data []byte) []byte {
-	return rewriteAttr(data, pathData, normalizePathData)
+	return rewriteAttr(data, pathData.get(), normalizePathData)
 }
 
 // normalizePathData is normalizePaths for one d value.
@@ -322,7 +337,7 @@ func mapPathData(d string, f func(cmd byte, pos int, num string) (string, bool))
 		if cmd == 0 {
 			return "", false
 		}
-		arity := pathArity[upper(cmd)]
+		arity := pathArity(upper(cmd))
 		if arity == 0 {
 			return "", false
 		}
@@ -369,8 +384,7 @@ func isSVGSep(c byte) bool {
 
 // isPathCmd reports whether c is a path command letter.
 func isPathCmd(c byte) bool {
-	_, ok := pathArity[upper(c)]
-	return ok && c != 'e' && c != 'E'
+	return strings.IndexByte(pathCommands, upper(c)) >= 0
 }
 
 // upper is c in upper case.

@@ -18,7 +18,7 @@ const (
 	fileRules
 )
 
-var includeDirs = map[fileType]string{
+var includeDirs = [...]string{
 	fileKeycodes: "keycodes",
 	fileTypes:    "types",
 	fileCompat:   "compat",
@@ -26,6 +26,15 @@ var includeDirs = map[fileType]string{
 	fileGeometry: "geometry",
 	fileKeymap:   "keymap",
 	fileRules:    "rules",
+}
+
+// dir is the directory of an include path that holds files of the type,
+// "" for a type that has none.
+func (t fileType) dir() string {
+	if int(t) >= len(includeDirs) {
+		return ""
+	}
+	return includeDirs[t]
 }
 
 type mergeMode uint8

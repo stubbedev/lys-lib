@@ -13,10 +13,10 @@ import (
 
 var (
 	// OpenType script tag, `DFLT`, for features that are not script-specific.
-	tagDefaultScript = ot.NewTag('D', 'F', 'L', 'T')
+	tagDefaultScript = ot.Tag('D'<<24 | 'F'<<16 | 'L'<<8 | 'T')
 	// OpenType language tag, `dflt`. Not a valid language tag, but some fonts
 	// mistakenly use it.
-	tagDefaultLanguage = ot.NewTag('d', 'f', 'l', 't')
+	tagDefaultLanguage = ot.Tag('d'<<24 | 'f'<<16 | 'l'<<8 | 't')
 )
 
 func oldTagFromScript(script language.Script) tables.Tag {
@@ -26,23 +26,23 @@ func oldTagFromScript(script language.Script) tables.Tag {
 	case 0:
 		return tagDefaultScript
 	case language.Mathematical_notation:
-		return ot.NewTag('m', 'a', 't', 'h')
+		return ot.Tag('m'<<24 | 'a'<<16 | 't'<<8 | 'h')
 
 	/* KATAKANA and HIRAGANA both map to 'kana' */
 	case language.Hiragana:
-		return ot.NewTag('k', 'a', 'n', 'a')
+		return ot.Tag('k'<<24 | 'a'<<16 | 'n'<<8 | 'a')
 
 	/* Spaces at the end are preserved, unlike ISO 15924 */
 	case language.Lao:
-		return ot.NewTag('l', 'a', 'o', ' ')
+		return ot.Tag('l'<<24 | 'a'<<16 | 'o'<<8 | ' ')
 	case language.Yi:
-		return ot.NewTag('y', 'i', ' ', ' ')
+		return ot.Tag('y'<<24 | 'i'<<16 | ' '<<8 | ' ')
 	/* Unicode-5.0 additions */
 	case language.Nko:
-		return ot.NewTag('n', 'k', 'o', ' ')
+		return ot.Tag('n'<<24 | 'k'<<16 | 'o'<<8 | ' ')
 	/* Unicode-5.1 additions */
 	case language.Vai:
-		return ot.NewTag('v', 'a', 'i', ' ')
+		return ot.Tag('v'<<24 | 'a'<<16 | 'i'<<8 | ' ')
 	}
 
 	/* Else, just change first char to lowercase and return */
@@ -52,25 +52,25 @@ func oldTagFromScript(script language.Script) tables.Tag {
 func newTagFromScript(script language.Script) tables.Tag {
 	switch script {
 	case language.Bengali:
-		return ot.NewTag('b', 'n', 'g', '2')
+		return ot.Tag('b'<<24 | 'n'<<16 | 'g'<<8 | '2')
 	case language.Devanagari:
-		return ot.NewTag('d', 'e', 'v', '2')
+		return ot.Tag('d'<<24 | 'e'<<16 | 'v'<<8 | '2')
 	case language.Gujarati:
-		return ot.NewTag('g', 'j', 'r', '2')
+		return ot.Tag('g'<<24 | 'j'<<16 | 'r'<<8 | '2')
 	case language.Gurmukhi:
-		return ot.NewTag('g', 'u', 'r', '2')
+		return ot.Tag('g'<<24 | 'u'<<16 | 'r'<<8 | '2')
 	case language.Kannada:
-		return ot.NewTag('k', 'n', 'd', '2')
+		return ot.Tag('k'<<24 | 'n'<<16 | 'd'<<8 | '2')
 	case language.Malayalam:
-		return ot.NewTag('m', 'l', 'm', '2')
+		return ot.Tag('m'<<24 | 'l'<<16 | 'm'<<8 | '2')
 	case language.Oriya:
-		return ot.NewTag('o', 'r', 'y', '2')
+		return ot.Tag('o'<<24 | 'r'<<16 | 'y'<<8 | '2')
 	case language.Tamil:
-		return ot.NewTag('t', 'm', 'l', '2')
+		return ot.Tag('t'<<24 | 'm'<<16 | 'l'<<8 | '2')
 	case language.Telugu:
-		return ot.NewTag('t', 'e', 'l', '2')
+		return ot.Tag('t'<<24 | 'e'<<16 | 'l'<<8 | '2')
 	case language.Myanmar:
-		return ot.NewTag('m', 'y', 'm', '2')
+		return ot.Tag('m'<<24 | 'y'<<16 | 'm'<<8 | '2')
 	}
 
 	return tagDefaultScript
@@ -87,7 +87,7 @@ func allTagsFromScript(script language.Script) []tables.Tag {
 	tag := newTagFromScript(script)
 	if tag != tagDefaultScript {
 		// HB_SCRIPT_MYANMAR maps to 'mym2', but there is no 'mym3'.
-		if tag != ot.NewTag('m', 'y', 'm', '2') {
+		if tag != ot.Tag('m'<<24|'y'<<16|'m'<<8|'2') {
 			tags = append(tags, tag|'3')
 		}
 		tags = append(tags, tag)

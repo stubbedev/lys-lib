@@ -119,7 +119,7 @@ func (complexShaperHebrew) normalizationPreference() normalizationMode {
 
 func (complexShaperHebrew) gposTag() tables.Tag {
 	// https://github.com/harfbuzz/harfbuzz/issues/347#issuecomment-267838368
-	return ot.NewTag('h', 'e', 'b', 'r')
+	return ot.Tag('h'<<24 | 'e'<<16 | 'b'<<8 | 'r')
 }
 
 func (complexShaperHebrew) reorderMarks(_ *otShapePlan, buffer *Buffer, start, end int) {

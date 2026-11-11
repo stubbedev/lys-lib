@@ -135,8 +135,19 @@ var (
 	runeLineMu    sync.Mutex
 	runeLines     [runeLineSets][runeLineWays]runeLineEntry
 	runeLineClock uint64
-	runeLineSeed  = maphash.MakeSeed()
 )
+
+var runeLineSeeding struct {
+	once sync.Once
+	seed maphash.Seed
+}
+
+// runeLineSeed is the seed of the rune line hashes, drawn when the
+// first line is hashed.
+func runeLineSeed() maphash.Seed {
+	runeLineSeeding.once.Do(func() { runeLineSeeding.seed = maphash.MakeSeed() })
+	return runeLineSeeding.seed
+}
 
 // cachedShapeRunes returns the shape of rs at px for font under base
 // direction d, filling the table on a miss; the fill must produce what
@@ -181,7 +192,7 @@ func runeLineHash(font Font, px float64, rs []rune, d text.Direction) uint64 {
 		h ^= x
 		h *= 0x100000001b3
 	}
-	mix(maphash.Comparable(runeLineSeed, font))
+	mix(maphash.Comparable(runeLineSeed(), font))
 	mix(math.Float64bits(px))
 	mix(uint64(d))
 	for _, r := range rs {
@@ -216,7 +227,7 @@ type lru[K comparable, V any] struct {
 	gets    uint64
 	mu      sync.Mutex
 	entries map[K]*list.Element
-	order   *list.List // front = most recently used
+	order   list.List // front = most recently used
 	live    int
 	budget  int
 }
@@ -227,12 +238,10 @@ type lruEntry[K comparable, V any] struct {
 	cost int
 }
 
+// newLRU is an empty cache of budget, which holds nothing until its
+// first put: a package-level cache costs its importer no code.
 func newLRU[K comparable, V any](budget int) *lru[K, V] {
-	return &lru[K, V]{
-		entries: make(map[K]*list.Element),
-		order:   list.New(),
-		budget:  budget,
-	}
+	return &lru[K, V]{budget: budget}
 }
 
 // get returns the cached value, marking it most recently used.
@@ -263,6 +272,9 @@ func (c *lru[K, V]) put(key K, val V, cost int) {
 			e.val, e.cost = val, cost
 		}
 	} else {
+		if c.entries == nil {
+			c.entries = make(map[K]*list.Element)
+		}
 		c.entries[key] = c.order.PushFront(&lruEntry[K, V]{key: key, val: val, cost: cost})
 		c.live += cost
 	}
@@ -289,7 +301,7 @@ func (c *lru[K, V]) len() int {
 func (c *lru[K, V]) dropAll() {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	c.entries = make(map[K]*list.Element)
+	c.entries = nil
 	c.order.Init()
 	c.live = 0
 }

@@ -8,14 +8,13 @@ package render
 
 import (
 	"image"
-	"strings"
 	"testing"
 
 	"github.com/stubbedev/lys-lib/text"
 )
 
 // benchText200 is a 200-rune line: an entry's worst realistic paste.
-var benchText200 = strings.Repeat("the quick brown fox jumps over the lazy dog. ", 5)[:200]
+const benchText200 = "the quick brown fox jumps over the lazy dog. the quick brown fox jumps over the lazy dog. the quick brown fox jumps over the lazy dog. the quick brown fox jumps over the lazy dog. the quick brown fox "
 
 // BenchmarkShape200 shapes the same 200-character string at the same
 // size every op - the steady state of a text widget repainting across

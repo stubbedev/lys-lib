@@ -68,17 +68,17 @@ func (planner *otShapePlanner) compile(plan *otShapePlan, key otShapePlanKey) {
 		planner.aatMap.compile(&plan.aatMap)
 	}
 
-	plan.fracMask = plan.otMap.getMask1(ot.NewTag('f', 'r', 'a', 'c'))
-	plan.numrMask = plan.otMap.getMask1(ot.NewTag('n', 'u', 'm', 'r'))
-	plan.dnomMask = plan.otMap.getMask1(ot.NewTag('d', 'n', 'o', 'm'))
+	plan.fracMask = plan.otMap.getMask1(ot.Tag('f'<<24 | 'r'<<16 | 'a'<<8 | 'c'))
+	plan.numrMask = plan.otMap.getMask1(ot.Tag('n'<<24 | 'u'<<16 | 'm'<<8 | 'r'))
+	plan.dnomMask = plan.otMap.getMask1(ot.Tag('d'<<24 | 'n'<<16 | 'o'<<8 | 'm'))
 	plan.hasFrac = plan.fracMask != 0 || (plan.numrMask != 0 && plan.dnomMask != 0)
 
-	plan.rtlmMask = plan.otMap.getMask1(ot.NewTag('r', 't', 'l', 'm'))
-	plan.hasVert = plan.otMap.getMask1(ot.NewTag('v', 'e', 'r', 't')) != 0
+	plan.rtlmMask = plan.otMap.getMask1(ot.Tag('r'<<24 | 't'<<16 | 'l'<<8 | 'm'))
+	plan.hasVert = plan.otMap.getMask1(ot.Tag('v'<<24|'e'<<16|'r'<<8|'t')) != 0
 
-	kernTag := ot.NewTag('v', 'k', 'r', 'n')
+	kernTag := ot.Tag('v'<<24 | 'k'<<16 | 'r'<<8 | 'n')
 	if planner.props.Direction.isHorizontal() {
-		kernTag = ot.NewTag('k', 'e', 'r', 'n')
+		kernTag = ot.Tag('k'<<24 | 'e'<<16 | 'r'<<8 | 'n')
 	}
 
 	plan.kernMask, _ = plan.otMap.getMask(kernTag)
@@ -119,7 +119,7 @@ func (planner *otShapePlanner) compile(plan *otShapePlan, key otShapePlanKey) {
 
 	plan.zeroMarks = planner.scriptZeroMarks && !plan.applyKerx &&
 		(!plan.applyKern || !hasMachineKerning(planner.tables.Kern))
-	plan.hasGposMark = plan.otMap.getMask1(ot.NewTag('m', 'a', 'r', 'k')) != 0
+	plan.hasGposMark = plan.otMap.getMask1(ot.Tag('m'<<24|'a'<<16|'r'<<8|'k')) != 0
 
 	plan.adjustMarkPositioningWhenZeroing = !plan.applyGpos && !plan.applyKerx &&
 		(!plan.applyKern || !hasCrossKerning(planner.tables.Kern))
@@ -201,56 +201,56 @@ func (sp *otShapePlan) position(font *Font, buffer *Buffer) {
 
 var (
 	commonFeatures = [...]otMapFeature{
-		{ot.NewTag('a', 'b', 'v', 'm'), ffGLOBAL},
-		{ot.NewTag('b', 'l', 'w', 'm'), ffGLOBAL},
-		{ot.NewTag('c', 'c', 'm', 'p'), ffGLOBAL},
-		{ot.NewTag('l', 'o', 'c', 'l'), ffGLOBAL},
-		{ot.NewTag('m', 'a', 'r', 'k'), ffGlobalManualJoiners},
-		{ot.NewTag('m', 'k', 'm', 'k'), ffGlobalManualJoiners},
-		{ot.NewTag('r', 'l', 'i', 'g'), ffGLOBAL},
+		{ot.Tag('a'<<24 | 'b'<<16 | 'v'<<8 | 'm'), ffGLOBAL},
+		{ot.Tag('b'<<24 | 'l'<<16 | 'w'<<8 | 'm'), ffGLOBAL},
+		{ot.Tag('c'<<24 | 'c'<<16 | 'm'<<8 | 'p'), ffGLOBAL},
+		{ot.Tag('l'<<24 | 'o'<<16 | 'c'<<8 | 'l'), ffGLOBAL},
+		{ot.Tag('m'<<24 | 'a'<<16 | 'r'<<8 | 'k'), ffGlobalManualJoiners},
+		{ot.Tag('m'<<24 | 'k'<<16 | 'm'<<8 | 'k'), ffGlobalManualJoiners},
+		{ot.Tag('r'<<24 | 'l'<<16 | 'i'<<8 | 'g'), ffGLOBAL},
 	}
 
 	horizontalFeatures = [...]otMapFeature{
-		{ot.NewTag('c', 'a', 'l', 't'), ffGLOBAL},
-		{ot.NewTag('c', 'l', 'i', 'g'), ffGLOBAL},
-		{ot.NewTag('c', 'u', 'r', 's'), ffGLOBAL},
-		{ot.NewTag('d', 'i', 's', 't'), ffGLOBAL},
-		{ot.NewTag('k', 'e', 'r', 'n'), ffGlobalHasFallback},
-		{ot.NewTag('l', 'i', 'g', 'a'), ffGLOBAL},
-		{ot.NewTag('r', 'c', 'l', 't'), ffGLOBAL},
+		{ot.Tag('c'<<24 | 'a'<<16 | 'l'<<8 | 't'), ffGLOBAL},
+		{ot.Tag('c'<<24 | 'l'<<16 | 'i'<<8 | 'g'), ffGLOBAL},
+		{ot.Tag('c'<<24 | 'u'<<16 | 'r'<<8 | 's'), ffGLOBAL},
+		{ot.Tag('d'<<24 | 'i'<<16 | 's'<<8 | 't'), ffGLOBAL},
+		{ot.Tag('k'<<24 | 'e'<<16 | 'r'<<8 | 'n'), ffGlobalHasFallback},
+		{ot.Tag('l'<<24 | 'i'<<16 | 'g'<<8 | 'a'), ffGLOBAL},
+		{ot.Tag('r'<<24 | 'c'<<16 | 'l'<<8 | 't'), ffGLOBAL},
 	}
 )
 
 func (planner *otShapePlanner) collectFeatures(userFeatures []Feature) {
 	map_ := &planner.otMap
 
-	map_.enableFeature(ot.NewTag('r', 'v', 'r', 'n'))
+	map_.enableFeature(ot.Tag('r'<<24 | 'v'<<16 | 'r'<<8 | 'n'))
 	map_.addGSUBPause(nil)
 
 	switch planner.props.Direction {
 	case LeftToRight:
-		map_.enableFeature(ot.NewTag('l', 't', 'r', 'a'))
-		map_.enableFeature(ot.NewTag('l', 't', 'r', 'm'))
+		map_.enableFeature(ot.Tag('l'<<24 | 't'<<16 | 'r'<<8 | 'a'))
+		map_.enableFeature(ot.Tag('l'<<24 | 't'<<16 | 'r'<<8 | 'm'))
 	case RightToLeft:
-		map_.enableFeature(ot.NewTag('r', 't', 'l', 'a'))
-		map_.addFeature(ot.NewTag('r', 't', 'l', 'm'))
+		map_.enableFeature(ot.Tag('r'<<24 | 't'<<16 | 'l'<<8 | 'a'))
+		map_.addFeature(ot.Tag('r'<<24 | 't'<<16 | 'l'<<8 | 'm'))
 	}
 
 	/* Automatic fractions. */
-	map_.addFeature(ot.NewTag('f', 'r', 'a', 'c'))
-	map_.addFeature(ot.NewTag('n', 'u', 'm', 'r'))
-	map_.addFeature(ot.NewTag('d', 'n', 'o', 'm'))
+	map_.addFeature(ot.Tag('f'<<24 | 'r'<<16 | 'a'<<8 | 'c'))
+	map_.addFeature(ot.Tag('n'<<24 | 'u'<<16 | 'm'<<8 | 'r'))
+	map_.addFeature(ot.Tag('d'<<24 | 'n'<<16 | 'o'<<8 | 'm'))
 
 	/* Random! */
-	map_.enableFeatureExt(ot.NewTag('r', 'a', 'n', 'd'), ffRandom, otMapMaxValue)
+	map_.enableFeatureExt(ot.Tag('r'<<24|'a'<<16|'n'<<8|'d'), ffRandom, otMapMaxValue)
 
-	map_.enableFeature(ot.NewTag('H', 'a', 'r', 'f')) /* Considered required. */
-	map_.enableFeature(ot.NewTag('H', 'A', 'R', 'F')) /* Considered discretionary. */
+	map_.enableFeature(ot.Tag('H'<<24 | 'a'<<16 | 'r'<<8 | 'f')) /* Considered required. */
+	map_.enableFeature(ot.Tag('H'<<24 | 'A'<<16 | 'R'<<8 | 'F')) /* Considered discretionary. */
 
 	planner.shaper.collectFeatures(planner)
 
-	map_.enableFeature(ot.NewTag('B', 'u', 'z', 'z')) /* Considered required. */
-	map_.enableFeature(ot.NewTag('B', 'U', 'Z', 'Z')) /* Considered discretionary. */
+	map_.enableFeature(ot.Tag('B'<<24 | 'u'<<16 | 'z'<<8 | 'z')) /* Considered required. */
+	map_.enableFeature(ot.Tag('B'<<24 | 'U'<<16 | 'Z'<<8 | 'Z')) /* Considered discretionary. */
 
 	for _, feat := range commonFeatures {
 		map_.addFeatureExt(feat.tag, feat.flags, 1)
@@ -265,7 +265,7 @@ func (planner *otShapePlanner) collectFeatures(userFeatures []Feature) {
 		 * matter which script/langsys it is listed (or not) under.
 		 * See various bugs referenced from:
 		 * https://github.com/harfbuzz/harfbuzz/issues/63 */
-		map_.enableFeatureExt(ot.NewTag('v', 'e', 'r', 't'), ffGlobalSearch, 1)
+		map_.enableFeatureExt(ot.Tag('v'<<24|'e'<<16|'r'<<8|'t'), ffGlobalSearch, 1)
 	}
 
 	for _, f := range userFeatures {

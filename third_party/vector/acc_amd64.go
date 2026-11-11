@@ -8,7 +8,9 @@ package vector
 
 import "golang.org/x/sys/cpu"
 
-var haveAccumulateSIMD = cpu.X86.HasSSE41
+// lys-lib patch: read on use, where upstream copied it when the package
+// was imported.
+func haveAccumulateSIMD() bool { return cpu.X86.HasSSE41 }
 
 //go:noescape
 func fixedAccumulateOpOverSIMD(dst []uint8, src []uint32)

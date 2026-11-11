@@ -19,7 +19,7 @@ var familyNameIDs = [...]uint16{1, 16, 21}
 // the one it is filed under. A face whose names cannot be read has none:
 // it stays reachable under family. raw is reused and returned.
 func familyAliases(ld *ot.Loader, family string, raw []byte) ([]string, []byte) {
-	table, err := ld.RawTableTo(ot.MustNewTag("name"), raw)
+	table, err := ld.RawTableTo(ot.Tag('n'<<24|'a'<<16|'m'<<8|'e'), raw)
 	if err != nil {
 		return nil, raw
 	}

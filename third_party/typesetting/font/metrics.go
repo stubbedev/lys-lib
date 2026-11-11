@@ -35,12 +35,12 @@ func (f *Font) GlyphName(glyph GID) string {
 func (f *Font) Upem() uint16 { return f.upem }
 
 var (
-	metricsTagHorizontalAscender  = ot.MustNewTag("hasc")
-	metricsTagHorizontalDescender = ot.MustNewTag("hdsc")
-	metricsTagHorizontalLineGap   = ot.MustNewTag("hlgp")
-	metricsTagVerticalAscender    = ot.MustNewTag("vasc")
-	metricsTagVerticalDescender   = ot.MustNewTag("vdsc")
-	metricsTagVerticalLineGap     = ot.MustNewTag("vlgp")
+	metricsTagHorizontalAscender  = ot.Tag('h'<<24 | 'a'<<16 | 's'<<8 | 'c')
+	metricsTagHorizontalDescender = ot.Tag('h'<<24 | 'd'<<16 | 's'<<8 | 'c')
+	metricsTagHorizontalLineGap   = ot.Tag('h'<<24 | 'l'<<16 | 'g'<<8 | 'p')
+	metricsTagVerticalAscender    = ot.Tag('v'<<24 | 'a'<<16 | 's'<<8 | 'c')
+	metricsTagVerticalDescender   = ot.Tag('v'<<24 | 'd'<<16 | 's'<<8 | 'c')
+	metricsTagVerticalLineGap     = ot.Tag('v'<<24 | 'l'<<16 | 'g'<<8 | 'p')
 )
 
 func fixAscenderDescender(value float32, metricsTag Tag) float32 {
@@ -117,17 +117,17 @@ func (f *Face) FontVExtents() (FontExtents, bool) {
 }
 
 var (
-	tagStrikeoutSize      = ot.MustNewTag("strs")
-	tagStrikeoutOffset    = ot.MustNewTag("stro")
-	tagUnderlineSize      = ot.MustNewTag("unds")
-	tagUnderlineOffset    = ot.MustNewTag("undo")
-	tagSuperscriptYSize   = ot.MustNewTag("spys")
-	tagSuperscriptXOffset = ot.MustNewTag("spxo")
-	tagSubscriptYSize     = ot.MustNewTag("sbys")
-	tagSubscriptYOffset   = ot.MustNewTag("sbyo")
-	tagSubscriptXOffset   = ot.MustNewTag("sbxo")
-	tagXHeight            = ot.MustNewTag("xhgt")
-	tagCapHeight          = ot.MustNewTag("cpht")
+	tagStrikeoutSize      = ot.Tag('s'<<24 | 't'<<16 | 'r'<<8 | 's')
+	tagStrikeoutOffset    = ot.Tag('s'<<24 | 't'<<16 | 'r'<<8 | 'o')
+	tagUnderlineSize      = ot.Tag('u'<<24 | 'n'<<16 | 'd'<<8 | 's')
+	tagUnderlineOffset    = ot.Tag('u'<<24 | 'n'<<16 | 'd'<<8 | 'o')
+	tagSuperscriptYSize   = ot.Tag('s'<<24 | 'p'<<16 | 'y'<<8 | 's')
+	tagSuperscriptXOffset = ot.Tag('s'<<24 | 'p'<<16 | 'x'<<8 | 'o')
+	tagSubscriptYSize     = ot.Tag('s'<<24 | 'b'<<16 | 'y'<<8 | 's')
+	tagSubscriptYOffset   = ot.Tag('s'<<24 | 'b'<<16 | 'y'<<8 | 'o')
+	tagSubscriptXOffset   = ot.Tag('s'<<24 | 'b'<<16 | 'x'<<8 | 'o')
+	tagXHeight            = ot.Tag('x'<<24 | 'h'<<16 | 'g'<<8 | 't')
+	tagCapHeight          = ot.Tag('c'<<24 | 'p'<<16 | 'h'<<8 | 't')
 )
 
 // return the height from baseline (in font units)

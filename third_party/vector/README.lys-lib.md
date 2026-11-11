@@ -24,6 +24,10 @@ that reaches an addition or a subtraction is now converted first. amd64's result
 are unchanged. Pinned by `lys_test.go`, which also holds the assembly accumulators
 to the portable ones on the architectures that have them, and by `just no-fused`.
 
+No initialisation: `haveAccumulateSIMD` is a function reading
+`cpu.X86.HasSSE41` on use, where upstream copied it into a variable when the
+package was imported. Pinned by `TestImportingCostsNothing`.
+
 ## Upstream status
 
 Not offered upstream yet.

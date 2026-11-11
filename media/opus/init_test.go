@@ -3,10 +3,10 @@ package opus
 import (
 	"testing"
 
-	"github.com/stubbedev/lys-lib/media/internal/initcost"
+	"github.com/stubbedev/lys-lib/testbuild"
 )
 
-func TestImportingCostsNothing(t *testing.T) { initcost.Check(t) }
+func TestImportingCostsNothing(t *testing.T) { testbuild.RequireNoInit(t) }
 
 func TestCodersShareTheTables(t *testing.T) {
 	e, err := NewEncoder(2, 96000, CBR)

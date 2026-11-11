@@ -297,7 +297,7 @@ type Connector struct {
 	Encoders         []uint32
 }
 
-var connectorTypes = map[uint32]string{
+var connectorTypes = [...]string{
 	0: "Unknown", 1: "VGA", 2: "DVI-I", 3: "DVI-D", 4: "DVI-A", 5: "Composite", 6: "SVIDEO", 7: "LVDS",
 	8: "Component", 9: "DIN", 10: "DP", 11: "HDMI-A", 12: "HDMI-B", 13: "TV", 14: "eDP", 15: "Virtual",
 	16: "DSI", 17: "DPI", 18: "Writeback", 19: "SPI", 20: "USB",
@@ -307,11 +307,10 @@ var connectorTypes = map[uint32]string{
 // spell it, such as "eDP-1" or "HDMI-A-2", or "Type<N>-<index>" for a
 // type this package does not know.
 func (c Connector) Name() string {
-	t, ok := connectorTypes[c.Type]
-	if !ok {
-		t = fmt.Sprintf("Type%d", c.Type)
+	if c.Type >= uint32(len(connectorTypes)) {
+		return fmt.Sprintf("Type%d-%d", c.Type, c.TypeID)
 	}
-	return fmt.Sprintf("%s-%d", t, c.TypeID)
+	return fmt.Sprintf("%s-%d", connectorTypes[c.Type], c.TypeID)
 }
 
 type getConnector struct {

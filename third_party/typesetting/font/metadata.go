@@ -2,28 +2,34 @@ package font
 
 import (
 	"strings"
+	"sync"
 
 	ot "github.com/stubbedev/lys-lib/third_party/typesetting/font/opentype"
 	"github.com/stubbedev/lys-lib/third_party/typesetting/font/opentype/tables"
 )
 
-// name values corresponding to the xxxConsts arrays
-var (
-	styleStrings   [len(styleConsts)]string
-	weightStrings  [len(weightConsts)]string
-	stretchStrings [len(stretchConsts)]string
-)
+// name values corresponding to the xxxConsts arrays (lys-lib patch:
+// filled on first use, where upstream had an init function do it)
+var constStrings struct {
+	once    sync.Once
+	style   [len(styleConsts)]string
+	weight  [len(weightConsts)]string
+	stretch [len(stretchConsts)]string
+}
 
-func init() {
-	for i, v := range styleConsts {
-		styleStrings[i] = v.name
-	}
-	for i, v := range weightConsts {
-		weightStrings[i] = v.name
-	}
-	for i, v := range stretchConsts {
-		stretchStrings[i] = v.name
-	}
+func constNames() (style, weight, stretch []string) {
+	constStrings.once.Do(func() {
+		for i, v := range styleConsts {
+			constStrings.style[i] = v.name
+		}
+		for i, v := range weightConsts {
+			constStrings.weight[i] = v.name
+		}
+		for i, v := range stretchConsts {
+			constStrings.stretch[i] = v.name
+		}
+	})
+	return constStrings.style[:], constStrings.weight[:], constStrings.stretch[:]
 }
 
 var styleConsts = [...]struct {
@@ -172,20 +178,21 @@ func (fd *fontDescriptor) aspect() Aspect {
 func (as *Aspect) inferFromStyle(additionalStyle string) {
 	additionalStyle = NormalizeFamily(additionalStyle)
 
+	styleStrings, weightStrings, stretchStrings := constNames()
 	if as.Style == 0 {
-		if index := stringContainsConst(additionalStyle, styleStrings[:]); index != -1 {
+		if index := stringContainsConst(additionalStyle, styleStrings); index != -1 {
 			as.Style = styleConsts[index].value
 		}
 	}
 
 	if as.Weight == 0 {
-		if index := stringContainsConst(additionalStyle, weightStrings[:]); index != -1 {
+		if index := stringContainsConst(additionalStyle, weightStrings); index != -1 {
 			as.Weight = weightConsts[index].value
 		}
 	}
 
 	if as.Stretch == 0 {
-		if index := stringContainsConst(additionalStyle, stretchStrings[:]); index != -1 {
+		if index := stringContainsConst(additionalStyle, stretchStrings); index != -1 {
 			as.Stretch = stretchConsts[index].value
 		}
 	}
@@ -277,10 +284,20 @@ func (fd *fontDescriptor) rawAspect() Aspect {
 	return Aspect{style, weight, stretch}
 }
 
-var rp = strings.NewReplacer(" ", "", "\t", "")
+// lys-lib patch: made on first use, where upstream made it when the
+// package was imported.
+var blanks struct {
+	once     sync.Once
+	replacer *strings.Replacer
+}
+
+func rp() *strings.Replacer {
+	blanks.once.Do(func() { blanks.replacer = strings.NewReplacer(" ", "", "\t", "") })
+	return blanks.replacer
+}
 
 // NormalizeFamily removes spaces and lower the given string.
-func NormalizeFamily(family string) string { return rp.Replace(strings.ToLower(family)) }
+func NormalizeFamily(family string) string { return rp().Replace(strings.ToLower(family)) }
 
 // returns the index in `constants` of a constant contained in `str`,
 // or -1
@@ -329,14 +346,14 @@ func newFontDescriptor(ld *ot.Loader, buffer []byte) (fontDescriptor, []byte) {
 	var desc fontDescriptor
 
 	// load tables, all considered optional
-	buffer, _ = ld.RawTableTo(ot.MustNewTag("OS/2"), buffer)
+	buffer, _ = ld.RawTableTo(ot.Tag('O'<<24|'S'<<16|'/'<<8|'2'), buffer)
 	if os2, _, err := tables.ParseOs2(buffer); err == nil {
 		desc.os2 = newOS2Desc(os2)
 	}
 
 	desc.head, buffer, _ = LoadHeadTable(ld, buffer)
 
-	buffer, _ = ld.RawTableTo(ot.MustNewTag("name"), buffer)
+	buffer, _ = ld.RawTableTo(ot.Tag('n'<<24|'a'<<16|'m'<<8|'e'), buffer)
 	desc.names, _, _ = tables.ParseName(buffer)
 
 	return desc, buffer

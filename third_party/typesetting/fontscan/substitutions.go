@@ -2,6 +2,7 @@ package fontscan
 
 import (
 	"strings"
+	"sync"
 
 	"github.com/stubbedev/lys-lib/third_party/typesetting/font"
 )
@@ -15,15 +16,22 @@ import (
 // it is generated from fontconfig substitution rules
 // the order matters, since the rules apply sequentially to the current
 // state of the family list
-func init() {
-	// replace families keys by their no case no blank version
-	for i, v := range familySubstitution {
-		for i, s := range v.additionalFamilies {
-			v.additionalFamilies[i] = font.NormalizeFamily(s)
-		}
+// (lys-lib patch: normalized for the first family looked up, where
+// upstream had an init function do it when the package was imported)
+var substitutionsNormalized sync.Once
 
-		familySubstitution[i].test = v.test.normalize()
-	}
+func substitutions() []substitution {
+	substitutionsNormalized.Do(func() {
+		// replace families keys by their no case no blank version
+		for i, v := range familySubstitution {
+			for i, s := range v.additionalFamilies {
+				v.additionalFamilies[i] = font.NormalizeFamily(s)
+			}
+
+			familySubstitution[i].test = v.test.normalize()
+		}
+	})
+	return familySubstitution
 }
 
 type weightedFamily struct {

@@ -12,12 +12,6 @@ const (
 // MaskCard selects card changes.
 const MaskCard SubscriptionMask = 1 << FacilityCard
 
-func init() {
-	commandNames[CmdGetCardInfo] = "GET_CARD_INFO"
-	commandNames[CmdGetCardInfoList] = "GET_CARD_INFO_LIST"
-	commandNames[CmdSetCardProfile] = "SET_CARD_PROFILE"
-}
-
 // CardProfile is one profile a card offers: the sinks and sources it
 // gives and whether it can be chosen now (protocol 29 and later; earlier
 // servers report every profile available).

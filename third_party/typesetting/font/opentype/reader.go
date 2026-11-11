@@ -18,17 +18,17 @@ var (
 	TrueType = Tag(0x00010000)
 	// AppleTrueType is the first four bytes of an OpenType file containing a TrueType font
 	// (specifically one designed for Apple products, it's recommended to use TrueType instead)
-	AppleTrueType = MustNewTag("true")
+	AppleTrueType = Tag('t'<<24 | 'r'<<16 | 'u'<<8 | 'e')
 	// PostScript1 is the first four bytes of an OpenType file containing a PostScript 1 font
-	PostScript1 = MustNewTag("typ1")
+	PostScript1 = Tag('t'<<24 | 'y'<<16 | 'p'<<8 | '1')
 	// OpenType is the first four bytes of an OpenType file containing a PostScript Type 2 font
 	// as specified by OpenType
-	OpenType = MustNewTag("OTTO")
+	OpenType = Tag('O'<<24 | 'T'<<16 | 'T'<<8 | 'O')
 
 	// signatureWOFF is the magic number at the start of a WOFF file.
-	signatureWOFF = MustNewTag("wOFF")
+	signatureWOFF = Tag('w'<<24 | 'O'<<16 | 'F'<<8 | 'F')
 
-	ttcTag = MustNewTag("ttcf")
+	ttcTag = Tag('t'<<24 | 't'<<16 | 'c'<<8 | 'f')
 
 	errInvalidDfont = errors.New("invalid dfont")
 )

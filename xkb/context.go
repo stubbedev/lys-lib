@@ -173,8 +173,20 @@ func parseLogLevel(s string) LogLevel {
 	return LogError
 }
 
-var logPrefixes = map[LogLevel]string{
-	LogDebug: "xkb: DEBUG: ", LogInfo: "xkb: INFO: ", LogWarning: "xkb: WARNING: ", LogError: "xkb: ERROR: ", LogCritical: "xkb: CRITICAL: ",
+func logPrefix(level LogLevel) string {
+	switch level {
+	case LogDebug:
+		return "xkb: DEBUG: "
+	case LogInfo:
+		return "xkb: INFO: "
+	case LogWarning:
+		return "xkb: WARNING: "
+	case LogError:
+		return "xkb: ERROR: "
+	case LogCritical:
+		return "xkb: CRITICAL: "
+	}
+	return ""
 }
 
 // SetLogFunc routes log messages to fn; nil restores the default, stderr.
@@ -245,7 +257,7 @@ func (c *Context) log(level LogLevel, verbosity, code int, format string, args .
 		fn(level, text)
 		return
 	}
-	fmt.Fprint(os.Stderr, logPrefixes[level], text)
+	fmt.Fprint(os.Stderr, logPrefix(level), text)
 }
 
 func (c *Context) ensureIncludes() {
@@ -519,7 +531,7 @@ func (c *Context) compileComponents(kccgst components4, layouts uint32, s *sessi
 			return nil, err
 		}
 		if len(inc.stmts) == 0 {
-			return nil, fmt.Errorf("an empty %s component", includeDirs[sec.typ])
+			return nil, fmt.Errorf("an empty %s component", sec.typ.dir())
 		}
 		file.sections = append(file.sections, &xkbFile{typ: sec.typ, decls: []decl{inc}})
 	}
@@ -553,8 +565,8 @@ func (c *Context) NewKeymapFromBuffer(text []byte, format KeymapFormat) (*Keymap
 		return nil, fmt.Errorf("xkb: parse keymap: %w", err)
 	}
 	if file.typ != fileKeymap {
-		c.log(LogError, 0, keymapCompilationFailed, "Cannot compile a %s file alone into a keymap\n", includeDirs[file.typ])
-		return nil, fmt.Errorf("xkb: parse keymap: a %s file cannot compile alone into a keymap", includeDirs[file.typ])
+		c.log(LogError, 0, keymapCompilationFailed, "Cannot compile a %s file alone into a keymap\n", file.typ.dir())
+		return nil, fmt.Errorf("xkb: parse keymap: a %s file cannot compile alone into a keymap", file.typ.dir())
 	}
 	m := newKeymap(c, format)
 	if err := m.finish(file, c.newSession(format)); err != nil {
@@ -586,7 +598,7 @@ func (c *Context) expandPath(name string, typ fileType) (string, bool, error) {
 	if !strings.Contains(name, "%") {
 		return name, false, nil
 	}
-	dir := includeDirs[typ]
+	dir := typ.dir()
 	var b strings.Builder
 	for i := 0; i < len(name); i++ {
 		if name[i] != '%' {
@@ -664,7 +676,7 @@ func (s *session) processInclude(stmt includeStmt, typ fileType) (*xkbFile, erro
 	case expanded:
 	default:
 		for _, dir := range s.paths {
-			candidates = append(candidates, filepath.Join(dir, includeDirs[typ], target))
+			candidates = append(candidates, filepath.Join(dir, typ.dir(), target))
 		}
 	}
 	var fallback *xkbFile
@@ -712,7 +724,7 @@ func (s *session) processInclude(stmt includeStmt, typ fileType) (*xkbFile, erro
 		if len(s.paths) == 0 {
 			return nil, fmt.Errorf("include %q: %w", what, ErrNoData)
 		}
-		return nil, coded(codeInvalidIncluded, codedf(codeIncludedNotFound, "include %q: no %s file in %v", what, includeDirs[typ], s.paths))
+		return nil, coded(codeInvalidIncluded, codedf(codeIncludedNotFound, "include %q: no %s file in %v", what, typ.dir(), s.paths))
 	}
 	return nil, coded(codeInvalidIncluded, fmt.Errorf("include %q: %w", what, errors.Join(errs...)))
 }

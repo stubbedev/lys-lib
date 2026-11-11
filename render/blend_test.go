@@ -60,15 +60,14 @@ const (
 // sits at half alpha, as if something unseen were drawn beneath it, so
 // blending must carry the destination's alpha through the keep term
 // and not just its channels.
-var (
-	bgGray  = RGB(96, 96, 96)
-	bgUnder = RGBA(200, 120, 40, 128)
-)
+func bgGray() Color { return RGB(96, 96, 96) }
+
+func bgUnder() Color { return RGBA(200, 120, 40, 128) }
 
 // blendSrc is the curated source color for the table: translucent, with
 // channels that sit far from both backgrounds so coverage errors cannot
 // hide in a flat channel.
-var blendSrc = RGBA(255, 255, 20, 200)
+func blendSrc() Color { return RGBA(255, 255, 20, 200) }
 
 // --- reference compositors -------------------------------------------------
 //
@@ -1130,8 +1129,8 @@ func sweepUntouched(t *testing.T, spec *aaSpec, data []byte, bg Color, ctx strin
 func TestBlendConformance(t *testing.T) {
 	for _, row := range blendRows(t) {
 		t.Run(row.name, func(t *testing.T) {
-			for _, bg := range []Color{bgGray, bgUnder} {
-				checkRow(t, row, blendSrc, bg, true, fmt.Sprintf("%s: bg %#08x", row.name, uint32(bg)))
+			for _, bg := range []Color{bgGray(), bgUnder()} {
+				checkRow(t, row, blendSrc(), bg, true, fmt.Sprintf("%s: bg %#08x", row.name, uint32(bg)))
 			}
 		})
 	}
@@ -1149,7 +1148,7 @@ func TestBlendAssociativity(t *testing.T) {
 	)
 	line := lineCoverage(12, 16, 40, 24, 5)
 	samples := [][2]int{{26, 20}, {22, 18}, {30, 22}}
-	for _, bg := range []Color{bgGray, bgUnder} {
+	for _, bg := range []Color{bgGray(), bgUnder()} {
 		// Left: one canvas, paint order C, B, A - i.e. A over (B over
 		// (C over bg)).
 		cv, data := newTestCanvas(blendW, blendH)
@@ -1252,16 +1251,16 @@ func TestResamplePremultiplied(t *testing.T) {
 	t.Run("blit of a resampled raster composites by the book", func(t *testing.T) {
 		dst := Resample(blendConstant(col, 4, 4), image.Rect(0, 0, 4, 4), 6, 6)
 		cv, data := newTestCanvas(16, 16)
-		cv.Clear(cv.Rect(), bgUnder)
+		cv.Clear(cv.Rect(), bgUnder())
 		cv.DrawImageDevice(dst, 4, 4)
 		for _, p := range [][2]int{{4, 4}, {9, 9}, {6, 7}} {
 			got := pxAt(data, Stride(16), p[0], p[1])
-			if !blendNear(got, refOver(col, bgUnder), 1) {
+			if !blendNear(got, refOver(col, bgUnder()), 1) {
 				t.Errorf("pixel (%d,%d) = %#08x, want resampled source over bg = %#08x (+/-1)",
-					p[0], p[1], uint32(got), uint32(refOver(col, bgUnder)))
+					p[0], p[1], uint32(got), uint32(refOver(col, bgUnder())))
 			}
 		}
-		if got := pxAt(data, Stride(16), 3, 4); got != bgUnder {
+		if got := pxAt(data, Stride(16), 3, 4); got != bgUnder() {
 			t.Errorf("outside the blit = %#08x, want untouched background", uint32(got))
 		}
 	})
@@ -1315,7 +1314,7 @@ func TestBlendPropertyPairs(t *testing.T) {
 		{0, RGB(255, 255, 255)},
 		{0, 0},
 		{RGB(1, 2, 3), RGB(254, 253, 252)},
-		{RGBA(128, 128, 128, 128), bgUnder},
+		{RGBA(128, 128, 128, 128), bgUnder()},
 		{RGBA(255, 255, 255, 128), RGB(0, 0, 0)},
 	}
 	i := 0

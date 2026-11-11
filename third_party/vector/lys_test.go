@@ -42,7 +42,7 @@ func TestCoverageIsTheSameEverywhere(t *testing.T) {
 // The amd64 assembly and the portable Go give the same bytes, which is
 // what lets one golden hold on both.
 func TestAccumulatorsAgree(t *testing.T) {
-	if !haveAccumulateSIMD {
+	if !haveAccumulateSIMD() {
 		t.Skip("no assembly accumulators on this architecture")
 	}
 	z := NewRasterizer(513, 100)

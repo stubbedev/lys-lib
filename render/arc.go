@@ -59,9 +59,9 @@ func ArcOf(cx, cy, radius, width, start, sweep float64, num, denom int) ArcGeome
 }
 
 // The turn and its reciprocal, as the arc folds angles by them.
-var (
-	turn32    = float32(2 * math.Pi)
-	invTurn32 = Reciprocal(turn32)
+const (
+	turn32    float32 = 2 * math.Pi
+	invTurn32 float32 = 0x1.45f306p-03
 )
 
 // Coverage is the stroke's coverage of pixel (x, y): within the sweep,

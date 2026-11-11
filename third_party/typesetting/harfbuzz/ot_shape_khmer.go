@@ -22,19 +22,19 @@ var khmerFeatures = [...]otMapFeature{
 	* Basic features.
 	* These features are applied in order, one at a time, after reordering.
 	 */
-	{ot.NewTag('p', 'r', 'e', 'f'), ffManualJoiners | ffPerSyllable},
-	{ot.NewTag('b', 'l', 'w', 'f'), ffManualJoiners | ffPerSyllable},
-	{ot.NewTag('a', 'b', 'v', 'f'), ffManualJoiners | ffPerSyllable},
-	{ot.NewTag('p', 's', 't', 'f'), ffManualJoiners | ffPerSyllable},
-	{ot.NewTag('c', 'f', 'a', 'r'), ffManualJoiners | ffPerSyllable},
+	{ot.Tag('p'<<24 | 'r'<<16 | 'e'<<8 | 'f'), ffManualJoiners | ffPerSyllable},
+	{ot.Tag('b'<<24 | 'l'<<16 | 'w'<<8 | 'f'), ffManualJoiners | ffPerSyllable},
+	{ot.Tag('a'<<24 | 'b'<<16 | 'v'<<8 | 'f'), ffManualJoiners | ffPerSyllable},
+	{ot.Tag('p'<<24 | 's'<<16 | 't'<<8 | 'f'), ffManualJoiners | ffPerSyllable},
+	{ot.Tag('c'<<24 | 'f'<<16 | 'a'<<8 | 'r'), ffManualJoiners | ffPerSyllable},
 	/*
 	* Other features.
 	* These features are applied all at once after clearing syllables.
 	 */
-	{ot.NewTag('p', 'r', 'e', 's'), ffGlobalManualJoiners},
-	{ot.NewTag('a', 'b', 'v', 's'), ffGlobalManualJoiners},
-	{ot.NewTag('b', 'l', 'w', 's'), ffGlobalManualJoiners},
-	{ot.NewTag('p', 's', 't', 's'), ffGlobalManualJoiners},
+	{ot.Tag('p'<<24 | 'r'<<16 | 'e'<<8 | 's'), ffGlobalManualJoiners},
+	{ot.Tag('a'<<24 | 'b'<<16 | 'v'<<8 | 's'), ffGlobalManualJoiners},
+	{ot.Tag('b'<<24 | 'l'<<16 | 'w'<<8 | 's'), ffGlobalManualJoiners},
+	{ot.Tag('p'<<24 | 's'<<16 | 't'<<8 | 's'), ffGlobalManualJoiners},
 }
 
 // Must be in the same order as the khmerFeatures array.
@@ -71,8 +71,8 @@ func (cs *complexShaperKhmer) collectFeatures(plan *otShapePlanner) {
 	*
 	* https://github.com/harfbuzz/harfbuzz/issues/974
 	 */
-	map_.enableFeatureExt(ot.NewTag('l', 'o', 'c', 'l'), ffPerSyllable, 1)
-	map_.enableFeatureExt(ot.NewTag('c', 'c', 'm', 'p'), ffPerSyllable, 1)
+	map_.enableFeatureExt(ot.Tag('l'<<24|'o'<<16|'c'<<8|'l'), ffPerSyllable, 1)
+	map_.enableFeatureExt(ot.Tag('c'<<24|'c'<<16|'m'<<8|'p'), ffPerSyllable, 1)
 
 	i := 0
 	for ; i < khmerBasicFeatures; i++ {
@@ -93,9 +93,9 @@ func (complexShaperKhmer) overrideFeatures(plan *otShapePlanner) {
 	/* Khmer spec has 'clig' as part of required shaping features:
 	* "Apply feature 'clig' to form ligatures that are desired for
 	* typographical correctness.", hence in overrides... */
-	map_.enableFeature(ot.NewTag('c', 'l', 'i', 'g'))
+	map_.enableFeature(ot.Tag('c'<<24 | 'l'<<16 | 'i'<<8 | 'g'))
 
-	map_.disableFeature(ot.NewTag('l', 'i', 'g', 'a'))
+	map_.disableFeature(ot.Tag('l'<<24 | 'i'<<16 | 'g'<<8 | 'a'))
 }
 
 type khmerShapePlan struct {

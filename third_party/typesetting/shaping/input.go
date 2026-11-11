@@ -53,7 +53,7 @@ type Input struct {
 // An exemple of font feature is the replacement of fractions (like 1/2, 3/4)
 // by specialized glyphs, which would be activated by using
 //
-//	FontFeature{Tag: ot.MustNewTag("frac"), Value: 1}
+//	FontFeature{Tag: ot.Tag('f'<<24 | 'r'<<16 | 'a'<<8 | 'c'), Value: 1}
 //
 // See also https://learn.microsoft.com/en-us/typography/opentype/spec/featurelist
 // and https://developer.mozilla.org/en-US/docs/Web/CSS/CSS_fonts/OpenType_fonts_guide
@@ -507,7 +507,7 @@ func enforceLang(lang language.LangID, s language.Script) language.LangID {
 	}
 
 	// the language is not used for the script, try to replace it
-	if l := language.ScriptToLang[s]; l != 0 {
+	if l := language.ScriptToLang(s); l != 0 {
 		return l
 	}
 

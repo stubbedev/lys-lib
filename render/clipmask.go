@@ -197,11 +197,21 @@ func (m *pathMask) size() int { return len(m.cov) }
 
 var pathMasks rasterCache[pathMaskKey, *pathMask]
 
-var pathHashSeed = maphash.MakeSeed()
+var pathHashSeeding struct {
+	once sync.Once
+	seed maphash.Seed
+}
+
+// pathHashSeed is the seed of the path hashes, drawn when the first
+// path is hashed.
+func pathHashSeed() maphash.Seed {
+	pathHashSeeding.once.Do(func() { pathHashSeeding.seed = maphash.MakeSeed() })
+	return pathHashSeeding.seed
+}
 
 func (p *Path) contentHash(scale float32, origin Rect) uint64 {
 	var h maphash.Hash
-	h.SetSeed(pathHashSeed)
+	h.SetSeed(pathHashSeed())
 	var b [12]byte
 	for i := range p.ops {
 		op := &p.ops[i]

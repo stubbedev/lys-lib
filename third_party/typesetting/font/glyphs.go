@@ -298,13 +298,13 @@ func getGlyphExtents(g tables.GlyphHeader, metrics tables.Hmtx, gid gID) GlyphEx
 // sbix
 
 var (
-	dupe = ot.MustNewTag("dupe")
+	dupe = ot.Tag('d'<<24 | 'u'<<16 | 'p'<<8 | 'e')
 	// tagPNG identifies bitmap glyph with png format
-	tagPNG = ot.MustNewTag("png ")
+	tagPNG = ot.Tag('p'<<24 | 'n'<<16 | 'g'<<8 | ' ')
 	// tagTIFF identifies bitmap glyph with tiff format
-	tagTIFF = ot.MustNewTag("tiff")
+	tagTIFF = ot.Tag('t'<<24 | 'i'<<16 | 'f'<<8 | 'f')
 	// tagJPG identifies bitmap glyph with jpg format
-	tagJPG = ot.MustNewTag("jpg ")
+	tagJPG = ot.Tag('j'<<24 | 'p'<<16 | 'g'<<8 | ' ')
 )
 
 // strikeGlyph return the data for [glyph], or a zero value if not found.

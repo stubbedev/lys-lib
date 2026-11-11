@@ -25,7 +25,13 @@ type Source interface {
 // ErrSessionStopped reports that the compositor ended a capture
 // session: its source went away (the output was unplugged, the window
 // closed). It is an ErrFailed.
-var ErrSessionStopped = fmt.Errorf("%w: the capture session stopped", ErrFailed)
+var ErrSessionStopped error = sessionStopped{}
+
+type sessionStopped struct{}
+
+func (sessionStopped) Error() string { return ErrFailed.Error() + ": the capture session stopped" }
+
+func (sessionStopped) Unwrap() error { return ErrFailed }
 
 // ErrReconfigured reports that a capture session's buffer constraints
 // changed (the output switched mode, the window resized): the buffers

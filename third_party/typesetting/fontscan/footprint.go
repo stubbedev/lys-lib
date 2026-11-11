@@ -87,7 +87,7 @@ func newCoverageFromLoader(ld *ot.Loader, buffer scanBuffer) (out Footprint, _ s
 
 	// since raw is shared, special car must be taken in the parsing order
 
-	raw, _ = ld.RawTableTo(ot.MustNewTag("OS/2"), raw)
+	raw, _ = ld.RawTableTo(ot.Tag('O'<<24|'S'<<16|'/'<<8|'2'), raw)
 	fp := tables.FPNone
 	if os2, _, err := tables.ParseOs2(raw); err != nil {
 		fp = os2.FontPage()
@@ -95,7 +95,7 @@ func newCoverageFromLoader(ld *ot.Loader, buffer scanBuffer) (out Footprint, _ s
 
 	// we can use the buffer since ProcessCmap do not keep any reference on
 	// the input slice
-	raw, err = ld.RawTableTo(ot.MustNewTag("cmap"), raw)
+	raw, err = ld.RawTableTo(ot.Tag('c'<<24|'m'<<16|'a'<<8|'p'), raw)
 	if err != nil {
 		return Footprint{}, buffer, err
 	}

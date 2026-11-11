@@ -69,51 +69,61 @@ const (
 	Invalid Modifier = 0x00ffffffffffffff
 )
 
-var withoutAlpha = map[Format]Format{
-	ARGB8888:    XRGB8888,
-	ABGR8888:    XBGR8888,
-	ARGB2101010: XRGB2101010,
-	ABGR2101010: XBGR2101010,
+var alphaVariants = [...]struct{ alpha, opaque Format }{
+	{ARGB8888, XRGB8888},
+	{ABGR8888, XBGR8888},
+	{ARGB2101010, XRGB2101010},
+	{ABGR2101010, XBGR2101010},
 }
 
-// yuvPlanes is each YUV format's color planes, as how many luma rows
-// share one row of the plane.
-var yuvPlanes = map[Format][]int{
-	NV12: {1, 2}, NV21: {1, 2}, NV16: {1, 1}, NV61: {1, 1}, NV24: {1, 1}, NV42: {1, 1},
-	P010: {1, 2}, P012: {1, 2}, P016: {1, 2}, P210: {1, 1},
-	YUV420: {1, 2, 2}, YVU420: {1, 2, 2}, YUV422: {1, 1, 1}, YVU422: {1, 1, 1}, YUV444: {1, 1, 1}, YVU444: {1, 1, 1},
-	Q410: {1, 1, 1}, Q401: {1, 1, 1},
-	YUYV: {1}, YVYU: {1}, UYVY: {1}, VYUY: {1}, Y210: {1}, Y212: {1}, Y216: {1},
-	AYUV: {1}, XYUV8888: {1}, AVUY8888: {1}, XVUY8888: {1},
-	Y410: {1}, XVYU2101010: {1}, Y412: {1}, XVYU121616: {1}, Y416: {1}, XVYU16161616: {1},
-	XVUY2101010: {1}, VUY888: {1},
+var (
+	packedRows           = []int{1}
+	fullChromaRows       = []int{1, 1}
+	halfChromaRows       = []int{1, 2}
+	fullChromaPlanarRows = []int{1, 1, 1}
+	halfChromaPlanarRows = []int{1, 2, 2}
+)
+
+// yuvPlanes is a YUV format's color planes, as how many luma rows share
+// one row of the plane; nil for a format that is not YUV.
+func yuvPlanes(f Format) []int {
+	switch f {
+	case NV12, NV21, P010, P012, P016:
+		return halfChromaRows
+	case NV16, NV61, NV24, NV42, P210:
+		return fullChromaRows
+	case YUV420, YVU420:
+		return halfChromaPlanarRows
+	case YUV422, YVU422, YUV444, YVU444, Q410, Q401:
+		return fullChromaPlanarRows
+	case YUYV, YVYU, UYVY, VYUY, Y210, Y212, Y216,
+		AYUV, XYUV8888, AVUY8888, XVUY8888,
+		Y410, XVYU2101010, Y412, XVYU121616, Y416, XVYU16161616,
+		XVUY2101010, VUY888:
+		return packedRows
+	}
+	return nil
 }
 
 // YUV reports whether f is one of the YUV formats named here.
-func (f Format) YUV() bool {
-	_, ok := yuvPlanes[f]
-	return ok
-}
+func (f Format) YUV() bool { return yuvPlanes(f) != nil }
 
 // Planes is how many color planes a buffer of f has, or 0 when f is not
 // named here. A modifier may add metadata planes beyond them.
 func (f Format) Planes() int {
-	if _, ok := withoutAlpha[f]; ok {
-		return 1
-	}
-	for _, opaque := range withoutAlpha {
-		if opaque == f {
+	for _, v := range alphaVariants {
+		if v.alpha == f || v.opaque == f {
 			return 1
 		}
 	}
-	return len(yuvPlanes[f])
+	return len(yuvPlanes(f))
 }
 
 // PlaneRows is how many rows plane has in a buffer of f height rows
 // tall: height for a plane that is not subsampled, a metadata plane or a
 // format not named here.
 func (f Format) PlaneRows(plane, height int) int {
-	subs := yuvPlanes[f]
+	subs := yuvPlanes(f)
 	if plane >= len(subs) {
 		return height
 	}
@@ -122,16 +132,15 @@ func (f Format) PlaneRows(plane, height int) int {
 
 // HasAlpha reports whether f is one of the RGB formats named here with
 // an alpha channel.
-func (f Format) HasAlpha() bool {
-	_, ok := withoutAlpha[f]
-	return ok
-}
+func (f Format) HasAlpha() bool { return f.Opaque() != f }
 
 // Opaque is f with its alpha channel replaced by padding, such as
 // XRGB8888 for ARGB8888, or f itself when it has no alpha variant here.
 func (f Format) Opaque() Format {
-	if x, ok := withoutAlpha[f]; ok {
-		return x
+	for _, v := range alphaVariants {
+		if v.alpha == f {
+			return v.opaque
+		}
 	}
 	return f
 }
@@ -140,9 +149,9 @@ func (f Format) Opaque() Format {
 // ARGB8888 for XRGB8888, or f itself when it has no opaque variant
 // here.
 func (f Format) WithAlpha() Format {
-	for alpha, opaque := range withoutAlpha {
-		if opaque == f {
-			return alpha
+	for _, v := range alphaVariants {
+		if v.opaque == f {
+			return v.alpha
 		}
 	}
 	return f

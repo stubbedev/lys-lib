@@ -25,8 +25,6 @@ var (
 
 	errInvalidCFFTable               = errors.New("invalid ps instructions")
 	errUnsupportedRealNumberEncoding = errors.New("unsupported real number encoding")
-
-	be = binary.BigEndian
 )
 
 const (
@@ -171,14 +169,14 @@ func (p *Machine) parseNumber() (hasResult bool, err error) {
 		if len(p.instructions) < 3 {
 			return true, errInvalidCFFTable
 		}
-		number, hasResult = float64(int16(be.Uint16(p.instructions[1:]))), true
+		number, hasResult = float64(int16(binary.BigEndian.Uint16(p.instructions[1:]))), true
 		p.instructions = p.instructions[3:]
 
 	case b == 29 && p.ctx != Type2Charstring:
 		if len(p.instructions) < 5 {
 			return true, errInvalidCFFTable
 		}
-		number, hasResult = float64(int32(be.Uint32(p.instructions[1:]))), true
+		number, hasResult = float64(int32(binary.BigEndian.Uint32(p.instructions[1:]))), true
 		p.instructions = p.instructions[5:]
 
 	case b == 30 && p.ctx != Type2Charstring && p.ctx != Type1Charstring:
@@ -242,7 +240,7 @@ func (p *Machine) parseNumber() (hasResult bool, err error) {
 		if len(p.instructions) < 5 {
 			return true, errInvalidCFFTable
 		}
-		intValue := int32(be.Uint32(p.instructions[1:]))
+		intValue := int32(binary.BigEndian.Uint32(p.instructions[1:]))
 		if p.ctx == Type2Charstring {
 			// 5177.Type2.pdf section 3.2 "Charstring Number Encoding" says "If the
 			// charstring byte contains the value 255... [this] number is

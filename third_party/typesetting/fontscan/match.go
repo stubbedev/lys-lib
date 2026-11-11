@@ -52,7 +52,7 @@ func (fc familyCrible) fillWithSubstitutions(family string, lang LangID) {
 
 func (fc familyCrible) fillWithSubstitutionsList(families []string, lang LangID) {
 	fl := newFamilyList(families)
-	for _, subs := range familySubstitution {
+	for _, subs := range substitutions() {
 		fl.execute(subs, lang)
 	}
 
@@ -221,7 +221,7 @@ func (fm fontSet) selectByFamilyWithSubs(queryFamilies []string, queryScript lan
 	cribleBuffer familyCrible, footprintsBuffer *scoredFootprints,
 ) []int {
 	// if not found, the zero value is fine (language based substitutions will be disabled)
-	queryLang := language.ScriptToLang[queryScript]
+	queryLang := language.ScriptToLang(queryScript)
 
 	// build the crible, handling substitutions
 	cribleBuffer.reset()

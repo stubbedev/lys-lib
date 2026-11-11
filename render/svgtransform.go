@@ -5,6 +5,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 
 	"github.com/stubbedev/lys-lib/third_party/rasterx"
 )
@@ -102,9 +103,22 @@ func matrixString(m rasterx.Matrix2D) string {
 // transformAttr matches a transform="..." attribute; styleAttr a
 // style="..." one.
 var (
-	transformAttr = regexp.MustCompile(`\stransform\s*=\s*("[^"]*"|'[^']*')`)
-	styleAttr     = regexp.MustCompile(`\sstyle\s*=\s*("[^"]*"|'[^']*')`)
+	transformAttr = lazyRegexp{pattern: `\stransform\s*=\s*("[^"]*"|'[^']*')`}
+	styleAttr     = lazyRegexp{pattern: `\sstyle\s*=\s*("[^"]*"|'[^']*')`}
 )
+
+// lazyRegexp is a pattern compiled when it is first matched, so that a
+// package-level one costs the importer of the package nothing.
+type lazyRegexp struct {
+	pattern string
+	once    sync.Once
+	re      *regexp.Regexp
+}
+
+func (l *lazyRegexp) get() *regexp.Regexp {
+	l.once.Do(func() { l.re = regexp.MustCompile(l.pattern) })
+	return l.re
+}
 
 // canonicalTransforms rewrites every transform, attribute or style
 // declaration, into the one matrix() it composes to. oksvg's own
@@ -113,13 +127,13 @@ var (
 // document has one transform semantics. A list that does not parse is
 // left as written, for layoutSVG to reject.
 func canonicalTransforms(data []byte) []byte {
-	data = rewriteAttr(data, transformAttr, func(v string) string {
+	data = rewriteAttr(data, transformAttr.get(), func(v string) string {
 		if m, ok := parseSVGTransform(v); ok {
 			return matrixString(m)
 		}
 		return v
 	})
-	return rewriteAttr(data, styleAttr, func(v string) string {
+	return rewriteAttr(data, styleAttr.get(), func(v string) string {
 		decls := strings.Split(v, ";")
 		for i, decl := range decls {
 			k, val, found := strings.Cut(decl, ":")

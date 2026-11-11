@@ -165,17 +165,17 @@ var indicFeatures = [...]otMapFeature{
 	* Basic features.
 	* These features are applied in order, one at a time, after initial_reordering.
 	 */
-	{ot.NewTag('n', 'u', 'k', 't'), ffGlobalManualJoiners | ffPerSyllable},
-	{ot.NewTag('a', 'k', 'h', 'n'), ffGlobalManualJoiners | ffPerSyllable},
-	{ot.NewTag('r', 'p', 'h', 'f'), ffManualJoiners | ffPerSyllable},
-	{ot.NewTag('r', 'k', 'r', 'f'), ffGlobalManualJoiners | ffPerSyllable},
-	{ot.NewTag('p', 'r', 'e', 'f'), ffManualJoiners | ffPerSyllable},
-	{ot.NewTag('b', 'l', 'w', 'f'), ffManualJoiners | ffPerSyllable},
-	{ot.NewTag('a', 'b', 'v', 'f'), ffManualJoiners | ffPerSyllable},
-	{ot.NewTag('h', 'a', 'l', 'f'), ffManualJoiners | ffPerSyllable},
-	{ot.NewTag('p', 's', 't', 'f'), ffManualJoiners | ffPerSyllable},
-	{ot.NewTag('v', 'a', 't', 'u'), ffGlobalManualJoiners | ffPerSyllable},
-	{ot.NewTag('c', 'j', 'c', 't'), ffGlobalManualJoiners | ffPerSyllable},
+	{ot.Tag('n'<<24 | 'u'<<16 | 'k'<<8 | 't'), ffGlobalManualJoiners | ffPerSyllable},
+	{ot.Tag('a'<<24 | 'k'<<16 | 'h'<<8 | 'n'), ffGlobalManualJoiners | ffPerSyllable},
+	{ot.Tag('r'<<24 | 'p'<<16 | 'h'<<8 | 'f'), ffManualJoiners | ffPerSyllable},
+	{ot.Tag('r'<<24 | 'k'<<16 | 'r'<<8 | 'f'), ffGlobalManualJoiners | ffPerSyllable},
+	{ot.Tag('p'<<24 | 'r'<<16 | 'e'<<8 | 'f'), ffManualJoiners | ffPerSyllable},
+	{ot.Tag('b'<<24 | 'l'<<16 | 'w'<<8 | 'f'), ffManualJoiners | ffPerSyllable},
+	{ot.Tag('a'<<24 | 'b'<<16 | 'v'<<8 | 'f'), ffManualJoiners | ffPerSyllable},
+	{ot.Tag('h'<<24 | 'a'<<16 | 'l'<<8 | 'f'), ffManualJoiners | ffPerSyllable},
+	{ot.Tag('p'<<24 | 's'<<16 | 't'<<8 | 'f'), ffManualJoiners | ffPerSyllable},
+	{ot.Tag('v'<<24 | 'a'<<16 | 't'<<8 | 'u'), ffGlobalManualJoiners | ffPerSyllable},
+	{ot.Tag('c'<<24 | 'j'<<16 | 'c'<<8 | 't'), ffGlobalManualJoiners | ffPerSyllable},
 	/*
 	* Other features.
 	* These features are applied all at once, after final_reordering
@@ -183,12 +183,12 @@ var indicFeatures = [...]otMapFeature{
 	* Default Bengali font in Windows for example has intermixed
 	* lookups for init,pres,abvs,blws features.
 	 */
-	{ot.NewTag('i', 'n', 'i', 't'), ffManualJoiners | ffPerSyllable},
-	{ot.NewTag('p', 'r', 'e', 's'), ffGlobalManualJoiners | ffPerSyllable},
-	{ot.NewTag('a', 'b', 'v', 's'), ffGlobalManualJoiners | ffPerSyllable},
-	{ot.NewTag('b', 'l', 'w', 's'), ffGlobalManualJoiners | ffPerSyllable},
-	{ot.NewTag('p', 's', 't', 's'), ffGlobalManualJoiners | ffPerSyllable},
-	{ot.NewTag('h', 'a', 'l', 'n'), ffGlobalManualJoiners | ffPerSyllable},
+	{ot.Tag('i'<<24 | 'n'<<16 | 'i'<<8 | 't'), ffManualJoiners | ffPerSyllable},
+	{ot.Tag('p'<<24 | 'r'<<16 | 'e'<<8 | 's'), ffGlobalManualJoiners | ffPerSyllable},
+	{ot.Tag('a'<<24 | 'b'<<16 | 'v'<<8 | 's'), ffGlobalManualJoiners | ffPerSyllable},
+	{ot.Tag('b'<<24 | 'l'<<16 | 'w'<<8 | 's'), ffGlobalManualJoiners | ffPerSyllable},
+	{ot.Tag('p'<<24 | 's'<<16 | 't'<<8 | 's'), ffGlobalManualJoiners | ffPerSyllable},
+	{ot.Tag('h'<<24 | 'a'<<16 | 'l'<<8 | 'n'), ffGlobalManualJoiners | ffPerSyllable},
 }
 
 // in the same order as the indicFeatures array
@@ -222,10 +222,10 @@ func (cs *complexShaperIndic) collectFeatures(plan *otShapePlanner) {
 	/* Do this before any lookups have been applied. */
 	map_.addGSUBPause(setupSyllablesIndic)
 
-	map_.enableFeatureExt(ot.NewTag('l', 'o', 'c', 'l'), ffPerSyllable, 1)
+	map_.enableFeatureExt(ot.Tag('l'<<24|'o'<<16|'c'<<8|'l'), ffPerSyllable, 1)
 	/* The Indic specs do not require ccmp, but we apply it here since if
 	* there is a use of it, it's typically at the beginning. */
-	map_.enableFeatureExt(ot.NewTag('c', 'c', 'm', 'p'), ffPerSyllable, 1)
+	map_.enableFeatureExt(ot.Tag('c'<<24|'c'<<16|'m'<<8|'p'), ffPerSyllable, 1)
 
 	i := 0
 	map_.addGSUBPause(cs.initialReorderingIndic)
@@ -243,7 +243,7 @@ func (cs *complexShaperIndic) collectFeatures(plan *otShapePlanner) {
 }
 
 func (complexShaperIndic) overrideFeatures(plan *otShapePlanner) {
-	plan.otMap.disableFeature(ot.NewTag('l', 'i', 'g', 'a'))
+	plan.otMap.disableFeature(ot.Tag('l'<<24 | 'i'<<16 | 'g'<<8 | 'a'))
 	plan.otMap.addGSUBPause(nil)
 }
 
@@ -301,11 +301,11 @@ func (cs *complexShaperIndic) dataCreate(plan *otShapePlan) {
 	* So, the heuristic here is the way it is.  It should *only* be changed,
 	* as we discover more cases of what Windows does.  DON'T TOUCH OTHERWISE. */
 	zeroContext := !indicPlan.isOldSpec && plan.props.Script != language.Malayalam
-	indicPlan.rphf = newIndicWouldSubstituteFeature(&plan.otMap, ot.NewTag('r', 'p', 'h', 'f'), zeroContext)
-	indicPlan.pref = newIndicWouldSubstituteFeature(&plan.otMap, ot.NewTag('p', 'r', 'e', 'f'), zeroContext)
-	indicPlan.blwf = newIndicWouldSubstituteFeature(&plan.otMap, ot.NewTag('b', 'l', 'w', 'f'), zeroContext)
-	indicPlan.pstf = newIndicWouldSubstituteFeature(&plan.otMap, ot.NewTag('p', 's', 't', 'f'), zeroContext)
-	indicPlan.vatu = newIndicWouldSubstituteFeature(&plan.otMap, ot.NewTag('v', 'a', 't', 'u'), zeroContext)
+	indicPlan.rphf = newIndicWouldSubstituteFeature(&plan.otMap, ot.Tag('r'<<24|'p'<<16|'h'<<8|'f'), zeroContext)
+	indicPlan.pref = newIndicWouldSubstituteFeature(&plan.otMap, ot.Tag('p'<<24|'r'<<16|'e'<<8|'f'), zeroContext)
+	indicPlan.blwf = newIndicWouldSubstituteFeature(&plan.otMap, ot.Tag('b'<<24|'l'<<16|'w'<<8|'f'), zeroContext)
+	indicPlan.pstf = newIndicWouldSubstituteFeature(&plan.otMap, ot.Tag('p'<<24|'s'<<16|'t'<<8|'f'), zeroContext)
+	indicPlan.vatu = newIndicWouldSubstituteFeature(&plan.otMap, ot.Tag('v'<<24|'a'<<16|'t'<<8|'u'), zeroContext)
 
 	for i := range indicPlan.maskArray {
 		if indicFeatures[i].flags&ffGLOBAL != 0 {

@@ -19,25 +19,6 @@ import (
 type svgFunc func(c *IconCursor, attrs []xml.Attr) error
 
 var (
-	drawFuncs = map[string]svgFunc{
-		"svg":            svgF,
-		"g":              gF,
-		"line":           lineF,
-		"stop":           stopF,
-		"rect":           rectF,
-		"circle":         circleF,
-		"ellipse":        circleF, //circleF handles ellipse also
-		"polyline":       polylineF,
-		"polygon":        polygonF,
-		"path":           pathF,
-		"desc":           descF,
-		"defs":           defsF,
-		"style":          styleF,
-		"title":          titleF,
-		"linearGradient": linearGradientF,
-		"radialGradient": radialGradientF,
-	}
-
 	svgF svgFunc = func(c *IconCursor, attrs []xml.Attr) error {
 		c.icon.ViewBox.X = 0
 		c.icon.ViewBox.Y = 0
@@ -323,81 +304,121 @@ var (
 		}
 		return nil
 	}
-	useF svgFunc = func(c *IconCursor, attrs []xml.Attr) error {
-		var (
-			href string
-			x, y float64
-			err  error
-		)
-		for _, attr := range attrs {
-			switch attr.Name.Local {
-			case "href":
-				href = attr.Value
-			case "x":
-				x, err = parseFloat(attr.Value, 64)
-			case "y":
-				y, err = parseFloat(attr.Value, 64)
-			}
-			if err != nil {
-				return err
-			}
-		}
-		// Translate the Style adder matrix by use's x and y
-		c.StyleStack[len(c.StyleStack)-1].mAdder.M =
-			c.StyleStack[len(c.StyleStack)-1].mAdder.M.Translate(x, y)
-		if href == "" {
-			return errors.New("only use tags with href is supported")
-		}
-		if !strings.HasPrefix(href, "#") {
-			return errors.New("only the ID CSS selector is supported")
-		}
-		defs, ok := c.icon.Defs[href[1:]]
-		if !ok {
-			return errors.New("href ID in use statement was not found in saved defs")
-		}
-		for _, def := range defs {
-			if def.Tag == "endg" {
-				// pop style
-				c.StyleStack = c.StyleStack[:len(c.StyleStack)-1]
-				continue
-			}
-			if err = c.PushStyle(def.Attrs); err != nil {
-				return err
-			}
-			df, ok := drawFuncs[def.Tag]
-			if !ok {
-				errStr := "Cannot process svg element " + def.Tag
-				if c.ErrorMode == StrictErrorMode {
-					return errors.New(errStr)
-				} else if c.ErrorMode == WarnErrorMode {
-					log.Println(errStr)
-				}
-				return nil
-			}
-			if err := df(c, def.Attrs); err != nil {
-				return err
-			}
-			//Did c.Path get added to during the drawFunction call iteration?
-			if len(c.Path) > 0 {
-				//The cursor parsed a path from the xml element
-				pathCopy := make(rasterx.Path, len(c.Path))
-				copy(pathCopy, c.Path)
-				c.icon.SVGPaths = append(c.icon.SVGPaths, SvgPath{c.StyleStack[len(c.StyleStack)-1], pathCopy})
-				c.Path = c.Path[:0]
-			}
-			if def.Tag != "g" {
-				// pop style
-				c.StyleStack = c.StyleStack[:len(c.StyleStack)-1]
-			}
-		}
-		return nil
-	}
 )
 
-func init() {
-	// avoids cyclical static declaration
-	// called on package initialization
-	drawFuncs["use"] = useF
+// useF draws a use element (lys-lib patch: a function, which may refer
+// to drawFunc, where upstream had a variable its init function put in
+// the map).
+func useF(c *IconCursor, attrs []xml.Attr) error {
+	var (
+		href string
+		x, y float64
+		err  error
+	)
+	for _, attr := range attrs {
+		switch attr.Name.Local {
+		case "href":
+			href = attr.Value
+		case "x":
+			x, err = parseFloat(attr.Value, 64)
+		case "y":
+			y, err = parseFloat(attr.Value, 64)
+		}
+		if err != nil {
+			return err
+		}
+	}
+	// Translate the Style adder matrix by use's x and y
+	c.StyleStack[len(c.StyleStack)-1].mAdder.M =
+		c.StyleStack[len(c.StyleStack)-1].mAdder.M.Translate(x, y)
+	if href == "" {
+		return errors.New("only use tags with href is supported")
+	}
+	if !strings.HasPrefix(href, "#") {
+		return errors.New("only the ID CSS selector is supported")
+	}
+	defs, ok := c.icon.Defs[href[1:]]
+	if !ok {
+		return errors.New("href ID in use statement was not found in saved defs")
+	}
+	for _, def := range defs {
+		if def.Tag == "endg" {
+			// pop style
+			c.StyleStack = c.StyleStack[:len(c.StyleStack)-1]
+			continue
+		}
+		if err = c.PushStyle(def.Attrs); err != nil {
+			return err
+		}
+		df, ok := drawFunc(def.Tag)
+		if !ok {
+			errStr := "Cannot process svg element " + def.Tag
+			if c.ErrorMode == StrictErrorMode {
+				return errors.New(errStr)
+			} else if c.ErrorMode == WarnErrorMode {
+				log.Println(errStr)
+			}
+			return nil
+		}
+		if err := df(c, def.Attrs); err != nil {
+			return err
+		}
+		//Did c.Path get added to during the drawFunction call iteration?
+		if len(c.Path) > 0 {
+			//The cursor parsed a path from the xml element
+			pathCopy := make(rasterx.Path, len(c.Path))
+			copy(pathCopy, c.Path)
+			c.icon.SVGPaths = append(c.icon.SVGPaths, SvgPath{c.StyleStack[len(c.StyleStack)-1], pathCopy})
+			c.Path = c.Path[:0]
+		}
+		if def.Tag != "g" {
+			// pop style
+			c.StyleStack = c.StyleStack[:len(c.StyleStack)-1]
+		}
+	}
+	return nil
+}
+
+// drawFunc is what draws the element name (lys-lib patch: a switch,
+// where upstream built a map when the package was imported).
+func drawFunc(name string) (svgFunc, bool) {
+	switch name {
+	case "svg":
+		return svgF, true
+	case "g":
+		return gF, true
+	case "line":
+		return lineF, true
+	case "stop":
+		return stopF, true
+	case "rect":
+		return rectF, true
+	case "circle":
+		return circleF, true
+	case "ellipse": //circleF handles ellipse also
+		return circleF, true
+	case "polyline":
+		return polylineF, true
+	case "polygon":
+		return polygonF, true
+	case "path":
+		return pathF, true
+	case "desc":
+		return descF, true
+	case "defs":
+		return defsF, true
+	case "style":
+		return styleF, true
+	case "title":
+		return titleF, true
+	case "linearGradient":
+		return linearGradientF, true
+	case "radialGradient":
+		return radialGradientF, true
+	case "use":
+		return useF, true
+	}
+	return nil, false
 }
 
 // setStopProperty applies a gradient stop's stop-color or stop-opacity,

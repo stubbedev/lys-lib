@@ -1,6 +1,8 @@
 package harfbuzz
 
 import (
+	"sync"
+
 	"github.com/stubbedev/lys-lib/third_party/typesetting/font"
 	ot "github.com/stubbedev/lys-lib/third_party/typesetting/font/opentype"
 	"github.com/stubbedev/lys-lib/third_party/typesetting/font/opentype/tables"
@@ -13,49 +15,58 @@ type manifest struct {
 	tag    tables.Tag
 }
 
-var arabicWin1256GsubLookups = [...]manifest{
-	{&rligLookup, ot.NewTag('r', 'l', 'i', 'g')},
-	{&initLookup, ot.NewTag('i', 'n', 'i', 't')},
-	{&mediLookup, ot.NewTag('m', 'e', 'd', 'i')},
-	{&finaLookup, ot.NewTag('f', 'i', 'n', 'a')},
-	{&rligMarksLookup, ot.NewTag('r', 'l', 'i', 'g')},
+var arabicWin1256 struct {
+	once    sync.Once
+	lookups [5]manifest
 }
 
-// Lookups
-var (
-	initLookup = lookupGSUB{
-		LookupOptions: font.LookupOptions{Flag: otIgnoreMarks},
-		Subtables: []tables.GSUBLookup{
-			initmediSubLookup,
-			initSubLookup,
-		},
-	}
-	mediLookup = lookupGSUB{
-		LookupOptions: font.LookupOptions{Flag: otIgnoreMarks},
-		Subtables: []tables.GSUBLookup{
-			initmediSubLookup,
-			mediSubLookup,
-			medifinaLamAlefSubLookup,
-		},
-	}
-	finaLookup = lookupGSUB{
-		LookupOptions: font.LookupOptions{Flag: otIgnoreMarks},
-		Subtables: []tables.GSUBLookup{
-			finaSubLookup,
-			/* We don't need this one currently as the sequence inherits masks
-			 * from the first item. Just in case we change that in the future
-			 * to be smart about Arabic masks when ligating... */
-			medifinaLamAlefSubLookup,
-		},
-	}
-	rligLookup = lookupGSUB{
-		LookupOptions: font.LookupOptions{Flag: otIgnoreMarks},
-		Subtables:     []tables.GSUBLookup{lamAlefLigaturesSubLookup},
-	}
-	rligMarksLookup = lookupGSUB{
-		Subtables: []tables.GSUBLookup{shaddaLigaturesSubLookup},
-	}
-)
+// arabicWin1256GsubLookups are the lookups of the fallback shaping
+// (lys-lib patch: built on first use, where upstream built them when
+// the package was imported).
+func arabicWin1256GsubLookups() [5]manifest {
+	arabicWin1256.once.Do(func() {
+		initLookup := lookupGSUB{
+			LookupOptions: font.LookupOptions{Flag: otIgnoreMarks},
+			Subtables: []tables.GSUBLookup{
+				initmediSubLookup,
+				initSubLookup,
+			},
+		}
+		mediLookup := lookupGSUB{
+			LookupOptions: font.LookupOptions{Flag: otIgnoreMarks},
+			Subtables: []tables.GSUBLookup{
+				initmediSubLookup,
+				mediSubLookup,
+				medifinaLamAlefSubLookup,
+			},
+		}
+		finaLookup := lookupGSUB{
+			LookupOptions: font.LookupOptions{Flag: otIgnoreMarks},
+			Subtables: []tables.GSUBLookup{
+				finaSubLookup,
+				/* We don't need this one currently as the sequence inherits masks
+				 * from the first item. Just in case we change that in the future
+				 * to be smart about Arabic masks when ligating... */
+				medifinaLamAlefSubLookup,
+			},
+		}
+		rligLookup := lookupGSUB{
+			LookupOptions: font.LookupOptions{Flag: otIgnoreMarks},
+			Subtables:     []tables.GSUBLookup{lamAlefLigaturesSubLookup},
+		}
+		rligMarksLookup := lookupGSUB{
+			Subtables: []tables.GSUBLookup{shaddaLigaturesSubLookup},
+		}
+		arabicWin1256.lookups = [...]manifest{
+			{&rligLookup, ot.Tag('r'<<24 | 'l'<<16 | 'i'<<8 | 'g')},
+			{&initLookup, ot.Tag('i'<<24 | 'n'<<16 | 'i'<<8 | 't')},
+			{&mediLookup, ot.Tag('m'<<24 | 'e'<<16 | 'd'<<8 | 'i')},
+			{&finaLookup, ot.Tag('f'<<24 | 'i'<<16 | 'n'<<8 | 'a')},
+			{&rligMarksLookup, ot.Tag('r'<<24 | 'l'<<16 | 'i'<<8 | 'g')},
+		}
+	})
+	return arabicWin1256.lookups
+}
 
 // init/medi/fina forms
 var (

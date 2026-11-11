@@ -30,7 +30,7 @@ import (
 // the default if no ErrorMode value is provided.
 func ReadIconStream(stream io.Reader, errMode ...ErrorMode) (*SvgIcon, error) {
 	icon := &SvgIcon{Defs: make(map[string][]definition), Grads: make(map[string]*rasterx.Gradient), Transform: rasterx.Identity}
-	cursor := &IconCursor{StyleStack: []PathStyle{DefaultStyle}, icon: icon}
+	cursor := &IconCursor{StyleStack: []PathStyle{DefaultStyle()}, icon: icon}
 	if len(errMode) > 0 {
 		cursor.ErrorMode = errMode[0]
 	}

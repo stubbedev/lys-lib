@@ -9,7 +9,6 @@ import (
 	"image/jpeg"
 	"image/png"
 	"math"
-	"regexp"
 
 	xdraw "golang.org/x/image/draw"
 )
@@ -100,14 +99,14 @@ func rasterSVG(doc *svgDoc, rx, ry, rw, rh float64, w, h int) *image.RGBA {
 // foreignAttr is an attribute in another vocabulary's namespace
 // (prefix:name, the xml, xmlns and xlink prefixes excepted), such as
 // GTK's symbolic-icon markup: gpa:fill='foreground'.
-var foreignAttr = regexp.MustCompile(`\s(?:[A-Za-z_][\w.-]*):[A-Za-z_][\w.-]*\s*=\s*(?:'[^']*'|"[^"]*")`)
+var foreignAttr = lazyRegexp{pattern: `\s(?:[A-Za-z_][\w.-]*):[A-Za-z_][\w.-]*\s*=\s*(?:'[^']*'|"[^"]*")`}
 
 // dropForeignAttrs removes the attributes oksvg would misread as its
 // own: it ignores namespaces, so gpa:fill='foreground' overrode the
 // real fill and failed the parse. The SVG vocabulary keeps its
 // meaning; GTK symbolic recoloring is the tint lys-ui applies anyway.
 func dropForeignAttrs(data []byte) []byte {
-	return foreignAttr.ReplaceAllFunc(data, func(m []byte) []byte {
+	return foreignAttr.get().ReplaceAllFunc(data, func(m []byte) []byte {
 		name := bytes.TrimSpace(m)
 		for _, keep := range [][]byte{[]byte("xml:"), []byte("xmlns:"), []byte("xlink:")} {
 			if bytes.HasPrefix(name, keep) {

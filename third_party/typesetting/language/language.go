@@ -6,6 +6,7 @@ import (
 	"os"
 	"sort"
 	"strings"
+	"sync"
 )
 
 var canonMap = [256]byte{
@@ -229,7 +230,7 @@ func (lang LangID) UseScript(s Script) bool {
 	return usedScripts[0] == s || usedScripts[1] == s || usedScripts[2] == s
 }
 
-// ScriptToLang maps a script to a language that is reasonably
+// scriptLangs maps a script to a language that is reasonably
 // representative of the script. This will usually be the
 // most widely spoken or used language written in that script:
 // for instance, the sample language for `Cyrillic`
@@ -244,77 +245,92 @@ func (lang LangID) UseScript(s Script) bool {
 // for many historical scripts as well.
 //
 // inspired by pango/pango-language.c
-var ScriptToLang = map[Script]LangID{
-	Arabic:   LangAr,
-	Armenian: LangHy,
-	Bengali:  LangBn,
-	// Used primarily in Taiwan, but not part of the standard
-	// zh-tw orthography
-	Bopomofo: 0,
-	Cherokee: LangChr,
-	Coptic:   LangCop,
-	Cyrillic: LangRu,
-	// Deseret was used to write English
-	Deseret:    0,
-	Devanagari: LangHi,
-	Ethiopic:   LangAm,
-	Georgian:   LangKa,
-	Gothic:     0,
-	Greek:      LangEl,
-	Gujarati:   LangGu,
-	Gurmukhi:   LangPa,
-	Han:        0,
-	Hangul:     LangKo,
-	Hebrew:     LangHe,
-	Hiragana:   LangJa,
-	Kannada:    LangKn,
-	Katakana:   LangJa,
-	Khmer:      LangKm,
-	Lao:        LangLo,
-	Latin:      LangEn,
-	Malayalam:  LangMl,
-	Mongolian:  LangMn,
-	Myanmar:    LangMy,
-	// Ogham was used to write old Irish
-	Ogham:               0,
-	Old_Italic:          0,
-	Oriya:               LangOr,
-	Runic:               0,
-	Sinhala:             LangSi,
-	Syriac:              LangSyr,
-	Tamil:               LangTa,
-	Telugu:              LangTe,
-	Thaana:              LangDv,
-	Thai:                LangTh,
-	Tibetan:             LangBo,
-	Canadian_Aboriginal: LangIu,
-	Yi:                  0,
-	Tagalog:             LangTl,
-	// Phillipino Languages/scripts
-	Hanunoo:  LangHnn,
-	Buhid:    LangBku,
-	Tagbanwa: LangTbw,
+func scriptLangs() map[Script]LangID {
+	return map[Script]LangID{
+		Arabic:   LangAr,
+		Armenian: LangHy,
+		Bengali:  LangBn,
+		// Used primarily in Taiwan, but not part of the standard
+		// zh-tw orthography
+		Bopomofo: 0,
+		Cherokee: LangChr,
+		Coptic:   LangCop,
+		Cyrillic: LangRu,
+		// Deseret was used to write English
+		Deseret:    0,
+		Devanagari: LangHi,
+		Ethiopic:   LangAm,
+		Georgian:   LangKa,
+		Gothic:     0,
+		Greek:      LangEl,
+		Gujarati:   LangGu,
+		Gurmukhi:   LangPa,
+		Han:        0,
+		Hangul:     LangKo,
+		Hebrew:     LangHe,
+		Hiragana:   LangJa,
+		Kannada:    LangKn,
+		Katakana:   LangJa,
+		Khmer:      LangKm,
+		Lao:        LangLo,
+		Latin:      LangEn,
+		Malayalam:  LangMl,
+		Mongolian:  LangMn,
+		Myanmar:    LangMy,
+		// Ogham was used to write old Irish
+		Ogham:               0,
+		Old_Italic:          0,
+		Oriya:               LangOr,
+		Runic:               0,
+		Sinhala:             LangSi,
+		Syriac:              LangSyr,
+		Tamil:               LangTa,
+		Telugu:              LangTe,
+		Thaana:              LangDv,
+		Thai:                LangTh,
+		Tibetan:             LangBo,
+		Canadian_Aboriginal: LangIu,
+		Yi:                  0,
+		Tagalog:             LangTl,
+		// Phillipino Languages/scripts
+		Hanunoo:  LangHnn,
+		Buhid:    LangBku,
+		Tagbanwa: LangTbw,
 
-	Braille: 0,
-	Cypriot: 0,
-	Limbu:   0,
-	// Used for Somali (so) in the past
-	Osmanya: 0,
-	// The Shavian alphabet was designed for English
-	Shavian:  0,
-	Linear_B: 0,
-	Tai_Le:   0,
-	Ugaritic: LangUga,
+		Braille: 0,
+		Cypriot: 0,
+		Limbu:   0,
+		// Used for Somali (so) in the past
+		Osmanya: 0,
+		// The Shavian alphabet was designed for English
+		Shavian:  0,
+		Linear_B: 0,
+		Tai_Le:   0,
+		Ugaritic: LangUga,
 
-	New_Tai_Lue: 0,
-	Buginese:    LangBug,
-	// The original script for Old Church Slavonic (chu), later
-	// written with Cyrillic
-	Glagolitic: 0,
-	// Used for for Berber (ber), but Arabic script is more common
-	Tifinagh:     0,
-	Syloti_Nagri: LangSyl,
-	Old_Persian:  LangPeo,
+		New_Tai_Lue: 0,
+		Buginese:    LangBug,
+		// The original script for Old Church Slavonic (chu), later
+		// written with Cyrillic
+		Glagolitic: 0,
+		// Used for for Berber (ber), but Arabic script is more common
+		Tifinagh:     0,
+		Syloti_Nagri: LangSyl,
+		Old_Persian:  LangPeo,
 
-	Nko: LangNqo,
+		Nko: LangNqo,
+	}
+}
+
+var scriptToLang struct {
+	once     sync.Once
+	byScript map[Script]LangID
+}
+
+// ScriptToLang is the language scriptLangs has for s, 0 for none
+// (lys-lib patch: a function over a map built on first use, where
+// upstream exported a map built when the package was imported).
+func ScriptToLang(s Script) LangID {
+	scriptToLang.once.Do(func() { scriptToLang.byScript = scriptLangs() })
+	return scriptToLang.byScript[s]
 }
