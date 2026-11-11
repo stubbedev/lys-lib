@@ -205,7 +205,7 @@ the object. `Dial`, which connects to the system bus, is bounded the same way.
 | The session of a process | `Manager.GetSessionByPID` |
 | Suspend, reboot, power off | `Manager.Power` with a `PowerAction` |
 | Delay or block sleep, idle, shutdown, lid | `Manager.Inhibit` with an `InhibitWhat` set and an `InhibitMode` |
-| Lock state | `Session.Lock`, `LockedHint`, `SetLockedHint`, `WaitLocked` |
+| Lock state | `Session.Lock`, `LockedHint`, `SetLockedHint`, `WaitLocked`, which fails on a property change it cannot read rather than wait on |
 | Device access for a compositor | `Session.TakeControl`, `TakeDevice`, `PauseDeviceComplete`, `ReleaseDevice` |
 | Backlight through logind | `Session.SetBrightness` |
 | Sleep, lock, device and property signals | `Session.Watch`, which takes signals only from logind's owner, across a restart of logind; each watch owns the descriptor of a device it is told resumed |
@@ -214,7 +214,8 @@ the object. `Dial`, which connects to the system bus, is bounded the same way.
 The methods that have it announce something (`SetLockedHint`, `Lock`,
 `PrepareForSleep`, …) report a failure with `t.Errorf` and return false, so they
 are safe on any goroutine of the test, an `OnLock` hook included; the fake waits
-for hooks still running before its connection closes.
+for hooks still running before its connection closes. `AnnounceProperty` sends a
+`PropertiesChanged` carrying any value, for what a client must refuse.
 
 ## polkit
 

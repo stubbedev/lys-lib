@@ -199,11 +199,20 @@ func (w *Watch) Stop() error {
 	return nil
 }
 
-// WaitLocked returns once the session's LockedHint is true, or with
-// ctx's error when it ends first.
+// WaitLocked returns once the session's LockedHint is true, with ctx's
+// error when it ends first, or with the failure to read a change of the
+// session's properties that logind announced meanwhile: the hint may
+// have been in it.
 func (s Session) WaitLocked(ctx context.Context) (err error) {
 	locked := make(chan struct{}, 1)
-	w, err := s.watch(ctx, func(error) {}, []dbusx.Route{s.changes(func(e Event) {
+	unread := make(chan error, 1)
+	report := func(err error) {
+		select {
+		case unread <- err:
+		default:
+		}
+	}
+	w, err := s.watch(ctx, report, []dbusx.Route{s.changes(func(e Event) {
 		if c, ok := e.(LockedHintChanged); ok && c.Locked {
 			select {
 			case locked <- struct{}{}:
@@ -225,6 +234,8 @@ func (s Session) WaitLocked(ctx context.Context) (err error) {
 	select {
 	case <-locked:
 		return nil
+	case err := <-unread:
+		return fmt.Errorf("logind: wait for LockedHint of %s: %w", s.obj.path, err)
 	case <-w.Done():
 		if err := ctx.Err(); err != nil {
 			return fmt.Errorf("logind: wait for LockedHint of %s: %w", s.obj.path, err)

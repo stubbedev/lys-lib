@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -247,6 +248,35 @@ func TestWaitLocked(t *testing.T) {
 	}
 	if err := s.WaitLocked(t.Context()); err != nil {
 		t.Errorf("WaitLocked on a locked session = %v", err)
+	}
+}
+
+// A change WaitLocked cannot read ends the wait with what was wrong
+// with it: it discarded the failure and waited on, for a hint that
+// might have been the one announced.
+func TestWaitLockedReportsAChangeItCannotRead(t *testing.T) {
+	t.Parallel()
+	fake, m := manager(t, logindtest.Config{Display: display})
+	s := session(t, m, logind.AutoSession)
+	done := make(chan error, 1)
+	go func() { done <- s.WaitLocked(t.Context()) }()
+	announce := time.NewTicker(time.Millisecond)
+	defer announce.Stop()
+	deadline := time.After(wait)
+	for {
+		select {
+		case err := <-done:
+			if err == nil || !strings.Contains(err.Error(), "LockedHint") || !strings.Contains(err.Error(), "changed to a s") {
+				t.Errorf("WaitLocked = %v, want the LockedHint that changed to a string", err)
+			}
+			return
+		case <-announce.C:
+			if !fake.AnnounceProperty(t, display, "LockedHint", "yes") {
+				return
+			}
+		case <-deadline:
+			t.Fatal("WaitLocked waited on after a LockedHint it could not read")
+		}
 	}
 }
 

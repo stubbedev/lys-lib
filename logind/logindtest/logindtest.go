@@ -330,7 +330,16 @@ func (l *Logind) setActive(s *session, active bool) error {
 	return l.propertyChanged(s, "Active", active)
 }
 
-func (l *Logind) propertyChanged(s *session, name string, v bool) error {
+// AnnounceProperty has logind announce, with PropertiesChanged, that
+// property name of session id changed to v, whatever v is and without
+// changing the session: a LockedHint that is no boolean is what a
+// reader must report rather than take for a hint.
+func (l *Logind) AnnounceProperty(t testing.TB, id logind.SessionID, name string, v any) bool {
+	t.Helper()
+	return l.announce(t, id, func(s *session) error { return l.propertyChanged(s, name, v) })
+}
+
+func (l *Logind) propertyChanged(s *session, name string, v any) error {
 	return dbusx.PropertiesChanged.Emit(l.conn, s.path, dbusx.ChangedProperties{
 		Interface:   logind.SessionInterface,
 		Changed:     map[string]dbus.Variant{name: dbus.MakeVariant(v)},
