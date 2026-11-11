@@ -42,14 +42,26 @@ type vaProfile struct {
 	hevcBlocks          uint32
 }
 
-// vaCodecProfiles are the VA profiles each codec tries, best first,
-// with the H.264 profile_idc each is.
-var vaCodecProfiles = map[Codec][]struct {
+// vaCodecProfile is a VA profile and the H.264 profile_idc it is.
+type vaCodecProfile struct {
 	profile int32
 	std     vk.StdVideoH264ProfileIdc
-}{
-	H264: {{va.ProfileH264High, vk.StdVideoH264ProfileIdcHigh}, {va.ProfileH264Main, vk.StdVideoH264ProfileIdcMain}},
-	H265: {{va.ProfileHEVCMain, 0}},
+}
+
+// The VA profiles each codec tries, best first.
+var (
+	vaH264Profiles = []vaCodecProfile{{va.ProfileH264High, vk.StdVideoH264ProfileIdcHigh}, {va.ProfileH264Main, vk.StdVideoH264ProfileIdcMain}}
+	vaH265Profiles = []vaCodecProfile{{va.ProfileHEVCMain, 0}}
+)
+
+func vaCodecProfiles(c Codec) []vaCodecProfile {
+	switch c {
+	case H264:
+		return vaH264Profiles
+	case H265:
+		return vaH265Profiles
+	}
+	return nil
 }
 
 // vaRateControls are the rate control modes the encoder codes at, best
@@ -112,7 +124,7 @@ func (d *Device) vaWhy(c Codec) error { return d.vaEncodersOf().why[c] }
 // rate control modes.
 func probeVAProfile(dpy *va.Display, c Codec) (vaProfile, error) {
 	var why []string
-	for _, prof := range vaCodecProfiles[c] {
+	for _, prof := range vaCodecProfiles(c) {
 		eps := dpy.Entrypoints(prof.profile)
 		for _, ep := range []int32{va.EntrypointEncSliceLP, va.EntrypointEncSlice} {
 			if !slices.Contains(eps, ep) {

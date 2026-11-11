@@ -310,19 +310,32 @@ type videoSamples struct {
 // nv12Samples are 8-bit 4:2:0 pictures: what the encoder codes.
 var nv12Samples = videoSamples{bits: 8, chroma: chroma420}
 
-// videoPictures are the formats pictures of each kind of samples are
-// coded in: luma, then a plane of interleaved chroma, a sample of more
-// than 8 bits in the high bits of its 16.
-var videoPictures = map[videoSamples]vk.Format{
-	{8, chroma420}:  nv12,
-	{10, chroma420}: vk.FormatG10x6B10x6r10x62plane420Unorm3pack16,
-	{12, chroma420}: vk.FormatG12x4B12x4r12x42plane420Unorm3pack16,
-	{8, chroma422}:  vk.FormatG8B8r82plane422Unorm,
-	{10, chroma422}: vk.FormatG10x6B10x6r10x62plane422Unorm3pack16,
-	{12, chroma422}: vk.FormatG12x4B12x4r12x42plane422Unorm3pack16,
-	{8, chroma444}:  vk.FormatG8B8r82plane444Unorm,
-	{10, chroma444}: vk.FormatG10x6B10x6r10x62plane444Unorm3pack16,
-	{12, chroma444}: vk.FormatG12x4B12x4r12x42plane444Unorm3pack16,
+// vk is the format pictures of the samples are coded in: luma, then a
+// plane of interleaved chroma, a sample of more than 8 bits in the high
+// bits of its 16. It is VK_FORMAT_UNDEFINED for samples pictures have
+// no format in.
+func (s videoSamples) vk() vk.Format {
+	switch s {
+	case videoSamples{8, chroma420}:
+		return nv12
+	case videoSamples{10, chroma420}:
+		return vk.FormatG10x6B10x6r10x62plane420Unorm3pack16
+	case videoSamples{12, chroma420}:
+		return vk.FormatG12x4B12x4r12x42plane420Unorm3pack16
+	case videoSamples{8, chroma422}:
+		return vk.FormatG8B8r82plane422Unorm
+	case videoSamples{10, chroma422}:
+		return vk.FormatG10x6B10x6r10x62plane422Unorm3pack16
+	case videoSamples{12, chroma422}:
+		return vk.FormatG12x4B12x4r12x42plane422Unorm3pack16
+	case videoSamples{8, chroma444}:
+		return vk.FormatG8B8r82plane444Unorm
+	case videoSamples{10, chroma444}:
+		return vk.FormatG10x6B10x6r10x62plane444Unorm3pack16
+	case videoSamples{12, chroma444}:
+		return vk.FormatG12x4B12x4r12x42plane444Unorm3pack16
+	}
+	return vk.FormatUndefined
 }
 
 // chromaOfIdc is the chroma format an H.264 or H.265 chroma_format_idc
@@ -356,17 +369,13 @@ func samplesOf(bits int, chroma chromaFormat) (videoSamples, bool) {
 		return videoSamples{}, false
 	}
 	s := videoSamples{bits: uint8(bits), chroma: chroma}
-	_, ok := videoPictures[s]
-	return s, ok
+	return s, s.vk() != vk.FormatUndefined
 }
 
 func (s videoSamples) String() string { return fmt.Sprintf("%d-bit %s", s.bits, s.chroma) }
 
 // bytes is how many bytes a sample takes.
 func (s videoSamples) bytes() int { return (int(s.bits) + 7) / 8 }
-
-// vk is the samples' picture format in Vulkan.
-func (s videoSamples) vk() vk.Format { return videoPictures[s] }
 
 // pixel is the samples' picture format as the renderer samples it,
 // through a YCbCr conversion.

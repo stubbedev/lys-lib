@@ -31,18 +31,22 @@ type planeSample struct {
 	channel vk.ComponentSwizzle
 }
 
-// yuvImageLayout is how a YUV format reads as plain images.
+// yuvImageLayout is how a YUV format reads as plain images: the first
+// count of images.
 type yuvImageLayout struct {
-	images     []planeImage
+	images     [3]planeImage
+	count      int
 	y, cb, cr  planeSample
 	bits       int
 	hsub, vsub int
 }
 
+func (l *yuvImageLayout) planes() []planeImage { return l.images[:l.count] }
+
 func biplanar(r, rg vk.Format, bits, hsub, vsub int, swapped bool) yuvImageLayout {
 	l := yuvImageLayout{
-		images: []planeImage{{0, r, 1, 1}, {1, rg, hsub, vsub}},
-		y:      planeSample{0, vk.ComponentSwizzleR}, cb: planeSample{1, vk.ComponentSwizzleR}, cr: planeSample{1, vk.ComponentSwizzleG},
+		images: [3]planeImage{{0, r, 1, 1}, {1, rg, hsub, vsub}}, count: 2,
+		y: planeSample{0, vk.ComponentSwizzleR}, cb: planeSample{1, vk.ComponentSwizzleR}, cr: planeSample{1, vk.ComponentSwizzleG},
 		bits: bits, hsub: hsub, vsub: vsub,
 	}
 	if swapped {
@@ -53,8 +57,8 @@ func biplanar(r, rg vk.Format, bits, hsub, vsub int, swapped bool) yuvImageLayou
 
 func triplanar(r vk.Format, bits, hsub, vsub int, swapped bool) yuvImageLayout {
 	l := yuvImageLayout{
-		images: []planeImage{{0, r, 1, 1}, {1, r, hsub, vsub}, {2, r, hsub, vsub}},
-		y:      planeSample{0, vk.ComponentSwizzleR}, cb: planeSample{1, vk.ComponentSwizzleR}, cr: planeSample{2, vk.ComponentSwizzleR},
+		images: [3]planeImage{{0, r, 1, 1}, {1, r, hsub, vsub}, {2, r, hsub, vsub}}, count: 3,
+		y: planeSample{0, vk.ComponentSwizzleR}, cb: planeSample{1, vk.ComponentSwizzleR}, cr: planeSample{2, vk.ComponentSwizzleR},
 		bits: bits, hsub: hsub, vsub: vsub,
 	}
 	if swapped {
@@ -67,46 +71,66 @@ func triplanar(r vk.Format, bits, hsub, vsub int, swapped bool) yuvImageLayout {
 // of it, and chroma from a four-channel image half as wide.
 func packed422(rg, rgba vk.Format, bits int, y, cb, cr vk.ComponentSwizzle) yuvImageLayout {
 	return yuvImageLayout{
-		images: []planeImage{{0, rg, 1, 1}, {0, rgba, 2, 1}},
-		y:      planeSample{0, y}, cb: planeSample{1, cb}, cr: planeSample{1, cr},
+		images: [3]planeImage{{0, rg, 1, 1}, {0, rgba, 2, 1}}, count: 2,
+		y: planeSample{0, y}, cb: planeSample{1, cb}, cr: planeSample{1, cr},
 		bits: bits, hsub: 2, vsub: 1,
 	}
 }
 
-var yuvImageLayouts = func() map[fourcc.Format]yuvImageLayout {
+// yuvImageLayoutOf is how format reads as plain images; false for a
+// format that is not YUV in planes or macropixels.
+func yuvImageLayoutOf(format fourcc.Format) (yuvImageLayout, bool) {
 	const (
 		r8, rg8, rgba8    = vk.FormatR8Unorm, vk.FormatR8g8Unorm, vk.FormatR8g8b8a8Unorm
 		r16, rg16, rgba16 = vk.FormatR16Unorm, vk.FormatR16g16Unorm, vk.FormatR16g16b16a16Unorm
 		sr, sg, sb, sa    = vk.ComponentSwizzleR, vk.ComponentSwizzleG, vk.ComponentSwizzleB, vk.ComponentSwizzleA
 	)
-	return map[fourcc.Format]yuvImageLayout{
-		fourcc.NV12:   biplanar(r8, rg8, 8, 2, 2, false),
-		fourcc.NV21:   biplanar(r8, rg8, 8, 2, 2, true),
-		fourcc.NV16:   biplanar(r8, rg8, 8, 2, 1, false),
-		fourcc.NV61:   biplanar(r8, rg8, 8, 2, 1, true),
-		fourcc.NV24:   biplanar(r8, rg8, 8, 1, 1, false),
-		fourcc.NV42:   biplanar(r8, rg8, 8, 1, 1, true),
-		fourcc.P010:   biplanar(r16, rg16, 16, 2, 2, false),
-		fourcc.P012:   biplanar(r16, rg16, 16, 2, 2, false),
-		fourcc.P016:   biplanar(r16, rg16, 16, 2, 2, false),
-		fourcc.P210:   biplanar(r16, rg16, 16, 2, 1, false),
-		fourcc.YUV420: triplanar(r8, 8, 2, 2, false),
-		fourcc.YVU420: triplanar(r8, 8, 2, 2, true),
-		fourcc.YUV422: triplanar(r8, 8, 2, 1, false),
-		fourcc.YVU422: triplanar(r8, 8, 2, 1, true),
-		fourcc.YUV444: triplanar(r8, 8, 1, 1, false),
-		fourcc.YVU444: triplanar(r8, 8, 1, 1, true),
-		fourcc.Q410:   triplanar(r16, 16, 1, 1, false),
-		fourcc.Q401:   triplanar(r16, 16, 1, 1, true),
-		fourcc.YUYV:   packed422(rg8, rgba8, 8, sr, sg, sa),
-		fourcc.YVYU:   packed422(rg8, rgba8, 8, sr, sa, sg),
-		fourcc.UYVY:   packed422(rg8, rgba8, 8, sg, sr, sb),
-		fourcc.VYUY:   packed422(rg8, rgba8, 8, sg, sb, sr),
-		fourcc.Y210:   packed422(rg16, rgba16, 16, sr, sg, sa),
-		fourcc.Y212:   packed422(rg16, rgba16, 16, sr, sg, sa),
-		fourcc.Y216:   packed422(rg16, rgba16, 16, sr, sg, sa),
+	switch format {
+	case fourcc.NV12:
+		return biplanar(r8, rg8, 8, 2, 2, false), true
+	case fourcc.NV21:
+		return biplanar(r8, rg8, 8, 2, 2, true), true
+	case fourcc.NV16:
+		return biplanar(r8, rg8, 8, 2, 1, false), true
+	case fourcc.NV61:
+		return biplanar(r8, rg8, 8, 2, 1, true), true
+	case fourcc.NV24:
+		return biplanar(r8, rg8, 8, 1, 1, false), true
+	case fourcc.NV42:
+		return biplanar(r8, rg8, 8, 1, 1, true), true
+	case fourcc.P010, fourcc.P012, fourcc.P016:
+		return biplanar(r16, rg16, 16, 2, 2, false), true
+	case fourcc.P210:
+		return biplanar(r16, rg16, 16, 2, 1, false), true
+	case fourcc.YUV420:
+		return triplanar(r8, 8, 2, 2, false), true
+	case fourcc.YVU420:
+		return triplanar(r8, 8, 2, 2, true), true
+	case fourcc.YUV422:
+		return triplanar(r8, 8, 2, 1, false), true
+	case fourcc.YVU422:
+		return triplanar(r8, 8, 2, 1, true), true
+	case fourcc.YUV444:
+		return triplanar(r8, 8, 1, 1, false), true
+	case fourcc.YVU444:
+		return triplanar(r8, 8, 1, 1, true), true
+	case fourcc.Q410:
+		return triplanar(r16, 16, 1, 1, false), true
+	case fourcc.Q401:
+		return triplanar(r16, 16, 1, 1, true), true
+	case fourcc.YUYV:
+		return packed422(rg8, rgba8, 8, sr, sg, sa), true
+	case fourcc.YVYU:
+		return packed422(rg8, rgba8, 8, sr, sa, sg), true
+	case fourcc.UYVY:
+		return packed422(rg8, rgba8, 8, sg, sr, sb), true
+	case fourcc.VYUY:
+		return packed422(rg8, rgba8, 8, sg, sb, sr), true
+	case fourcc.Y210, fourcc.Y212, fourcc.Y216:
+		return packed422(rg16, rgba16, 16, sr, sg, sa), true
 	}
-}()
+	return yuvImageLayout{}, false
+}
 
 // chromaFeatures are what a sampler conversion needs one of.
 const chromaFeatures = vk.FormatFeatureFlags(vk.FormatFeatureCositedChromaSamplesBit | vk.FormatFeatureMidpointChromaSamplesBit)
@@ -114,7 +138,7 @@ const chromaFeatures = vk.FormatFeatureFlags(vk.FormatFeatureCositedChromaSample
 // driverConverts reports whether the device's sampler conversion samples
 // format in modifier: the features its modifier lists, and an import.
 func (d *Device) driverConverts(format fourcc.Format, modifier fourcc.Modifier, features vk.FormatFeatureFlags, create vk.ImageCreateFlags) bool {
-	pf := pixelFormats[format]
+	pf, _ := lookupPixelFormat(format)
 	if !pf.ycbcr || !d.ycbcr || pf.core13 && !d.vulkan13 {
 		return false
 	}
@@ -136,7 +160,7 @@ func (d *Device) driverConverts(format fourcc.Format, modifier fourcc.Modifier, 
 // samples and imports in.
 func (d *Device) planesModifiers(l yuvImageLayout) []fourcc.Modifier {
 	var out []fourcc.Modifier
-	for i, img := range l.images {
+	for i, img := range l.planes() {
 		var mods []fourcc.Modifier
 		for _, m := range d.formatModifiers(img.vf) {
 			mod := fourcc.Modifier(m.DrmFormatModifier)
@@ -257,7 +281,8 @@ func (d *Device) constantsPipelineOf(ct *compTarget, frag vk.ShaderModule, layou
 
 // importPlanes samples b through plain images over its planes.
 func (d *Device) importPlanes(b dmabuf.Buffer, l yuvImageLayout, c YCbCr) (*Texture, error) {
-	t := &Texture{d: d, format: b.Format, pf: pixelFormats[b.Format], w: b.Width, h: b.Height, foreign: true, layout: vk.ImageLayoutGeneral}
+	pf, _ := lookupPixelFormat(b.Format)
+	t := &Texture{d: d, format: b.Format, pf: pf, w: b.Width, h: b.Height, foreign: true, layout: vk.ImageLayoutGeneral}
 	if len(b.Planes) != t.pf.planes {
 		return nil, fmt.Errorf("gpu: DRM format %s has %d planes, the dmabuf %d", b.Format, t.pf.planes, len(b.Planes))
 	}
@@ -275,7 +300,7 @@ func (d *Device) importPlanes(b dmabuf.Buffer, l yuvImageLayout, c YCbCr) (*Text
 
 func (t *Texture) createPlanes(b dmabuf.Buffer, l yuvImageLayout) error {
 	d := t.d
-	for _, spec := range l.images {
+	for _, spec := range l.planes() {
 		features, err := d.planeImageFeatures(spec.vf, b.Modifier)
 		if err != nil {
 			return fmt.Errorf("gpu: %s importing a %s dmabuf: %w", d.name, b.Format, err)

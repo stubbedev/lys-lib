@@ -150,7 +150,7 @@ func (d *Device) publishPipelines() error {
 // Begin.
 func (d *Device) Prepare(formats ...fourcc.Format) error {
 	for _, f := range formats {
-		if _, ok := pixelFormats[f]; !ok {
+		if _, ok := lookupPixelFormat(f); !ok {
 			return fmt.Errorf("gpu: Prepare of DRM format %s, no target format", f)
 		}
 	}
@@ -160,7 +160,8 @@ func (d *Device) Prepare(formats ...fourcc.Format) error {
 	}
 	d.prep.async = true
 	for _, f := range formats {
-		ct, err := d.compTargetOf(pixelFormats[f].vk)
+		pf, _ := lookupPixelFormat(f)
+		ct, err := d.compTargetOf(pf.vk)
 		if err != nil {
 			return err
 		}

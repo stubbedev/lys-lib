@@ -51,7 +51,8 @@ func (d *Device) NewTexture(format fourcc.Format, width, height int) (*Texture, 
 	if err := d.checkSize(width, height); err != nil {
 		return nil, err
 	}
-	t := &Texture{d: d, format: format, pf: pixelFormats[format], w: width, h: height}
+	pf, _ := lookupPixelFormat(format)
+	t := &Texture{d: d, format: format, pf: pf, w: width, h: height}
 	if err := t.create(); err != nil {
 		t.release()
 		return nil, err

@@ -96,7 +96,8 @@ func (d *Device) NewTarget(width, height int, format fourcc.Format, modifiers []
 }
 
 func (d *Device) exportedTarget(width, height int, format fourcc.Format, modifiers []fourcc.Modifier) (*Target, error) {
-	vf := pixelFormats[format].vk
+	pf, _ := lookupPixelFormat(format)
+	vf := pf.vk
 	e, err := d.export(width, height, format, modifiers, renderUse)
 	if err != nil {
 		return nil, err
@@ -123,7 +124,8 @@ func (t *Target) Texture() (*Texture, error) {
 	if t.s.vf == floatTargetFormat {
 		format = fourcc.ABGR16161616F
 	}
-	t.tex = &Texture{d: t.s.d, format: format, pf: pixelFormats[format], w: t.s.w, h: t.s.h, view: t.s.view, surf: &t.s}
+	pf, _ := lookupPixelFormat(format)
+	t.tex = &Texture{d: t.s.d, format: format, pf: pf, w: t.s.w, h: t.s.h, view: t.s.view, surf: &t.s}
 	return t.tex, nil
 }
 

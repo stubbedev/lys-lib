@@ -42,32 +42,60 @@ type yuvLayout struct {
 	bits       int
 }
 
-var yuvLayouts = map[fourcc.Format]yuvLayout{
-	fourcc.NV12:   {[]string{"Y", "UV"}, 2, 2, 8},
-	fourcc.NV21:   {[]string{"Y", "VU"}, 2, 2, 8},
-	fourcc.NV16:   {[]string{"Y", "UV"}, 2, 1, 8},
-	fourcc.NV61:   {[]string{"Y", "VU"}, 2, 1, 8},
-	fourcc.NV24:   {[]string{"Y", "UV"}, 1, 1, 8},
-	fourcc.NV42:   {[]string{"Y", "VU"}, 1, 1, 8},
-	fourcc.P010:   {[]string{"Y", "UV"}, 2, 2, 10},
-	fourcc.P012:   {[]string{"Y", "UV"}, 2, 2, 12},
-	fourcc.P016:   {[]string{"Y", "UV"}, 2, 2, 16},
-	fourcc.P210:   {[]string{"Y", "UV"}, 2, 1, 10},
-	fourcc.YUV420: {[]string{"Y", "U", "V"}, 2, 2, 8},
-	fourcc.YVU420: {[]string{"Y", "V", "U"}, 2, 2, 8},
-	fourcc.YUV422: {[]string{"Y", "U", "V"}, 2, 1, 8},
-	fourcc.YVU422: {[]string{"Y", "V", "U"}, 2, 1, 8},
-	fourcc.YUV444: {[]string{"Y", "U", "V"}, 1, 1, 8},
-	fourcc.YVU444: {[]string{"Y", "V", "U"}, 1, 1, 8},
-	fourcc.Q410:   {[]string{"Y", "U", "V"}, 1, 1, 10},
-	fourcc.Q401:   {[]string{"Y", "V", "U"}, 1, 1, 10},
-	fourcc.YUYV:   {[]string{"YUYV"}, 2, 1, 8},
-	fourcc.YVYU:   {[]string{"YVYU"}, 2, 1, 8},
-	fourcc.UYVY:   {[]string{"UYVY"}, 2, 1, 8},
-	fourcc.VYUY:   {[]string{"VYUY"}, 2, 1, 8},
-	fourcc.Y210:   {[]string{"YUYV"}, 2, 1, 10},
-	fourcc.Y212:   {[]string{"YUYV"}, 2, 1, 12},
-	fourcc.Y216:   {[]string{"YUYV"}, 2, 1, 16},
+func yuvLayoutOf(format fourcc.Format) (yuvLayout, bool) {
+	switch format {
+	case fourcc.NV12:
+		return yuvLayout{[]string{"Y", "UV"}, 2, 2, 8}, true
+	case fourcc.NV21:
+		return yuvLayout{[]string{"Y", "VU"}, 2, 2, 8}, true
+	case fourcc.NV16:
+		return yuvLayout{[]string{"Y", "UV"}, 2, 1, 8}, true
+	case fourcc.NV61:
+		return yuvLayout{[]string{"Y", "VU"}, 2, 1, 8}, true
+	case fourcc.NV24:
+		return yuvLayout{[]string{"Y", "UV"}, 1, 1, 8}, true
+	case fourcc.NV42:
+		return yuvLayout{[]string{"Y", "VU"}, 1, 1, 8}, true
+	case fourcc.P010:
+		return yuvLayout{[]string{"Y", "UV"}, 2, 2, 10}, true
+	case fourcc.P012:
+		return yuvLayout{[]string{"Y", "UV"}, 2, 2, 12}, true
+	case fourcc.P016:
+		return yuvLayout{[]string{"Y", "UV"}, 2, 2, 16}, true
+	case fourcc.P210:
+		return yuvLayout{[]string{"Y", "UV"}, 2, 1, 10}, true
+	case fourcc.YUV420:
+		return yuvLayout{[]string{"Y", "U", "V"}, 2, 2, 8}, true
+	case fourcc.YVU420:
+		return yuvLayout{[]string{"Y", "V", "U"}, 2, 2, 8}, true
+	case fourcc.YUV422:
+		return yuvLayout{[]string{"Y", "U", "V"}, 2, 1, 8}, true
+	case fourcc.YVU422:
+		return yuvLayout{[]string{"Y", "V", "U"}, 2, 1, 8}, true
+	case fourcc.YUV444:
+		return yuvLayout{[]string{"Y", "U", "V"}, 1, 1, 8}, true
+	case fourcc.YVU444:
+		return yuvLayout{[]string{"Y", "V", "U"}, 1, 1, 8}, true
+	case fourcc.Q410:
+		return yuvLayout{[]string{"Y", "U", "V"}, 1, 1, 10}, true
+	case fourcc.Q401:
+		return yuvLayout{[]string{"Y", "V", "U"}, 1, 1, 10}, true
+	case fourcc.YUYV:
+		return yuvLayout{[]string{"YUYV"}, 2, 1, 8}, true
+	case fourcc.YVYU:
+		return yuvLayout{[]string{"YVYU"}, 2, 1, 8}, true
+	case fourcc.UYVY:
+		return yuvLayout{[]string{"UYVY"}, 2, 1, 8}, true
+	case fourcc.VYUY:
+		return yuvLayout{[]string{"VYUY"}, 2, 1, 8}, true
+	case fourcc.Y210:
+		return yuvLayout{[]string{"YUYV"}, 2, 1, 10}, true
+	case fourcc.Y212:
+		return yuvLayout{[]string{"YUYV"}, 2, 1, 12}, true
+	case fourcc.Y216:
+		return yuvLayout{[]string{"YUYV"}, 2, 1, 16}, true
+	}
+	return yuvLayout{}, false
 }
 
 const yuvPlaneAlignment = 64 << 10
@@ -80,7 +108,7 @@ type yuvPlanes struct {
 
 func (p yuvPlanes) buffer(t *testing.T, y, u, v uint16) dmabuf.Buffer {
 	t.Helper()
-	l := yuvLayouts[p.format]
+	l, _ := yuvLayoutOf(p.format)
 	size := 1
 	if l.bits > 8 {
 		size = 2
@@ -188,7 +216,7 @@ func TestEveryFormatsImportRouteIsListed(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		pf := pixelFormats[f]
+		pf, _ := lookupPixelFormat(f)
 		converts := 0
 		for _, m := range mods {
 			if d.driverConverts(f, m, 0, 0) {
@@ -214,7 +242,8 @@ func everyLayoutConverts(t *testing.T, planes bool) {
 			d := exportingDevice(t)
 			d.ycbcr = d.ycbcr && !planes
 			linearOrSkip(t, d, d.TextureModifiers, f)
-			bits := yuvLayouts[f].bits
+			l, _ := yuvLayoutOf(f)
+			bits := l.bits
 			scale := uint16(1) << (bits - 8)
 			y, u, v := 120*scale, 90*scale, 200*scale
 			got := drawYUV(t, d, yuvPlanes{format: f, w: 8, h: 8}.buffer(t, y, u, v), &YCbCr{Matrix: BT709})
@@ -227,19 +256,19 @@ func everyLayoutConverts(t *testing.T, planes bool) {
 
 func TestEveryConvertedFormatHasALayoutAndAYUVName(t *testing.T) {
 	for _, f := range ycbcrFormats {
-		if _, ok := yuvLayouts[f]; !ok {
+		if _, ok := yuvLayoutOf(f); !ok {
 			t.Errorf("%s has no test layout", f)
 		}
-		if _, ok := yuvImageLayouts[f]; !ok {
+		if _, ok := yuvImageLayoutOf(f); !ok {
 			t.Errorf("%s has no plain image layout", f)
 		}
-		pf := pixelFormats[f]
+		pf, _ := lookupPixelFormat(f)
 		if !f.YUV() || !pf.ycbcr || f.Planes() != pf.planes {
 			t.Errorf("%s: YUV %v, ycbcr %v, %d planes against %d", f, f.YUV(), pf.ycbcr, f.Planes(), pf.planes)
 		}
 	}
 	for _, f := range yuv444Formats {
-		if pf := pixelFormats[f]; !f.YUV() || pf.yuvBits == 0 || f.Planes() != 1 {
+		if pf, _ := lookupPixelFormat(f); !f.YUV() || pf.yuvBits == 0 || f.Planes() != 1 {
 			t.Errorf("%s: YUV %v, %d bits, %d planes", f, f.YUV(), pf.yuvBits, f.Planes())
 		}
 	}
@@ -258,12 +287,13 @@ func TestP010Converts(t *testing.T) {
 
 func TestYUVDisjointPlanes(t *testing.T) {
 	for _, f := range ycbcrFormats {
-		if pixelFormats[f].planes < 2 {
+		if pf, _ := lookupPixelFormat(f); pf.planes < 2 {
 			continue
 		}
 		t.Run(f.String(), func(t *testing.T) {
 			d := yuvDevice(t, f, true)
-			bits := yuvLayouts[f].bits
+			l, _ := yuvLayoutOf(f)
+			bits := l.bits
 			scale := uint16(1) << (bits - 8)
 			y, u, v := 81*scale, 90*scale, 240*scale
 			got := drawYUV(t, d, yuvPlanes{format: f, w: 8, h: 8, disjoint: true}.buffer(t, y, u, v), &YCbCr{Matrix: BT709})
@@ -328,7 +358,8 @@ func TestPacked444ConvertsWhereTheDriverOffersIt(t *testing.T) {
 		t.Run(f.String(), func(t *testing.T) {
 			d := exportingDevice(t)
 			linearOrSkip(t, d, d.TextureModifiers, f)
-			bits := pixelFormats[f].yuvBits
+			pf, _ := lookupPixelFormat(f)
+			bits := pf.yuvBits
 			const y, u, v = 120 << 8, 90 << 8, 200 << 8
 			scale := math.Exp2(float64(bits - 16))
 			px := packed444(f, y, u, v, 0xffff)

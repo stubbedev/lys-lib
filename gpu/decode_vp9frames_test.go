@@ -368,11 +368,11 @@ func recoded(t *testing.T, pkts []demux.Packet, key int, with func(*testing.T, [
 // hidden frames decode from frame context 1 and save to it, one that
 // uses context 0 alone, and one of error resilient frames, which reset
 // every context and save to none.
-var (
-	vp9TwoContexts = libvpxTwoPass("-b:v", "200k", "-g", "20", "-keyint_min", "20", "-auto-alt-ref", "1", "-lag-in-frames", "16")
-	vp9OneContext  = [][]string{libvpx("-g", "12")}
-	vp9NoContext   = [][]string{libvpx("-g", "12", "-error-resilient", "1")}
-)
+func vp9TwoContexts() [][]string {
+	return libvpxTwoPass("-b:v", "200k", "-g", "20", "-keyint_min", "20", "-auto-alt-ref", "1", "-lag-in-frames", "16")
+}
+func vp9OneContext() [][]string { return [][]string{libvpx("-g", "12")} }
+func vp9NoContext() [][]string  { return [][]string{libvpx("-g", "12", "-error-resilient", "1")} }
 
 // An intra frame decodes as ffmpeg decodes it, and so do the frames
 // after it, from the frame contexts and the reference pictures it
@@ -403,14 +403,14 @@ func TestDecodeVP9IntraFramesAndTheirContexts(t *testing.T) {
 		passes [][]string
 		with   func(*testing.T, []byte) [][]byte
 	}{
-		{"intra-only, resetting every context", vp9TwoContexts, hidden(vp9test.IntraOnly{Reset: vp9.ResetAllContexts, Refresh: 0xff})},
-		{"intra-only, resetting every context and coding another", vp9TwoContexts, hidden(vp9test.IntraOnly{Reset: vp9.ResetAllContexts, Refresh: 0xff, Context: 2})},
-		{"intra-only, resetting its context, refreshing three slots", vp9OneContext, hidden(vp9test.IntraOnly{Reset: vp9.ResetOneContext, Refresh: 0x07})},
-		{"intra-only, error resilient", vp9NoContext, hidden(vp9test.IntraOnly{Resilient: true, Refresh: 0xff})},
-		{"intra-only, resetting no context (0)", vp9NoContext, hidden(vp9test.IntraOnly{Reset: 0, Refresh: 0xff})},
-		{"intra-only, resetting no context (1)", vp9NoContext, hidden(vp9test.IntraOnly{Reset: 1, Refresh: 0x07})},
-		{"intra-only, resetting a context nothing saved to", vp9NoContext, hidden(vp9test.IntraOnly{Reset: vp9.ResetOneContext, Refresh: 0xff, Context: 1})},
-		{"key frame coding another context", vp9TwoContexts, func(t *testing.T, key []byte) [][]byte { return [][]byte{vp9test.KeyContext(t, key, 2)} }},
+		{"intra-only, resetting every context", vp9TwoContexts(), hidden(vp9test.IntraOnly{Reset: vp9.ResetAllContexts, Refresh: 0xff})},
+		{"intra-only, resetting every context and coding another", vp9TwoContexts(), hidden(vp9test.IntraOnly{Reset: vp9.ResetAllContexts, Refresh: 0xff, Context: 2})},
+		{"intra-only, resetting its context, refreshing three slots", vp9OneContext(), hidden(vp9test.IntraOnly{Reset: vp9.ResetOneContext, Refresh: 0x07})},
+		{"intra-only, error resilient", vp9NoContext(), hidden(vp9test.IntraOnly{Resilient: true, Refresh: 0xff})},
+		{"intra-only, resetting no context (0)", vp9NoContext(), hidden(vp9test.IntraOnly{Reset: 0, Refresh: 0xff})},
+		{"intra-only, resetting no context (1)", vp9NoContext(), hidden(vp9test.IntraOnly{Reset: 1, Refresh: 0x07})},
+		{"intra-only, resetting a context nothing saved to", vp9NoContext(), hidden(vp9test.IntraOnly{Reset: vp9.ResetOneContext, Refresh: 0xff, Context: 1})},
+		{"key frame coding another context", vp9TwoContexts(), func(t *testing.T, key []byte) [][]byte { return [][]byte{vp9test.KeyContext(t, key, 2)} }},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			cl := ffmpegPasses(t, "a.webm", 192, 128, 1.4, c.passes...)
@@ -434,7 +434,7 @@ func TestDecodeVP9IntraFramesAndTheirContexts(t *testing.T) {
 // decode from.
 func TestDecodeVP9RefusesToResetASavedContextApart(t *testing.T) {
 	d := decodingDevice(t, demux.VP9)
-	cl := ffmpegPasses(t, "a.webm", 192, 128, 1.4, vp9TwoContexts...)
+	cl := ffmpegPasses(t, "a.webm", 192, 128, 1.4, vp9TwoContexts()...)
 	track, pkts := packets(t, cl.path)
 	key := secondKey(t, pkts)
 	cut := recoded(t, pkts, key, hidden(vp9test.IntraOnly{Reset: vp9.ResetOneContext, Refresh: 0xff, Context: 1}))

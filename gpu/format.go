@@ -34,59 +34,110 @@ var (
 	viewCbYCr = vk.ComponentMapping{R: vk.ComponentSwizzleG, G: vk.ComponentSwizzleR}
 )
 
-var pixelFormats = map[fourcc.Format]pixelFormat{
-	fourcc.ARGB8888:      {vk: vk.FormatB8g8r8a8Unorm, planes: 1, size: 4},
-	fourcc.XRGB8888:      {vk: vk.FormatB8g8r8a8Unorm, planes: 1, opaque: true, size: 4},
-	fourcc.ABGR8888:      {vk: vk.FormatR8g8b8a8Unorm, planes: 1, size: 4},
-	fourcc.XBGR8888:      {vk: vk.FormatR8g8b8a8Unorm, planes: 1, opaque: true, size: 4},
-	fourcc.ARGB2101010:   {vk: vk.FormatA2r10g10b10UnormPack32, planes: 1, size: 4},
-	fourcc.XRGB2101010:   {vk: vk.FormatA2r10g10b10UnormPack32, planes: 1, opaque: true, size: 4},
-	fourcc.ABGR2101010:   {vk: vk.FormatA2b10g10r10UnormPack32, planes: 1, size: 4},
-	fourcc.XBGR2101010:   {vk: vk.FormatA2b10g10r10UnormPack32, planes: 1, opaque: true, size: 4},
-	fourcc.ABGR16161616F: {vk: vk.FormatR16g16b16a16Sfloat, planes: 1, size: 8},
-	fourcc.XBGR16161616F: {vk: vk.FormatR16g16b16a16Sfloat, planes: 1, opaque: true, size: 8},
-	fourcc.NV12:          {vk: nv12, planes: 2, ycbcr: true},
-	fourcc.NV21:          {vk: nv12, planes: 2, ycbcr: true, swapped: true},
-	fourcc.NV16:          {vk: vk.FormatG8B8r82plane422Unorm, planes: 2, ycbcr: true},
-	fourcc.NV61:          {vk: vk.FormatG8B8r82plane422Unorm, planes: 2, ycbcr: true, swapped: true},
-	fourcc.NV24:          {vk: vk.FormatG8B8r82plane444Unorm, planes: 2, ycbcr: true, core13: true},
-	fourcc.NV42:          {vk: vk.FormatG8B8r82plane444Unorm, planes: 2, ycbcr: true, swapped: true, core13: true},
-	fourcc.P010:          {vk: vk.FormatG10x6B10x6r10x62plane420Unorm3pack16, planes: 2, ycbcr: true},
-	fourcc.P012:          {vk: vk.FormatG12x4B12x4r12x42plane420Unorm3pack16, planes: 2, ycbcr: true},
-	fourcc.P016:          {vk: vk.FormatG16B16r162plane420Unorm, planes: 2, ycbcr: true},
-	fourcc.P210:          {vk: vk.FormatG10x6B10x6r10x62plane422Unorm3pack16, planes: 2, ycbcr: true},
-	fourcc.YUV420:        {vk: vk.FormatG8B8R83plane420Unorm, planes: 3, ycbcr: true},
-	fourcc.YVU420:        {vk: vk.FormatG8B8R83plane420Unorm, planes: 3, ycbcr: true, swapped: true},
-	fourcc.YUV422:        {vk: vk.FormatG8B8R83plane422Unorm, planes: 3, ycbcr: true},
-	fourcc.YVU422:        {vk: vk.FormatG8B8R83plane422Unorm, planes: 3, ycbcr: true, swapped: true},
-	fourcc.YUV444:        {vk: vk.FormatG8B8R83plane444Unorm, planes: 3, ycbcr: true},
-	fourcc.YVU444:        {vk: vk.FormatG8B8R83plane444Unorm, planes: 3, ycbcr: true, swapped: true},
-	fourcc.Q410:          {vk: vk.FormatG10x6B10x6R10x63plane444Unorm3pack16, planes: 3, ycbcr: true},
-	fourcc.Q401:          {vk: vk.FormatG10x6B10x6R10x63plane444Unorm3pack16, planes: 3, ycbcr: true, swapped: true},
-	fourcc.YUYV:          {vk: vk.FormatG8b8g8r8422Unorm, planes: 1, ycbcr: true},
-	fourcc.YVYU:          {vk: vk.FormatG8b8g8r8422Unorm, planes: 1, ycbcr: true, swapped: true},
-	fourcc.UYVY:          {vk: vk.FormatB8g8r8g8422Unorm, planes: 1, ycbcr: true},
-	fourcc.VYUY:          {vk: vk.FormatB8g8r8g8422Unorm, planes: 1, ycbcr: true, swapped: true},
-	fourcc.Y210:          {vk: vk.FormatG10x6b10x6g10x6r10x6422Unorm4pack16, planes: 1, ycbcr: true},
-	fourcc.Y212:          {vk: vk.FormatG12x4b12x4g12x4r12x4422Unorm4pack16, planes: 1, ycbcr: true},
-	fourcc.Y216:          {vk: vk.FormatG16b16g16r16422Unorm, planes: 1, ycbcr: true},
-
-	fourcc.AYUV:         {vk: vk.FormatR8g8b8a8Unorm, planes: 1, yuvBits: 8, view: viewCrCbY},
-	fourcc.XYUV8888:     {vk: vk.FormatR8g8b8a8Unorm, planes: 1, yuvBits: 8, view: viewCrCbY, opaque: true},
-	fourcc.AVUY8888:     {vk: vk.FormatR8g8b8a8Unorm, planes: 1, yuvBits: 8},
-	fourcc.XVUY8888:     {vk: vk.FormatR8g8b8a8Unorm, planes: 1, yuvBits: 8, opaque: true},
-	fourcc.VUY888:       {vk: vk.FormatR8g8b8Unorm, planes: 1, yuvBits: 8},
-	fourcc.Y410:         {vk: vk.FormatA2b10g10r10UnormPack32, planes: 1, yuvBits: 10, view: viewCbYCr},
-	fourcc.XVYU2101010:  {vk: vk.FormatA2b10g10r10UnormPack32, planes: 1, yuvBits: 10, view: viewCbYCr, opaque: true},
-	fourcc.XVUY2101010:  {vk: vk.FormatA2b10g10r10UnormPack32, planes: 1, yuvBits: 10, opaque: true},
-	fourcc.Y412:         {vk: vk.FormatR16g16b16a16Unorm, planes: 1, yuvBits: 16, view: viewCbYCr},
-	fourcc.XVYU121616:   {vk: vk.FormatR16g16b16a16Unorm, planes: 1, yuvBits: 16, view: viewCbYCr, opaque: true},
-	fourcc.Y416:         {vk: vk.FormatR16g16b16a16Unorm, planes: 1, yuvBits: 16, view: viewCbYCr},
-	fourcc.XVYU16161616: {vk: vk.FormatR16g16b16a16Unorm, planes: 1, yuvBits: 16, view: viewCbYCr, opaque: true},
+// lookupPixelFormat is how Vulkan holds a DRM format; false for a
+// format it has none for.
+func lookupPixelFormat(format fourcc.Format) (pixelFormat, bool) {
+	switch format {
+	case fourcc.ARGB8888:
+		return pixelFormat{vk: vk.FormatB8g8r8a8Unorm, planes: 1, size: 4}, true
+	case fourcc.XRGB8888:
+		return pixelFormat{vk: vk.FormatB8g8r8a8Unorm, planes: 1, opaque: true, size: 4}, true
+	case fourcc.ABGR8888:
+		return pixelFormat{vk: vk.FormatR8g8b8a8Unorm, planes: 1, size: 4}, true
+	case fourcc.XBGR8888:
+		return pixelFormat{vk: vk.FormatR8g8b8a8Unorm, planes: 1, opaque: true, size: 4}, true
+	case fourcc.ARGB2101010:
+		return pixelFormat{vk: vk.FormatA2r10g10b10UnormPack32, planes: 1, size: 4}, true
+	case fourcc.XRGB2101010:
+		return pixelFormat{vk: vk.FormatA2r10g10b10UnormPack32, planes: 1, opaque: true, size: 4}, true
+	case fourcc.ABGR2101010:
+		return pixelFormat{vk: vk.FormatA2b10g10r10UnormPack32, planes: 1, size: 4}, true
+	case fourcc.XBGR2101010:
+		return pixelFormat{vk: vk.FormatA2b10g10r10UnormPack32, planes: 1, opaque: true, size: 4}, true
+	case fourcc.ABGR16161616F:
+		return pixelFormat{vk: vk.FormatR16g16b16a16Sfloat, planes: 1, size: 8}, true
+	case fourcc.XBGR16161616F:
+		return pixelFormat{vk: vk.FormatR16g16b16a16Sfloat, planes: 1, opaque: true, size: 8}, true
+	case fourcc.NV12:
+		return pixelFormat{vk: nv12, planes: 2, ycbcr: true}, true
+	case fourcc.NV21:
+		return pixelFormat{vk: nv12, planes: 2, ycbcr: true, swapped: true}, true
+	case fourcc.NV16:
+		return pixelFormat{vk: vk.FormatG8B8r82plane422Unorm, planes: 2, ycbcr: true}, true
+	case fourcc.NV61:
+		return pixelFormat{vk: vk.FormatG8B8r82plane422Unorm, planes: 2, ycbcr: true, swapped: true}, true
+	case fourcc.NV24:
+		return pixelFormat{vk: vk.FormatG8B8r82plane444Unorm, planes: 2, ycbcr: true, core13: true}, true
+	case fourcc.NV42:
+		return pixelFormat{vk: vk.FormatG8B8r82plane444Unorm, planes: 2, ycbcr: true, swapped: true, core13: true}, true
+	case fourcc.P010:
+		return pixelFormat{vk: vk.FormatG10x6B10x6r10x62plane420Unorm3pack16, planes: 2, ycbcr: true}, true
+	case fourcc.P012:
+		return pixelFormat{vk: vk.FormatG12x4B12x4r12x42plane420Unorm3pack16, planes: 2, ycbcr: true}, true
+	case fourcc.P016:
+		return pixelFormat{vk: vk.FormatG16B16r162plane420Unorm, planes: 2, ycbcr: true}, true
+	case fourcc.P210:
+		return pixelFormat{vk: vk.FormatG10x6B10x6r10x62plane422Unorm3pack16, planes: 2, ycbcr: true}, true
+	case fourcc.YUV420:
+		return pixelFormat{vk: vk.FormatG8B8R83plane420Unorm, planes: 3, ycbcr: true}, true
+	case fourcc.YVU420:
+		return pixelFormat{vk: vk.FormatG8B8R83plane420Unorm, planes: 3, ycbcr: true, swapped: true}, true
+	case fourcc.YUV422:
+		return pixelFormat{vk: vk.FormatG8B8R83plane422Unorm, planes: 3, ycbcr: true}, true
+	case fourcc.YVU422:
+		return pixelFormat{vk: vk.FormatG8B8R83plane422Unorm, planes: 3, ycbcr: true, swapped: true}, true
+	case fourcc.YUV444:
+		return pixelFormat{vk: vk.FormatG8B8R83plane444Unorm, planes: 3, ycbcr: true}, true
+	case fourcc.YVU444:
+		return pixelFormat{vk: vk.FormatG8B8R83plane444Unorm, planes: 3, ycbcr: true, swapped: true}, true
+	case fourcc.Q410:
+		return pixelFormat{vk: vk.FormatG10x6B10x6R10x63plane444Unorm3pack16, planes: 3, ycbcr: true}, true
+	case fourcc.Q401:
+		return pixelFormat{vk: vk.FormatG10x6B10x6R10x63plane444Unorm3pack16, planes: 3, ycbcr: true, swapped: true}, true
+	case fourcc.YUYV:
+		return pixelFormat{vk: vk.FormatG8b8g8r8422Unorm, planes: 1, ycbcr: true}, true
+	case fourcc.YVYU:
+		return pixelFormat{vk: vk.FormatG8b8g8r8422Unorm, planes: 1, ycbcr: true, swapped: true}, true
+	case fourcc.UYVY:
+		return pixelFormat{vk: vk.FormatB8g8r8g8422Unorm, planes: 1, ycbcr: true}, true
+	case fourcc.VYUY:
+		return pixelFormat{vk: vk.FormatB8g8r8g8422Unorm, planes: 1, ycbcr: true, swapped: true}, true
+	case fourcc.Y210:
+		return pixelFormat{vk: vk.FormatG10x6b10x6g10x6r10x6422Unorm4pack16, planes: 1, ycbcr: true}, true
+	case fourcc.Y212:
+		return pixelFormat{vk: vk.FormatG12x4b12x4g12x4r12x4422Unorm4pack16, planes: 1, ycbcr: true}, true
+	case fourcc.Y216:
+		return pixelFormat{vk: vk.FormatG16b16g16r16422Unorm, planes: 1, ycbcr: true}, true
+	case fourcc.AYUV:
+		return pixelFormat{vk: vk.FormatR8g8b8a8Unorm, planes: 1, yuvBits: 8, view: viewCrCbY}, true
+	case fourcc.XYUV8888:
+		return pixelFormat{vk: vk.FormatR8g8b8a8Unorm, planes: 1, yuvBits: 8, view: viewCrCbY, opaque: true}, true
+	case fourcc.AVUY8888:
+		return pixelFormat{vk: vk.FormatR8g8b8a8Unorm, planes: 1, yuvBits: 8}, true
+	case fourcc.XVUY8888:
+		return pixelFormat{vk: vk.FormatR8g8b8a8Unorm, planes: 1, yuvBits: 8, opaque: true}, true
+	case fourcc.VUY888:
+		return pixelFormat{vk: vk.FormatR8g8b8Unorm, planes: 1, yuvBits: 8}, true
+	case fourcc.Y410:
+		return pixelFormat{vk: vk.FormatA2b10g10r10UnormPack32, planes: 1, yuvBits: 10, view: viewCbYCr}, true
+	case fourcc.XVYU2101010:
+		return pixelFormat{vk: vk.FormatA2b10g10r10UnormPack32, planes: 1, yuvBits: 10, view: viewCbYCr, opaque: true}, true
+	case fourcc.XVUY2101010:
+		return pixelFormat{vk: vk.FormatA2b10g10r10UnormPack32, planes: 1, yuvBits: 10, opaque: true}, true
+	case fourcc.Y412:
+		return pixelFormat{vk: vk.FormatR16g16b16a16Unorm, planes: 1, yuvBits: 16, view: viewCbYCr}, true
+	case fourcc.XVYU121616:
+		return pixelFormat{vk: vk.FormatR16g16b16a16Unorm, planes: 1, yuvBits: 16, view: viewCbYCr, opaque: true}, true
+	case fourcc.Y416:
+		return pixelFormat{vk: vk.FormatR16g16b16a16Unorm, planes: 1, yuvBits: 16, view: viewCbYCr}, true
+	case fourcc.XVYU16161616:
+		return pixelFormat{vk: vk.FormatR16g16b16a16Unorm, planes: 1, yuvBits: 16, view: viewCbYCr, opaque: true}, true
+	}
+	return pixelFormat{}, false
 }
 
 func pixelFormatOf(format fourcc.Format) (pixelFormat, error) {
-	pf, ok := pixelFormats[format]
+	pf, ok := lookupPixelFormat(format)
 	if !ok {
 		return pixelFormat{}, fmt.Errorf("gpu: no Vulkan format for DRM format %s", format)
 	}

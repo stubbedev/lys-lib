@@ -25,13 +25,16 @@ type exportUse struct {
 	verb     string
 }
 
+// What an image the device renders into has: exported as a Target or
+// imported as one.
+const (
+	renderFeatures = vk.FormatFeatureFlags(vk.FormatFeatureColorAttachmentBit | vk.FormatFeatureColorAttachmentBlendBit)
+	renderUsage    = vk.ImageUsageFlags(vk.ImageUsageTransferDstBit | vk.ImageUsageTransferSrcBit | vk.ImageUsageColorAttachmentBit | vk.ImageUsageSampledBit)
+)
+
 var (
 	// renderUse is a Target: drawn into, copied and sampled.
-	renderUse = exportUse{
-		features: vk.FormatFeatureFlags(vk.FormatFeatureColorAttachmentBit | vk.FormatFeatureColorAttachmentBlendBit),
-		usage:    vk.ImageUsageFlags(vk.ImageUsageTransferDstBit | vk.ImageUsageTransferSrcBit | vk.ImageUsageColorAttachmentBit | vk.ImageUsageSampledBit),
-		verb:     "renders",
-	}
+	renderUse = exportUse{features: renderFeatures, usage: renderUsage, verb: "renders"}
 	// shareUse is a Buffer: written by a transfer, sampled and read
 	// back, never drawn into here.
 	shareUse = exportUse{
@@ -352,7 +355,7 @@ func (b *Buffer) ReadPixels() (*image.RGBA, error) {
 	}
 	d := b.d
 	w, h := b.e.buf.Width, b.e.buf.Height
-	pf := pixelFormats[b.e.buf.Format]
+	pf, _ := lookupPixelFormat(b.e.buf.Format)
 	return d.readPixels(image.Rect(0, 0, w, h), pf.vk, pf.opaque, func(cb vk.CommandBuffer, staging *buffer) {
 		fullBarrier(d, cb, b.e.image, vk.ImageLayoutGeneral, vk.ImageLayoutTransferSrcOptimal, vk.QueueFamilyForeignExt, d.family)
 		region := vk.BufferImageCopy{
@@ -369,7 +372,8 @@ func (b *Buffer) view() (vk.ImageView, error) {
 	if b.sampled != 0 {
 		return b.sampled, nil
 	}
-	vci := vk.ImageViewCreateInfo{SType: vk.StructureTypeImageViewCreateInfo, Image: b.e.image, ViewType: vk.ImageViewType2d, Format: pixelFormats[b.e.buf.Format].vk, SubresourceRange: colorRange}
+	pf, _ := lookupPixelFormat(b.e.buf.Format)
+	vci := vk.ImageViewCreateInfo{SType: vk.StructureTypeImageViewCreateInfo, Image: b.e.image, ViewType: vk.ImageViewType2d, Format: pf.vk, SubresourceRange: colorRange}
 	if r := b.d.cmds.CreateImageView(b.d.device, &vci, nil, &b.sampled); r != vk.Success {
 		return 0, fmt.Errorf("gpu: vkCreateImageView (buffer): %w", resultError(r))
 	}

@@ -14,14 +14,12 @@ import (
 )
 
 var (
-	gamma22 = ColorFunc{Kind: ColorCurve, G: 2.2, A: 1}
-	degamma = ColorFunc{Kind: ColorCurve, G: 1 / 2.2, A: 1}
-	unit    = [9]float32{1, 0, 0, 0, 1, 0, 0, 0, 1}
+	unit = [9]float32{1, 0, 0, 0, 1, 0, 0, 0, 1}
 	// sdrToPQ shows gamma 2.2 SDR white at 203 cd/m², as an HDR output does.
-	sdrToPQ = ColorTransform{Decode: gamma22, Matrix: unit, Scale: 203.0 / 10000, Encode: ColorFunc{Kind: ColorPQ}}
+	sdrToPQ = ColorTransform{Decode: ColorFunc{Kind: ColorCurve, G: 2.2, A: 1}, Matrix: [9]float32{1, 0, 0, 0, 1, 0, 0, 0, 1}, Scale: 203.0 / 10000, Encode: ColorFunc{Kind: ColorPQ}}
 	// pqToSDR is the way back, for SDR white at 203 cd/m² with the rest above
 	// 0.8 compressed to fit 1.
-	pqToSDR = ColorTransform{Decode: ColorFunc{Kind: ColorPQ}, Matrix: [9]float32{10000.0 / 203, 0, 0, 0, 10000.0 / 203, 0, 0, 0, 10000.0 / 203}, Knee: 0.8, Compress: 4.9, Scale: 1, Encode: degamma}
+	pqToSDR = ColorTransform{Decode: ColorFunc{Kind: ColorPQ}, Matrix: [9]float32{10000.0 / 203, 0, 0, 0, 10000.0 / 203, 0, 0, 0, 10000.0 / 203}, Knee: 0.8, Compress: 4.9, Scale: 1, Encode: ColorFunc{Kind: ColorCurve, G: 1 / 2.2, A: 1}}
 )
 
 func TestColorApplyEncodesKnownPQSignals(t *testing.T) {
@@ -237,7 +235,8 @@ func TestColorPipelinesOfEveryYUVKindBuild(t *testing.T) {
 		t.Fatal(err)
 	}
 	if d.probeYCbCr(d.phys) {
-		kind, err := d.ycbcrKindOf(pixelFormats[fourcc.NV12], YCbCr{Matrix: BT2020, Range: FullRange, Chroma: ChromaSiting{X: SitedAt0, Y: SitedAt0}}, vk.FormatFeatureFlags(vk.FormatFeatureCositedChromaSamplesBit))
+		nv12Format, _ := lookupPixelFormat(fourcc.NV12)
+		kind, err := d.ycbcrKindOf(nv12Format, YCbCr{Matrix: BT2020, Range: FullRange, Chroma: ChromaSiting{X: SitedAt0, Y: SitedAt0}}, vk.FormatFeatureFlags(vk.FormatFeatureCositedChromaSamplesBit))
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -245,14 +244,16 @@ func TestColorPipelinesOfEveryYUVKindBuild(t *testing.T) {
 			t.Error(err)
 		}
 	}
-	y444, err := d.yuv444KindOf(pixelFormats[fourcc.AYUV], YCbCr{Matrix: BT2020})
+	ayuv, _ := lookupPixelFormat(fourcc.AYUV)
+	y444, err := d.yuv444KindOf(ayuv, YCbCr{Matrix: BT2020})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if _, _, err := d.colorTexturePipeline(&Texture{yuv444: y444}, ct, floatTargetFormat); err != nil {
 		t.Error(err)
 	}
-	planes, err := d.planesKindOf(yuvImageLayouts[fourcc.P010], YCbCr{Matrix: BT2020})
+	p010, _ := yuvImageLayoutOf(fourcc.P010)
+	planes, err := d.planesKindOf(p010, YCbCr{Matrix: BT2020})
 	if err != nil {
 		t.Fatal(err)
 	}

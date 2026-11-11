@@ -23,22 +23,33 @@ var driverChoices = []string{
 	"VK_ADD_DRIVER_FILES",
 }
 
-// driverManifests maps a DRM node's kernel driver to the manifests of
-// the Vulkan drivers that drive it, as driversSelect globs.
-var driverManifests = map[string]string{
-	"i915":       "intel_*",
-	"xe":         "intel_*",
-	"amdgpu":     "radeon_*,amd_*",
-	"radeon":     "radeon_*,amd_*",
-	"nouveau":    "nouveau_*",
-	"nvidia":     "nvidia_*",
-	"virtio_gpu": "virtio_*",
-	"msm":        "freedreno_*",
-	"panfrost":   "panfrost_*",
-	"panthor":    "panfrost_*",
-	"v3d":        "broadcom_*",
-	"asahi":      "asahi_*",
-	"powervr":    "powervr_*",
+// driverManifests are the manifests of the Vulkan drivers that drive a
+// DRM node of a kernel driver, as driversSelect globs; "" for a driver
+// it knows none for, which loads them all.
+func driverManifests(driver string) string {
+	switch driver {
+	case "i915", "xe":
+		return "intel_*"
+	case "amdgpu", "radeon":
+		return "radeon_*,amd_*"
+	case "nouveau":
+		return "nouveau_*"
+	case "nvidia":
+		return "nvidia_*"
+	case "virtio_gpu":
+		return "virtio_*"
+	case "msm":
+		return "freedreno_*"
+	case "panfrost", "panthor":
+		return "panfrost_*"
+	case "v3d":
+		return "broadcom_*"
+	case "asahi":
+		return "asahi_*"
+	case "powervr":
+		return "powervr_*"
+	}
+	return ""
 }
 
 // sysDevChar is where sysfs links a character device number to its
@@ -72,7 +83,7 @@ func driverGlob(root string, node *drmNode, getenv func(string) string) string {
 		debug.Log("gpu", "loading every Vulkan driver: %v", err)
 		return ""
 	}
-	return driverManifests[driver]
+	return driverManifests(driver)
 }
 
 // selectDrivers limits the loader to glob's drivers while create

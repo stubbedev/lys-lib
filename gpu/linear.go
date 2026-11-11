@@ -49,7 +49,8 @@ func (d *Device) ImportLinear(b dmabuf.Buffer) (*Linear, error) {
 		return nil, fmt.Errorf("gpu: a linear buffer of %d planes, want 1", len(b.Planes))
 	}
 	p := b.Planes[0]
-	px := pixelFormats[b.Format].size
+	pf, _ := lookupPixelFormat(b.Format)
+	px := pf.size
 	if int(p.Stride) < b.Width*px || int(p.Stride)%px != 0 {
 		return nil, fmt.Errorf("gpu: stride %d for %d pixels of %d bytes", p.Stride, b.Width, px)
 	}
@@ -131,12 +132,15 @@ func (d *Device) CopyToLinear(dst *Linear, src *Target, rects []image.Rectangle)
 		return errors.New("gpu: CopyToLinear with a closed buffer or target")
 	case dst.d != d || src.s.d != d:
 		return errors.New("gpu: CopyToLinear across devices")
-	case dst.Size() != src.Size() || pixelFormats[dst.format].vk != src.s.vf:
+	}
+	pf, _ := lookupPixelFormat(dst.format)
+	switch {
+	case dst.Size() != src.Size() || pf.vk != src.s.vf:
 		return fmt.Errorf("gpu: CopyToLinear from a %v %s target into a %v %s buffer", src.Size(), src.buf.Format, dst.Size(), dst.format)
 	case src.s.layout == vk.ImageLayoutUndefined:
 		return errors.New("gpu: CopyToLinear from a target never drawn")
 	}
-	px := pixelFormats[dst.format].size
+	px := pf.size
 	bounds := image.Rectangle{Max: src.Size()}
 	copies := make([]vk.BufferImageCopy, 0, len(rects))
 	for _, r := range rects {

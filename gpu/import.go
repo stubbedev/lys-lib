@@ -30,8 +30,8 @@ var (
 		verb:     "samples",
 	}
 	targetImport = importUse{
-		features: renderUse.features,
-		usage:    renderUse.usage,
+		features: renderFeatures,
+		usage:    renderUsage,
 		formats:  func(*Device) []fourcc.Format { return textureFormats },
 		verb:     "renders into",
 	}
@@ -49,7 +49,7 @@ func (d *Device) importFormatOf(format fourcc.Format, use importUse) (pixelForma
 	if formats := use.formats(d); !slices.Contains(formats, format) {
 		return pixelFormat{}, fmt.Errorf("gpu: %s %s no imported DRM format %s (%v)", d.name, use.verb, format, formats)
 	}
-	return pixelFormats[format], nil
+	return pixelFormatOf(format)
 }
 
 // TextureModifiers are the DRM modifiers ImportTexture takes format
@@ -72,7 +72,7 @@ func (d *Device) importModifiers(format fourcc.Format, use importUse) ([]fourcc.
 	if err != nil {
 		return nil, err
 	}
-	if l, ok := yuvImageLayouts[format]; ok {
+	if l, ok := yuvImageLayoutOf(format); ok {
 		return d.yuvModifiers(format, pf, l), nil
 	}
 	var out []fourcc.Modifier
@@ -348,7 +348,7 @@ func (d *Device) ImportTexture(b dmabuf.Buffer) (*Texture, error) {
 // ImportTextureYCbCr is ImportTexture sampling a YUV buffer through c;
 // an RGB buffer ignores c.
 func (d *Device) ImportTextureYCbCr(b dmabuf.Buffer, c YCbCr) (*Texture, error) {
-	if l, ok := yuvImageLayouts[b.Format]; ok {
+	if l, ok := yuvImageLayoutOf(b.Format); ok {
 		if err := d.checkImportable(b); err != nil {
 			return nil, err
 		}

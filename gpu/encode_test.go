@@ -115,8 +115,16 @@ func encodingDevice(t *testing.T, c Codec) (*Device, string) {
 	return d, ffmpeg
 }
 
-// ffmpegFormats name each codec's elementary stream for ffmpeg.
-var ffmpegFormats = map[Codec]string{H264: "h264", H265: "hevc"}
+// ffmpegFormat names a codec's elementary stream for ffmpeg.
+func ffmpegFormat(c Codec) string {
+	switch c {
+	case H264:
+		return "h264"
+	case H265:
+		return "hevc"
+	}
+	return ""
+}
 
 // clip is an encoder, the buffer it encodes from and what it wrote.
 type clip struct {
@@ -196,13 +204,13 @@ func (c *clip) decode(ffmpeg string) [][]byte {
 	}
 	path := filepath.Join(t.TempDir(), "clip")
 	if dir := os.Getenv(encodeDirEnv); dir != "" {
-		path = filepath.Join(dir, artifactName(t)+"."+ffmpegFormats[c.cfg.Codec])
+		path = filepath.Join(dir, artifactName(t)+"."+ffmpegFormat(c.cfg.Codec))
 	}
 	if err := os.WriteFile(path, stream.Bytes(), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	var stderr bytes.Buffer
-	cmd := exec.Command(ffmpeg, "-v", "error", "-f", ffmpegFormats[c.cfg.Codec], "-i", path, "-f", "rawvideo", "-pix_fmt", "rgb24", "-")
+	cmd := exec.Command(ffmpeg, "-v", "error", "-f", ffmpegFormat(c.cfg.Codec), "-i", path, "-f", "rawvideo", "-pix_fmt", "rgb24", "-")
 	cmd.Stderr = &stderr
 	rgb, err := cmd.Output()
 	if err != nil || stderr.Len() > 0 {
@@ -716,7 +724,7 @@ func TestEncoderHeadersMatchTheDrivers(t *testing.T) {
 			if d.video == nil || !slices.Contains(d.video.codecs, c.codec) {
 				t.Skipf("%s encodes no %s on its Vulkan video queue", d.Name(), c.codec)
 			}
-			format := ffmpegFormats[c.codec]
+			format := ffmpegFormat(c.codec)
 			for _, size := range []image.Point{{640, 360}, {333, 241}} {
 				enc := newClip(t, d, EncoderConfig{Codec: c.codec, Width: size.X, Height: size.Y, FrameRate: 60, KeyInterval: 120, QP: 20}).enc
 				driver := naltest.Trace(t, format, nal.AnnexB(enc.ParameterSets()...))
