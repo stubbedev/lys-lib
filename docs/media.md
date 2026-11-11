@@ -185,8 +185,9 @@ func main() {
   too; `VideoFrame.Decoded` says, without waiting, whether the decode has
   finished, for a caller that must not stall there. A device decodes only where
   it has timeline semaphores.
-- A frame carries its packet's `PTS` and `Duration`, and its picture's `Size`
-  with the stream's cropping applied. `Pass.DrawFrame` draws a region of the
+- A frame carries its packet's `PTS` and `Duration`, its picture's `Size`
+  with the stream's cropping applied, and its `FieldOrder`. `Pass.DrawFrame`
+  draws a region of the
   picture, given in the picture's own pixels, as `DrawTexture` draws a
   texture's; the codec's padding around the picture is out of its reach. The
   YCbCr matrix, range and chroma siting come from the stream's VUI, AV1 colour
@@ -210,9 +211,10 @@ func main() {
   (H.264), an IRAP picture (H.265) or a key frame (AV1 and VP9, from the first
   packet marked a keyframe); pictures before it, and leading pictures that predict
   from before it (open-GOP B-frames, RASL pictures), are dropped.
-- Streams decode bit-exactly as ffmpeg decodes them: H.264 Baseline, Main and
-  High (B-frames, reference marking, every picture order count type, scaling
-  matrices, slices, gaps in `frame_num`), H.265 Main and Main 10 (reference
+- Streams decode bit-exactly as ffmpeg decodes them: H.264 Baseline, Main,
+  High and Extended where it keeps to Main (B-frames, reference marking, every
+  picture order count type, scaling matrices, slices, gaps in `frame_num`,
+  interlaced frames and fields), H.265 Main and Main 10 (reference
   picture sets in the SPS or slice headers, long-term pictures, CRA starts,
   slices, wavefronts, scaling lists), AV1 Main at 8 and 10 bits (hidden frames
   shown by later frame headers, all seven references, compound and skip modes,
@@ -225,11 +227,39 @@ func main() {
   from references of another size, intra-only frames; libvpx streams in
   WebM and MP4), and, where the device decodes them (NVIDIA does), 12-bit
   H.265 and VP9 profile 2 and 4:4:4 H.265 at 8, 10 and 12 bits (the format
-  range extensions). Progressive only: interlaced H.264 is an error that says
-  so, as are AV1 frames
-  coded at a superres-scaled width, AV1 inter frames whose size
-  differs from their references' (reference scaling), and frames smaller than
-  the device decodes (NVIDIA decodes AV1 from 128x128, H.265 from 144x144).
+  range extensions). AV1 frames coded at a superres-scaled width are errors
+  that say so, as are AV1 inter frames whose size differs from their
+  references' (reference scaling) and frames smaller than the device decodes
+  (NVIDIA decodes AV1 from 128x128, H.265 from 144x144).
+- Interlaced H.264 comes out as it is coded, a frame's two fields woven into
+  one picture, the top field its even lines: nothing deinterlaces.
+  `VideoFrame.FieldOrder` says whether a frame is two fields and which is the
+  earlier (`Progressive`, `TopFieldFirst`, `BottomFieldFirst`), for a caller
+  that deinterlaces or tells its output: a frame coded as two field pictures
+  or as field and frame macroblock pairs (MBAFF) is two fields, the earlier
+  the one of the lower picture order count, the top field where they are
+  equal, as ffmpeg says of it; the picture timing SEI is not read. A field
+  picture is a decode of its own into its frame's DPB slot, which the device
+  holds with the fields' lines interleaved; the frame goes to `Next` when its
+  second field has decoded, whether a packet holds both fields (MP4) or one (a
+  transport stream), with the first field's `PTS`; each field decodes with the
+  parameter sets before it in the packet, which a stream may change between
+  the two. A field whose frame's other
+  field never comes is decoded for the pictures that predict from it and never
+  shown, as ffmpeg shows none. Reference marking is by field (8.2.5): the
+  sliding window, and memory management control operations that name single
+  fields.
+- Of interlaced H.264 the decoder refuses, saying what: a sequence of fields
+  on a device with output pictures apart from its reference pictures (the
+  fields meet in the reference picture before the frame is copied out, the one
+  way verified); a frame whose fields are a reference and none (no decoder
+  pairs them, ffmpeg neither); a frame with a short-term and a long-term
+  reference field, and a frame decoded as one picture of which one field alone
+  is left a reference (a Vulkan Video reference picture is long-term or not,
+  and a frame or the fields it was decoded as, as a whole); a field that
+  predicts from more reference fields than the device decodes a picture from
+  (NVIDIA: 16, each field of a frame decoded as two counting); and a gap in
+  `frame_num`, which is inferred in sequences of frames only.
 - A VP9 frame is the size its header says, whatever its references' (libvpx
   resizes a stream it cannot fit in its bitrate): the device scales the
   references as it predicts, each picture decoded at its own size into the
@@ -289,7 +319,19 @@ func main() {
   libvpx codes no intra-only frame, no frame shown twice and, through ffmpeg,
   no resized frame: the tests make the first two of the frames it does code
   (`internal/vp9/vp9test`), and `gpu/testdata/vp9-resize.ivf` is a stream
-  vpxenc resized (`gpu/testdata/README.md` says how).
+  vpxenc resized (`gpu/testdata/README.md` says how). x264 codes interlaced
+  video as frames of field and frame macroblock pairs, never as field
+  pictures: the tests make those of the pictures of progressive CAVLC streams
+  at half the height, their slice headers rewritten (`gpu/h264cut_test.go`),
+  which decode to pictures no encoder meant but the standard defines, and
+  ffmpeg decodes as the reference. Field pictures coded with CABAC have no
+  such source and no test in the tree; they, and what else real field
+  encoders code (temporal direct prediction, weighted prediction, picture
+  order count type 1, memory management in multi-reference streams), were
+  checked once on the NVIDIA driver against 86 streams of the H.264
+  conformance suite (ITU-T H.264.1), 59 of them coding fields or
+  macroblock-adaptive frames, 3984 field pictures in all: every one decodes
+  as ffmpeg decodes it.
 - A device whose decoder writes its output into its reference pictures (NVIDIA)
   has each picture copied into its frame on the decode queue; one with distinct
   output pictures decodes into the frame directly.

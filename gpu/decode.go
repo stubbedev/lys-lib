@@ -109,6 +109,10 @@ type decodeSlot struct {
 // picture may name, how many pictures presentation order holds back,
 // how many decoded pictures the codec keeps hidden to show later, the
 // pictures' samples and the YCbCr conversion they sample through.
+// fields says the pictures are H.264 frames of two fields or fields of
+// them, which the device is asked to hold with their lines interleaved,
+// and each of which is a reference a picture may name: refs is then
+// what the stream could name, which a device may decode fewer of.
 // unverified, when not empty, is what about the stream no device has
 // been seen to decode right: a device that says it decodes the profile
 // is refused it all the same, rather than trusted with pictures nothing
@@ -122,6 +126,7 @@ type decodeShape struct {
 	hidden     int
 	samples    videoSamples
 	ycbcr      YCbCr
+	fields     bool
 	unverified string
 }
 
@@ -398,7 +403,11 @@ func (v *VideoDecoder) pickProfile() error {
 		break
 	}
 	if v.profile == nil {
-		return fmt.Errorf("%w: %s decodes no %s profile %d at %s: vkGetPhysicalDeviceVideoCapabilitiesKHR answers %w", ErrNoVideoDecoder, d.name, v.name, v.shape.profile, v.shape.samples, resultError(last))
+		layout := ""
+		if v.shape.fields {
+			layout = " as fields of interleaved lines"
+		}
+		return fmt.Errorf("%w: %s decodes no %s profile %d at %s%s: vkGetPhysicalDeviceVideoCapabilitiesKHR answers %w", ErrNoVideoDecoder, d.name, v.name, v.shape.profile, v.shape.samples, layout, resultError(last))
 	}
 	if what := v.shape.unverified; what != "" {
 		return fmt.Errorf("%w: %s says it decodes %s profile %d at %s (vkGetPhysicalDeviceVideoCapabilitiesKHR succeeds), but %s is verified on no device and refused rather than decoded unchecked", ErrNoVideoDecoder, d.name, v.name, v.shape.profile, v.shape.samples, what)
@@ -416,7 +425,7 @@ func (v *VideoDecoder) pickProfile() error {
 		return fmt.Errorf("%w: %s decodes %s up to %dx%d, not %dx%d", ErrNoVideoDecoder, d.name, v.name, c.MaxCodedExtent.Width, c.MaxCodedExtent.Height, s.coded[0], s.coded[1])
 	case s.coded[0] < int(c.MinCodedExtent.Width) || s.coded[1] < int(c.MinCodedExtent.Height):
 		return fmt.Errorf("%w: %s decodes %s from %dx%d, not %dx%d", ErrNoVideoDecoder, d.name, v.name, c.MinCodedExtent.Width, c.MinCodedExtent.Height, s.coded[0], s.coded[1])
-	case s.slots > int(c.MaxDpbSlots) || s.refs > int(c.MaxActiveReferencePictures):
+	case s.slots > int(c.MaxDpbSlots) || !s.fields && s.refs > int(c.MaxActiveReferencePictures):
 		return fmt.Errorf("%w: %s decodes %s with %d DPB slots and %d references, not %d and %d", ErrNoVideoDecoder, d.name, v.name, c.MaxDpbSlots, c.MaxActiveReferencePictures, s.slots, s.refs)
 	}
 	v.copies = !distinct
@@ -452,7 +461,7 @@ func (v *VideoDecoder) createSession() error {
 	sci := vk.VideoSessionCreateInfoKHR{
 		SType: vk.StructureTypeVideoSessionCreateInfoKhr, QueueFamilyIndex: d.decode.family, PVideoProfile: &v.profile.info,
 		PictureFormat: v.shape.samples.vk(), MaxCodedExtent: extent2D(extent[0], extent[1]), ReferencePictureFormat: v.shape.samples.vk(),
-		MaxDpbSlots: intconv.Must[uint32](v.shape.slots), MaxActiveReferencePictures: intconv.Must[uint32](v.shape.refs),
+		MaxDpbSlots: intconv.Must[uint32](v.shape.slots), MaxActiveReferencePictures: intconv.Must[uint32](v.activeRefs()),
 		PStdHeaderVersion: &v.caps.video.StdHeaderVersion,
 	}
 	r := d.cmds.CreateVideoSessionKHR(d.device, &sci, nil, &v.session)
@@ -466,6 +475,13 @@ func (v *VideoDecoder) createSession() error {
 		return err
 	}
 	return v.createParameters()
+}
+
+// activeRefs is how many reference pictures a picture of the session
+// may name: the shape's, or of a stream of fields, each a reference
+// picture of its own, as many of them as the device decodes from.
+func (v *VideoDecoder) activeRefs() int {
+	return min(v.shape.refs, int(v.caps.video.MaxActiveReferencePictures))
 }
 
 // createParameters makes the session parameters of the stream's
@@ -538,11 +554,46 @@ type VideoFrame struct {
 	// device submission, if any, that then works it over on the graphics
 	// queue (film grain); after the device submission after which the
 	// renderer no longer samples it.
-	seq   uint64
-	post  uint64
-	after uint64
-	state frameState
+	seq    uint64
+	post   uint64
+	after  uint64
+	state  frameState
+	fields FieldOrder
 }
+
+// FieldOrder is how a frame's lines were sampled in time: all at once,
+// or as two fields, the even lines (the top field) and the odd lines
+// (the bottom field) a field period apart.
+type FieldOrder uint8
+
+// The field orders.
+const (
+	// Progressive frames are one picture.
+	Progressive FieldOrder = iota
+	// TopFieldFirst frames are two fields woven, the top field the
+	// earlier.
+	TopFieldFirst
+	// BottomFieldFirst frames are two fields woven, the bottom field
+	// the earlier.
+	BottomFieldFirst
+)
+
+func (o FieldOrder) String() string {
+	switch o {
+	case TopFieldFirst:
+		return "top field first"
+	case BottomFieldFirst:
+		return "bottom field first"
+	}
+	return "progressive"
+}
+
+// FieldOrder is whether the frame is two fields woven, and which is the
+// earlier: an H.264 frame coded as fields or as field and frame
+// macroblock pairs, by its fields' picture order counts. The decoder
+// deinterlaces nothing: the picture has the fields' lines as the stream
+// codes them.
+func (f *VideoFrame) FieldOrder() FieldOrder { return f.fields }
 
 // Decoded reports whether the frame's picture has finished decoding,
 // and the film grain pass of the graphics queue where the decoder
@@ -814,10 +865,17 @@ func (v *VideoDecoder) streamAlign() int {
 	return max(intconv.Must[int](v.caps.video.MinBitstreamBufferSizeAlignment), 1)
 }
 
-// decodePicture is one picture to decode: the frame it decodes into,
-// its coded size, within the session's, the bytes of the stream buffer
-// it reads, the codec's picture info, the DPB slot it sets up and the
-// slots it references, each with the codec's DPB slot info.
+// decodePicture is one picture to decode: the frame it completes, its
+// coded size, within the session's, the bytes of the stream buffer it
+// reads, the codec's picture info, the DPB slot it sets up and the
+// slots it references, each with the codec's DPB slot info. frame is
+// nil for a picture that completes none, an H.264 frame's first field,
+// which a device that decodes into its reference pictures alone keeps
+// there until the second joins it in the slot's picture. held says the
+// slot is active with part of the picture, a reference field: it keeps
+// that, and may be among the slots referenced. A picture that is no
+// reference activates no slot, and its fields meet in the slot's
+// picture all the same.
 type decodePicture struct {
 	frame     *VideoFrame
 	coded     [2]int
@@ -825,6 +883,7 @@ type decodePicture struct {
 	info      unsafe.Pointer
 	setup     int
 	setupInfo unsafe.Pointer
+	held      bool
 	refs      []int
 	refInfo   []unsafe.Pointer
 }
@@ -845,13 +904,26 @@ func (v *VideoDecoder) submit(p *decodePicture) error {
 	n := len(p.refs)
 	c.res[0] = resource(v.dpb.views[p.setup], p.coded)
 	c.bound[0] = vk.VideoReferenceSlotInfoKHR{SType: vk.StructureTypeVideoReferenceSlotInfoKhr, SlotIndex: -1, PPictureResource: &c.res[0]}
+	if p.held {
+		c.bound[0].SlotIndex = intconv.Must[int32](p.setup)
+	}
+	bound := 1
 	for i, slot := range p.refs {
-		c.res[1+i] = resource(v.dpb.views[slot], v.coded[slot])
-		c.bound[1+i] = vk.VideoReferenceSlotInfoKHR{SType: vk.StructureTypeVideoReferenceSlotInfoKhr, PNext: (*uintptr)(p.refInfo[i]), SlotIndex: intconv.Must[int32](slot), PPictureResource: &c.res[1+i]}
+		res := &c.res[1+i]
+		if slot == p.setup {
+			res = &c.res[0]
+		} else {
+			*res = resource(v.dpb.views[slot], v.coded[slot])
+		}
+		c.refs[i] = vk.VideoReferenceSlotInfoKHR{SType: vk.StructureTypeVideoReferenceSlotInfoKhr, PNext: (*uintptr)(p.refInfo[i]), SlotIndex: intconv.Must[int32](slot), PPictureResource: res}
+		if slot != p.setup {
+			c.bound[bound] = c.refs[i]
+			bound++
+		}
 	}
 	c.begin = vk.VideoBeginCodingInfoKHR{
 		SType: vk.StructureTypeVideoBeginCodingInfoKhr, VideoSession: v.session, VideoSessionParameters: v.params,
-		ReferenceSlotCount: intconv.Must[uint32](1 + n), PReferenceSlots: &c.bound[0],
+		ReferenceSlotCount: intconv.Must[uint32](bound), PReferenceSlots: &c.bound[0],
 	}
 	d.cmds.CmdBeginVideoCodingKHR(cb, &c.begin)
 	if v.reset {
@@ -869,7 +941,7 @@ func (v *VideoDecoder) submit(p *decodePicture) error {
 		c.decode.DstPictureResource = resource(p.frame.pic.views[0], p.coded)
 	}
 	if n > 0 {
-		c.decode.ReferenceSlotCount, c.decode.PReferenceSlots = intconv.Must[uint32](n), &c.bound[1]
+		c.decode.ReferenceSlotCount, c.decode.PReferenceSlots = intconv.Must[uint32](n), &c.refs[0]
 	}
 	d.cmds.CmdDecodeVideoKHR(cb, &c.decode)
 	c.end = vk.VideoEndCodingInfoKHR{SType: vk.StructureTypeVideoEndCodingInfoKhr}
@@ -880,7 +952,8 @@ func (v *VideoDecoder) submit(p *decodePicture) error {
 }
 
 // finish ends the commands of s, the slot of the next decode
-// submission, and submits them: what writes frame's picture.
+// submission, and submits them: what writes frame's picture, where
+// they complete one.
 func (v *VideoDecoder) finish(s *decodeSlot, frame *VideoFrame) error {
 	d := v.d
 	if r := d.cmds.EndCommandBuffer(s.cb); r != vk.Success {
@@ -892,7 +965,9 @@ func (v *VideoDecoder) finish(s *decodeSlot, frame *VideoFrame) error {
 	}
 	v.submitted++
 	s.seq, v.next = v.submitted, (v.next+1)%len(v.slots)
-	frame.seq, frame.post, frame.state = s.seq, 0, frameQueued
+	if frame != nil {
+		frame.seq, frame.post, frame.state, frame.fields = s.seq, 0, frameQueued, Progressive
+	}
 	return nil
 }
 
@@ -927,6 +1002,7 @@ func (v *VideoDecoder) again(slot int) (*VideoFrame, error) {
 type decodeCommands struct {
 	res     [maxDPBSlots + 1]vk.VideoPictureResourceInfoKHR
 	bound   [maxDPBSlots + 1]vk.VideoReferenceSlotInfoKHR
+	refs    [maxDPBSlots]vk.VideoReferenceSlotInfoKHR
 	setup   vk.VideoReferenceSlotInfoKHR
 	begin   vk.VideoBeginCodingInfoKHR
 	control vk.VideoCodingControlInfoKHR
@@ -968,7 +1044,9 @@ func (v *VideoDecoder) barriersBefore(cb vk.CommandBuffer, p *decodePicture) {
 // frame made ready to sample.
 func (v *VideoDecoder) barriersAfter(cb vk.CommandBuffer, p *decodePicture) {
 	if v.copies {
-		v.copyOut(cb, p.setup, p.frame)
+		if p.frame != nil {
+			v.copyOut(cb, p.setup, p.frame)
+		}
 		return
 	}
 	decoded := imageBarrier(p.frame.tex.image, colorRange, vk.ImageLayoutVideoDecodeDstKhr, vk.ImageLayoutShaderReadOnlyOptimal)
@@ -1009,17 +1087,23 @@ func (v *VideoDecoder) copyOut(cb vk.CommandBuffer, slot int, f *VideoFrame) {
 }
 
 // queue puts f, decoded, among the frames waiting for presentation
-// order at order. A boundary (an IDR) first hands every frame before
-// it to Next, or with discard drops them.
+// order at order, after a boundary (an IDR) what drain does.
 func (v *VideoDecoder) queue(f *VideoFrame, order int32, boundary, discard bool) {
 	if boundary {
-		if discard {
-			v.pending.drain(func(f *VideoFrame) { f.free(0) })
-		} else {
-			v.pending.drain(v.present)
-		}
+		v.drain(discard)
 	}
 	v.pending.add(f, order, v.present)
+}
+
+// drain hands every frame waiting for presentation order to Next, or
+// with discard drops them: what a picture the order starts again at (an
+// IDR) does to the frames before it.
+func (v *VideoDecoder) drain(discard bool) {
+	if discard {
+		v.pending.drain(func(f *VideoFrame) { f.free(0) })
+		return
+	}
+	v.pending.drain(v.present)
 }
 
 // present hands f to Next.

@@ -11,16 +11,76 @@ import (
 // reference frames and the picture being decoded.
 const h264MaxSlots = 17
 
+// h264Fields are fields of a frame, a bit each: a field picture is one
+// of them, a frame both.
+type h264Fields uint8
+
+// The fields.
+const (
+	h264Top h264Fields = 1 << iota
+	h264Bottom
+	h264Frame = h264Top | h264Bottom
+)
+
+// index is where a field's picture order count is among a frame's.
+func (f h264Fields) index() int {
+	if f == h264Bottom {
+		return 1
+	}
+	return 0
+}
+
+func (f h264Fields) String() string {
+	switch f {
+	case h264Top:
+		return "top field"
+	case h264Bottom:
+		return "bottom field"
+	}
+	return "frame"
+}
+
+// h264FieldsOf is the field a picture whose slices h heads is, or
+// h264Frame.
+func h264FieldsOf(h *nal.H264SliceHeader) h264Fields {
+	switch {
+	case !h.FieldPic:
+		return h264Frame
+	case h.BottomField:
+		return h264Bottom
+	}
+	return h264Top
+}
+
 // h264Ref is a DPB slot's frame as reference picture marking (8.2.5)
-// sees it.
+// sees it: a frame, or the fields of one decoded so far.
 type h264Ref struct {
 	// frameNum is FrameNum; longIdx LongTermFrameIdx.
 	frameNum, longIdx uint32
 	poc               [2]int32
-	short, long       bool
+	// held are the fields the slot's picture holds, decoded as one
+	// picture when whole, else each as a picture of its own; short and
+	// long the ones used for short-term and for long-term reference.
+	held, short, long h264Fields
+	whole             bool
 }
 
-func (r *h264Ref) used() bool { return r.short || r.long }
+// marked are the fields used for reference.
+func (r *h264Ref) marked() h264Fields { return r.short | r.long }
+
+func (r *h264Ref) used() bool { return r.marked() != 0 }
+
+// order is the picture order count of the fields the slot holds: the
+// first of them in output order.
+func (r *h264Ref) order() int32 {
+	switch r.held {
+	case h264Top:
+		return r.poc[0]
+	case h264Bottom:
+		return r.poc[1]
+	}
+	return min(r.poc[0], r.poc[1])
+}
 
 // h264Pic is the picture being decoded: its first slice's header and
 // what decoding it works out.
@@ -32,7 +92,12 @@ type h264Pic struct {
 	ref bool
 	// intra is every slice an I or SI slice.
 	intra bool
-	// poc is TopFieldOrderCnt and BottomFieldOrderCnt; pocMsb and
+	// fields is the field the picture is, or h264Frame; second marks
+	// the second field of a frame, whose first field its slot holds.
+	fields h264Fields
+	second bool
+	// poc is TopFieldOrderCnt and BottomFieldOrderCnt, a field picture's
+	// own alone until its frame's other field joins it; pocMsb and
 	// frameNumOffset the state that derived it (8.2.1).
 	poc            [2]int32
 	pocMsb         int32
@@ -46,10 +111,15 @@ type h264Pic struct {
 
 // order is the picture's position in output order among the pictures
 // since the last IDR or memory_management_control_operation 5.
-func (p *h264Pic) order() int32 { return min(p.poc[0], p.poc[1]) }
+func (p *h264Pic) order() int32 {
+	if p.fields == h264Frame {
+		return min(p.poc[0], p.poc[1])
+	}
+	return p.poc[p.fields.index()]
+}
 
 // h264State is the reference frames of a stream being decoded, by DPB
-// slot, and the picture order count state: progressive frames only.
+// slot, and the picture order count state.
 type h264State struct {
 	// slots is how many DPB slots the sequence uses.
 	slots int
@@ -69,6 +139,16 @@ type h264State struct {
 	prevRefPoc [2]int32
 	// gapHdr is the slice header of the frame a gap infers.
 	gapHdr nal.H264SliceHeader
+	// first is the field decoded last, when the next picture may be the
+	// other field of its frame: its slot, its frame_num and whether it
+	// is a reference.
+	first struct {
+		open     bool
+		field    h264Fields
+		slot     int
+		frameNum uint32
+		ref      bool
+	}
 	// started is set once a picture that needs no earlier one (an IDR
 	// or an I picture) began decoding; leadFrom is the order before
 	// which pictures after a non-IDR start are dropped, for they may
@@ -97,23 +177,52 @@ func (s *h264State) begin(p *h264Pic) (gap int, err error) {
 	return s.frameNumGap(p)
 }
 
-// place works out p's picture order count and DPB slot. It returns
-// errSkipPicture for a picture leading a non-IDR start, which may
-// predict from pictures before it; such a picture still counts in
-// frame_num and picture order count.
+// pairs reports whether p is the second field of the frame whose first
+// field was decoded before it: a field of the other parity and the same
+// frame_num, neither an IDR picture nor one that marks every reference
+// unused, which start a frame of their own (3.30).
+func (s *h264State) pairs(p *h264Pic) bool {
+	f := &s.first
+	if !f.open || p.fields == h264Frame || p.fields == f.field || p.hdr.FrameNum != f.frameNum || p.idr {
+		return false
+	}
+	for _, m := range p.hdr.MMCO[:p.hdr.NumMMCO] {
+		if m.Op == 5 {
+			return false
+		}
+	}
+	return true
+}
+
+// place works out p's picture order count and DPB slot, the slot of its
+// frame's first field for a second field. It returns errSkipPicture
+// for a picture leading a non-IDR start, which may predict from
+// pictures before it; such a picture still counts in frame_num and
+// picture order count. A field decoded before p that p is not the
+// other field of stays unpaired.
 func (s *h264State) place(p *h264Pic) error {
 	start := !s.started
+	p.second = s.pairs(p)
+	if p.second && p.ref != s.first.ref {
+		return fmt.Errorf("%w: the fields of frame %d are a reference field and one that is none, which no decoder pairs: %w", nal.ErrH264, p.hdr.FrameNum, nal.ErrUnsupported)
+	}
+	s.first.open = false
 	s.pictureOrder(p)
 	switch {
 	case p.idr:
 		s.leading = false
+	case p.second:
 	case start:
 		s.leading, s.leadFrom = true, p.order()
 	case s.leading && p.order() < s.leadFrom:
 		s.advance(p)
 		return errSkipPicture
 	}
-	if err := s.freeSlot(p); err != nil {
+	if p.second {
+		p.slot = s.first.slot
+		other := 1 - p.fields.index()
+		p.poc[other] = s.refs[p.slot].poc[other]
+	} else if err := s.freeSlot(p); err != nil {
 		return err
 	}
 	s.started = true
@@ -162,7 +271,8 @@ func (s *h264State) frameNumGap(p *h264Pic) (int, error) {
 // previous reference frame's plus 2, as ffmpeg counts.
 func (s *h264State) infer(q *h264Pic, sps *nal.H264SPS) error {
 	s.gapHdr = nal.H264SliceHeader{SliceType: nal.H264SliceP, FrameNum: (s.prevRefFrameNum + 1) % (uint32(1) << sps.Log2MaxFrameNum)}
-	*q = h264Pic{hdr: &s.gapHdr, sps: sps, ref: true, nonExisting: true}
+	*q = h264Pic{hdr: &s.gapHdr, sps: sps, ref: true, fields: h264Frame, nonExisting: true}
+	s.first.open = false
 	if sps.PicOrderCntType == 0 {
 		q.poc = [2]int32{s.prevRefPoc[0] + 2, s.prevRefPoc[1] + 2}
 	} else {
@@ -171,8 +281,23 @@ func (s *h264State) infer(q *h264Pic, sps *nal.H264SPS) error {
 	return s.freeSlot(q)
 }
 
-// pictureOrder derives p's picture order count (8.2.1) for a frame.
+// pictureOrder derives p's picture order count (8.2.1): a frame's two,
+// or a field's own, in both places until place gives a second field
+// its frame's other.
 func (s *h264State) pictureOrder(p *h264Pic) {
+	top, bottom := s.fieldOrders(p)
+	switch p.fields {
+	case h264Top:
+		bottom = top
+	case h264Bottom:
+		top = bottom
+	}
+	p.poc = [2]int32{top, bottom}
+}
+
+// fieldOrders is TopFieldOrderCnt and BottomFieldOrderCnt as p's
+// header codes them, of which a field picture has its own alone.
+func (s *h264State) fieldOrders(p *h264Pic) (top, bottom int32) {
 	sps, h := p.sps, p.hdr
 	if sps.PicOrderCntType == 0 {
 		if p.idr {
@@ -188,8 +313,10 @@ func (s *h264State) pictureOrder(p *h264Pic) {
 			msb -= maxLsb
 		}
 		p.pocMsb = msb
-		p.poc = [2]int32{msb + lsb, msb + lsb + h.DeltaPicOrderCntBottom}
-		return
+		if p.fields != h264Frame {
+			return msb + lsb, msb + lsb
+		}
+		return msb + lsb, msb + lsb + h.DeltaPicOrderCntBottom
 	}
 	maxFrameNum := int32(1) << sps.Log2MaxFrameNum
 	frameNum := intconv.Must[int32](h.FrameNum)
@@ -210,8 +337,7 @@ func (s *h264State) pictureOrder(p *h264Pic) {
 		default:
 			t = 2 * (p.frameNumOffset + frameNum)
 		}
-		p.poc = [2]int32{t, t}
-		return
+		return t, t
 	}
 	n := int32(sps.NumRefFramesInPicOrderCntCycle)
 	abs := int32(0)
@@ -236,32 +362,38 @@ func (s *h264State) pictureOrder(p *h264Pic) {
 	if !p.ref {
 		expected += sps.OffsetForNonRefPic
 	}
-	top := expected + h.DeltaPicOrderCnt[0]
-	p.poc = [2]int32{top, top + sps.OffsetForTopToBottomField + h.DeltaPicOrderCnt[1]}
+	top = expected + h.DeltaPicOrderCnt[0]
+	if p.fields != h264Frame {
+		return top, top + sps.OffsetForTopToBottomField
+	}
+	return top, top + sps.OffsetForTopToBottomField + h.DeltaPicOrderCnt[1]
 }
 
-// finish marks the reference frames once p has decoded (8.2.5) and
-// keeps the state the next picture derives its own from.
+// finish marks the reference pictures once p has decoded (8.2.5) and
+// keeps the state the next picture derives its own from. A second
+// field joins its frame's first in the slot.
 func (s *h264State) finish(p *h264Pic) {
 	h := p.hdr
 	cur := &s.refs[p.slot]
-	*cur = h264Ref{frameNum: h.FrameNum, poc: p.poc}
+	if !p.second {
+		*cur = h264Ref{frameNum: h.FrameNum, whole: p.fields == h264Frame}
+	}
+	cur.held |= p.fields
+	cur.poc = p.poc
 	if p.ref {
 		switch {
 		case p.idr:
 			s.unmarkAll(p.slot)
 			s.maxLongIdx = -1
 			if h.LongTermReference {
-				cur.long, s.maxLongIdx = true, 0
+				cur.long, cur.longIdx, s.maxLongIdx = p.fields, 0, 0
 			}
 		case h.AdaptiveRefPicMarking:
 			s.adaptive(p)
 		default:
 			s.slidingWindow(p)
 		}
-		if !cur.long {
-			cur.short = true
-		}
+		cur.short |= p.fields &^ cur.long
 	}
 	if p.mmco5 {
 		t := p.order()
@@ -273,6 +405,7 @@ func (s *h264State) finish(p *h264Pic) {
 		s.prevRefPoc = p.poc
 	}
 	s.advance(p)
+	s.first.open, s.first.field, s.first.slot, s.first.frameNum, s.first.ref = p.fields != h264Frame && !p.second, p.fields, p.slot, cur.frameNum, p.ref
 }
 
 // advance keeps what the next picture derives its frame_num check and
@@ -288,36 +421,44 @@ func (s *h264State) advance(p *h264Pic) {
 	}
 	if p.ref && !p.nonExisting {
 		s.prevPocMsb, s.prevPocLsb = p.pocMsb, intconv.Must[int32](h.PicOrderCntLsb)
-		if p.mmco5 {
+		switch {
+		case p.mmco5 && p.fields == h264Bottom:
+			s.prevPocMsb, s.prevPocLsb = 0, 0
+		case p.mmco5:
 			s.prevPocMsb, s.prevPocLsb = 0, p.poc[0]
 		}
 	}
 	s.prevFrameNum, s.prevFrameNumOffset = frameNum, offset
 }
 
-// unmarkAll marks every frame but slot keep's unused for reference, in
-// the slots past the sequence's too: a new sequence may use fewer.
+// unmarkAll marks every picture but slot keep's unused for reference,
+// in the slots past the sequence's too: a new sequence may use fewer.
 func (s *h264State) unmarkAll(keep int) {
 	for i := range s.refs {
 		if i != keep {
-			s.refs[i].short, s.refs[i].long = false, false
+			s.refs[i].short, s.refs[i].long = 0, 0
 		}
 	}
 }
 
-// numRefs counts the reference frames other than slot cur's.
-func (s *h264State) numRefs(cur int) int {
+// numRefs counts the reference frames, complementary field pairs and
+// unpaired fields: the ones with a short-term field and the ones with
+// a long-term field (8.2.5.3).
+func (s *h264State) numRefs() int {
 	n := 0
 	for i := range s.slots {
-		if i != cur && s.refs[i].used() {
+		if s.refs[i].short != 0 {
+			n++
+		}
+		if s.refs[i].long != 0 {
 			n++
 		}
 	}
 	return n
 }
 
-// picNum is a short-term frame's PicNum while p decodes: FrameNumWrap.
-func (s *h264State) picNum(r *h264Ref, p *h264Pic) int64 {
+// frameNumWrap is a short-term picture's FrameNumWrap while p decodes.
+func (s *h264State) frameNumWrap(r *h264Ref, p *h264Pic) int64 {
 	if r.frameNum > p.hdr.FrameNum {
 		return int64(r.frameNum) - int64(1)<<p.sps.Log2MaxFrameNum
 	}
@@ -325,50 +466,57 @@ func (s *h264State) picNum(r *h264Ref, p *h264Pic) int64 {
 }
 
 // slidingWindow is 8.2.5.3: with the reference frames full, the
-// short-term frame of the smallest FrameNumWrap goes.
+// short-term frame, field pair or unpaired field of the smallest
+// FrameNumWrap goes, both its fields. The second field of a frame
+// whose first field is a short-term reference joins it and moves
+// nothing.
 func (s *h264State) slidingWindow(p *h264Pic) {
-	if s.numRefs(p.slot) < max(int(p.sps.MaxNumRefFrames), 1) {
+	if p.second && s.refs[p.slot].short != 0 {
+		return
+	}
+	if s.numRefs() < max(int(p.sps.MaxNumRefFrames), 1) {
 		return
 	}
 	oldest := -1
 	for i := range s.slots {
-		if i == p.slot || !s.refs[i].short {
+		if i == p.slot || s.refs[i].short == 0 {
 			continue
 		}
-		if oldest < 0 || s.picNum(&s.refs[i], p) < s.picNum(&s.refs[oldest], p) {
+		if oldest < 0 || s.frameNumWrap(&s.refs[i], p) < s.frameNumWrap(&s.refs[oldest], p) {
 			oldest = i
 		}
 	}
 	if oldest >= 0 {
-		s.refs[oldest].short = false
+		s.refs[oldest].short = 0
 	}
 }
 
-// adaptive is 8.2.5.4: p's memory management control operations.
+// adaptive is 8.2.5.4: p's memory management control operations, which
+// name frames where p is a frame and fields where it is a field.
 func (s *h264State) adaptive(p *h264Pic) {
 	h := p.hdr
+	cur := &s.refs[p.slot]
 	for _, m := range h.MMCO[:h.NumMMCO] {
 		switch m.Op {
 		case 1:
-			if i := s.shortByPicNum(p, m.DifferenceOfPicNumsMinus1); i >= 0 {
-				s.refs[i].short = false
+			if i, f := s.shortByPicNum(p, m.DifferenceOfPicNumsMinus1); i >= 0 {
+				s.refs[i].short &^= f
 			}
 		case 2:
-			for i := range s.slots {
-				if i != p.slot && s.refs[i].long && s.refs[i].longIdx == m.LongTermPicNum {
-					s.refs[i].long = false
-				}
+			if i, f := s.longByPicNum(p, m.LongTermPicNum); i >= 0 {
+				s.refs[i].long &^= f
 			}
 		case 3:
-			if i := s.shortByPicNum(p, m.DifferenceOfPicNumsMinus1); i >= 0 {
+			if i, f := s.shortByPicNum(p, m.DifferenceOfPicNumsMinus1); i >= 0 {
 				s.dropLongIdx(m.LongTermFrameIdx, i)
-				s.refs[i].short, s.refs[i].long, s.refs[i].longIdx = false, true, m.LongTermFrameIdx
+				r := &s.refs[i]
+				r.short, r.long, r.longIdx = r.short&^f, r.long|f, m.LongTermFrameIdx
 			}
 		case 4:
 			s.maxLongIdx = int64(m.MaxLongTermFrameIdxPlus1) - 1
 			for i := range s.slots {
-				if i != p.slot && s.refs[i].long && int64(s.refs[i].longIdx) > s.maxLongIdx {
-					s.refs[i].long = false
+				if s.refs[i].long != 0 && int64(s.refs[i].longIdx) > s.maxLongIdx {
+					s.refs[i].long = 0
 				}
 			}
 		case 5:
@@ -377,30 +525,83 @@ func (s *h264State) adaptive(p *h264Pic) {
 			p.mmco5 = true
 		case 6:
 			s.dropLongIdx(m.LongTermFrameIdx, p.slot)
-			cur := &s.refs[p.slot]
-			cur.long, cur.longIdx = true, m.LongTermFrameIdx
+			cur.long, cur.longIdx = cur.long|p.fields, m.LongTermFrameIdx
 		}
 	}
 }
 
-// shortByPicNum is the slot of the short-term frame picNumX names,
-// CurrPicNum less diff+1; -1 when none does.
-func (s *h264State) shortByPicNum(p *h264Pic, diff uint32) int {
-	x := int64(p.hdr.FrameNum) - int64(diff) - 1
+// picNums walks the pictures a memory management control operation of
+// p can name with their picture numbers (8.2.4.1): frames whose fields
+// both are marked, by FrameNumWrap or LongTermFrameIdx, where p is a
+// frame; each marked field where p is a field, by twice that, plus one
+// for a field of p's parity. marked is short or long.
+func (s *h264State) picNums(p *h264Pic, long bool, yield func(slot int, f h264Fields, num int64) bool) {
 	for i := range s.slots {
-		if i != p.slot && s.refs[i].short && s.picNum(&s.refs[i], p) == x {
-			return i
+		r := &s.refs[i]
+		marked, num := r.short, s.frameNumWrap(r, p)
+		if long {
+			marked, num = r.long, int64(r.longIdx)
+		}
+		if p.fields == h264Frame {
+			if i != p.slot && marked == h264Frame && !yield(i, h264Frame, num) {
+				return
+			}
+			continue
+		}
+		for _, f := range [...]h264Fields{h264Top, h264Bottom} {
+			if marked&f == 0 {
+				continue
+			}
+			n := 2 * num
+			if f == p.fields {
+				n++
+			}
+			if !yield(i, f, n) {
+				return
+			}
 		}
 	}
-	return -1
 }
 
-// dropLongIdx marks the long-term frame with LongTermFrameIdx idx, other
-// than slot keep's, unused.
+// shortByPicNum is the slot and the fields of the short-term picture
+// picNumX names, CurrPicNum less diff+1; slot -1 when none does.
+func (s *h264State) shortByPicNum(p *h264Pic, diff uint32) (slot int, fields h264Fields) {
+	curr := int64(p.hdr.FrameNum)
+	if p.fields != h264Frame {
+		curr = 2*curr + 1
+	}
+	slot = -1
+	s.picNums(p, false, func(i int, f h264Fields, num int64) bool {
+		if num != curr-int64(diff)-1 {
+			return true
+		}
+		slot, fields = i, f
+		return false
+	})
+	return slot, fields
+}
+
+// longByPicNum is the slot and the fields of the long-term picture
+// LongTermPicNum num names; slot -1 when none does.
+func (s *h264State) longByPicNum(p *h264Pic, num uint32) (slot int, fields h264Fields) {
+	slot = -1
+	s.picNums(p, true, func(i int, f h264Fields, n int64) bool {
+		if n != int64(num) {
+			return true
+		}
+		slot, fields = i, f
+		return false
+	})
+	return slot, fields
+}
+
+// dropLongIdx marks the long-term pictures with LongTermFrameIdx idx
+// unused, but slot keep's: the picture given the index, or the frame
+// whose other field has it.
 func (s *h264State) dropLongIdx(idx uint32, keep int) {
 	for i := range s.slots {
-		if i != keep && s.refs[i].long && s.refs[i].longIdx == idx {
-			s.refs[i].long = false
+		if i != keep && s.refs[i].long != 0 && s.refs[i].longIdx == idx {
+			s.refs[i].long = 0
 		}
 	}
 }

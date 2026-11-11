@@ -3,6 +3,8 @@ package gpu
 import (
 	"errors"
 	"slices"
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stubbedev/lys-lib/internal/nal"
@@ -27,7 +29,7 @@ func newDPBRun(t *testing.T, sps nal.H264SPS) *dpbRun {
 // pic decodes the picture h describes, returning it as decoded.
 func (r *dpbRun) pic(h nal.H264SliceHeader, idr, ref, intra bool) (h264Pic, error) {
 	r.t.Helper()
-	p := h264Pic{hdr: &h, sps: &r.sps, idr: idr, ref: ref, intra: intra}
+	p := h264Pic{hdr: &h, sps: &r.sps, idr: idr, ref: ref, intra: intra, fields: h264FieldsOf(&h)}
 	gap, err := r.state.begin(&p)
 	if err != nil {
 		return p, err
@@ -63,9 +65,9 @@ func (r *dpbRun) refs() []int {
 	var out []int
 	for i := range r.state.slots {
 		switch ref := r.state.refs[i]; {
-		case ref.short:
+		case ref.short != 0:
 			out = append(out, int(ref.frameNum))
-		case ref.long:
+		case ref.long != 0:
 			out = append(out, -1-int(ref.longIdx))
 		}
 	}
@@ -270,5 +272,200 @@ func TestReorder(t *testing.T) {
 	r.drain(emit)
 	if want := []int{0, 2, 3, 1, 5, 4}; !slices.Equal(out, want) {
 		t.Errorf("frames out %v, want %v", out, want)
+	}
+}
+
+// field is the header of a field of frame frameNum, the bottom one when
+// bottom, with pic_order_cnt_lsb lsb and the memory management control
+// operations ops.
+func field(frameNum uint32, bottom bool, lsb uint32, ops ...nal.H264MMCO) nal.H264SliceHeader {
+	h := nal.H264SliceHeader{FrameNum: frameNum, FieldPic: true, BottomField: bottom, PicOrderCntLsb: lsb}
+	if len(ops) > 0 {
+		h.AdaptiveRefPicMarking, h.NumMMCO = true, len(ops)
+		copy(h.MMCO[:], ops)
+	}
+	return h
+}
+
+// marks are the reference fields, a slot each in the order of
+// FrameNum: the frame's FrameNum, then T and B for its top and bottom
+// field where short-term references, t and b where long-term ones.
+func (r *dpbRun) marks() string {
+	var frames []string
+	for i := range r.state.slots {
+		ref := &r.state.refs[i]
+		if !ref.used() {
+			continue
+		}
+		s := []byte(strconv.Itoa(int(ref.frameNum)))
+		for j, c := range []struct {
+			in   h264Fields
+			name byte
+		}{{ref.short & h264Top, 'T'}, {ref.short & h264Bottom, 'B'}, {ref.long & h264Top, 't'}, {ref.long & h264Bottom, 'b'}} {
+			if c.in != 0 {
+				s = append(s, c.name)
+			}
+			if j == 3 && ref.long != 0 {
+				s = append(s, '@', '0'+byte(ref.longIdx))
+			}
+		}
+		frames = append(frames, string(s))
+	}
+	slices.Sort(frames)
+	return strings.Join(frames, " ")
+}
+
+// A field's picture order count is its own, in whichever way the
+// sequence counts (type 0 past the wrap of pic_order_cnt_lsb, from the
+// field before), and its frame's are its two fields': the frame comes
+// out where the earlier of them is.
+func TestH264FieldPictureOrder(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		sps  nal.H264SPS
+		// want is the frame's counts decoded top field first, and bottom
+		// field first.
+		want [2][2]int32
+	}{
+		{"type 0", nal.H264SPS{Log2MaxFrameNum: 4, Log2MaxPicOrderCntLsb: 4, MaxNumRefFrames: 2}, [2][2]int32{{15, 17}, {17, 15}}},
+		{"type 1", nal.H264SPS{Log2MaxFrameNum: 4, PicOrderCntType: 1, MaxNumRefFrames: 2, NumRefFramesInPicOrderCntCycle: 1, OffsetForRefFrame: [255]int32{4}, OffsetForTopToBottomField: 3}, [2][2]int32{{4, 7}, {4, 7}}},
+		{"type 2", nal.H264SPS{Log2MaxFrameNum: 4, PicOrderCntType: 2, MaxNumRefFrames: 2}, [2][2]int32{{2, 2}, {2, 2}}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			for _, bottomFirst := range []bool{false, true} {
+				want := c.want[b2i(bottomFirst)]
+				r := newDPBRun(t, c.sps)
+				r.must(field(0, bottomFirst, 0), true, true)
+				r.must(field(0, !bottomFirst, 7), false, true)
+				first := r.must(field(1, bottomFirst, 15), false, true)
+				second := r.must(field(1, !bottomFirst, 1), false, true)
+				if first.second || !second.second || second.slot != first.slot {
+					t.Fatalf("the fields of frame 1 are in slots %d and %d, the second a second field: %v", first.slot, second.slot, second.second)
+				}
+				if own := first.fields.index(); first.poc[own] != want[own] || second.poc != want {
+					t.Errorf("bottom field first %v: the first field counts %d, the frame %v, want %d and %v", bottomFirst, first.poc[own], second.poc, want[own], want)
+				}
+				if got := r.state.refs[second.slot].order(); got != min(want[0], want[1]) {
+					t.Errorf("bottom field first %v: the frame comes out at %d, want %d", bottomFirst, got, min(want[0], want[1]))
+				}
+			}
+		})
+	}
+}
+
+// Two fields are a frame's where the second follows the first with the
+// other parity and the same frame_num, and is neither an IDR picture
+// nor one that marks every reference unused; any other field starts a
+// frame of its own, and the field before it stays alone in its slot, a
+// reference as it was. A reference field and one that is none are no
+// frame.
+func TestH264FieldsPairIntoFrames(t *testing.T) {
+	r := newDPBRun(t, nal.H264SPS{Log2MaxFrameNum: 4, PicOrderCntType: 2, MaxNumRefFrames: 8})
+	top, bottom := false, true
+	steps := []struct {
+		name   string
+		h      nal.H264SliceHeader
+		idr    bool
+		second bool
+		marks  string
+	}{
+		{"an IDR field", field(0, top, 0), true, false, "0T"},
+		{"its frame's other", field(0, bottom, 0), false, true, "0TB"},
+		{"a field", field(1, top, 0), false, false, "0TB 1T"},
+		{"a field of the same parity", field(2, top, 0), false, false, "0TB 1T 2T"},
+		{"its frame's other", field(2, bottom, 0), false, true, "0TB 1T 2TB"},
+		{"a bottom field first", field(3, bottom, 0), false, false, "0TB 1T 2TB 3B"},
+		{"a field of another frame_num", field(4, top, 0), false, false, "0TB 1T 2TB 3B 4T"},
+		{"a field that marks every reference unused", field(4, bottom, 0, nal.H264MMCO{Op: 5}), false, false, "0B"},
+		{"a field of frame_num 0 after it, its frame's other", field(0, top, 0), false, true, "0TB"},
+		{"a frame", nal.H264SliceHeader{FrameNum: 1}, false, false, "0TB 1TB"},
+		{"a field after a frame", field(2, bottom, 0), false, false, "0TB 1TB 2B"},
+		{"an IDR field of the other parity and frame_num 0", field(0, top, 0), true, false, "0T"},
+	}
+	for i, s := range steps {
+		p := r.must(s.h, s.idr, true)
+		if p.second != s.second {
+			t.Fatalf("step %d, %s: a second field: %v, want %v", i, s.name, p.second, s.second)
+		}
+		if got := r.marks(); got != s.marks {
+			t.Fatalf("step %d, %s: references %q, want %q", i, s.name, got, s.marks)
+		}
+	}
+	r.must(field(1, top, 0), false, true)
+	if _, err := r.pic(field(1, bottom, 0), false, false, false); !errors.Is(err, nal.ErrUnsupported) {
+		t.Errorf("a field that is no reference after its frame's reference field: %v, want nal.ErrUnsupported", err)
+	}
+}
+
+// The sliding window counts frames, field pairs and fields alone alike
+// and drops both fields of the oldest; the second field of a frame
+// whose first is a short-term reference joins it and drops nothing.
+func TestH264FieldSlidingWindow(t *testing.T) {
+	r := newDPBRun(t, nal.H264SPS{Log2MaxFrameNum: 4, PicOrderCntType: 2, MaxNumRefFrames: 3})
+	steps := []struct {
+		h     nal.H264SliceHeader
+		marks string
+	}{
+		{field(0, false, 0), "0T"},
+		{field(0, true, 0), "0TB"},
+		{field(1, true, 0), "0TB 1B"},
+		{nal.H264SliceHeader{FrameNum: 2}, "0TB 1B 2TB"},
+		{field(3, false, 0), "1B 2TB 3T"},
+		{field(3, true, 0), "1B 2TB 3TB"},
+		{field(4, false, 0), "2TB 3TB 4T"},
+		{field(4, true, 0), "2TB 3TB 4TB"},
+		{field(5, true, 0), "3TB 4TB 5B"},
+	}
+	for i, s := range steps {
+		r.must(s.h, i == 0, true)
+		if got := r.marks(); got != s.marks {
+			t.Fatalf("step %d: references %q, want %q", i, got, s.marks)
+		}
+	}
+}
+
+// A field's memory management control operations name fields, by
+// picture numbers that are twice a frame's plus one for a field of its
+// own parity: one field of a frame marked unused, short-term or
+// long-term; a frame's fields made long-term one by one, at one index,
+// the second keeping the first; a long-term index taken from another
+// frame, and from a field alone; and the cap of the indices.
+func TestH264FieldMemoryManagement(t *testing.T) {
+	r := newDPBRun(t, nal.H264SPS{Log2MaxFrameNum: 4, PicOrderCntType: 2, MaxNumRefFrames: 6})
+	same, other := func(frame uint32) uint32 { return 2*frame + 1 }, func(frame uint32) uint32 { return 2 * frame }
+	unmark := func(curr, picNum uint32) nal.H264MMCO {
+		return nal.H264MMCO{Op: 1, DifferenceOfPicNumsMinus1: curr - picNum - 1}
+	}
+	toLong := func(curr, picNum, idx uint32) nal.H264MMCO {
+		return nal.H264MMCO{Op: 3, DifferenceOfPicNumsMinus1: curr - picNum - 1, LongTermFrameIdx: idx}
+	}
+	long := func(idx uint32) nal.H264MMCO { return nal.H264MMCO{Op: 6, LongTermFrameIdx: idx} }
+	top, bottom := false, true
+	steps := []struct {
+		name  string
+		h     nal.H264SliceHeader
+		marks string
+	}{
+		{"", field(0, top, 0), "0T"},
+		{"", field(0, bottom, 0), "0TB"},
+		{"the current field made long-term", field(1, top, 0, nal.H264MMCO{Op: 4, MaxLongTermFrameIdxPlus1: 3}, long(0)), "0TB 1t@0"},
+		{"its frame's other made long-term at the same index, keeping it", field(1, bottom, 0, long(0)), "0TB 1tb@0"},
+		{"", field(2, top, 0), "0TB 1tb@0 2T"},
+		{"a field of the other parity marked unused, from a second field", field(2, bottom, 0, unmark(same(2), other(0))), "0B 1tb@0 2TB"},
+		{"a field of the same parity made long-term", field(3, top, 0, toLong(same(3), same(2), 1)), "0B 1tb@0 2Bt@1 3T"},
+		{"its frame's other made long-term at the same index, keeping it", field(3, bottom, 0, toLong(same(3), same(2), 1)), "0B 1tb@0 2tb@1 3TB"},
+		{"a long-term field of the other parity marked unused", field(4, top, 0, nal.H264MMCO{Op: 2, LongTermPicNum: other(0)}), "0B 1t@0 2tb@1 3TB 4T"},
+		{"the first field of the current frame marked unused", field(4, bottom, 0, unmark(same(4), other(4))), "0B 1t@0 2tb@1 3TB 4B"},
+		{"a field made long-term at the index of another frame, which loses it", field(5, top, 0, toLong(same(5), other(0), 1)), "0b@1 1t@0 3TB 4B 5T"},
+		{"the current field made long-term at the index of a field alone, which loses it", field(5, bottom, 0, unmark(same(5), other(5)), long(0)), "0b@1 5b@0 3TB 4B"},
+		{"the long-term indices capped", field(6, top, 0, nal.H264MMCO{Op: 4, MaxLongTermFrameIdxPlus1: 1}), "3TB 4B 5b@0 6T"},
+	}
+	for i, s := range steps {
+		r.must(s.h, i == 0, true)
+		got, want := strings.Fields(r.marks()), strings.Fields(s.marks)
+		slices.Sort(want)
+		if !slices.Equal(got, want) {
+			t.Fatalf("step %d, %s: references %q, want %q", i, s.name, got, want)
+		}
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"image"
+	"time"
 	"unsafe"
 
 	"github.com/stubbedev/lys-lib/intconv"
@@ -30,8 +31,15 @@ type h264Decoder struct {
 	hdr           nal.H264SliceHeader
 	other         nal.H264SliceHeader
 	rbsp          []byte
-	slices        [][]byte
-	offsets       []uint32
+	// slices are the slices read of the packet's part-th picture; whole
+	// is whether the picture before it in the packet is a frame.
+	slices []h264Slice
+	part   int
+	whole  bool
+	// fieldPTS and fieldDuration are the packet's of a frame's first
+	// field, for the frame its second field completes.
+	fieldPTS, fieldDuration time.Duration
+	offsets                 []uint32
 	// gapPPS is the PPS the skip slices of the frames a gap in
 	// frame_num infers name, and gapPic the frame being inferred.
 	gapPPS *nal.H264PPS
@@ -138,10 +146,24 @@ func (c *h264Decoder) parameterSet(unit []byte) error {
 	return nil
 }
 
+// h264Slice is a slice of the picture being read: its NAL unit, and of
+// a slice after the picture's first, whether it is an I or SI slice.
+type h264Slice struct {
+	unit  []byte
+	intra bool
+}
+
+// h264Intra reports whether the slice h heads is an I or SI slice.
+func h264Intra(h *nal.H264SliceHeader) bool {
+	return h.SliceType == nal.H264SliceI || h.SliceType == nal.H264SliceSI
+}
+
 // decode reads the packet's NAL units, length-prefixed, and decodes the
-// picture its slices make.
+// pictures its slices make: a frame, a field, or a frame's two fields,
+// each with the parameter sets that come before it, which a stream may
+// change between the two fields.
 func (c *h264Decoder) decode(v *VideoDecoder, p demux.Packet) error {
-	c.slices = c.slices[:0]
+	c.slices, c.part = c.slices[:0], 0
 	for data := p.Data; len(data) > 0; {
 		if len(data) < c.lengthSize {
 			return fmt.Errorf("%d bytes left for a %d-byte NAL unit length: %w", len(data), c.lengthSize, demux.ErrMalformed)
@@ -161,15 +183,28 @@ func (c *h264Decoder) decode(v *VideoDecoder, p demux.Packet) error {
 		}
 		switch nal.H264Type(unit) {
 		case nal.H264NALSPS, nal.H264NALPPS:
+			if err := c.picture(v, p); err != nil {
+				return err
+			}
 			if err := c.parameterSet(unit); err != nil {
 				return err
 			}
 		case nal.H264NALSlice, nal.H264NALIDR:
-			c.slices = append(c.slices, unit)
+			s := h264Slice{unit: unit}
+			if len(c.slices) > 0 {
+				c.rbsp = nal.Unescape(c.rbsp[:0], unit[1:min(len(unit), 17)])
+				if err := c.other.ParseType(c.rbsp); err != nil {
+					return err
+				}
+				if c.other.FirstMbInSlice == 0 {
+					if err := c.picture(v, p); err != nil {
+						return err
+					}
+				}
+				s.intra = h264Intra(&c.other)
+			}
+			c.slices = append(c.slices, s)
 		}
-	}
-	if len(c.slices) == 0 {
-		return nil
 	}
 	return c.picture(v, p)
 }
@@ -187,9 +222,20 @@ func (c *h264Decoder) header(h *nal.H264SliceHeader, unit []byte) error {
 	return err
 }
 
-// picture decodes the packet's slices, one frame.
+// picture decodes the slices read, if any: one picture, the packet's
+// next. A packet holds one picture, or the two fields of a frame. A
+// frame, or the second field of one, completes a frame for Next; a
+// first field waits in its DPB slot for the second, and comes out with
+// it, their lines woven. A field whose frame's other field does not
+// follow is decoded for the pictures that predict from it and never
+// shown.
 func (c *h264Decoder) picture(v *VideoDecoder, p demux.Packet) error {
-	first := c.slices[0]
+	if len(c.slices) == 0 {
+		return nil
+	}
+	slices, part := c.slices, c.part
+	c.slices, c.part = c.slices[:0], c.part+1
+	first := slices[0].unit
 	if err := c.header(&c.hdr, first); err != nil {
 		return err
 	}
@@ -197,21 +243,15 @@ func (c *h264Decoder) picture(v *VideoDecoder, p demux.Packet) error {
 	if err := h264Decodes(sps); err != nil {
 		return err
 	}
-	pic := h264Pic{hdr: &c.hdr, sps: sps, idr: nal.H264Type(first) == nal.H264NALIDR, ref: nal.H264RefIdc(first) != 0, intra: true}
-	for i, unit := range c.slices {
-		h := &c.hdr
-		if i > 0 {
-			end := min(len(unit), 17)
-			c.rbsp = nal.Unescape(c.rbsp[:0], unit[1:end])
-			if err := c.other.ParseType(c.rbsp); err != nil {
-				return err
-			}
-			if c.other.FirstMbInSlice == 0 {
-				return fmt.Errorf("%w: the packet holds more than one picture", nal.ErrH264)
-			}
-			h = &c.other
-		}
-		pic.intra = pic.intra && (h.SliceType == nal.H264SliceI || h.SliceType == nal.H264SliceSI)
+	pic := h264Pic{hdr: &c.hdr, sps: sps, idr: nal.H264Type(first) == nal.H264NALIDR, ref: nal.H264RefIdc(first) != 0, intra: h264Intra(&c.hdr), fields: h264FieldsOf(&c.hdr)}
+	if part > 1 || part == 1 && (c.whole || pic.fields == h264Frame) {
+		return fmt.Errorf("%w: the packet holds more pictures than a frame or the two fields of one", nal.ErrH264)
+	}
+	c.whole = pic.fields == h264Frame
+	total := len(startCode) + len(first)
+	for _, s := range slices[1:] {
+		pic.intra = pic.intra && s.intra
+		total += len(startCode) + len(s.unit)
 	}
 	shape, err := c.shape(sps)
 	if err != nil {
@@ -234,13 +274,12 @@ func (c *h264Decoder) picture(v *VideoDecoder, p demux.Packet) error {
 	if err := c.prepare(v, sps, shape); err != nil {
 		return err
 	}
-	frame, err := v.frame()
-	if err != nil {
-		return err
-	}
-	total := 0
-	for _, unit := range c.slices {
-		total += 3 + len(unit)
+	completes := pic.fields == h264Frame || pic.second
+	var frame *VideoFrame
+	if completes {
+		if frame, err = v.frame(); err != nil {
+			return err
+		}
 	}
 	buf, err := v.stream(total)
 	if err != nil {
@@ -248,19 +287,38 @@ func (c *h264Decoder) picture(v *VideoDecoder, p demux.Packet) error {
 	}
 	c.offsets = c.offsets[:0]
 	at := 0
-	for _, unit := range c.slices {
+	for i := range slices {
 		c.offsets = append(c.offsets, intconv.Must[uint32](at))
 		at += copy(buf[at:], startCode)
-		at += copy(buf[at:], unit)
+		at += copy(buf[at:], slices[i].unit)
 	}
 	if err := c.submit(v, &pic, frame, total); err != nil {
 		return err
 	}
-	frame.pts, frame.duration = p.PTS, p.Duration
+	c.state.finish(&pic)
+	if pic.idr || pic.mmco5 {
+		v.drain(pic.idr && c.hdr.NoOutputOfPriorPics)
+	}
+	switch {
+	case !completes:
+		c.fieldPTS, c.fieldDuration = p.PTS, p.Duration
+		return nil
+	case pic.second && part == 0:
+		frame.pts, frame.duration = c.fieldPTS, c.fieldDuration+p.Duration
+	default:
+		frame.pts, frame.duration = p.PTS, p.Duration
+	}
 	x0, y0, x1, y1 := sps.CropRect()
 	frame.rect = image.Rect(x0, y0, x1, y1)
-	c.state.finish(&pic)
-	v.queue(frame, pic.order(), pic.idr || pic.mmco5, pic.idr && c.hdr.NoOutputOfPriorPics)
+	held := &c.state.refs[pic.slot]
+	switch {
+	case pic.fields == h264Frame && !sps.MbAdaptiveFrameField:
+	case held.poc[1] < held.poc[0]:
+		frame.fields = BottomFieldFirst
+	default:
+		frame.fields = TopFieldFirst
+	}
+	v.queue(frame, held.order(), false, false)
 	return nil
 }
 
@@ -270,6 +328,9 @@ func (c *h264Decoder) prepare(v *VideoDecoder, sps *nal.H264SPS, shape decodeSha
 	c.active = sps
 	if err := v.shapeFor(shape); err != nil {
 		return err
+	}
+	if shape.fields && !v.copies {
+		return fmt.Errorf("%w: SPS %d codes fields or field-pair frames, which are verified only on a device that decodes into its reference pictures alone, where a frame's fields meet before they are copied out; %s decodes into output pictures apart from them", ErrNoVideoDecoder, sps.ID, v.d.name)
 	}
 	if !c.paramsChanged {
 		return nil
@@ -281,28 +342,63 @@ func (c *h264Decoder) prepare(v *VideoDecoder, sps *nal.H264SPS, shape decodeSha
 	return nil
 }
 
-// submit decodes pic into frame from the first total bytes of the
-// stream buffer, its slices at c.offsets, with every reference frame
-// active.
+// h264FieldFlags are the StdVideoDecodeH264ReferenceInfo flags that
+// name fields of a DPB slot's picture.
+func h264FieldFlags(fields h264Fields) uint32 {
+	return bitfield(flagBit{fields&h264Top != 0, vk.StdVideoDecodeH264ReferenceTopField}, flagBit{fields&h264Bottom != 0, vk.StdVideoDecodeH264ReferenceBottomField})
+}
+
+// submit decodes pic from the first total bytes of the stream buffer,
+// its slices at c.offsets, into frame where it completes one. A frame
+// predicts from the reference frames whose fields both are references,
+// a field from every reference field. A Vulkan Video reference picture
+// is what its slot was decoded as: a frame decoded as one picture is
+// named whole, and a device takes its fields where the picture being
+// decoded is a field; one decoded as two fields is named by the fields
+// that are references, each a reference picture of the ones a device
+// decodes a picture from.
 func (c *h264Decoder) submit(v *VideoDecoder, pic *h264Pic, frame *VideoFrame, total int) error {
 	c.fill(pic)
-	c.req = decodePicture{frame: frame, coded: v.shape.coded, bytes: total, info: unsafe.Pointer(&c.picInfo), setup: pic.slot, setupInfo: unsafe.Pointer(&c.setupInfo)}
-	n := 0
+	c.req = decodePicture{frame: frame, coded: v.shape.coded, bytes: total, info: unsafe.Pointer(&c.picInfo), setup: pic.slot, setupInfo: unsafe.Pointer(&c.setupInfo), held: pic.second && pic.ref}
+	n, active := 0, 0
 	for slot := range c.state.slots {
 		r := &c.state.refs[slot]
-		if !r.used() {
+		marked := r.marked()
+		if marked == 0 || pic.fields == h264Frame && marked != h264Frame {
 			continue
 		}
+		switch {
+		case r.short != 0 && r.long != 0:
+			return fmt.Errorf("%w: H.264 frame %d has a field that is a short-term reference and one that is a long-term reference, which a Vulkan Video reference picture, long-term or not as a whole, cannot say", ErrNoVideoDecoder, r.frameNum)
+		case r.whole && marked != h264Frame:
+			return fmt.Errorf("%w: H.264 frame %d, decoded as one picture, has its %s alone left a reference, which a Vulkan Video reference picture cannot say: it names the fields of a frame decoded as two", ErrNoVideoDecoder, r.frameNum, marked)
+		}
 		c.refStd[n] = vk.StdVideoDecodeH264ReferenceInfo{FrameNum: uint16(r.frameNum & 0xffff), PicOrderCnt: r.poc}
-		if r.long {
-			c.refStd[n].Flags, c.refStd[n].FrameNum = vk.StdVideoDecodeH264ReferenceUsedForLongTerm, uint16(r.longIdx&0xffff)
+		active++
+		if !r.whole {
+			c.refStd[n].Flags = h264FieldFlags(marked)
+			active += b2i(marked == h264Frame)
+		}
+		if r.long != 0 {
+			c.refStd[n].Flags |= vk.StdVideoDecodeH264ReferenceUsedForLongTerm
+			c.refStd[n].FrameNum = uint16(r.longIdx & 0xffff)
 		}
 		c.refInfo[n] = vk.VideoDecodeH264DpbSlotInfoKHR{SType: vk.StructureTypeVideoDecodeH264DpbSlotInfoKhr, PStdReferenceInfo: &c.refStd[n]}
 		c.refSlots[n], c.refPtrs[n] = slot, unsafe.Pointer(&c.refInfo[n])
 		n++
 	}
+	if limit := v.activeRefs(); active > limit {
+		return fmt.Errorf("%w: an H.264 %s predicts from %d reference pictures, each field decoded as a picture one, where %s decodes from %d", ErrNoVideoDecoder, pic.fields, active, v.d.name, limit)
+	}
 	c.req.refs, c.req.refInfo = c.refSlots[:n], c.refPtrs[:n]
 	return v.submit(&c.req)
+}
+
+func b2i(b bool) int {
+	if b {
+		return 1
+	}
+	return 0
 }
 
 // inferGap decodes a picture for each of the gap frames in frame_num
@@ -314,6 +410,9 @@ func (c *h264Decoder) submit(v *VideoDecoder, pic *h264Pic, frame *VideoFrame, t
 // predicts from them (frames lost) reads the copy, as ffmpeg conceals
 // the loss.
 func (c *h264Decoder) inferGap(v *VideoDecoder, sps *nal.H264SPS, shape decodeShape, gap int) error {
+	if !sps.FrameMbsOnly {
+		return fmt.Errorf("%w: frame_num skips %d frames in SPS %d, a sequence of fields or field-pair frames, where the decoder infers no frames for a gap", ErrNoVideoDecoder, gap, sps.ID)
+	}
 	pps, err := c.skipPPS(sps)
 	if err != nil {
 		return err
@@ -380,6 +479,11 @@ func (c *h264Decoder) fill(pic *h264Pic) {
 	if pic.ref {
 		flags |= vk.StdVideoDecodeH264PictureIsReference
 	}
+	flags |= bitfield(
+		flagBit{pic.fields != h264Frame, vk.StdVideoDecodeH264PictureFieldPic},
+		flagBit{pic.fields == h264Bottom, vk.StdVideoDecodeH264PictureBottomField},
+		flagBit{pic.second, vk.StdVideoDecodeH264PictureComplementaryFieldPair},
+	)
 	pps := c.pps[h.PPSID]
 	c.pic = vk.StdVideoDecodeH264PictureInfo{
 		Flags: flags, SeqParameterSetID: pps.SPSID, PicParameterSetID: pps.ID,
@@ -390,8 +494,12 @@ func (c *h264Decoder) fill(pic *h264Pic) {
 		SliceCount: intconv.Must[uint32](len(c.offsets)), PSliceOffsets: &c.offsets[0],
 	}
 	c.setupStd = vk.StdVideoDecodeH264ReferenceInfo{FrameNum: uint16(h.FrameNum & 0xffff), PicOrderCnt: pic.poc}
+	if pic.fields != h264Frame {
+		c.setupStd.Flags = h264FieldFlags(pic.fields)
+	}
 	if idx, long := h264LongTerm(pic); long {
-		c.setupStd.Flags, c.setupStd.FrameNum = vk.StdVideoDecodeH264ReferenceUsedForLongTerm, uint16(idx&0xffff)
+		c.setupStd.Flags |= vk.StdVideoDecodeH264ReferenceUsedForLongTerm
+		c.setupStd.FrameNum = uint16(idx & 0xffff)
 	}
 	c.setupInfo = vk.VideoDecodeH264DpbSlotInfoKHR{SType: vk.StructureTypeVideoDecodeH264DpbSlotInfoKhr, PStdReferenceInfo: &c.setupStd}
 }
@@ -415,13 +523,9 @@ func h264LongTerm(pic *h264Pic) (uint32, bool) {
 }
 
 // h264Decodes refuses a sequence no device is asked to decode:
-// interlaced coding, and pictures there is no format for (monochrome,
-// colour planes coded apart, luma and chroma of different depths, a
-// depth past 12 bits).
+// pictures there is no format for (monochrome, colour planes coded
+// apart, luma and chroma of different depths, a depth past 12 bits).
 func h264Decodes(s *nal.H264SPS) error {
-	if !s.FrameMbsOnly {
-		return fmt.Errorf("%w: SPS %d codes interlaced fields or field-pair frames: %w", nal.ErrH264, s.ID, nal.ErrUnsupported)
-	}
 	if _, err := h264Samples(s); err != nil {
 		return err
 	}
@@ -480,7 +584,7 @@ func (c *h264Decoder) shape(s *nal.H264SPS) (decodeShape, error) {
 		if s.Constraints&0x40 != 0 {
 			c.candidates = append(c.candidates, vk.StdVideoH264ProfileIdcMain, vk.StdVideoH264ProfileIdcHigh)
 		}
-	case s.ProfileIdc == 77 && samples == nv12Samples:
+	case (s.ProfileIdc == 77 || s.ProfileIdc == h264Extended && s.Constraints&0x40 != 0) && samples == nv12Samples:
 		c.candidates = append(c.candidates, vk.StdVideoH264ProfileIdcMain, vk.StdVideoH264ProfileIdcHigh)
 	case s.ProfileIdc == 100 && samples == nv12Samples:
 		c.candidates = append(c.candidates, vk.StdVideoH264ProfileIdcHigh)
@@ -488,7 +592,7 @@ func (c *h264Decoder) shape(s *nal.H264SPS) (decodeShape, error) {
 		c.candidates = append(c.candidates, vk.StdVideoH264ProfileIdc(s.ProfileIdc))
 		unverified = "decoding H.264 beyond 8-bit 4:2:0 (the High 10, High 4:2:2 and High 4:4:4 Predictive profiles)"
 	default:
-		return decodeShape{}, fmt.Errorf("%w: SPS %d is profile_idc %d at %s, none of Baseline, Main, High, High 10, High 4:2:2 and High 4:4:4 Predictive: %w", nal.ErrH264, s.ID, s.ProfileIdc, samples, nal.ErrUnsupported)
+		return decodeShape{}, fmt.Errorf("%w: SPS %d is profile_idc %d at %s, none of Baseline, Main, Extended within Main, High, High 10, High 4:2:2 and High 4:4:4 Predictive: %w", nal.ErrH264, s.ID, s.ProfileIdc, samples, nal.ErrUnsupported)
 	}
 	refs := max(int(s.MaxNumRefFrames), 1)
 	mbs := s.WidthMbs * s.FrameHeightMbs()
@@ -501,19 +605,25 @@ func (c *h264Decoder) shape(s *nal.H264SPS) (decodeShape, error) {
 	case s.Constraints&0x10 != 0 && (s.ProfileIdc == 44 || s.ProfileIdc == 86 || s.ProfileIdc == 100 || s.ProfileIdc == 110 || s.ProfileIdc == 122 || s.ProfileIdc == 244):
 		reorder = 0
 	}
+	active := refs
+	if !s.FrameMbsOnly {
+		active *= 2
+	}
 	return decodeShape{
 		profile: int(s.ProfileIdc), coded: [2]int{16 * s.WidthMbs, 16 * s.FrameHeightMbs()},
-		slots: refs + 1, refs: refs, reorder: reorder, samples: samples, ycbcr: ycbcr, unverified: unverified,
+		slots: refs + 1, refs: active, reorder: reorder, samples: samples, ycbcr: ycbcr, fields: !s.FrameMbsOnly, unverified: unverified,
 	}, nil
 }
 
 // The H.264 profiles past High, which the Vulkan headers have no
 // enumerant for but High 4:4:4 Predictive: a device is asked for them
-// by their profile_idc.
+// by their profile_idc. A stream of the Extended profile that says it
+// obeys Main's constraints (constraint_set1_flag) decodes as Main.
 const (
-	h264High10  = 110
-	h264High422 = 122
-	h264High444 = 244
+	h264Extended = 88
+	h264High10   = 110
+	h264High422  = 122
+	h264High444  = 244
 )
 
 // h264YCbCr is how s's pictures convert to RGB, as its VUI says.
@@ -537,6 +647,9 @@ func (c *h264Decoder) profile(i int, next unsafe.Pointer) unsafe.Pointer {
 	c.profileInfo = vk.VideoDecodeH264ProfileInfoKHR{
 		SType: vk.StructureTypeVideoDecodeH264ProfileInfoKhr, PNext: (*uintptr)(next),
 		StdProfileIdc: c.candidates[i], PictureLayout: vk.VideoDecodeH264PictureLayoutProgressiveKhr,
+	}
+	if !c.active.FrameMbsOnly {
+		c.profileInfo.PictureLayout = vk.VideoDecodeH264PictureLayoutInterlacedInterleavedLinesBitKhr
 	}
 	return unsafe.Pointer(&c.profileInfo)
 }

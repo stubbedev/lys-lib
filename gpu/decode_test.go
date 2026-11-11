@@ -148,12 +148,19 @@ func ffmpegDecoded(t *testing.T, path string, w, h int, format videoSamples) str
 
 func runFFmpeg(t *testing.T, args ...string) []byte {
 	t.Helper()
-	cmd := exec.Command("ffmpeg", args...)
+	return runCommand(t, "ffmpeg", args...)
+}
+
+// runCommand runs name, one of ffmpeg's programs, with args, and
+// returns what it writes.
+func runCommand(t *testing.T, name string, args ...string) []byte {
+	t.Helper()
+	cmd := exec.Command(name, args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	out, err := cmd.Output()
 	if err != nil {
-		t.Fatalf("ffmpeg %v: %v: %s", args, err, stderr.Bytes())
+		t.Fatalf("%s %v: %v: %s", name, args, err, stderr.Bytes())
 	}
 	return out
 }
