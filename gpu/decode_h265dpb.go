@@ -47,7 +47,7 @@ func (p *h265Pic) rasl() bool {
 	return p.nalType == nal.HEVCNALRASLN || p.nalType == nal.HEVCNALRASLR
 }
 
-// subLayerNonRef is a sub-layer non-reference picture, RADL or RASL:
+// skipsTid0 reports a sub-layer non-reference picture, RADL or RASL:
 // none of which counts as prevTid0Pic (8.3.1).
 func (p *h265Pic) skipsTid0() bool {
 	t := p.nalType
