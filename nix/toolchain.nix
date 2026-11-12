@@ -1,10 +1,10 @@
 {
-  perSystem = {pkgs, ...}: let
-    # The dev shell's Go toolchain. go.mod declares `go 1.27.3` and the
-    # shell holds GOTOOLCHAIN=local, so the version is load-bearing:
-    # nixpkgs' default `go` (1.26) cannot compile this module, so the
-    # pin is go_1_27 - no toolchain is ever downloaded at dev time.
-    go = pkgs.go_1_27;
+  perSystem = {
+    inputs',
+    pkgs,
+    ...
+  }: let
+    go = inputs'.devtools.packages.go;
   in {
     _module.args = {
       inherit go;

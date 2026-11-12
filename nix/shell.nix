@@ -1,19 +1,10 @@
 {inputs, ...}: {
   perSystem = {
-    buildGoModule,
     go,
     lib,
     pkgs,
     ...
   }: let
-    # Rebuild a nixpkgs Go tool against the pinned toolchain: every
-    # buildGo*Module argument its override takes (gopls asks for
-    # buildGoLatestModule, the rest for buildGoModule) gets ours, so
-    # gopls, delve and the editor tools understand go 1.27 sources.
-    withPinnedGo = pkg:
-      pkg.override (lib.mapAttrs (_: _: buildGoModule)
-        (lib.filterAttrs (name: _: lib.match "buildGo.*Module" name != null)
-          (lib.functionArgs pkg.override)));
     gpuDrivers = import ./gpu-drivers.nix pkgs;
   in {
     devShells.default = pkgs.mkShellNoCC ({
@@ -62,10 +53,7 @@
             # headers they write back through ffmpeg's trace_headers.
             pkgs.ffmpeg-headless
           ]
-          # Editor tooling (gopls, delve, and the tools vscode-go and
-          # vim-go install), built against the pinned Go: vscode-go
-          # expects every tool compiled with the Go it drives.
-          ++ map withPinnedGo [
+          ++ [
             pkgs.gopls
             pkgs.delve
             pkgs.gotools
@@ -79,9 +67,6 @@
         # lys-lib is pure Go by design; keep accidental cgo out.
         CGO_ENABLED = "0";
 
-        # nixpkgs' go defaults to GOTOOLCHAIN=auto, which would fetch
-        # whatever toolchain a go.mod line asks for; the shell holds
-        # to the pinned one.
         GOTOOLCHAIN = "local";
 
         # `just race` runs the suite under the race detector, which needs
