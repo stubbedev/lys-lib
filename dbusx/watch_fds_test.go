@@ -8,6 +8,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/stubbedev/lys-lib/dbustest"
 	"github.com/stubbedev/lys-lib/dbusx"
 	dbus "github.com/stubbedev/lys-lib/third_party/godbus"
 )
@@ -28,15 +29,6 @@ func inodeOf(t *testing.T, fd dbus.UnixFD) uint64 {
 		t.Fatalf("descriptor %d is not open: %v", fd, err)
 	}
 	return st.Ino
-}
-
-func awaitEveryCopyClosed(t *testing.T, read int, what string) {
-	t.Helper()
-	fds := []unix.PollFd{{Fd: int32(read), Events: unix.POLLIN}}
-	n, err := unix.Poll(fds, int(watchWait.Milliseconds()))
-	if err != nil || n != 1 || fds[0].Revents&unix.POLLHUP == 0 {
-		t.Fatalf("%s: poll the pipe = %d, %v, events %#x; want a hangup, every copy of its write end closed", what, n, err, fds[0].Revents)
-	}
 }
 
 func TestWatchesOfOneSignalEachOwnItsDescriptor(t *testing.T) {
@@ -65,8 +57,9 @@ func TestWatchesOfOneSignalEachOwnItsDescriptor(t *testing.T) {
 	}
 	t.Cleanup(func() { _ = bystander.Stop() })
 
-	read, write := watchPipe(t)
-	pipe := inodeOf(t, write)
+	pipe := dbustest.NewPipe(t)
+	write := pipe.Write
+	inode := inodeOf(t, write)
 	before := openDescriptors(t)
 	if err := handSignal.Emit(w.service, watchedPath, handed{FD: write}); err != nil {
 		t.Fatal(err)
@@ -80,8 +73,8 @@ func TestWatchesOfOneSignalEachOwnItsDescriptor(t *testing.T) {
 		t.Fatalf("the watches were handed descriptors %d and %d of the sender's %d, want one of its own each", first, second, write)
 	}
 	for _, fd := range []dbus.UnixFD{first, second} {
-		if got := inodeOf(t, fd); got != pipe {
-			t.Errorf("descriptor %d is inode %d, want the pipe's %d", fd, got, pipe)
+		if got := inodeOf(t, fd); got != inode {
+			t.Errorf("descriptor %d is inode %d, want the pipe's %d", fd, got, inode)
 		}
 	}
 	if got := openDescriptors(t); got != before+2 {
@@ -95,10 +88,7 @@ func TestWatchesOfOneSignalEachOwnItsDescriptor(t *testing.T) {
 	if got := openDescriptors(t); got != before {
 		t.Errorf("%d descriptors open once both watches closed their own, want the %d before", got, before)
 	}
-	if err := unix.Close(int(write)); err != nil {
-		t.Fatal(err)
-	}
-	awaitEveryCopyClosed(t, read, "each watch closed its copy")
+	pipe.RequireEveryCopyClosed(t)
 }
 
 func TestAWatchThatEndsClosesTheDescriptorsItNeverRead(t *testing.T) {
@@ -123,7 +113,8 @@ func TestAWatchThatEndsClosesTheDescriptorsItNeverRead(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	read, write := watchPipe(t)
+	pipe := dbustest.NewPipe(t)
+	write := pipe.Write
 	before := openDescriptors(t)
 	const sent = 8
 	for range sent {
@@ -164,10 +155,7 @@ func TestAWatchThatEndsClosesTheDescriptorsItNeverRead(t *testing.T) {
 			t.Errorf("close descriptor %d: %v", fd, err)
 		}
 	}
-	if err := unix.Close(int(write)); err != nil {
-		t.Fatal(err)
-	}
-	awaitEveryCopyClosed(t, read, "the watch ended")
+	pipe.RequireEveryCopyClosed(t)
 }
 
 func TestAWatchClosesTheDescriptorsInArgumentsItsSignalDoesNotDeclare(t *testing.T) {
@@ -183,7 +171,8 @@ func TestAWatchClosesTheDescriptorsInArgumentsItsSignalDoesNotDeclare(t *testing
 	}
 	t.Cleanup(func() { _ = watch.Stop() })
 
-	read, write := watchPipe(t)
+	pipe := dbustest.NewPipe(t)
+	write := pipe.Write
 	before := openDescriptors(t)
 	if err := w.service.Emit(watchedPath, tickSignal.Name(), uint32(1), write, []dbus.UnixFD{write}); err != nil {
 		t.Fatal(err)
@@ -199,8 +188,5 @@ func TestAWatchClosesTheDescriptorsInArgumentsItsSignalDoesNotDeclare(t *testing
 	if got := openDescriptors(t); got != before {
 		t.Errorf("%d descriptors open with the Tick handled, want the %d before: those in the arguments Tick does not declare belong to nobody", got, before)
 	}
-	if err := unix.Close(int(write)); err != nil {
-		t.Fatal(err)
-	}
-	awaitEveryCopyClosed(t, read, "the watch closed the appended descriptors")
+	pipe.RequireEveryCopyClosed(t)
 }

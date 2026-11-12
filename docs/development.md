@@ -83,7 +83,7 @@ Importable by tests here and in other family members.
 | `wltest` | Private runtime dir, loopback display for wire-level tests, fake linux-dmabuf feedback, and a client that shows solid-colour surfaces on the headless compositor (`LYS_TEST_HEADLESS`) |
 | `pipewire/pwtest` | Private PipeWire daemon and libpipewire reference consumers |
 | `eis/eistest` | libei reference client for EIS servers |
-| `dbustest` | Private `dbus-daemon`s configured from a generated file; needs only `dbus-daemon` on `PATH` |
+| `dbustest` | Private `dbus-daemon`s configured from a generated file; needs only `dbus-daemon` on `PATH`. `NewPipe` is a descriptor to send whose `RequireEveryCopyClosed` fails the test while any copy the bus handed out is still open |
 | `pulse/pulsetest` | A fake PulseAudio server speaking the native protocol, with scriptable devices, streams and failures; a client's own streams go with its connection |
 | `logind/logindtest` | A fake systemd-logind on a `dbustest` bus that records every call and emits logind's signals; its helpers report with `t.Errorf`, so hooks on other goroutines may call them |
 | `polkit/polkittest` | A fake polkitd Authority on a `dbustest` bus: scripted or held authorization checks, agent registrations, actions and temporary authorizations, every check and cancel recorded |

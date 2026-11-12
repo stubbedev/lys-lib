@@ -6,6 +6,7 @@ import (
 
 	"golang.org/x/sys/unix"
 
+	"github.com/stubbedev/lys-lib/dbustest"
 	"github.com/stubbedev/lys-lib/logind"
 	"github.com/stubbedev/lys-lib/logind/logindtest"
 )
@@ -63,4 +64,18 @@ func TestWatchesOfASessionOnOneConnectionEachOwnTheResumedDevice(t *testing.T) {
 			t.Errorf("close descriptor %d: %v: another watch, or WaitLocked, closed it", fd, err)
 		}
 	}
+}
+
+func TestAWatchClosesTheDescriptorsInPropertiesItDoesNotRead(t *testing.T) {
+	t.Parallel()
+	fake, m := manager(t, logindtest.Config{Own: own})
+	s := session(t, m, own)
+	_, r := watch(t, s)
+	pipe := dbustest.NewPipe(t)
+	fake.AnnounceProperty(t, own, "Pipe", pipe.Write)
+	fake.SetActive(t, own, false)
+	if e := r.next(t); e != (logind.ActiveChanged{Active: false}) {
+		t.Fatalf("event %#v, want Active turning false and nothing for the property the watch does not read", e)
+	}
+	pipe.RequireEveryCopyClosed(t)
 }

@@ -150,7 +150,12 @@ func main() {
 | Following a service that starts or restarts | `WatchOwner`, `NameOwner` |
 | One peer's signals, decoded | `WatchSignals` with an `On` route per signal, from `FromOwner(name)` or `FromBus()` |
 | That peer's name changing owner, in order with its signals | an `OnOwnerChange` route in the same watch |
+| Every name changing owner, or those in a namespace | `OnNameOwnerChanged`, narrowed by `WithArg0` or `WithArg0Namespace` |
+| A name losing its owner: a peer leaving the bus | `OnNameLost` |
+| A signal from every object in a path namespace | `OnUnder` |
 | Every other signal of an interface, to fail on what a contract does not define | an `OnOthers` route, listed last |
+| A signal channel of your own, taken off the connection | `RemoveSignal`: it closes the descriptors of what nobody read |
+| Proving a descriptor sent over the bus was closed by everyone it reached | `dbustest.NewPipe`, `Pipe.RequireEveryCopyClosed` |
 | Ordering a signal against a call's reply | the `dbus.Sequence` every `On` handler and `WatchOwner`'s `appeared` get, against `dbus.Call.ResponseSequence` |
 | The system or session bus, without hanging on a silent one | `DialSystem`, `DialSession` with a timeout |
 
@@ -181,14 +186,26 @@ interface of each object, narrowed to the member when they are of one signal and
 to the first argument when they all name the same one, and removes them when its
 context ends, `Watch.Stop` is called, or the connection closes
 (`ErrDisconnected`). `Route.WithArg0` narrows a route to one first argument, as
-for `PropertiesChanged` of one interface. `OnOwnerChange(name, …)` is the bus's
+for `PropertiesChanged` of one interface, and `Route.WithArg0Namespace` to a
+first argument in a namespace, as the match rule's `arg0namespace` says:
+`org.mpris.MediaPlayer2` takes `org.mpris.MediaPlayer2.vlc`, not
+`org.mpris.MediaPlayer2x`. `OnUnder(s, namespace, …)` is `On` for the object at
+`namespace` and every object below it (`path_namespace`), its handler told
+which object sent the signal. A `PropertiesChanged` handler only borrows the
+values it is handed: the descriptors among them are closed once it returns,
+whether it read them or not, so a handler that keeps one duplicates it. `OnOwnerChange(name, …)` is the bus's
 announcement that a name changed owner, taken from the bus whoever the watch's
 sender is: a watch following `FromOwner(name)` learns there, between the old
 owner's signals and the new one's, that the owner came, went or was replaced.
+`OnNameOwnerChanged` is that announcement for every name, an `OwnerChange`
+each, and `OnNameLost` only a name left without an owner: a released
+well-known name or a peer that left the bus.
 `OnOthers(iface, path, …)` takes every signal of an interface that no route
 before it does, undecoded. `Dispatch` is the watch without the bus: it routes
 one signal, for a caller that reads its own signal channel, and closes the
-descriptors of a signal it hands to no handler.
+descriptors of a signal it hands to no handler. Such a caller takes its channel off
+the connection with `RemoveSignal`, which closes the descriptors of the signals
+still unread on it.
 
 ## pulse/native
 

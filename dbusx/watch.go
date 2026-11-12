@@ -13,12 +13,20 @@ import (
 
 // ChangedProperties is what PropertiesChanged carries: the interface
 // the properties belong to, those that changed with their new values,
-// and those that changed without one.
+// and those that changed without one. A route lends it to its handler:
+// the descriptors in Changed are closed once the handler returns, so a
+// handler that keeps one duplicates it.
 type ChangedProperties struct {
 	Interface   string                  `dbus:"interface_name"`
 	Changed     map[string]dbus.Variant `dbus:"changed_properties"`
 	Invalidated []string                `dbus:"invalidated_properties"`
 }
+
+func (c ChangedProperties) closeLent() error {
+	return dbus.CloseFDs([]any{c.Changed})
+}
+
+type lent interface{ closeLent() error }
 
 // PropertiesChanged is the signal an object sends when properties of
 // one of its interfaces change.
@@ -66,19 +74,80 @@ func (s Sender) current(ctx context.Context, conn *dbus.Conn) (unique string, as
 	return unique, asOf, err
 }
 
-// Route is one signal of a watch: which signal, from which object, and
+// Route is one signal of a watch: which signal, from which objects, and
 // the handler it is decoded for. One made by OnOthers is every signal
-// of an interface instead, and one made by OnOwnerChange is the bus's
-// whoever the watch's sender is.
+// of an interface instead, and one made by OnNameOwnerChanged,
+// OnOwnerChange or OnNameLost is the bus's whoever the watch's sender
+// is.
 type Route struct {
-	path    dbus.ObjectPath
+	objects objects
 	iface   string
 	member  string
 	name    string
-	arg0    string
-	byArg0  bool
+	arg0    arg0Filter
 	fromBus bool
 	deliver func(*dbus.Signal) error
+}
+
+type objects struct {
+	path  dbus.ObjectPath
+	below bool
+}
+
+func (o objects) has(path dbus.ObjectPath) bool {
+	switch {
+	case path == o.path:
+		return true
+	case !o.below:
+		return false
+	case o.path == "/":
+		return true
+	}
+	return within(string(path), string(o.path), '/')
+}
+
+func within(name, namespace string, separator byte) bool {
+	return len(name) > len(namespace) && name[len(namespace)] == separator && strings.HasPrefix(name, namespace)
+}
+
+func (o objects) match() dbus.MatchOption {
+	if o.below {
+		return dbus.WithMatchPathNamespace(o.path)
+	}
+	return dbus.WithMatchObjectPath(o.path)
+}
+
+type arg0Kind uint8
+
+const (
+	anyArg0 arg0Kind = iota
+	arg0Is
+	arg0Within
+)
+
+type arg0Filter struct {
+	kind  arg0Kind
+	value string
+}
+
+func (f arg0Filter) admits(arg string) bool {
+	switch f.kind {
+	case arg0Is:
+		return arg == f.value
+	case arg0Within:
+		return arg == f.value || within(arg, f.value, '.')
+	}
+	return true
+}
+
+func (f arg0Filter) narrow(match []dbus.MatchOption) []dbus.MatchOption {
+	switch f.kind {
+	case arg0Is:
+		return append(match, dbus.WithMatchArg(0, f.value))
+	case arg0Within:
+		return append(match, dbus.WithMatchArg0Namespace(f.value))
+	}
+	return match
 }
 
 // On routes the signal s, sent from the object at path, to handle,
@@ -88,14 +157,33 @@ type Route struct {
 // was sent before the peer answered. An error handle returns is
 // reported as the watch reports a signal it could not decode. The
 // signal may carry arguments after those s declares (Signal.Decode);
-// their descriptors are closed.
+// their descriptors are closed, as are those of a ChangedProperties
+// once handle returns.
 func On[T any](s Signal[T], path dbus.ObjectPath, handle func(T, dbus.Sequence) error) Route {
-	return Route{path: path, iface: s.iface, member: s.member, name: s.Name(), deliver: func(sig *dbus.Signal) error {
+	return on(s, objects{path: path}, func(_ dbus.ObjectPath, v T, sent dbus.Sequence) error {
+		return handle(v, sent)
+	})
+}
+
+// OnUnder is On for every object in the path namespace: the object at
+// namespace and every object below it, as the D-Bus match rule's
+// path_namespace says. handle also gets the path of the object that
+// sent the signal.
+func OnUnder[T any](s Signal[T], namespace dbus.ObjectPath, handle func(dbus.ObjectPath, T, dbus.Sequence) error) Route {
+	return on(s, objects{path: namespace, below: true}, handle)
+}
+
+func on[T any](s Signal[T], at objects, handle func(dbus.ObjectPath, T, dbus.Sequence) error) Route {
+	return Route{objects: at, iface: s.iface, member: s.member, name: s.Name(), deliver: func(sig *dbus.Signal) error {
 		v, err := s.Decode(sig)
 		if err != nil {
 			return errors.Join(err, sig.CloseFDs())
 		}
-		return errors.Join(handle(v, sig.Sequence), s.closeUndeclared(sig))
+		err = errors.Join(handle(sig.Path, v, sig.Sequence), s.closeUndeclared(sig))
+		if l, ok := any(v).(lent); ok {
+			err = errors.Join(err, l.closeLent())
+		}
+		return err
 	}}
 }
 
@@ -105,19 +193,27 @@ func On[T any](s Signal[T], path dbus.ObjectPath, handle func(T, dbus.Sequence) 
 // its peer says about an object lists it last and fails on what
 // reaches it.
 func OnOthers(iface string, path dbus.ObjectPath, handle func(*dbus.Signal) error) Route {
-	return Route{path: path, iface: iface, deliver: handle}
+	return Route{objects: objects{path: path}, iface: iface, deliver: handle}
 }
 
 // WithArg0 narrows the route to signals whose first argument is the
 // string value: the name a NameOwnerChanged is about, the interface of
 // a PropertiesChanged.
 func (r Route) WithArg0(value string) Route {
-	r.arg0, r.byArg0 = value, true
+	r.arg0 = arg0Filter{kind: arg0Is, value: value}
 	return r
 }
 
-// sentBy is the peer whose signals the route takes in a watch
-// following sender: the bus for an owner change, sender for the rest.
+// WithArg0Namespace narrows the route to signals whose first argument
+// is the string namespace or a name in it, as the D-Bus match rule's
+// arg0namespace says: org.mpris.MediaPlayer2 takes
+// org.mpris.MediaPlayer2 and org.mpris.MediaPlayer2.vlc, not
+// org.mpris.MediaPlayer2x.
+func (r Route) WithArg0Namespace(namespace string) Route {
+	r.arg0 = arg0Filter{kind: arg0Within, value: namespace}
+	return r
+}
+
 func (r *Route) sentBy(sender string) string {
 	if r.fromBus {
 		return bus
@@ -126,7 +222,7 @@ func (r *Route) sentBy(sender string) string {
 }
 
 func (r *Route) takes(sig *dbus.Signal) bool {
-	if sig.Path != r.path {
+	if !r.objects.has(sig.Path) {
 		return false
 	}
 	if r.member != "" {
@@ -136,26 +232,22 @@ func (r *Route) takes(sig *dbus.Signal) bool {
 	} else if iface, _, ok := strings.CutLast(sig.Name, "."); !ok || iface != r.iface {
 		return false
 	}
-	if !r.byArg0 || len(sig.Body) == 0 {
+	if len(sig.Body) == 0 {
 		return true
 	}
 	first, isString := sig.Body[0].(string)
-	return !isString || first == r.arg0
+	return !isString || r.arg0.admits(first)
 }
 
-// matches are the match rules that bring routes' signals from sender:
-// one for the routes of each interface of each object, narrowed to the
-// member when they are of one signal, and to the first argument when
-// they all name the same one.
 func matches(sender string, routes []Route) [][]dbus.MatchOption {
 	out := make([][]dbus.MatchOption, 0, len(routes))
 	for i := range routes {
 		r := &routes[i]
-		sameInterface := func(o Route) bool { return o.fromBus == r.fromBus && o.path == r.path && o.iface == r.iface }
+		sameInterface := func(o Route) bool { return o.fromBus == r.fromBus && o.objects == r.objects && o.iface == r.iface }
 		if slices.IndexFunc(routes, sameInterface) != i {
 			continue
 		}
-		member, byArg0 := r.member, r.byArg0
+		member, arg0 := r.member, r.arg0
 		for _, o := range routes[i+1:] {
 			if !sameInterface(o) {
 				continue
@@ -163,16 +255,15 @@ func matches(sender string, routes []Route) [][]dbus.MatchOption {
 			if o.member != member {
 				member = ""
 			}
-			byArg0 = byArg0 && o.byArg0 && o.arg0 == r.arg0
+			if o.arg0 != arg0 {
+				arg0 = arg0Filter{}
+			}
 		}
-		match := []dbus.MatchOption{dbus.WithMatchSender(r.sentBy(sender)), dbus.WithMatchObjectPath(r.path), dbus.WithMatchInterface(r.iface)}
+		match := []dbus.MatchOption{dbus.WithMatchSender(r.sentBy(sender)), r.objects.match(), dbus.WithMatchInterface(r.iface)}
 		if member != "" {
 			match = append(match, dbus.WithMatchMember(member))
 		}
-		if byArg0 {
-			match = append(match, dbus.WithMatchArg(0, r.arg0))
-		}
-		out = append(out, match)
+		out = append(out, arg0.narrow(match))
 	}
 	return out
 }
@@ -198,9 +289,12 @@ func Dispatch(sig *dbus.Signal, sender string, routes []Route) error {
 	return sig.CloseFDs()
 }
 
-// closeUnread closes the descriptors of the signals a watch that has
-// ended was sent and never read. Nothing is sent on signals any more.
-func closeUnread(signals <-chan *dbus.Signal) error {
+// RemoveSignal takes signals off conn, as conn.RemoveSignal does, and
+// closes the descriptors of the signals it was sent and nobody read:
+// every signal channel owns those of what it is handed. Nothing is sent
+// on signals once it returns.
+func RemoveSignal(conn *dbus.Conn, signals chan *dbus.Signal) error {
+	conn.RemoveSignal(signals)
 	var errs []error
 	for {
 		select {
@@ -208,7 +302,9 @@ func closeUnread(signals <-chan *dbus.Signal) error {
 			if !open {
 				return errors.Join(errs...)
 			}
-			errs = append(errs, sig.CloseFDs())
+			if err := sig.CloseFDs(); err != nil {
+				errs = append(errs, fmt.Errorf("discard %s from %s: %w", sig.Name, sig.Sender, err))
+			}
 		default:
 			return errors.Join(errs...)
 		}
@@ -240,15 +336,14 @@ func WatchSignals(ctx context.Context, conn *dbus.Conn, from Sender, failed func
 	setup, cancelSetup := context.WithTimeout(ctx, watchTimeout)
 	defer cancelSetup()
 	rules := matches(from.name, routes)
-	ownerRouted := func(r Route) bool { return r.fromBus && r.arg0 == from.name }
+	ownerRouted := func(r Route) bool { return r.fromBus && r.arg0.admits(from.name) }
 	if from.owned && !slices.ContainsFunc(routes, ownerRouted) {
 		rules = append(rules, OwnerMatch(from.name))
 	}
 	signals := make(chan *dbus.Signal, signalBuffer)
 	conn.Signal(signals)
 	abandon := func(err error, added [][]dbus.MatchOption) error {
-		conn.RemoveSignal(signals)
-		return errors.Join(fmt.Errorf("watch %s: %w", from.name, err), closeUnread(signals), removeMatches(ctx, conn, added))
+		return errors.Join(fmt.Errorf("watch %s: %w", from.name, err), RemoveSignal(conn, signals), removeMatches(ctx, conn, added))
 	}
 	for i, rule := range rules {
 		if err := conn.AddMatchSignalContext(setup, rule...); err != nil {
@@ -264,8 +359,7 @@ func WatchSignals(ctx context.Context, conn *dbus.Conn, from Sender, failed func
 	go func() {
 		defer close(w.done)
 		defer func() {
-			conn.RemoveSignal(signals)
-			if err := errors.Join(closeUnread(signals), removeMatches(ctx, conn, rules)); err != nil {
+			if err := errors.Join(RemoveSignal(conn, signals), removeMatches(ctx, conn, rules)); err != nil {
 				w.err = errors.Join(w.err, fmt.Errorf("stop watching %s: %w", from.name, err))
 			}
 		}()

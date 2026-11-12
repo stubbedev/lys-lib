@@ -17,29 +17,50 @@ const (
 	errNameHasNoOwner = bus + ".Error.NameHasNoOwner"
 )
 
-// ownerChange is what NameOwnerChanged carries: the name, and its old
+// OwnerChange is what NameOwnerChanged carries: the name, and its old
 // and new owners, "" for none.
-type ownerChange struct {
+type OwnerChange struct {
 	Name     string `dbus:"name"`
 	OldOwner string `dbus:"old_owner"`
 	NewOwner string `dbus:"new_owner"`
 }
 
-var nameOwnerChanged = NewSignal[ownerChange](bus, "NameOwnerChanged")
+var nameOwnerChanged = NewSignal[OwnerChange](bus, "NameOwnerChanged")
 
-// OnOwnerChange routes the bus's announcement that name changed owner,
-// from old to new ("" for none), to handle, with the announcement's
-// sequence. The bus sends it whoever the watch's own signals are from,
-// so a watch following the owner of name (FromOwner) learns here, in
-// order with that owner's signals, that the owner came, went or was
-// replaced; it is not told of a change the bus had already announced
-// when it answered who owns the name as the watch began.
-func OnOwnerChange(name string, handle func(old, new string, announced dbus.Sequence) error) Route {
-	r := On(nameOwnerChanged, busPath, func(change ownerChange, announced dbus.Sequence) error {
-		return handle(change.OldOwner, change.NewOwner, announced)
-	}).WithArg0(name)
+// OnNameOwnerChanged routes the bus's announcement that a name changed
+// owner to handle, with the announcement's sequence: every name's,
+// unless WithArg0 or WithArg0Namespace narrows the route. The bus sends
+// it whoever the watch's own signals are from, so a watch following the
+// owner of a name (FromOwner) learns here, in order with that owner's
+// signals, that the owner came, went or was replaced; it is not told of
+// a change the bus had already announced when it answered who owns the
+// name as the watch began.
+func OnNameOwnerChanged(handle func(OwnerChange, dbus.Sequence) error) Route {
+	r := On(nameOwnerChanged, busPath, handle)
 	r.fromBus = true
 	return r
+}
+
+// OnOwnerChange is OnNameOwnerChanged for name alone, handle getting
+// its old and new owners ("" for none).
+func OnOwnerChange(name string, handle func(old, new string, announced dbus.Sequence) error) Route {
+	return OnNameOwnerChanged(func(change OwnerChange, announced dbus.Sequence) error {
+		return handle(change.OldOwner, change.NewOwner, announced)
+	}).WithArg0(name)
+}
+
+// OnNameLost is OnNameOwnerChanged for a name losing its owner: a
+// well-known name released, or the unique name of a peer that left the
+// bus. The announcement's sequence orders the loss against a reply the
+// name's owner sent (dbus.Call.ResponseSequence): an answer sequenced
+// before it came from an owner that has left since.
+func OnNameLost(lost func(name string, announced dbus.Sequence) error) Route {
+	return OnNameOwnerChanged(func(change OwnerChange, announced dbus.Sequence) error {
+		if change.NewOwner != "" {
+			return nil
+		}
+		return lost(change.Name, announced)
+	})
 }
 
 // NameOwner returns the unique name of name's current owner; a name
