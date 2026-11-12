@@ -287,6 +287,9 @@ func main() {
   before that (every frame held, say) leaves the state as it was and decodes
   the same given again: a CRA picture decoding starts at after a seek still
   drops its RASL pictures.
+- An AV1 frame whose film grain pass fails, one decoded to be shown or one
+  copied out to be shown again, goes back to the free frames, and the packet
+  given again decodes or copies it once more.
 - A frame header that shows a picture shown before (AV1 and VP9
   `show_existing_frame`) gets the picture copied out of its reference picture
   into a frame of its own again, with its film grain; a device with output

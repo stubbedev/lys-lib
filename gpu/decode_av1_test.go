@@ -6,12 +6,14 @@ import (
 	"math/bits"
 	"slices"
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
 	"github.com/stubbedev/lys-lib/internal/av1"
 	"github.com/stubbedev/lys-lib/media/demux"
 	"github.com/stubbedev/lys-lib/testbuild"
+	"github.com/stubbedev/lys-lib/third_party/vk"
 )
 
 // libaom is ffmpeg's arguments for libaom at speed 6 with params, if
@@ -289,6 +291,33 @@ func av1ShowExisting(slot int) []byte {
 	return append(slices.Clone(av1TemporalDelimiter), 0x1a, 0x01, 0x88|byte(slot)<<4)
 }
 
+// av1ShownAgain is a clip libaom codes with args, its packets with a
+// temporal unit put in after the first that ends in a shown inter frame
+// a reference slot holds, with film grain or without, that shows that
+// frame again, the frame headers of the clip's packets, and where that
+// frame is.
+func av1ShownAgain(t *testing.T, args []string, grain bool) (cl stream, track demux.Track, again []demux.Packet, hdrs [][]av1.FrameHeader, at int) {
+	t.Helper()
+	cl = ffmpegClip(t, "a.mp4", 192, 128, 0.4, args...)
+	track, pkts := packets(t, cl.path)
+	hdrs = av1Headers(t, track.Config, pkts)
+	at = slices.IndexFunc(hdrs, func(h []av1.FrameHeader) bool {
+		last := &h[len(h)-1]
+		return last.FrameType == av1.InterFrame && last.ShowFrame && !last.ShowExistingFrame && last.RefreshFrameFlags != 0 && last.FilmGrain.ApplyGrain == grain
+	})
+	if at < 0 {
+		t.Fatal("libaom coded no shown inter frame that a reference slot holds")
+	}
+	var cut [][]byte
+	for i, p := range pkts {
+		cut = append(cut, slices.Concat(av1TemporalDelimiter, p.Data))
+		if i == at {
+			cut = append(cut, av1ShowExisting(bits.TrailingZeros8(hdrs[at][len(hdrs[at])-1].RefreshFrameFlags)))
+		}
+	}
+	return cl, track, apart(cut), hdrs, at
+}
+
 // A frame header that shows a frame shown before shows it again, as
 // ffmpeg (dav1d) does, with its film grain, which is in the frame the
 // picture went out in and not in the reference picture it is copied
@@ -304,24 +333,7 @@ func TestDecodeAV1ShowsAFrameAgain(t *testing.T) {
 		{"with film grain", libaom("film-grain-test=1", "-g", "12"), true},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			cl := ffmpegClip(t, "a.mp4", 192, 128, 0.4, c.args...)
-			track, pkts := packets(t, cl.path)
-			hdrs := av1Headers(t, track.Config, pkts)
-			at := slices.IndexFunc(hdrs, func(h []av1.FrameHeader) bool {
-				last := &h[len(h)-1]
-				return last.FrameType == av1.InterFrame && last.ShowFrame && !last.ShowExistingFrame && last.RefreshFrameFlags != 0 && last.FilmGrain.ApplyGrain == c.grain
-			})
-			if at < 0 {
-				t.Fatal("libaom coded no shown inter frame that a reference slot holds")
-			}
-			var cut [][]byte
-			for i, p := range pkts {
-				cut = append(cut, slices.Concat(av1TemporalDelimiter, p.Data))
-				if i == at {
-					cut = append(cut, av1ShowExisting(bits.TrailingZeros8(hdrs[at][len(hdrs[at])-1].RefreshFrameFlags)))
-				}
-			}
-			again := apart(cut)
+			cl, track, again, _, at := av1ShownAgain(t, c.args, c.grain)
 			v, err := d.NewVideoDecoder(track)
 			if err != nil {
 				t.Fatal(err)
@@ -335,6 +347,50 @@ func TestDecodeAV1ShowsAFrameAgain(t *testing.T) {
 			if !bytes.Equal(got[at].picture, got[at+1].picture) {
 				t.Errorf("the frame shown again differs from its first showing in %d bytes", differing(got[at].picture, got[at+1].picture))
 			}
+		})
+	}
+}
+
+// A frame whose film grain pass fails, one shown as it decodes or one
+// copied out to be shown again, goes back to the free frames rather
+// than being lost to the decoder, and its packet given again decodes as
+// though it had not failed.
+func TestDecodeAV1RetriesAFrameWhoseFilmGrainFailed(t *testing.T) {
+	d := decodingDevice(t, demux.AV1)
+	cl, track, again, hdrs, at := av1ShownAgain(t, libaom("film-grain-test=1", "-g", "12"), true)
+	shown := 1 + slices.IndexFunc(hdrs[1:at+1], func(h []av1.FrameHeader) bool {
+		return len(h) == 1 && h[0].ShowFrame && !h[0].ShowExistingFrame && h[0].FilmGrain.ApplyGrain
+	})
+	if shown == 0 {
+		t.Fatal("libaom coded no temporal unit of one shown frame with film grain after the first")
+	}
+	want := ffmpegDecoded(t, writeIVF(t, "AV01", cl.w, cl.h, again), cl.w, cl.h, nv12Samples)
+	for _, c := range []struct {
+		name string
+		at   int
+	}{
+		{"shown as it decodes", shown},
+		{"shown again", at + 1},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			v, err := d.NewVideoDecoder(track)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer v.Close()
+			got := decodeSome(t, v, again[:c.at])
+			if !v.copies {
+				t.Skipf("%s applies film grain into its output pictures itself", d.Name())
+			}
+			d.fault, d.faultAfter = vk.ErrorOutOfDeviceMemory, 1
+			err = v.Decode(again[c.at])
+			if err == nil || !strings.Contains(err.Error(), "film grain") || !strings.Contains(err.Error(), "vkQueueSubmit:") {
+				t.Fatalf("packet %d with its film grain pass refused: %v, want the pass's error", c.at, err)
+			}
+			if stray := strayFrames(v, &v.codec.(*av1Decoder).refSlots); stray > 0 {
+				t.Fatalf("after the film grain pass failed, %d frames are neither free, nor on their way to Next, nor kept to be shown", stray)
+			}
+			checkFrames(t, want, append(got, decodeShownAgain(t, v, again[c.at:])...), 0)
 		})
 	}
 }

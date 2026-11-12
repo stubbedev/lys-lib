@@ -288,6 +288,20 @@ func holdFramesBut(t *testing.T, v *VideoDecoder, free int) []*VideoFrame {
 	return held[free:]
 }
 
+// strayFrames counts v's frames that are neither free, nor the
+// caller's, nor on their way to Next, nor kept in r to be shown by a
+// later frame header: frames lost to the decoder.
+func strayFrames(v *VideoDecoder, r *refSlots) int {
+	n := 0
+	for _, f := range v.frames {
+		if f.state == frameQueued && !slices.Contains(v.ready, f) && !slices.Contains(v.pending.frames, f) &&
+			!slices.ContainsFunc(r.pictures[:], func(p slotPicture) bool { return p.frame == f }) {
+			n++
+		}
+	}
+	return n
+}
+
 // readPicture copies f's picture back to the CPU through the graphics
 // queue, which waits for its decode: its luma, then its interleaved
 // chroma, as the frame's format holds its samples.

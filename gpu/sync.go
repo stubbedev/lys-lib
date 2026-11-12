@@ -74,8 +74,10 @@ type timing struct {
 	timelineSignals []timelineWait
 	// fault is a result a test makes the device's next submission, on
 	// any of its queues, return in place of submitting (LoseForTesting);
-	// VK_SUCCESS, the zero value, for none.
-	fault vk.Result
+	// VK_SUCCESS, the zero value, for none. faultAfter is how many
+	// submissions go through before that one.
+	fault      vk.Result
+	faultAfter int
 	// spareFences, spareBuffers and spareSemaphores are the objects of
 	// finished submissions, for the next ones.
 	spareFences     []vk.Fence
@@ -576,8 +578,13 @@ func (d *Device) dropWaits() {
 }
 
 // takeFault is the result a test set for the next submission, which it
-// then is no more: VK_SUCCESS for none.
+// then is no more: VK_SUCCESS for none, or while faultAfter submissions
+// are still to go through first.
 func (d *Device) takeFault() vk.Result {
+	if d.fault != vk.Success && d.faultAfter > 0 {
+		d.faultAfter--
+		return vk.Success
+	}
 	r := d.fault
 	d.fault = vk.Success
 	return r

@@ -183,8 +183,18 @@ type grainFrame struct {
 
 // applyGrain synthesizes g into f's picture, whose decode is submitted,
 // on the graphics queue, behind that decode and ahead of every pass
-// that draws f: nothing waits here.
+// that draws f: nothing waits here. A pass that fails hands f back to
+// the free frames, its picture going out to no one.
 func (v *VideoDecoder) applyGrain(f *VideoFrame, g grainFrame) error {
+	if err := v.recordGrain(f, g); err != nil {
+		f.free(0)
+		return fmt.Errorf("film grain of a %dx%d frame: %w", g.w, g.h, err)
+	}
+	return nil
+}
+
+// recordGrain records and submits the pass applyGrain runs.
+func (v *VideoDecoder) recordGrain(f *VideoFrame, g grainFrame) error {
 	d := v.d
 	if v.grain == nil {
 		pass, err := d.newGrainPass(v.extent(), v.shape.samples.bytes())
