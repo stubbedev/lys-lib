@@ -213,7 +213,7 @@ func decodeShownAgain(t *testing.T, v *VideoDecoder, pkts []demux.Packet) []deco
 	var out []decoded
 	for _, p := range pkts {
 		if err := v.Decode(p); err != nil {
-			if v.session != 0 && !v.copies && errors.Is(err, ErrNoVideoDecoder) && strings.Contains(err.Error(), "a second time") {
+			if v.session != 0 && !v.output.copies() && errors.Is(err, ErrNoVideoDecoder) && strings.Contains(err.Error(), "a second time") {
 				t.Skipf("%s copies no picture out of its reference pictures: %v", v.d.Name(), err)
 			}
 			t.Fatal(err)
@@ -330,7 +330,7 @@ func TestDecodeVP9ShowingAFrameAgainDoesNotAllocate(t *testing.T) {
 		}
 		again.PTS, again.Data[0] = p.PTS+p.Duration/2, vp9test.ShowExisting(uint8(bits.TrailingZeros8(hdrs[i][0].RefreshFrameFlags)))[0]
 		if err := v.Decode(again); err != nil {
-			if !v.copies && errors.Is(err, ErrNoVideoDecoder) {
+			if !v.output.copies() && errors.Is(err, ErrNoVideoDecoder) {
 				t.Skipf("%s copies no picture out of its reference pictures: %v", d.Name(), err)
 			}
 			t.Fatal(err)

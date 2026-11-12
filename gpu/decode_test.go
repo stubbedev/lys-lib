@@ -566,7 +566,9 @@ func TestDecodedFrameDraws(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer v.Close()
-			if err := v.Decode(pkts[0]); err != nil {
+			err = v.Decode(pkts[0])
+			skipRefusedProfile(t, d, err, c.format, c.codec)
+			if err != nil {
 				t.Fatal(err)
 			}
 			v.Flush()

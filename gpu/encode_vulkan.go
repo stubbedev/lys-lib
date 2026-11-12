@@ -393,11 +393,11 @@ func (vb *vulkanBackend) createImages() error {
 	dpb := src
 	dpb.usage, dpb.layers, dpb.shared = vk.ImageUsageFlags(vk.ImageUsageVideoEncodeDpbBitKhr), dpbSlots, false
 	for _, spec := range []*pictureSpec{&src, &dpb} {
-		format, err := d.videoFormat(spec.profiles, spec.usage, spec.samples, ErrNoVideoEncoder)
+		tiling, err := d.videoTiling(spec.profiles, spec.usage, spec.samples, ErrNoVideoEncoder)
 		if err != nil {
 			return err
 		}
-		spec.format = format
+		spec.tiling = tiling
 	}
 	var err error
 	for i := range vb.slots {

@@ -38,12 +38,7 @@ func TestDecodeDeepAndFullChromaMatchFFmpeg(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer v.Close()
-			if err := v.Decode(pkts[0]); errors.Is(err, ErrNoVideoDecoder) {
-				if !strings.Contains(err.Error(), "vkGetPhysicalDeviceVideoCapabilitiesKHR") {
-					t.Fatalf("a refusal that names no capability query: %v", err)
-				}
-				t.Skipf("%s decodes no %s %s: %v", d.Name(), c.samples, c.codec, err)
-			}
+			skipRefusedProfile(t, d, v.Decode(pkts[0]), c.samples, c.codec)
 			if err := v.Reset(); err != nil {
 				t.Fatal(err)
 			}
@@ -60,6 +55,17 @@ func TestDecodeDeepAndFullChromaMatchFFmpeg(t *testing.T) {
 // the capability query that answered for the device, with the query's
 // result where it refused: H.264 beyond 8-bit 4:2:0, 4:2:2 H.265, AV1
 // and VP9 beyond 4:2:0.
+func skipRefusedProfile(t *testing.T, d *Device, err error, samples videoSamples, codec demux.Codec) {
+	t.Helper()
+	if !errors.Is(err, ErrNoVideoDecoder) {
+		return
+	}
+	if !strings.Contains(err.Error(), "vkGetPhysicalDeviceVideoCapabilitiesKHR") {
+		t.Fatalf("a refusal that names no capability query: %v", err)
+	}
+	t.Skipf("%s decodes no %s %s: %v", d.Name(), samples, codec, err)
+}
+
 func TestRefusedFormatsNameTheCapabilityQuery(t *testing.T) {
 	for _, c := range []struct {
 		name, file string

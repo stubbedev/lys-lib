@@ -352,7 +352,7 @@ func (c *h264Decoder) prepare(v *VideoDecoder, sps *nal.H264SPS, shape decodeSha
 	if err := v.shapeFor(shape); err != nil {
 		return err
 	}
-	if shape.fields && !v.copies {
+	if shape.fields && !v.output.copies() {
 		return fmt.Errorf("%w: SPS %d codes fields or field-pair frames, which are verified only on a device that decodes into its reference pictures alone, where a frame's fields meet before they are copied out; %s decodes into output pictures apart from them", ErrNoVideoDecoder, sps.ID, v.d.name)
 	}
 	if !c.paramsChanged {

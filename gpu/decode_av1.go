@@ -249,7 +249,7 @@ func (c *av1Decoder) picture(v *VideoDecoder, p demux.Packet, data []byte) error
 		}
 		return err
 	}
-	c.deviceGrain = h.FilmGrain.ApplyGrain && !v.copies
+	c.deviceGrain = h.FilmGrain.ApplyGrain && !v.output.copies()
 	if c.paramsChanged {
 		if err := v.createParameters(); err != nil {
 			return err
@@ -287,7 +287,7 @@ func (c *av1Decoder) picture(v *VideoDecoder, p demux.Packet, data []byte) error
 	if err := v.submit(&c.req); err != nil {
 		return err
 	}
-	if h.FilmGrain.ApplyGrain && v.copies && (h.ShowFrame || h.ShowableFrame) {
+	if h.FilmGrain.ApplyGrain && v.output.copies() && (h.ShowFrame || h.ShowableFrame) {
 		if err := v.applyGrain(frame, c.grain()); err != nil {
 			return err
 		}

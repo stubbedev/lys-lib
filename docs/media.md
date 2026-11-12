@@ -198,8 +198,14 @@ func main() {
   which changes where the stream resizes. Pictures are luma and
   a plane of interleaved chroma in the stream's depth and chroma format: NV12
   for 8-bit 4:2:0, P010 (`G10X6_B10X6R10X6_2PLANE_420`) for 10-bit, and the
-  12-bit and 4:4:4 formats of the same family, all drawn through the sampler's
-  YCbCr conversion.
+  12-bit and 4:4:4 formats of the same family, drawn through the sampler's
+  YCbCr conversion where the device's conversion samples the format with the
+  stream's chroma siting. Where it does not (Intel's lists no conversion for
+  P010, P012 or the 10- and 12-bit 4:4:4 formats) and the frame is a copy, a
+  view of each plane in a plain format (`R16`, `R16G16`) is sampled and
+  converted in the shader, as an imported YUV dmabuf is; a device that
+  decodes into separate output pictures it cannot sample so is refused the
+  stream with `ErrNoVideoDecoder`.
 - A frame's texture belongs to the decoder and is never handed out, so nothing
   can update or close it: `Release` hands the frame back, and the decoder
   decodes into it again once the passes that drew it, the open one too, have
@@ -303,7 +309,7 @@ func main() {
   nothing) and refused where something was.
 - AV1 film grain comes out as dav1d synthesizes it, sample for sample. A
   device with output pictures apart from its reference pictures applies it; on
-  one that decodes into its reference pictures alone (NVIDIA) the decoder
+  one that decodes into its reference pictures alone (NVIDIA, Intel) the decoder
   synthesizes it: the host makes the grain templates, scaling functions and
   block offsets (`internal/av1`), and a compute pass of the graphics queue
   adds the noise to the frame's picture after its decode, ahead of any pass
@@ -313,7 +319,8 @@ func main() {
   the answer of `vkGetPhysicalDeviceVideoCapabilitiesKHR`
   (`VK_ERROR_VIDEO_PROFILE_FORMAT_NOT_SUPPORTED_KHR` from NVIDIA for H.264
   High 10, High 4:2:2 and High 4:4:4, 4:2:2 H.265, AV1 High and Professional
-  and VP9 profiles 1 and 3). Those formats are verified on no device, so one
+  and VP9 profiles 1 and 3; Intel's Mesa 26.2 refuses those too, and 12-bit
+  and 4:4:4 H.265 and 12-bit VP9 besides). Those formats are verified on no device, so one
   that accepts the query is refused them too, saying so, rather than trusted
   with pictures nothing has checked. Monochrome streams have no picture format
   and are refused when parsed.
@@ -352,9 +359,31 @@ func main() {
   conformance suite (ITU-T H.264.1), 59 of them coding fields or
   macroblock-adaptive frames, 3984 field pictures in all: every one decodes
   as ffmpeg decodes it.
-- A device whose decoder writes its output into its reference pictures (NVIDIA)
-  has each picture copied into its frame on the decode queue; one with distinct
-  output pictures decodes into the frame directly.
+- Where a picture goes follows the device's decode capabilities for the
+  profile, not its vendor. One with output pictures apart from its reference
+  pictures (`VK_VIDEO_DECODE_CAPABILITY_DPB_AND_OUTPUT_DISTINCT_BIT_KHR`)
+  decodes into the frame directly. One that decodes into its reference
+  pictures alone (`..._DPB_AND_OUTPUT_COINCIDE_BIT_KHR` only) has each picture
+  copied out of its DPB slot into its frame: by the decode queue where that
+  queue family copies images (NVIDIA), else by the graphics queue (Intel,
+  whose video decode family has no transfer bit). There the reference
+  pictures are shared by the two queue families (`VK_SHARING_MODE_CONCURRENT`)
+  and the frames are the graphics queue's alone; the copy waits for the
+  decode on the decoder's timeline semaphore, and every decode after it waits
+  for the copy on a second one that the copy signals, since the copy moves its
+  DPB layer through `TRANSFER_SRC_OPTIMAL`. The copy, film grain and the
+  passes that draw the frame follow one another on the graphics queue, so a
+  frame handed back is decoded into again once the passes that drew it are
+  submitted, not finished; nothing waits on the CPU. Frames that are copies
+  are the coded size, rounded up to whole chroma samples, rather than the DPB's
+  size, so the sampler's edge clamping meets the coded picture and not memory
+  no decode wrote.
+- Intel's driver (Mesa ANV) offers Vulkan Video decoding only with
+  `ANV_DEBUG=video-decode` set (Mesa 26.2.5); without it `DecodeCodecs` is
+  empty there. AV1 frames that keep the segmentation map of their primary
+  reference frame (`segmentation_update_map` 0) decode wrong there: Mesa
+  26.2.5 leaves the segment id read buffer unset (`genX_cmd_video.c`), so
+  they decode with another map than dav1d's.
 - Decoding a frame allocates nothing once the decoder has made its frames.
 - A `VideoDecoder` belongs to its device's goroutine.
 

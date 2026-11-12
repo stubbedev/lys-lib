@@ -104,8 +104,8 @@ func TestDecodeAV1FilmGrain(t *testing.T) {
 			}
 			defer v.Close()
 			checkFrames(t, cl, decodeAll(t, v, pkts), 0)
-			if v.copies != (v.grain != nil) {
-				t.Errorf("the device decodes into its reference pictures alone: %v; the decoder synthesized grain: %v", v.copies, v.grain != nil)
+			if v.output.copies() != (v.grain != nil) {
+				t.Errorf("the device decodes into its reference pictures alone: %v; the decoder synthesized grain: %v", v.output.copies(), v.grain != nil)
 			}
 		})
 	}
@@ -145,7 +145,7 @@ func TestDecodeAV1FilmGrainDoesNotAllocate(t *testing.T) {
 	for range 20 {
 		step()
 	}
-	if v.copies && v.grain == nil {
+	if v.output.copies() && v.grain == nil {
 		t.Fatal("the clip has no film grain for the decoder to synthesize")
 	}
 	if n := testing.AllocsPerRun(len(pkts)-i-1, step); n != 0 {
@@ -352,25 +352,32 @@ func TestDecodeAV1ShowsAFrameAgain(t *testing.T) {
 }
 
 // A frame whose film grain pass fails, one shown as it decodes or one
-// copied out to be shown again, goes back to the free frames rather
-// than being lost to the decoder, and its packet given again decodes as
-// though it had not failed.
+// copied out to be shown again, or whose copy out of its reference
+// picture on the graphics queue fails, goes back to the free frames
+// rather than being lost to the decoder, and its packet given again
+// decodes as though it had not failed.
 func TestDecodeAV1RetriesAFrameWhoseFilmGrainFailed(t *testing.T) {
 	d := decodingDevice(t, demux.AV1)
 	cl, track, again, hdrs, at := av1ShownAgain(t, libaom("film-grain-test=1", "-g", "12"), true)
-	shown := 1 + slices.IndexFunc(hdrs[1:at+1], func(h []av1.FrameHeader) bool {
+	shown := 1 + slices.IndexFunc(hdrs[1:], func(h []av1.FrameHeader) bool {
 		return len(h) == 1 && h[0].ShowFrame && !h[0].ShowExistingFrame && h[0].FilmGrain.ApplyGrain
 	})
 	if shown == 0 {
 		t.Fatal("libaom coded no temporal unit of one shown frame with film grain after the first")
 	}
+	if shown > at {
+		shown++
+	}
 	want := ffmpegDecoded(t, writeIVF(t, "AV01", cl.w, cl.h, again), cl.w, cl.h, nv12Samples)
 	for _, c := range []struct {
-		name string
-		at   int
+		name   string
+		at     int
+		copied bool
+		fails  string
 	}{
-		{"shown as it decodes", shown},
-		{"shown again", at + 1},
+		{"shown as it decodes", shown, false, "film grain"},
+		{"shown again", at + 1, false, "film grain"},
+		{"copied out as it decodes", shown, true, "copy of DPB slot"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			v, err := d.NewVideoDecoder(track)
@@ -379,16 +386,24 @@ func TestDecodeAV1RetriesAFrameWhoseFilmGrainFailed(t *testing.T) {
 			}
 			defer v.Close()
 			got := decodeSome(t, v, again[:c.at])
-			if !v.copies {
+			if !v.output.copies() {
 				t.Skipf("%s applies film grain into its output pictures itself", d.Name())
 			}
-			d.fault, d.faultAfter = vk.ErrorOutOfDeviceMemory, 1
+			graphics := v.output == outputCopiedByGraphicsQueue
+			if c.copied && !graphics {
+				t.Skipf("%s copies pictures out of its reference pictures on its decode queue", d.Name())
+			}
+			before := 1
+			if c.at == shown && graphics && !c.copied {
+				before++
+			}
+			d.fault, d.faultAfter = vk.ErrorOutOfDeviceMemory, before
 			err = v.Decode(again[c.at])
-			if err == nil || !strings.Contains(err.Error(), "film grain") || !strings.Contains(err.Error(), "vkQueueSubmit:") {
-				t.Fatalf("packet %d with its film grain pass refused: %v, want the pass's error", c.at, err)
+			if err == nil || !strings.Contains(err.Error(), c.fails) || !strings.Contains(err.Error(), "vkQueueSubmit:") {
+				t.Fatalf("packet %d with its %s refused: %v, want that submission's error", c.at, c.fails, err)
 			}
 			if stray := strayFrames(v, &v.codec.(*av1Decoder).refSlots); stray > 0 {
-				t.Fatalf("after the film grain pass failed, %d frames are neither free, nor on their way to Next, nor kept to be shown", stray)
+				t.Fatalf("after the %s failed, %d frames are neither free, nor on their way to Next, nor kept to be shown", c.fails, stray)
 			}
 			checkFrames(t, want, append(got, decodeShownAgain(t, v, again[c.at:])...), 0)
 		})

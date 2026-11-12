@@ -28,6 +28,10 @@ Other recipes:
 | `just vendor-hash` | Update the Nix `vendorHash` from `go.sum` |
 | `just release-patch`, `release-minor`, `release-major` | Tag and push the next release from a clean default branch with green CI |
 
+On Intel GPUs Mesa's ANV driver exposes Vulkan Video decoding only with
+`ANV_DEBUG=video-decode` (Mesa 26.2.5): run `ANV_DEBUG=video-decode just
+gpu-host` there, or the decode tests skip for want of a decoding device.
+
 `nix fmt` formats Nix files with alejandra.
 
 ## Determinism

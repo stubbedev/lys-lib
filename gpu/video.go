@@ -84,8 +84,9 @@ type decodeQueue struct {
 	family uint32
 	queue  vk.Queue
 	codecs []demux.Codec
-	// transfer is whether the family copies images, which a device
-	// that decodes only into its reference pictures needs.
+	// transfer is whether the family copies images: on a device that
+	// decodes only into its reference pictures, whether it copies them
+	// out itself or leaves that to the graphics queue.
 	transfer bool
 }
 
@@ -377,9 +378,33 @@ func (s videoSamples) String() string { return fmt.Sprintf("%d-bit %s", s.bits, 
 // bytes is how many bytes a sample takes.
 func (s videoSamples) bytes() int { return (int(s.bits) + 7) / 8 }
 
+func (s videoSamples) planeLayout() yuvImageLayout {
+	r, rg, bits := vk.FormatR8Unorm, vk.FormatR8g8Unorm, 8
+	if s.bits > 8 {
+		r, rg, bits = vk.FormatR16Unorm, vk.FormatR16g16Unorm, 16
+	}
+	switch s.chroma {
+	case chroma422:
+		return biplanar(r, rg, bits, 2, 1, false)
+	case chroma444:
+		return biplanar(r, rg, bits, 1, 1, false)
+	}
+	return biplanar(r, rg, bits, 2, 2, false)
+}
+
 // pixel is the samples' picture format as the renderer samples it,
 // through a YCbCr conversion.
 func (s videoSamples) pixel() pixelFormat { return pixelFormat{vk: s.vk(), planes: 2, ycbcr: true} }
+
+func (s videoSamples) whole(size [2]int) [2]int {
+	switch s.chroma {
+	case chroma420:
+		return [2]int{alignUp(size[0], 2), alignUp(size[1], 2)}
+	case chroma422:
+		return [2]int{alignUp(size[0], 2), size[1]}
+	}
+	return size
+}
 
 // chromaSize is the size of the chroma plane of a w x h picture.
 func (s videoSamples) chromaSize(w, h int) (int, int) {
@@ -414,15 +439,15 @@ func (s videoSamples) subsampling() vk.VideoChromaSubsamplingFlagsKHR {
 	return vk.VideoChromaSubsamplingFlagsKHR(vk.VideoChromaSubsampling420BitKhr)
 }
 
-// videoFormat finds the properties of samples' format among the formats
-// the device codes pictures of usage in, in the profiles list names.
-// none is what the device lacks when there is no such format:
+// videoTiling finds the tiling of samples' format among the formats the
+// device codes pictures of usage in, in the profiles list names. none
+// is what the device lacks when there is no such format:
 // ErrNoVideoDecoder or ErrNoVideoEncoder.
-func (d *Device) videoFormat(list *vk.VideoProfileListInfoKHR, usage vk.ImageUsageFlags, samples videoSamples, none error) (vk.VideoFormatPropertiesKHR, error) {
+func (d *Device) videoTiling(list *vk.VideoProfileListInfoKHR, usage vk.ImageUsageFlags, samples videoSamples, none error) (vk.ImageTiling, error) {
 	fi := vk.PhysicalDeviceVideoFormatInfoKHR{SType: vk.StructureTypePhysicalDeviceVideoFormatInfoKhr, PNext: (*uintptr)(unsafe.Pointer(list)), ImageUsage: usage}
 	var n uint32
 	if r := d.cmds.GetPhysicalDeviceVideoFormatPropertiesKHR(d.phys, &fi, &n, nil); r != vk.Success {
-		return vk.VideoFormatPropertiesKHR{}, fmt.Errorf("gpu: vkGetPhysicalDeviceVideoFormatPropertiesKHR usage %#x: %w", usage, resultError(r))
+		return 0, fmt.Errorf("gpu: vkGetPhysicalDeviceVideoFormatPropertiesKHR usage %#x: %w", usage, resultError(r))
 	}
 	props := make([]vk.VideoFormatPropertiesKHR, n)
 	for i := range props {
@@ -430,16 +455,16 @@ func (d *Device) videoFormat(list *vk.VideoProfileListInfoKHR, usage vk.ImageUsa
 	}
 	if n > 0 {
 		if r := d.cmds.GetPhysicalDeviceVideoFormatPropertiesKHR(d.phys, &fi, &n, &props[0]); r != vk.Success {
-			return vk.VideoFormatPropertiesKHR{}, fmt.Errorf("gpu: vkGetPhysicalDeviceVideoFormatPropertiesKHR usage %#x: %w", usage, resultError(r))
+			return 0, fmt.Errorf("gpu: vkGetPhysicalDeviceVideoFormatPropertiesKHR usage %#x: %w", usage, resultError(r))
 		}
 	}
 	runtime.KeepAlive(list)
 	for _, p := range props[:n] {
 		if p.Format == samples.vk() && p.ImageType == vk.ImageType2d {
-			return p, nil
+			return p.ImageTiling, nil
 		}
 	}
-	return vk.VideoFormatPropertiesKHR{}, fmt.Errorf("%w: %s codes no %s pictures for usage %#x (vkGetPhysicalDeviceVideoFormatPropertiesKHR lists %d formats, none of them VkFormat %d)", none, d.name, samples, usage, n, samples.vk())
+	return 0, fmt.Errorf("%w: %s codes no %s pictures for usage %#x (vkGetPhysicalDeviceVideoFormatPropertiesKHR lists %d formats, none of them VkFormat %d)", none, d.name, samples, usage, n, samples.vk())
 }
 
 // bindVideoSession allocates and binds the memory session needs.
@@ -509,16 +534,17 @@ func (vi *videoImage) close(d *Device) {
 const codingUsage = vk.ImageUsageFlags(vk.ImageUsageVideoDecodeDstBitKhr | vk.ImageUsageVideoDecodeDpbBitKhr | vk.ImageUsageVideoEncodeSrcBitKhr | vk.ImageUsageVideoEncodeDpbBitKhr)
 
 // pictureSpec is a picture newPicture makes: its size in luma samples,
-// its samples, the profiles of the session that codes it, its layout as
-// videoFormat found it for usage, its array layers, and the video queue
-// family that codes it, which shares it with the graphics queue when
-// shared.
+// its samples, the profiles of the session that codes it, its tiling as
+// videoTiling found it for usage, its create flags, its array layers,
+// and the video queue family that codes it, which shares it with the
+// graphics queue when shared.
 type pictureSpec struct {
 	extent   [2]int
 	samples  videoSamples
 	profiles *vk.VideoProfileListInfoKHR
-	format   vk.VideoFormatPropertiesKHR
+	tiling   vk.ImageTiling
 	usage    vk.ImageUsageFlags
+	flags    vk.ImageCreateFlags
 	layers   int
 	family   uint32
 	shared   bool
@@ -529,9 +555,9 @@ type pictureSpec struct {
 // profiles, with a view of each layer for them.
 func (d *Device) newPicture(s pictureSpec) (videoImage, error) {
 	ici := vk.ImageCreateInfo{
-		SType: vk.StructureTypeImageCreateInfo, Flags: s.format.ImageCreateFlags,
+		SType: vk.StructureTypeImageCreateInfo, Flags: s.flags,
 		ImageType: vk.ImageType2d, Format: s.samples.vk(), Extent: extent3D(s.extent[0], s.extent[1]),
-		MipLevels: 1, ArrayLayers: intconv.Must[uint32](s.layers), Samples: vk.SampleCount1Bit, Tiling: s.format.ImageTiling,
+		MipLevels: 1, ArrayLayers: intconv.Must[uint32](s.layers), Samples: vk.SampleCount1Bit, Tiling: s.tiling,
 		Usage: s.usage, SharingMode: vk.SharingModeExclusive, InitialLayout: vk.ImageLayoutUndefined,
 	}
 	coding := s.usage & codingUsage

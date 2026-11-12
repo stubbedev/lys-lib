@@ -51,12 +51,14 @@ type VideoDecoder struct {
 	codec decodeCodec
 	shape decodeShape
 
-	// format and usage are the output pictures' and the DPB's; copies is
-	// whether the device decodes into the DPB alone, each picture copied
-	// out of it.
-	format [2]vk.VideoFormatPropertiesKHR
-	usage  [2]vk.ImageUsageFlags
-	copies bool
+	// tiling and usage are the output pictures' and the DPB's; output is
+	// where the device decodes pictures and which queue copies them out
+	// of the DPB into their frames; sampling how the renderer samples
+	// the frames.
+	tiling   [2]vk.ImageTiling
+	usage    [2]vk.ImageUsageFlags
+	output   decodeOutput
+	sampling frameSampling
 
 	profile    *decodeProfile
 	caps       *decodeCaps
@@ -83,6 +85,8 @@ type VideoDecoder struct {
 	done      vk.Semaphore
 	submitted uint64
 	completed uint64
+	copied    vk.Semaphore
+	copiedOut uint64
 
 	frames  []*VideoFrame
 	pending reorder
@@ -103,6 +107,28 @@ type decodeSlot struct {
 	bitstream *buffer
 	seq       uint64
 }
+
+type decodeOutput uint8
+
+const (
+	outputDistinct decodeOutput = iota
+	outputCopiedByDecodeQueue
+	outputCopiedByGraphicsQueue
+)
+
+func outputOf(flags vk.VideoDecodeCapabilityFlagsKHR, decodeQueueCopies bool) (decodeOutput, bool) {
+	switch {
+	case flags&vk.VideoDecodeCapabilityFlagsKHR(vk.VideoDecodeCapabilityDpbAndOutputDistinctBitKhr) != 0:
+		return outputDistinct, true
+	case flags&vk.VideoDecodeCapabilityFlagsKHR(vk.VideoDecodeCapabilityDpbAndOutputCoincideBitKhr) == 0:
+		return 0, false
+	case decodeQueueCopies:
+		return outputCopiedByDecodeQueue, true
+	}
+	return outputCopiedByGraphicsQueue, true
+}
+
+func (o decodeOutput) copies() bool { return o != outputDistinct }
 
 // decodeShape is what a video session is made for: the codec profile,
 // the coded size in luma samples, the DPB slots and the references a
@@ -293,8 +319,10 @@ func (v *VideoDecoder) Close() {
 			b.close()
 		}
 	}
-	if v.done != 0 {
-		d.retireTimeline(v.done)
+	for _, s := range [2]vk.Semaphore{v.done, v.copied} {
+		if s != 0 {
+			d.retireTimeline(s)
+		}
 	}
 	if v.pool != 0 {
 		d.cmds.DestroyCommandPool(d.device, v.pool, nil)
@@ -309,7 +337,10 @@ func (v *VideoDecoder) closeSession() {
 		d.retire(v.grain)
 		v.grain = nil
 	}
-	v.dpb.close(d)
+	if v.dpb.image != 0 {
+		d.retire(&retiredPicture{d: d, pic: v.dpb})
+		v.dpb = videoImage{}
+	}
 	if v.params != 0 {
 		d.cmds.DestroyVideoSessionParametersKHR(d.device, v.params, nil)
 		v.params = 0
@@ -366,7 +397,7 @@ func (v *VideoDecoder) shapeFor(shape decodeShape) error {
 	v.closeSession()
 	v.shape = shape
 	v.pending.depth = shape.reorder
-	steps := []func() error{v.pickProfile, v.createSession, v.createDPB}
+	steps := []func() error{v.pickProfile, v.createSession, v.createDPB, v.createCopied}
 	for _, step := range steps {
 		if err := step(); err != nil {
 			v.closeSession()
@@ -418,11 +449,10 @@ func (v *VideoDecoder) pickProfile() error {
 		return fmt.Errorf("%w: %s: %w", ErrNoVideoDecoder, d.name, err)
 	}
 	c, s := &v.caps.video, v.shape
-	distinct := v.caps.decode.Flags&vk.VideoDecodeCapabilityFlagsKHR(vk.VideoDecodeCapabilityDpbAndOutputDistinctBitKhr) != 0
-	coincide := v.caps.decode.Flags&vk.VideoDecodeCapabilityFlagsKHR(vk.VideoDecodeCapabilityDpbAndOutputCoincideBitKhr) != 0
+	output, ok := outputOf(v.caps.decode.Flags, d.decode.transfer)
 	switch {
-	case !distinct && (!coincide || !d.decode.transfer):
-		return fmt.Errorf("%w: %s decodes %s only into its reference pictures (capability flags %#x), on a queue family that copies no images out of them", ErrNoVideoDecoder, d.name, v.name, v.caps.decode.Flags)
+	case !ok:
+		return fmt.Errorf("%w: %s decodes %s neither into output pictures apart from its reference pictures nor into them (capability flags %#x)", ErrNoVideoDecoder, d.name, v.name, v.caps.decode.Flags)
 	case s.coded[0] > int(c.MaxCodedExtent.Width) || s.coded[1] > int(c.MaxCodedExtent.Height):
 		return fmt.Errorf("%w: %s decodes %s up to %dx%d, not %dx%d", ErrNoVideoDecoder, d.name, v.name, c.MaxCodedExtent.Width, c.MaxCodedExtent.Height, s.coded[0], s.coded[1])
 	case s.coded[0] < int(c.MinCodedExtent.Width) || s.coded[1] < int(c.MinCodedExtent.Height):
@@ -430,14 +460,14 @@ func (v *VideoDecoder) pickProfile() error {
 	case s.slots > int(c.MaxDpbSlots) || !s.fields && s.refs > int(c.MaxActiveReferencePictures):
 		return fmt.Errorf("%w: %s decodes %s with %d DPB slots and %d references, not %d and %d", ErrNoVideoDecoder, d.name, v.name, c.MaxDpbSlots, c.MaxActiveReferencePictures, s.slots, s.refs)
 	}
-	v.copies = !distinct
+	v.output = output
 	var err error
-	if v.copies {
+	if output.copies() {
 		v.usage = [2]vk.ImageUsageFlags{
 			vk.ImageUsageFlags(vk.ImageUsageTransferDstBit | vk.ImageUsageSampledBit | vk.ImageUsageTransferSrcBit),
 			vk.ImageUsageFlags(vk.ImageUsageVideoDecodeDpbBitKhr | vk.ImageUsageVideoDecodeDstBitKhr | vk.ImageUsageTransferSrcBit),
 		}
-		v.format[0] = vk.VideoFormatPropertiesKHR{Format: v.shape.samples.vk(), ImageType: vk.ImageType2d, ImageTiling: vk.ImageTilingOptimal}
+		v.tiling[0] = vk.ImageTilingOptimal
 		need := vk.FormatFeatureFlags(vk.FormatFeatureSampledImageBit | vk.FormatFeatureTransferDstBit)
 		if v.sampledFeatures()&need != need {
 			return fmt.Errorf("%w: %s neither samples nor copies into %s images (VkFormat %d)", ErrNoVideoDecoder, d.name, v.shape.samples, v.shape.samples.vk())
@@ -447,12 +477,42 @@ func (v *VideoDecoder) pickProfile() error {
 			vk.ImageUsageFlags(vk.ImageUsageVideoDecodeDstBitKhr | vk.ImageUsageSampledBit | vk.ImageUsageTransferSrcBit),
 			vk.ImageUsageFlags(vk.ImageUsageVideoDecodeDpbBitKhr),
 		}
-		if v.format[0], err = d.videoFormat(&v.profile.list, v.usage[0], v.shape.samples, ErrNoVideoDecoder); err != nil {
+		if v.tiling[0], err = d.videoTiling(&v.profile.list, v.usage[0], v.shape.samples, ErrNoVideoDecoder); err != nil {
 			return err
 		}
 	}
-	v.format[1], err = d.videoFormat(&v.profile.list, v.usage[1], v.shape.samples, ErrNoVideoDecoder)
+	if v.tiling[1], err = d.videoTiling(&v.profile.list, v.usage[1], v.shape.samples, ErrNoVideoDecoder); err != nil {
+		return err
+	}
+	v.sampling, err = v.pickSampling()
 	return err
+}
+
+type frameSampling uint8
+
+const (
+	samplingConversion frameSampling = iota
+	samplingPlanes
+)
+
+func (v *VideoDecoder) pickSampling() (frameSampling, error) {
+	d := v.d
+	_, refused := v.shape.ycbcr.key(v.shape.samples.pixel(), v.sampledFeatures())
+	switch {
+	case refused == nil:
+		return samplingConversion, nil
+	case !v.output.copies():
+		return 0, fmt.Errorf("%w: %s samples no %s output pictures through a YCbCr conversion: %w", ErrNoVideoDecoder, d.name, v.shape.samples, refused)
+	}
+	l := v.shape.samples.planeLayout()
+	for _, p := range l.planes() {
+		var props vk.FormatProperties
+		d.cmds.GetPhysicalDeviceFormatProperties(d.phys, p.vf, &props)
+		if props.OptimalTilingFeatures&vk.FormatFeatureFlags(vk.FormatFeatureSampledImageBit) == 0 {
+			return 0, fmt.Errorf("%w: %s samples %s pictures neither through a YCbCr conversion (%w) nor as planes of VkFormat %d", ErrNoVideoDecoder, d.name, v.shape.samples, refused, p.vf)
+		}
+	}
+	return samplingPlanes, nil
 }
 
 // createSession makes the video session, binds its memory and makes
@@ -517,25 +577,46 @@ func (v *VideoDecoder) extent() [2]int {
 	return [2]int{alignUp(v.shape.coded[0], max(int(g.Width), 1)), alignUp(v.shape.coded[1], max(int(g.Height), 1))}
 }
 
-// newPicture makes a picture of the session's size and depth with layers
-// array layers, laid out as format says, shared with the graphics queue
-// when shared.
-func (v *VideoDecoder) newPicture(format vk.VideoFormatPropertiesKHR, usage vk.ImageUsageFlags, layers int, shared bool) (videoImage, error) {
-	return v.d.newPicture(pictureSpec{
-		extent: v.extent(), samples: v.shape.samples, profiles: &v.profile.list, format: format, usage: usage, layers: layers,
-		family: v.d.decode.family, shared: shared,
-	})
+func (v *VideoDecoder) frameExtent() [2]int {
+	if v.output.copies() {
+		return v.shape.samples.whole(v.shape.coded)
+	}
+	return v.extent()
 }
 
-// createDPB makes the reference pictures, a layer per DPB slot.
+// newPicture makes the picture s describes but for its depth, profiles
+// and family: the session's.
+func (v *VideoDecoder) newPicture(s pictureSpec) (videoImage, error) {
+	s.samples, s.profiles, s.family = v.shape.samples, &v.profile.list, v.d.decode.family
+	return v.d.newPicture(s)
+}
+
+// createDPB makes the reference pictures, a layer per DPB slot, shared
+// with the graphics queue where that copies them out.
 func (v *VideoDecoder) createDPB() error {
-	img, err := v.newPicture(v.format[1], v.usage[1], v.shape.slots, false)
+	img, err := v.newPicture(pictureSpec{extent: v.extent(), tiling: v.tiling[1], usage: v.usage[1], layers: v.shape.slots, shared: v.output == outputCopiedByGraphicsQueue})
 	if err != nil {
 		return fmt.Errorf("gpu: %s DPB: %w", v.name, err)
 	}
 	v.dpb = img
 	return nil
 }
+
+func (v *VideoDecoder) createCopied() error {
+	if v.output != outputCopiedByGraphicsQueue || v.copied != 0 {
+		return nil
+	}
+	var err error
+	v.copied, err = v.d.timelineSemaphore()
+	return err
+}
+
+type retiredPicture struct {
+	d   *Device
+	pic videoImage
+}
+
+func (r *retiredPicture) destroy() { r.pic.close(r.d) }
 
 // VideoFrame is a decoded picture a Pass draws (DrawFrame) through the
 // stream's YCbCr conversion. Its texture is the decoder's, which
@@ -549,6 +630,7 @@ type VideoFrame struct {
 	extent   [2]int
 	samples  videoSamples
 	ycbcr    YCbCr
+	sampling frameSampling
 	rect     image.Rectangle
 	pts      time.Duration
 	duration time.Duration
@@ -715,17 +797,26 @@ func (p *Pass) DrawFrame(f *VideoFrame, src FRect, dst image.Rectangle, tr Trans
 
 // frame is a free frame of the session's size to decode into: one the
 // renderer is done with, else a new one, else, with as many as the
-// decoder may hold, the first the renderer finishes with.
+// decoder may hold, the first the renderer finishes with. Where the
+// graphics queue copies pictures into frames, the renderer is done with
+// a frame for that once the submissions that use it are submitted:
+// the copy follows them on the queue.
 func (v *VideoDecoder) frame() (*VideoFrame, error) {
 	d := v.d
-	extent := v.extent()
+	extent := v.frameExtent()
+	done := func() uint64 {
+		if v.output == outputCopiedByGraphicsQueue {
+			return d.submitted
+		}
+		return d.completed
+	}
 	pick := func() *VideoFrame {
 		for i := 0; i < len(v.frames); i++ {
 			f := v.frames[i]
-			if f.state != frameFree || f.after > d.completed {
+			if f.state != frameFree || f.after > done() {
 				continue
 			}
-			if f.extent == extent && f.ycbcr == v.shape.ycbcr && f.samples == v.shape.samples {
+			if f.extent == extent && f.ycbcr == v.shape.ycbcr && f.samples == v.shape.samples && f.sampling == v.sampling {
 				return f
 			}
 			f.destroy()
@@ -756,7 +847,7 @@ func (v *VideoDecoder) frame() (*VideoFrame, error) {
 	if err := d.flushBatch(); err != nil {
 		return nil, err
 	}
-	for soonest > d.completed {
+	for soonest > done() {
 		if soonest > d.submitted || len(d.inflight) == 0 {
 			return nil, fmt.Errorf("gpu: %s: every free frame waits on a pass not yet submitted", v.name)
 		}
@@ -771,16 +862,28 @@ func (v *VideoDecoder) frame() (*VideoFrame, error) {
 // through the stream's YCbCr conversion.
 func (v *VideoDecoder) newFrame() (*VideoFrame, error) {
 	d := v.d
-	pic, err := v.newPicture(v.format[0], v.usage[0], 1, true)
+	var flags vk.ImageCreateFlags
+	if v.sampling == samplingPlanes {
+		flags = vk.ImageCreateFlags(vk.ImageCreateMutableFormatBit)
+	}
+	extent := v.frameExtent()
+	pic, err := v.newPicture(pictureSpec{extent: extent, tiling: v.tiling[0], usage: v.usage[0], flags: flags, layers: 1, shared: v.output != outputCopiedByGraphicsQueue})
 	if err != nil {
 		return nil, fmt.Errorf("gpu: %s frame: %w", v.name, err)
 	}
-	extent := v.extent()
 	pf := v.shape.samples.pixel()
 	t := &Texture{d: d, pf: pf, w: extent[0], h: extent[1], image: pic.image, memory: []vk.DeviceMemory{pic.memory}, layout: vk.ImageLayoutShaderReadOnlyOptimal}
-	f := &VideoFrame{v: v, pic: videoImage{views: pic.views}, extent: extent, samples: v.shape.samples, ycbcr: v.shape.ycbcr}
-	if t.ycbcr, err = d.ycbcrKindOf(pf, v.shape.ycbcr, v.sampledFeatures()); err == nil {
-		err = t.createView()
+	f := &VideoFrame{v: v, pic: videoImage{views: pic.views}, extent: extent, samples: v.shape.samples, ycbcr: v.shape.ycbcr, sampling: v.sampling}
+	switch v.sampling {
+	case samplingConversion:
+		if t.ycbcr, err = d.ycbcrKindOf(pf, v.shape.ycbcr, v.sampledFeatures()); err == nil {
+			err = t.createView()
+		}
+	case samplingPlanes:
+		l := v.shape.samples.planeLayout()
+		if t.planes, err = d.planesKindOf(l, v.shape.ycbcr); err == nil {
+			err = t.createPlaneViews(l)
+		}
 	}
 	f.tex = t
 	if err != nil {
@@ -796,7 +899,7 @@ func (v *VideoDecoder) newFrame() (*VideoFrame, error) {
 func (v *VideoDecoder) sampledFeatures() vk.FormatFeatureFlags {
 	var props vk.FormatProperties
 	v.d.cmds.GetPhysicalDeviceFormatProperties(v.d.phys, v.shape.samples.vk(), &props)
-	if v.format[0].ImageTiling == vk.ImageTilingLinear {
+	if v.tiling[0] == vk.ImageTilingLinear {
 		return props.LinearTilingFeatures
 	}
 	return props.OptimalTilingFeatures
@@ -940,7 +1043,7 @@ func (v *VideoDecoder) submit(p *decodePicture) error {
 		SrcBuffer: s.bitstream.buf, SrcBufferRange: intconv.Must[vk.DeviceSize](alignUp(p.bytes, v.streamAlign())),
 		DstPictureResource: c.res[0], PSetupReferenceSlot: &c.setup,
 	}
-	if !v.copies {
+	if !v.output.copies() {
 		c.decode.DstPictureResource = resource(p.frame.pic.views[0], p.coded)
 	}
 	if n > 0 {
@@ -955,6 +1058,9 @@ func (v *VideoDecoder) submit(p *decodePicture) error {
 		return err
 	}
 	v.reset, v.dpbFresh = false, false
+	if v.output == outputCopiedByGraphicsQueue && p.frame != nil {
+		return v.copyOnGraphics(p.setup, p.frame)
+	}
 	return nil
 }
 
@@ -966,15 +1072,52 @@ func (v *VideoDecoder) finish(s *decodeSlot, frame *VideoFrame) error {
 	if r := d.cmds.EndCommandBuffer(s.cb); r != vk.Success {
 		return fmt.Errorf("gpu: vkEndCommandBuffer (%s decode): %w", v.name, resultError(r))
 	}
-	signal := vk.SemaphoreSubmitInfo{SType: vk.StructureTypeSemaphoreSubmitInfo, Semaphore: v.done, Value: v.submitted + 1, StageMask: vk.PipelineStageFlags2(vk.PipelineStage2AllCommandsBit)}
-	if err := submit2(d, d.decode.queue, s.cb, nil, &signal, 0); err != nil {
+	all := vk.PipelineStageFlags2(vk.PipelineStage2AllCommandsBit)
+	signal := vk.SemaphoreSubmitInfo{SType: vk.StructureTypeSemaphoreSubmitInfo, Semaphore: v.done, Value: v.submitted + 1, StageMask: all}
+	var wait *vk.SemaphoreSubmitInfo
+	if v.copiedOut > 0 {
+		wait = &vk.SemaphoreSubmitInfo{SType: vk.StructureTypeSemaphoreSubmitInfo, Semaphore: v.copied, Value: v.copiedOut, StageMask: all}
+	}
+	if err := submit2(d, d.decode.queue, s.cb, wait, &signal, 0); err != nil {
 		return err
 	}
 	v.submitted++
 	s.seq, v.next = v.submitted, (v.next+1)%len(v.slots)
 	if frame != nil {
-		frame.seq, frame.post, frame.state, frame.fields = s.seq, 0, frameQueued, Progressive
+		frame.decodedBy(s.seq)
 	}
+	return nil
+}
+
+func (f *VideoFrame) decodedBy(seq uint64) {
+	f.seq, f.post, f.state, f.fields = seq, 0, frameQueued, Progressive
+}
+
+func (v *VideoDecoder) copyOnGraphics(slot int, f *VideoFrame) error {
+	if err := v.recordCopyOnGraphics(slot, f); err != nil {
+		f.free(0)
+		return fmt.Errorf("gpu: %s copy of DPB slot %d out on the graphics queue: %w", v.name, slot, err)
+	}
+	return nil
+}
+
+func (v *VideoDecoder) recordCopyOnGraphics(slot int, f *VideoFrame) error {
+	d := v.d
+	if err := d.flushBatch(); err != nil {
+		return err
+	}
+	cb, err := d.batchCommands()
+	if err != nil {
+		return err
+	}
+	v.copyOut(cb, slot, f)
+	d.awaitTimeline(f.decoding())
+	next := v.copiedOut + 1
+	d.signalTimeline(timelineWait{semaphore: v.copied, value: next})
+	if err := d.flushBatch(); err != nil {
+		return err
+	}
+	v.copiedOut, f.post = next, d.submitted
 	return nil
 }
 
@@ -983,13 +1126,18 @@ func (v *VideoDecoder) finish(s *decodeSlot, frame *VideoFrame) error {
 // the frame it went out in then is the caller's, or decoded into again.
 // Only a device that decodes into its reference pictures alone can: one
 // with output pictures apart from them copies nothing out of its DPB.
+// The queue that copies every picture out copies this one.
 func (v *VideoDecoder) again(slot int) (*VideoFrame, error) {
-	if !v.copies {
+	if !v.output.copies() {
 		return nil, fmt.Errorf("%w: a frame header shows the picture in DPB slot %d a second time; %s decodes %s into output pictures apart from its reference pictures, which are not copied out of", ErrNoVideoDecoder, slot, v.d.name, v.name)
 	}
 	frame, err := v.frame()
 	if err != nil {
 		return nil, err
+	}
+	if v.output == outputCopiedByGraphicsQueue {
+		frame.decodedBy(v.submitted)
+		return frame, v.copyOnGraphics(slot, frame)
 	}
 	s, err := v.slot()
 	if err != nil {
@@ -1026,7 +1174,7 @@ func (v *VideoDecoder) barriersBefore(cb vk.CommandBuffer, p *decodePicture) {
 	readWrite := vk.AccessFlags2(vk.Access2VideoDecodeReadBitKhr | vk.Access2VideoDecodeWriteBitKhr)
 	var images [2]vk.ImageMemoryBarrier2
 	n := 0
-	if !v.copies {
+	if !v.output.copies() {
 		images[n] = imageBarrier(p.frame.tex.image, colorRange, vk.ImageLayoutUndefined, vk.ImageLayoutVideoDecodeDstKhr)
 		images[n].DstStageMask, images[n].DstAccessMask = coding, vk.AccessFlags2(vk.Access2VideoDecodeWriteBitKhr)
 		n++
@@ -1039,18 +1187,22 @@ func (v *VideoDecoder) barriersBefore(cb vk.CommandBuffer, p *decodePicture) {
 	}
 	done := vk.MemoryBarrier2{
 		SType:        vk.StructureTypeMemoryBarrier2,
-		SrcStageMask: coding | vk.PipelineStageFlags2(vk.PipelineStage2CopyBit), SrcAccessMask: vk.AccessFlags2(vk.Access2VideoDecodeWriteBitKhr | vk.Access2TransferReadBit),
+		SrcStageMask: coding, SrcAccessMask: vk.AccessFlags2(vk.Access2VideoDecodeWriteBitKhr),
 		DstStageMask: coding, DstAccessMask: readWrite,
+	}
+	if v.output == outputCopiedByDecodeQueue {
+		done.SrcStageMask |= vk.PipelineStageFlags2(vk.PipelineStage2CopyBit)
+		done.SrcAccessMask |= vk.AccessFlags2(vk.Access2TransferReadBit)
 	}
 	barrier2(v.d, cb, &done, images[:n]...)
 }
 
 // barriersAfter records what follows p's decode: with the DPB the
-// output, the picture copied out of its DPB slot into the frame; the
-// frame made ready to sample.
+// output, on a decode queue that copies images, the picture copied out
+// of its DPB slot into the frame; the frame made ready to sample.
 func (v *VideoDecoder) barriersAfter(cb vk.CommandBuffer, p *decodePicture) {
-	if v.copies {
-		if p.frame != nil {
+	if v.output.copies() {
+		if p.frame != nil && v.output == outputCopiedByDecodeQueue {
 			v.copyOut(cb, p.setup, p.frame)
 		}
 		return
@@ -1061,17 +1213,26 @@ func (v *VideoDecoder) barriersAfter(cb vk.CommandBuffer, p *decodePicture) {
 }
 
 // copyOut records copying the picture in DPB slot, once the decodes
-// before it are done with the slot, into f, made ready to sample.
+// before it are done with the slot, into f, made ready to sample: on
+// the decode queue, or on the graphics queue behind its wait for the
+// decodes, ahead of the passes after it there.
 func (v *VideoDecoder) copyOut(cb vk.CommandBuffer, slot int, f *VideoFrame) {
 	d, c := v.d, &v.cmd
-	coding := vk.PipelineStageFlags2(vk.PipelineStage2VideoDecodeBitKhr)
+	coding, all := vk.PipelineStageFlags2(vk.PipelineStage2VideoDecodeBitKhr), vk.PipelineStageFlags2(vk.PipelineStage2AllCommandsBit)
+	graphics := v.output == outputCopiedByGraphicsQueue
 	frame := f.tex.image
 	copying := vk.PipelineStageFlags2(vk.PipelineStage2CopyBit)
 	layer := vk.ImageSubresourceRange{AspectMask: vk.ImageAspectFlags(vk.ImageAspectColorBit), LevelCount: 1, BaseArrayLayer: intconv.Must[uint32](slot), LayerCount: 1}
 	from := imageBarrier(v.dpb.image, layer, vk.ImageLayoutVideoDecodeDpbKhr, vk.ImageLayoutTransferSrcOptimal)
 	from.SrcStageMask, from.SrcAccessMask = coding, vk.AccessFlags2(vk.Access2VideoDecodeWriteBitKhr)
+	if graphics {
+		from.SrcStageMask, from.SrcAccessMask = all, 0
+	}
 	from.DstStageMask, from.DstAccessMask = copying, vk.AccessFlags2(vk.Access2TransferReadBit)
 	to := imageBarrier(frame, colorRange, vk.ImageLayoutUndefined, vk.ImageLayoutTransferDstOptimal)
+	if graphics {
+		to.SrcStageMask = all
+	}
 	to.DstStageMask, to.DstAccessMask = copying, vk.AccessFlags2(vk.Access2TransferWriteBit)
 	barrier2(d, cb, nil, from, to)
 	w, h := v.coded[slot][0], v.coded[slot][1]
@@ -1087,8 +1248,12 @@ func (v *VideoDecoder) copyOut(cb vk.CommandBuffer, slot int, f *VideoFrame) {
 	d.cmds.CmdCopyImage(cb, v.dpb.image, vk.ImageLayoutTransferSrcOptimal, frame, vk.ImageLayoutTransferDstOptimal, 2, &c.regions[0])
 	from = imageBarrier(v.dpb.image, layer, vk.ImageLayoutTransferSrcOptimal, vk.ImageLayoutVideoDecodeDpbKhr)
 	from.SrcStageMask, from.SrcAccessMask = copying, vk.AccessFlags2(vk.Access2TransferReadBit)
+	from.DstStageMask = all
 	to = imageBarrier(frame, colorRange, vk.ImageLayoutTransferDstOptimal, vk.ImageLayoutShaderReadOnlyOptimal)
 	to.SrcStageMask, to.SrcAccessMask = copying, vk.AccessFlags2(vk.Access2TransferWriteBit)
+	if graphics {
+		to.DstStageMask, to.DstAccessMask = all, vk.AccessFlags2(vk.Access2ShaderSampledReadBit|vk.Access2TransferReadBit)
+	}
 	barrier2(d, cb, nil, from, to)
 }
 

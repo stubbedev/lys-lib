@@ -331,6 +331,31 @@ func (t *Texture) createPlanes(b dmabuf.Buffer, l yuvImageLayout) error {
 	return nil
 }
 
+func (t *Texture) createPlaneViews(l yuvImageLayout) error {
+	d := t.d
+	for i, s := range [3]planeSample{l.y, l.cb, l.cr} {
+		vf := l.images[s.image].vf
+		var props vk.FormatProperties
+		d.cmds.GetPhysicalDeviceFormatProperties(d.phys, vf, &props)
+		if props.OptimalTilingFeatures&vk.FormatFeatureFlags(vk.FormatFeatureSampledImageFilterLinearBit) == 0 {
+			t.nearest = true
+		}
+		aspect := vk.ImageAspectPlane0Bit
+		if l.images[s.image].plane == 1 {
+			aspect = vk.ImageAspectPlane1Bit
+		}
+		vci := vk.ImageViewCreateInfo{
+			SType: vk.StructureTypeImageViewCreateInfo, Image: t.image, ViewType: vk.ImageViewType2d, Format: vf,
+			Components:       vk.ComponentMapping{R: s.channel},
+			SubresourceRange: vk.ImageSubresourceRange{AspectMask: flags[vk.ImageAspectFlags](aspect), LevelCount: 1, LayerCount: 1},
+		}
+		if r := d.cmds.CreateImageView(d.device, &vci, nil, &t.planeViews[i]); r != vk.Success {
+			return fmt.Errorf("gpu: vkCreateImageView (plane %d as VkFormat %d): %w", l.images[s.image].plane, vf, resultError(r))
+		}
+	}
+	return nil
+}
+
 func (d *Device) planeImageFeatures(vf vk.Format, modifier fourcc.Modifier) (vk.FormatFeatureFlags, error) {
 	for _, m := range d.formatModifiers(vf) {
 		if fourcc.Modifier(m.DrmFormatModifier) == modifier && m.DrmFormatModifierPlaneCount == 1 && m.DrmFormatModifierTilingFeatures&textureImport.features == textureImport.features {

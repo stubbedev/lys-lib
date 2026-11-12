@@ -77,12 +77,15 @@ func TestDrawnFrameWaitsForItsDecodeOnTheGPU(t *testing.T) {
 // Decoded answers for a frame the caller holds, and says why not for
 // one handed back or of a closed decoder.
 func TestDecodedRefusesFramesNotHeld(t *testing.T) {
-	_, v, f := heldFrame(t, 174, 98)
+	d, v, f := heldFrame(t, 174, 98)
 	if err := v.wait(f.seq); err != nil {
 		t.Fatal(err)
 	}
+	if err := d.Finish(); err != nil {
+		t.Fatal(err)
+	}
 	if done, err := f.Decoded(); err != nil || !done {
-		t.Errorf("a frame whose decode was waited for: %v, %v, want true", done, err)
+		t.Errorf("a frame whose decode and copy out, if any, were waited for: %v, %v, want true", done, err)
 	}
 	f.Release()
 	if _, err := f.Decoded(); err == nil || !strings.Contains(err.Error(), "does not hold") {
