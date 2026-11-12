@@ -214,6 +214,11 @@ PulseAudio and by `pipewire-pulse`: server, card, sink and source introspection,
 volume and mute, subscriptions, record streams, the sample cache, and playback
 streams. A playback `Write` blocks until the server asks for audio, never
 allocates, and `Cork` pauses it; each stream gets its own sync group.
+`Close` returns once the connection's reader and event goroutines have ended,
+an `OnSubscribe` handler still running included; requests fail with `ErrClosed`
+from the moment it starts, so a handler querying the connection returns
+promptly. Called from an `OnSubscribe` or record data handler, `Close` does not
+wait for the goroutine it runs on.
 
 `pulse/pulsetest` is a fake server speaking the same protocol. Like a real one
 it drops a client's record and playback streams when the client disconnects:

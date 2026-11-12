@@ -332,14 +332,17 @@ func TestMalformedReplyFailsOnlyThatRequest(t *testing.T) {
 	}
 }
 
-func TestRequestTimesOut(t *testing.T) {
-	dir := sockdir.Dir(t)
-	path := filepath.Join(dir, "native")
+// swallowingServer answers the handshake, announces a new sink, and
+// then answers nothing, reporting each request it swallows.
+func swallowingServer(t *testing.T) (addr string, swallowed <-chan uint32) {
+	t.Helper()
+	path := filepath.Join(sockdir.Dir(t), "native")
 	ln, err := net.Listen("unix", path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer ln.Close()
+	t.Cleanup(func() { _ = ln.Close() })
+	commands := make(chan uint32, 16)
 	go func() {
 		nc, err := ln.Accept()
 		if err != nil {
@@ -351,16 +354,31 @@ func TestRequestTimesOut(t *testing.T) {
 			if err != nil {
 				return
 			}
-			if i >= 2 {
-				continue // swallow every request after the handshake
-			}
 			pkt, _ := native.DecodePacket(f.Payload)
+			if i >= 2 {
+				select {
+				case commands <- pkt.Command:
+				default:
+				}
+				continue
+			}
 			var w native.Writer
 			w.U32(35)
 			_ = native.WriteFrame(nc, native.Frame{Channel: native.ControlChannel, Payload: native.EncodePacket(native.CmdReply, pkt.Tag, w.Bytes())})
+			if i == 1 {
+				var ev native.Writer
+				ev.U32(uint32(native.FacilitySink) | uint32(native.OpNew))
+				ev.U32(1)
+				_ = native.WriteFrame(nc, native.Frame{Channel: native.ControlChannel, Payload: native.EncodePacket(native.CmdSubscribeEvent, native.ControlChannel, ev.Bytes())})
+			}
 		}
 	}()
-	c, err := native.Dial(context.Background(), native.Options{Server: "unix:" + path, Timeout: 50 * time.Millisecond})
+	return "unix:" + path, commands
+}
+
+func TestRequestTimesOut(t *testing.T) {
+	addr, _ := swallowingServer(t)
+	c, err := native.Dial(context.Background(), native.Options{Server: addr, Timeout: 50 * time.Millisecond})
 	if err != nil {
 		t.Fatal(err)
 	}

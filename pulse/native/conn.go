@@ -23,6 +23,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/stubbedev/lys-lib/internal/goroutine"
 )
 
 // ProtocolVersion is the native protocol version this client speaks.
@@ -51,7 +53,8 @@ type Options struct {
 	Timeout time.Duration
 	// OnSubscribe receives subscription events in order, on one
 	// goroutine that is not the socket reader, so it may issue
-	// requests on the connection.
+	// requests on the connection. Close waits for a call still
+	// running, unless the call is Close's caller.
 	OnSubscribe func(SubscribeEvent)
 }
 
@@ -85,7 +88,7 @@ type Conn struct {
 	playbacks map[uint32]*PlaybackStream
 	wbuf      []byte
 	err       error
-	loopDone  chan struct{}
+	routines  []*routine
 }
 
 // Dial connects and authenticates, trying each address of the server
@@ -105,7 +108,7 @@ func Dial(ctx context.Context, opts Options) (*Conn, error) {
 		}
 		c := newConn(nc, opts)
 		if err := c.handshake(ctx, opts.ClientName); err != nil {
-			c.fail(err)
+			c.shutdown(err)
 			lastErr = fmt.Errorf("pulse: %s: %w", addr, err)
 			continue
 		}
@@ -124,15 +127,15 @@ func newConn(nc net.Conn, opts Options) *Conn {
 		timeout:   timeout,
 		onEvent:   opts.OnSubscribe,
 		done:      make(chan struct{}),
-		loopDone:  make(chan struct{}),
 		waiting:   map[uint32]pending{},
 		records:   map[uint32]*RecordStream{},
 		playbacks: map[uint32]*PlaybackStream{},
+		routines:  make([]*routine, 0, 2),
 	}
 	c.events.signal = make(chan struct{}, 1)
-	go c.readLoop()
+	c.routines = append(c.routines, startRoutine(c.readLoop))
 	if c.onEvent != nil {
-		go c.events.run(c.done, c.onEvent)
+		c.routines = append(c.routines, startRoutine(func() { c.events.run(c.done, c.onEvent) }))
 	}
 	return c
 }
@@ -183,12 +186,26 @@ func (c *Conn) Err() error {
 	return c.err
 }
 
-// Close tears the connection down. Pending requests fail with
-// ErrClosed.
+// Close tears the connection down and returns once the goroutines it
+// ran have ended, a subscription handler still running on one
+// included. Pending requests fail with ErrClosed, and so does every
+// request made after, so a handler querying the connection returns
+// promptly. Called from a subscription or record data handler, Close
+// does not wait for the goroutine it runs on, which ends when the
+// handler returns.
 func (c *Conn) Close() error {
-	c.fail(ErrClosed)
-	<-c.loopDone
+	c.shutdown(ErrClosed)
 	return nil
+}
+
+// shutdown fails the connection with err and waits for its goroutines
+// other than the caller's own.
+func (c *Conn) shutdown(err error) {
+	c.fail(err)
+	self := goroutine.ID()
+	for _, r := range c.routines {
+		r.wait(self)
+	}
 }
 
 // fail records the terminal error once, closes the socket, and
@@ -224,7 +241,6 @@ func (c *Conn) fail(err error) {
 // readLoop demultiplexes frames: replies to their waiters, events to
 // the queue, audio to its record stream.
 func (c *Conn) readLoop() {
-	defer close(c.loopDone)
 	br := bufio.NewReaderSize(c.nc, 64<<10)
 	for {
 		f, err := ReadFrame(br)

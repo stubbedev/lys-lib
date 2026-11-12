@@ -16,6 +16,7 @@ import (
 	"github.com/stubbedev/lys-lib/appearance"
 	"github.com/stubbedev/lys-lib/dbustest"
 	"github.com/stubbedev/lys-lib/icons"
+	"github.com/stubbedev/lys-lib/internal/goroutine"
 	dbus "github.com/stubbedev/lys-lib/third_party/godbus"
 )
 
@@ -291,19 +292,6 @@ func wantNoEvents(t *testing.T, snapshot func() []appearance.ColorScheme) {
 	if got := snapshot(); len(got) != 0 {
 		t.Fatalf("unexpected events: %v", got)
 	}
-}
-
-// goroutineID parses the calling goroutine's id out of its own stack
-// (the identity check in TestCallbacksRunOnMonitorGoroutine).
-func goroutineID() uint64 {
-	var buf [64]byte
-	n := runtime.Stack(buf[:], false)
-	line := string(buf[:n])
-	var id uint64
-	if _, err := fmt.Sscanf(line, "goroutine %d ", &id); err != nil {
-		return 0
-	}
-	return id
 }
 
 func TestStartupRead(t *testing.T) {
@@ -636,10 +624,10 @@ func TestCallbacksRunOnMonitorGoroutine(t *testing.T) {
 	mock.set(1)
 	m := newTestMonitor(t, bus.Address)
 
-	caller := goroutineID()
+	caller := goroutine.ID()
 	delivered := make(chan uint64, 1)
 	m.OnColorSchemeChange(func(a appearance.ColorScheme) {
-		delivered <- goroutineID()
+		delivered <- goroutine.ID()
 	})
 	mock.emit(t, uint32(2))
 	select {
