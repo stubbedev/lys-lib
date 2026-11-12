@@ -89,11 +89,12 @@ type Logind struct {
 	cfg  Config
 	conn *dbus.Conn
 
-	mu       sync.Mutex
-	sessions map[logind.SessionID]*session
-	refusals map[string]*dbus.Error
-	sleeping bool
-	hooks    hooks
+	mu        sync.Mutex
+	sessions  map[logind.SessionID]*session
+	lidClosed bool
+	refusals  map[string]*dbus.Error
+	sleeping  bool
+	hooks     hooks
 }
 
 // hooks are the OnLock hooks running now. Once the test is ending no
@@ -163,7 +164,7 @@ func Serve(t testing.TB, bus *dbustest.Bus, cfg Config) *Logind {
 		path  dbus.ObjectPath
 		iface dbusx.Interface
 	}{
-		{logind.ManagerPath, dbusx.Interface{Name: logind.ManagerInterface, Methods: manager{l}, Signals: []dbusx.SignalDecl{logind.PrepareForSleep}}},
+		{logind.ManagerPath, dbusx.Interface{Name: logind.ManagerInterface, Methods: manager{l}, Properties: dbusx.Getters{"LidClosed": l.lidClosedNow}, Signals: []dbusx.SignalDecl{logind.PrepareForSleep}}},
 		{SeatPath, dbusx.Interface{Name: logind.SeatInterface, Methods: seat{l}, Properties: dbusx.Getters{"Id": func() any { return string(Seat) }}}},
 		{userSelfPath, dbusx.Interface{Name: logind.UserInterface, Methods: user{}, Properties: dbusx.Getters{"Display": l.display}}},
 	}
@@ -314,6 +315,19 @@ func (l *Logind) setLockedHint(s *session, locked bool) error {
 	}
 	l.record(event)
 	return l.propertyChanged(s, "LockedHint", locked)
+}
+
+// SetLidClosed sets the lid state the Manager's LidClosed reports.
+func (l *Logind) SetLidClosed(closed bool) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.lidClosed = closed
+}
+
+func (l *Logind) lidClosedNow() any {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.lidClosed
 }
 
 // SetActive changes whether session id is in the foreground and

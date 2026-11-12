@@ -194,6 +194,15 @@ func (m Manager) SelfUser() User {
 	return User{obj: object{conn: m.obj.conn, path: ManagerPath + "/user/self"}}
 }
 
+// LidClosed reads whether the lid is closed: the switch state logind
+// keeps from the lid devices, known at startup when no lid event has
+// come yet.
+func (m Manager) LidClosed(ctx context.Context) (bool, error) {
+	var closed bool
+	err := m.obj.property(ctx, ManagerInterface, "LidClosed", &closed)
+	return closed, err
+}
+
 // LockSession asks logind to lock session id: logind sends the
 // session's Lock signal, which its lock screen answers.
 func (m Manager) LockSession(ctx context.Context, id SessionID) error {

@@ -497,3 +497,15 @@ func TestDialWithoutABusNamesLogindAndTheSystemBus(t *testing.T) {
 		t.Errorf("error %q is the dial's timeout, want the dial's own failure at once", err)
 	}
 }
+
+func TestLidClosedReadsTheManagersLidState(t *testing.T) {
+	t.Parallel()
+	fake, m := manager(t, logindtest.Config{Display: display})
+	for _, closed := range []bool{false, true, false} {
+		fake.SetLidClosed(closed)
+		got, err := m.LidClosed(t.Context())
+		if err != nil || got != closed {
+			t.Fatalf("LidClosed = %v, %v; want %v", got, err, closed)
+		}
+	}
+}
