@@ -161,12 +161,14 @@ func busyFence(t *testing.T, d *Device) int {
 }
 
 // dmabufUse is a way a device takes a dmabuf from its other users: what
-// it does, the dmabuf's fd, and whether it writes.
+// it does, the dmabuf's fd, whether it writes, and whether it hands the
+// dmabuf back to them when done.
 type dmabufUse struct {
-	name   string
-	fd     int
-	access dmabuf.Access
-	use    func()
+	name      string
+	fd        int
+	access    dmabuf.Access
+	handsOver bool
+	use       func()
 }
 
 // dmabufUses are the ways b takes a dmabuf from its other users, the
@@ -211,14 +213,14 @@ func dmabufUses(t *testing.T, a, b *Device) []dmabufUse {
 	clearTarget(t, b, dst, color.RGBA{0, 0, 255, 255})
 	rec := render.NewRecorder(w, h, 1, 1)
 	uses := []dmabufUse{
-		{"a pass into a target", tg.Dmabuf().Planes[0].FD, dmabuf.Write, func() { clearTarget(t, b, tg, color.RGBA{0, 255, 0, 255}) }},
-		{"a render into a target", tg.Dmabuf().Planes[0].FD, dmabuf.Write, func() {
+		{"a pass into a target", tg.Dmabuf().Planes[0].FD, dmabuf.Write, false, func() { clearTarget(t, b, tg, color.RGBA{0, 255, 0, 255}) }},
+		{"a render into a target", tg.Dmabuf().Planes[0].FD, dmabuf.Write, true, func() {
 			if err := b.Render(heavyList(rec, w, h, render.RGBA(0, 255, 0, 255)), tg); err != nil {
 				t.Fatal(err)
 			}
 		}},
-		{"a pass into an imported target", imported.sync.fds[0], dmabuf.Write, func() { clearTarget(t, b, imported, color.RGBA{0, 255, 0, 255}) }},
-		{"a pass sampling an imported texture", sampled.Dmabuf().Planes[0].FD, dmabuf.Read, func() {
+		{"a pass into an imported target", imported.sync.fds[0], dmabuf.Write, false, func() { clearTarget(t, b, imported, color.RGBA{0, 255, 0, 255}) }},
+		{"a pass sampling an imported texture", sampled.Dmabuf().Planes[0].FD, dmabuf.Read, false, func() {
 			runPass(t, b, dst, []image.Rectangle{{Max: dst.Size()}}, func(p *Pass) {
 				p.DrawTexture(tex, FRect{W: w, H: h}, image.Rectangle{Max: dst.Size()}, TransformNormal, 1, Mask{})
 			})
@@ -230,7 +232,7 @@ func dmabufUses(t *testing.T, a, b *Device) []dmabufUse {
 			t.Fatal(err)
 		}
 		t.Cleanup(lin.Close)
-		uses = append(uses, dmabufUse{"a copy into a linear buffer", lin.sync.fds[0], dmabuf.Write, func() {
+		uses = append(uses, dmabufUse{"a copy into a linear buffer", lin.sync.fds[0], dmabuf.Write, false, func() {
 			if err := b.CopyToLinear(lin, dst, []image.Rectangle{{Max: dst.Size()}}); err != nil {
 				t.Fatal(err)
 			}
@@ -242,10 +244,13 @@ func dmabufUses(t *testing.T, a, b *Device) []dmabufUse {
 // Every way a device takes a dmabuf from its other users waits, on the
 // GPU, for the fence another device's still-running job left on it: the
 // submission is queued without a wait here while that fence is pending,
-// and finishes after it signals.
+// and finishes after it signals. The device hands targets over by a
+// fence, so a Render waits for nothing more;
+// TestARenderHandedOverByWaitingWaitsOnlyForItsFrame takes the hand-over
+// by waiting.
 func TestUsesOfADmabufWaitOnTheGPUForTheFenceOnIt(t *testing.T) {
 	a := syncDevice(t)
-	b := syncDevice(t)
+	b := fencingDevice(t)
 	for _, u := range dmabufUses(t, a, b) {
 		t.Run(u.name, func(t *testing.T) {
 			if err := b.Finish(); err != nil {
@@ -288,6 +293,45 @@ func TestUsesOfADmabufWaitOnTheGPUForTheFenceOnIt(t *testing.T) {
 			}
 			if doneAt < fenceAt {
 				t.Errorf("the %s finished at %v, %v before the fence on its dmabuf signalled", u.access, doneAt, fenceAt-doneAt)
+			}
+		})
+	}
+}
+
+// A device that hands a target over by waiting, as NVIDIA does, waits
+// here once, for the frame it just queued, which waited on the GPU for
+// the fence another device's still-running job left on the target's
+// dmabuf: the target is handed over finished, after that fence.
+func TestARenderHandedOverByWaitingWaitsOnlyForItsFrame(t *testing.T) {
+	a := syncDevice(t)
+	b := syncDevice(t)
+	uses := dmabufUses(t, a, b)
+	b.implicitFences = false
+	for _, u := range uses {
+		if !u.handsOver {
+			continue
+		}
+		t.Run(u.name, func(t *testing.T) {
+			if err := b.Finish(); err != nil {
+				t.Fatal(err)
+			}
+			fence := busyFence(t, a)
+			if fence < 0 {
+				t.Skipf("%s finished its job before handing out its fence", a.Name())
+			}
+			if err := dmabuf.ImportSyncFile(u.fd, fence); err != nil {
+				t.Fatal(err)
+			}
+			waits := b.BlockingWaits()
+			u.use()
+			if got := b.BlockingWaits() - waits; got != 1 {
+				t.Errorf("the %s waited here %d times, want once, for its frame to hand it over", u.access, got)
+			}
+			if n := len(b.inflight); n != 0 {
+				t.Errorf("the %s handed its target over with %d submissions in flight", u.access, n)
+			}
+			if signalled, err := drm.SyncFileSignalled(fence); err != nil || !signalled {
+				t.Errorf("the %s handed its target over with the fence on its dmabuf still pending (%v)", u.access, err)
 			}
 		})
 	}

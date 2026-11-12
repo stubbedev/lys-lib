@@ -205,7 +205,11 @@ Drawing:
   still reading it. A device without `sync_file` semaphores, or a kernel
   without the ioctl (before Linux 6.0), polls the dmabuf here instead,
   within the wait limit. A wait that cannot be set up fails the submission
-  it was for, and the next one runs without it.
+  it was for, and the next one runs without it. This wait is separate from
+  the hand-over: on NVIDIA, `Render` and `Publish` still wait for their own
+  frame after queuing it, because the compositor reading the buffer may
+  ignore the fence, while the frame itself waits on the GPU for the fences
+  already on the dmabuf.
 
 Vulkan comes from the patched [vk](/third-party/vk) bindings. Shaders are
 embedded SPIR-V; `just generate` rebuilds them.
