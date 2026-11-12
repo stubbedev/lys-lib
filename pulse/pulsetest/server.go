@@ -487,7 +487,7 @@ func (c *conn) handle(pkt native.Packet) bool {
 	if pkt.Command == native.CmdAuth {
 		return c.auth(pkt.Tag, r, code, failing)
 	}
-	h, ok := handlers[pkt.Command]
+	h, ok := handlerFor(pkt.Command)
 	if !ok {
 		c.fail(pkt.Tag, native.ErrCommand)
 		return true
@@ -504,47 +504,82 @@ func (c *conn) handle(pkt native.Packet) bool {
 // an injected failure the handler returns without effect.
 type handler func(c *conn, tag uint32, r *native.Reader, failed func() bool) bool
 
-var handlers map[uint32]handler
-
-func init() {
-	handlers = map[uint32]handler{
-		native.CmdSetClientName:         (*conn).setClientName,
-		native.CmdGetServerInfo:         (*conn).serverInfo,
-		native.CmdGetSinkInfoList:       (*conn).sinkList,
-		native.CmdGetSourceInfoList:     (*conn).sourceList,
-		native.CmdGetSinkInputInfoList:  (*conn).sinkInputList,
-		native.CmdGetSourceOutputList:   (*conn).sourceOutputList,
-		native.CmdGetSinkInfo:           (*conn).sinkInfo,
-		native.CmdGetSourceInfo:         (*conn).sourceInfo,
-		native.CmdGetSinkInputInfo:      (*conn).sinkInputInfo,
-		native.CmdGetSourceOutputInfo:   (*conn).sourceOutputInfo,
-		native.CmdSubscribe:             (*conn).subscribe,
-		native.CmdSetSinkVolume:         deviceSetter(native.FacilitySink, setVolume),
-		native.CmdSetSourceVolume:       deviceSetter(native.FacilitySource, setVolume),
-		native.CmdSetSinkMute:           deviceSetter(native.FacilitySink, setMute),
-		native.CmdSetSourceMute:         deviceSetter(native.FacilitySource, setMute),
-		native.CmdSetSinkPort:           deviceSetter(native.FacilitySink, setPort),
-		native.CmdSetSourcePort:         deviceSetter(native.FacilitySource, setPort),
-		native.CmdSetSinkInputVolume:    streamSetter(native.FacilitySinkInput, setStreamVolume),
-		native.CmdSetSourceOutputVolume: streamSetter(native.FacilitySourceOutput, setStreamVolume),
-		native.CmdSetSinkInputMute:      streamSetter(native.FacilitySinkInput, setStreamMute),
-		native.CmdSetSourceOutputMute:   streamSetter(native.FacilitySourceOutput, setStreamMute),
-		native.CmdMoveSinkInput:         moveHandler(native.FacilitySinkInput),
-		native.CmdMoveSourceOutput:      moveHandler(native.FacilitySourceOutput),
-		native.CmdSetDefaultSink:        setDefaultHandler(true),
-		native.CmdSetDefaultSource:      setDefaultHandler(false),
-		native.CmdCreatePlaybackStream:  (*conn).createPlayback,
-		native.CmdDeletePlaybackStream:  (*conn).deletePlayback,
-		native.CmdCorkPlaybackStream:    (*conn).corkPlayback,
-		native.CmdCreateRecordStream:    (*conn).createRecord,
-		native.CmdDeleteRecordStream:    (*conn).deleteRecord,
-		native.CmdCreateUploadStream:    (*conn).createUpload,
-		native.CmdFinishUploadStream:    (*conn).finishUpload,
-		native.CmdPlaySample:            (*conn).playSample,
-		native.CmdGetCardInfoList:       (*conn).cardList,
-		native.CmdGetCardInfo:           (*conn).cardInfo,
-		native.CmdSetCardProfile:        (*conn).setCardProfile,
+func handlerFor(cmd uint32) (handler, bool) {
+	switch cmd {
+	case native.CmdSetClientName:
+		return (*conn).setClientName, true
+	case native.CmdGetServerInfo:
+		return (*conn).serverInfo, true
+	case native.CmdGetSinkInfoList:
+		return (*conn).sinkList, true
+	case native.CmdGetSourceInfoList:
+		return (*conn).sourceList, true
+	case native.CmdGetSinkInputInfoList:
+		return (*conn).sinkInputList, true
+	case native.CmdGetSourceOutputList:
+		return (*conn).sourceOutputList, true
+	case native.CmdGetSinkInfo:
+		return (*conn).sinkInfo, true
+	case native.CmdGetSourceInfo:
+		return (*conn).sourceInfo, true
+	case native.CmdGetSinkInputInfo:
+		return (*conn).sinkInputInfo, true
+	case native.CmdGetSourceOutputInfo:
+		return (*conn).sourceOutputInfo, true
+	case native.CmdSubscribe:
+		return (*conn).subscribe, true
+	case native.CmdSetSinkVolume:
+		return deviceSetter(native.FacilitySink, setVolume), true
+	case native.CmdSetSourceVolume:
+		return deviceSetter(native.FacilitySource, setVolume), true
+	case native.CmdSetSinkMute:
+		return deviceSetter(native.FacilitySink, setMute), true
+	case native.CmdSetSourceMute:
+		return deviceSetter(native.FacilitySource, setMute), true
+	case native.CmdSetSinkPort:
+		return deviceSetter(native.FacilitySink, setPort), true
+	case native.CmdSetSourcePort:
+		return deviceSetter(native.FacilitySource, setPort), true
+	case native.CmdSetSinkInputVolume:
+		return streamSetter(native.FacilitySinkInput, setStreamVolume), true
+	case native.CmdSetSourceOutputVolume:
+		return streamSetter(native.FacilitySourceOutput, setStreamVolume), true
+	case native.CmdSetSinkInputMute:
+		return streamSetter(native.FacilitySinkInput, setStreamMute), true
+	case native.CmdSetSourceOutputMute:
+		return streamSetter(native.FacilitySourceOutput, setStreamMute), true
+	case native.CmdMoveSinkInput:
+		return moveHandler(native.FacilitySinkInput), true
+	case native.CmdMoveSourceOutput:
+		return moveHandler(native.FacilitySourceOutput), true
+	case native.CmdSetDefaultSink:
+		return setDefaultHandler(true), true
+	case native.CmdSetDefaultSource:
+		return setDefaultHandler(false), true
+	case native.CmdCreatePlaybackStream:
+		return (*conn).createPlayback, true
+	case native.CmdDeletePlaybackStream:
+		return (*conn).deletePlayback, true
+	case native.CmdCorkPlaybackStream:
+		return (*conn).corkPlayback, true
+	case native.CmdCreateRecordStream:
+		return (*conn).createRecord, true
+	case native.CmdDeleteRecordStream:
+		return (*conn).deleteRecord, true
+	case native.CmdCreateUploadStream:
+		return (*conn).createUpload, true
+	case native.CmdFinishUploadStream:
+		return (*conn).finishUpload, true
+	case native.CmdPlaySample:
+		return (*conn).playSample, true
+	case native.CmdGetCardInfoList:
+		return (*conn).cardList, true
+	case native.CmdGetCardInfo:
+		return (*conn).cardInfo, true
+	case native.CmdSetCardProfile:
+		return (*conn).setCardProfile, true
 	}
+	return nil, false
 }
 
 func (c *conn) auth(tag uint32, r *native.Reader, code native.Error, failing bool) bool {
