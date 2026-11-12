@@ -144,21 +144,28 @@ func newClip(t *testing.T, d *Device, cfg EncoderConfig) *clip {
 // openClip is a clip on the encoder open makes.
 func openClip(t *testing.T, d *Device, cfg EncoderConfig, open func(EncoderConfig) (*Encoder, error)) *clip {
 	t.Helper()
-	mods, err := d.ExportModifiers(fourcc.XRGB8888)
-	if err != nil {
-		t.Fatal(err)
-	}
-	buf, err := d.NewBuffer(cfg.Width, cfg.Height, fourcc.XRGB8888, mods)
-	if err != nil {
-		t.Fatal(err)
-	}
-	t.Cleanup(buf.Close)
+	buf := newExportBuffer(t, d, cfg.Width, cfg.Height)
 	enc, err := open(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	t.Cleanup(enc.Close)
 	return &clip{t: t, cfg: cfg, enc: enc, buf: buf}
+}
+
+// newExportBuffer is a w x h XRGB8888 Buffer of d, closed with the test.
+func newExportBuffer(t *testing.T, d *Device, w, h int) *Buffer {
+	t.Helper()
+	mods, err := d.ExportModifiers(fourcc.XRGB8888)
+	if err != nil {
+		t.Fatal(err)
+	}
+	buf, err := d.NewBuffer(w, h, fourcc.XRGB8888, mods)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(buf.Close)
+	return buf
 }
 
 // frame encodes the buffer's pixels as the next frame, img written
@@ -333,6 +340,15 @@ func backends(d *Device, c Codec) []backend {
 		out = append(out, backend{VAAPI, func(cfg EncoderConfig) (*Encoder, error) { return newEncoderOn(d, cfg, newVABackend) }})
 	}
 	return out
+}
+
+func encodingBackends(t *testing.T, d *Device, c Codec) []backend {
+	t.Helper()
+	bs := backends(d, c)
+	if len(bs) == 0 {
+		t.Skipf("%s encodes no %s: Vulkan: %v; VA-API: %v", d.Name(), c, d.videoWhy[c], d.vaWhy(c))
+	}
+	return bs
 }
 
 // An encoder says which path it encodes through, the one it was made
@@ -522,15 +538,7 @@ func abs(n int) int { return max(n, -n) }
 // A Buffer reads back what was copied into it, opaque in XRGB8888.
 func TestBufferReadsBack(t *testing.T) {
 	d := exportingDevice(t)
-	mods, err := d.ExportModifiers(fourcc.XRGB8888)
-	if err != nil {
-		t.Fatal(err)
-	}
-	buf, err := d.NewBuffer(48, 20, fourcc.XRGB8888, mods)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer buf.Close()
+	buf := newExportBuffer(t, d, 48, 20)
 	src := encodeFrame(48, 20, 3)
 	buf.fill(t, src)
 	got, err := buf.ReadPixels()
@@ -637,15 +645,7 @@ func TestEncoderSourceAndTransform(t *testing.T) {
 				rs := cfg.sourceSize()
 				cfg.Source = image.Rectangle{Min: image.Pt(37, 21)}
 				cfg.Source.Max = cfg.Source.Min.Add(rs)
-				mods, err := d.ExportModifiers(fourcc.XRGB8888)
-				if err != nil {
-					t.Fatal(err)
-				}
-				buf, err := d.NewBuffer(200, 160, fourcc.XRGB8888, mods)
-				if err != nil {
-					t.Fatal(err)
-				}
-				defer buf.Close()
+				buf := newExportBuffer(t, d, 200, 160)
 				enc, err := d.NewEncoder(cfg)
 				if err != nil {
 					t.Fatal(err)

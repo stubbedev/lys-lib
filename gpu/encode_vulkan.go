@@ -97,6 +97,8 @@ func newVulkanBackend(d *Device, cfg EncoderConfig) (*vulkanBackend, error) {
 
 func (vb *vulkanBackend) kind() EncoderBackend { return VulkanVideo }
 
+func (vb *vulkanBackend) waitsForConversionOnGPU() bool { return true }
+
 func (vb *vulkanBackend) codedSize() [2]int { return vb.coded }
 
 func (vb *vulkanBackend) parameterSets() [][]byte { return vb.paramSets }

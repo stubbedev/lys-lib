@@ -432,13 +432,14 @@ func (vb *vaBackend) importPicture(b dmabuf.Buffer) (uint32, error) {
 
 func (vb *vaBackend) kind() EncoderBackend { return VAAPI }
 
+func (vb *vaBackend) waitsForConversionOnGPU() bool { return false }
+
 func (vb *vaBackend) codedSize() [2]int { return vb.coded }
 
 func (vb *vaBackend) parameterSets() [][]byte { return vb.codec.parameterSets() }
 
 // afterConvert copies the planes into slot's picture and hands it to
-// the driver, which reads it once encode has waited for the
-// conversion.
+// the driver, which reads it once the conversion has finished.
 func (vb *vaBackend) afterConvert(cb vk.CommandBuffer, slot int, planes vk.Buffer) {
 	d, pic := vb.d, vb.slots[slot].picture.image
 	copyPlanes(d, cb, planes, pic, vb.coded, vk.QueueFamilyForeignExt)
@@ -448,13 +449,11 @@ func (vb *vaBackend) afterConvert(cb vk.CommandBuffer, slot int, planes vk.Buffe
 	barrier2(d, cb, nil, release)
 }
 
-// encode waits for the conversion, which the driver cannot wait for
-// itself, and hands slot's surface to the driver with the frame's
-// parameter buffers, which the driver has copied when it returns.
+// encode hands slot's surface, whose conversion has finished, the
+// driver taking no semaphore to wait on, to the driver with the
+// frame's parameter buffers, which the driver has copied when it
+// returns.
 func (vb *vaBackend) encode(slot, frame, sinceIDR int, idrs uint16) error {
-	if err := vb.d.idle(); err != nil {
-		return fmt.Errorf("gpu: wait for the NV12 conversion of frame %d: %w", frame, err)
-	}
 	vb.frame.bufs = vb.frame.bufs[:0]
 	err := vb.render(slot, frame, sinceIDR, idrs)
 	for _, b := range vb.frame.bufs {
@@ -566,7 +565,11 @@ func (vb *vaBackend) rateControl() error {
 // driver repeats at an IDR, which ParameterSets gives.
 func (vb *vaBackend) collect(slot int) ([]byte, error) {
 	s, f := &vb.slots[slot], &vb.frame
-	if err := vb.dpy.SyncSurface(s.surface, vb.d.waitLimit); err != nil {
+	err := vb.dpy.SyncSurface(s.surface, vb.d.waitLimit)
+	if errors.Is(err, va.ErrTimeout) {
+		return nil, fmt.Errorf("%w: %w", ErrTimeout, err)
+	}
+	if err != nil {
 		return nil, err
 	}
 	data, err := vb.dpy.ReadCoded(f.coded[:0], s.coded)

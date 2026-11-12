@@ -7,6 +7,8 @@ import (
 	"testing"
 	"unsafe"
 
+	"github.com/ebitengine/purego"
+
 	"github.com/stubbedev/lys-lib/testbuild"
 )
 
@@ -81,4 +83,59 @@ func TestGenericValueIntegerIsTheUnionsInt(t *testing.T) {
 	if got := v.integer(); got != -5 {
 		t.Fatalf("integer() = %d, want -5", got)
 	}
+}
+
+func libcSymbol(t *testing.T, name string) uintptr {
+	t.Helper()
+	h, err := purego.Dlopen("libc.so.6", purego.RTLD_NOW|purego.RTLD_GLOBAL)
+	if err != nil {
+		t.Skipf("no libc to call: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := purego.Dlclose(h); err != nil {
+			t.Error(err)
+		}
+	})
+	sym, err := purego.Dlsym(h, name)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return sym
+}
+
+func TestACallAllocatesNothing(t *testing.T) {
+	if testbuild.Race {
+		t.Skip("the race detector allocates on its own")
+	}
+	abs := libcSymbol(t, "abs")
+	c := new(calls)
+	var got int32
+	if n := testing.AllocsPerRun(100, func() { got = status(c.call1(abs, cint(-7))) }); n != 0 {
+		t.Errorf("%v allocations a call, want 0", n)
+	}
+	if got != 7 {
+		t.Errorf("abs(-7) = %d through a call", got)
+	}
+}
+
+func TestAPointerArgumentSurvivesAStackCopy(t *testing.T) {
+	memset := libcSymbol(t, "memset")
+	for depth := range 300 {
+		got := make(chan uint64)
+		go func() { got <- fillAt(depth, memset) }()
+		if v := <-got; v != 0xabababababababab {
+			t.Fatalf("at depth %d memset left %#x", depth, v)
+		}
+	}
+}
+
+//go:noinline
+func fillAt(depth int, memset uintptr) uint64 {
+	if depth > 0 {
+		var pad [48]byte
+		return fillAt(depth-1, memset) + uint64(pad[depth%len(pad)])
+	}
+	var x uint64
+	new(calls).call3(memset, uintptr(unsafe.Pointer(&x)), 0xab, 8)
+	return x
 }

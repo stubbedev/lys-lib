@@ -184,6 +184,11 @@ type Encoder struct {
 	frames int
 	idrs   uint16
 	closed bool
+	// strayConversion is whether a conversion was submitted for a frame
+	// Encode then failed to encode: it may still read its slot's
+	// descriptor set, which the next conversion waits for before
+	// writing.
+	strayConversion bool
 	// collected are the packets of finished frames no call has returned
 	// yet: a call that fails after collecting one leaves it here.
 	collected []Packet
@@ -236,9 +241,10 @@ type encodeBackend interface {
 	afterConvert(cb vk.CommandBuffer, slot int, planes vk.Buffer)
 	// encode queues slot's frame, whose conversion is submitted, the
 	// encoder's frame-th, sinceIDR frames after its IDR, the idrs-th
-	// IDR's: after the conversion, without waiting here where the
-	// backend can wait for it on the GPU.
+	// IDR's: after the conversion, which it waits for on the GPU where
+	// waitsForConversionOnGPU says so and which has otherwise finished.
 	encode(slot, frame, sinceIDR int, idrs uint16) error
+	waitsForConversionOnGPU() bool
 	// collect waits for slot's frame, the device's wait limit at most,
 	// and returns its access unit.
 	collect(slot int) ([]byte, error)
@@ -461,7 +467,9 @@ var nv12Range = vk.ImageSubresourceRange{AspectMask: vk.ImageAspectFlags(vk.Imag
 // instead, as it does for the VA-API driver, which takes no semaphore:
 // the device's wait limit at most. A packet collected before a
 // conversion or an encode that then fails is not lost: the next Encode
-// or Flush returns it.
+// or Flush returns it. A frame whose wait times out, ErrTimeout, stays
+// in flight, its slot with it: the next Encode or Flush waits for it
+// again.
 func (e *Encoder) Encode(src *Buffer, pts time.Duration) ([]Packet, error) {
 	if e.closed {
 		return nil, errors.New("gpu: encode on a closed encoder")
@@ -492,6 +500,7 @@ func (e *Encoder) Encode(src *Buffer, pts time.Duration) ([]Packet, error) {
 	if err := e.backend.encode(i, e.frames, sinceIDR, e.idrs); err != nil {
 		return nil, errors.Join(err, e.d.idle())
 	}
+	e.strayConversion = false
 	slot.busy, slot.pts, slot.key = true, pts, sinceIDR == 0
 	if sinceIDR == 0 {
 		e.idrs++
@@ -598,7 +607,7 @@ func (e *Encoder) uploadOverlay(img *image.RGBA) error {
 // Flush waits for the frames in flight and returns their packets,
 // oldest first, behind any an Encode that failed had collected. When
 // collecting a frame fails, the packets before it come out of the next
-// Flush.
+// Flush, and a frame whose wait timed out stays in flight for it.
 func (e *Encoder) Flush() ([]Packet, error) {
 	for i := range encodeSlots {
 		i := (e.frames + i) % encodeSlots
@@ -614,14 +623,15 @@ func (e *Encoder) Flush() ([]Packet, error) {
 	return e.takeCollected(), nil
 }
 
-// collect waits for slot i's frame and takes its packet.
+// collect waits for slot i's frame and takes its packet. The slot is
+// free again only once it has: a frame whose wait failed keeps it.
 func (e *Encoder) collect(i int) (Packet, error) {
 	slot := &e.slots[i]
-	slot.busy = false
 	data, err := e.backend.collect(i)
 	if err != nil {
 		return Packet{}, fmt.Errorf("gpu: the frame at %v: %w", slot.pts, err)
 	}
+	slot.busy = false
 	return Packet{Data: data, PTS: slot.pts, Key: slot.key}, nil
 }
 
@@ -635,6 +645,12 @@ func (e *Encoder) convert(src *Buffer, origin image.Point, slot int) error {
 		return err
 	}
 	d, c := e.d, &e.cmd
+	if e.strayConversion {
+		if err := d.idle(); err != nil {
+			return err
+		}
+		e.strayConversion = false
+	}
 	c.images = [2]vk.DescriptorImageInfo{
 		{Sampler: d.sampler, ImageView: view, ImageLayout: vk.ImageLayoutGeneral},
 		{Sampler: e.linear, ImageView: view, ImageLayout: vk.ImageLayoutGeneral},
@@ -654,10 +670,11 @@ func (e *Encoder) convert(src *Buffer, origin image.Point, slot int) error {
 		frameW: intconv.Must[int32](e.cfg.Width), frameH: intconv.Must[int32](e.cfg.Height), codedW: intconv.Must[int32](e.coded[0]), codedH: intconv.Must[int32](e.coded[1]), overlay: over,
 		originX: intconv.Must[int32](origin.X), originY: intconv.Must[int32](origin.Y), transform: intconv.Must[int32](e.cfg.Transform),
 	}
-	fenced := d.implicitFences
+	fenced := d.implicitFences && e.backend.waitsForConversionOnGPU()
 	if err := d.submitAsync(func(cb vk.CommandBuffer) { e.recordConvert(cb, src.e.image, slot) }, submission{signals: fenced}); err != nil {
 		return err
 	}
+	e.strayConversion = true
 	return d.fenceDmabuf(src.e.buf.Planes[0].FD, fenced)
 }
 

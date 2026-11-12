@@ -91,7 +91,10 @@ func main() {
 - A packet collected before a conversion or an encode that then fails comes
   out of the next `Encode` or `Flush`.
 - Every wait is bounded by the device's wait limit, the VA-API driver's for a
-  picture too: a hung GPU is an error instead of a frozen caller.
+  picture too: a hung GPU is an error instead of a frozen caller. A wait that
+  runs out is `ErrTimeout`, and the frame stays in flight: its slot is not
+  reused until a later `Encode` or `Flush` has waited for it and returned its
+  packet.
 - An `Encoder` belongs to one goroutine.
 - `NewEncoder` fails with `ErrNoVideoEncoder`, carrying both backends' reasons,
   when neither encodes the codec.

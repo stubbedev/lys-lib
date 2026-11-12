@@ -1,6 +1,7 @@
 package gpu
 
 import (
+	"errors"
 	"image"
 	"image/color"
 	"slices"
@@ -111,10 +112,19 @@ func TestEncodeWithoutAFenceFinishesTheConversion(t *testing.T) {
 }
 
 // A packet Encode collected before its conversion failed is not lost:
-// the next Encode returns it, ahead of the frames that follow.
+// the next Encode returns it, ahead of the frames that follow, on every
+// backend the device encodes on.
 func TestEncodeKeepsThePacketOfAFrameBeforeAFailure(t *testing.T) {
 	d := exportingDevice(t)
-	c := vulkanClip(t, d, H264)
+	for _, b := range encodingBackends(t, d, H264) {
+		t.Run(b.kind.String(), func(t *testing.T) { testKeepsThePacketOfAFrameBeforeAFailure(t, d, b) })
+	}
+}
+
+func testKeepsThePacketOfAFrameBeforeAFailure(t *testing.T, d *Device, b backend) {
+	cfg := EncoderConfig{Codec: H264, Width: 320, Height: 240, FrameRate: 30, KeyInterval: 4, QP: 20}
+	c := openClip(t, d, cfg, b.open)
+	c.buf.fill(t, encodeFrame(cfg.Width, cfg.Height, 0))
 	at := func(frame int) time.Duration { return time.Duration(frame) * time.Second / 30 }
 	for frame := range encodeSlots {
 		if out, err := c.enc.Encode(c.buf, at(frame)); err != nil || len(out) != 0 {
@@ -139,4 +149,67 @@ func TestEncodeKeepsThePacketOfAFrameBeforeAFailure(t *testing.T) {
 			t.Errorf("flushed packet %d presents at %v with %d bytes, want %v", i, p.PTS, len(p.Data), at(1+i))
 		}
 	}
+}
+
+// A frame whose wait for its encode times out stays in flight, on every
+// backend: the Encode that timed out returns no packet and encodes
+// nothing, the next Encode waits for that frame again before its slot
+// takes another, and its packet comes out then. An Encode whose wait for
+// its conversion times out encodes nothing either, and the next one
+// converts again. The stream decodes whole, every frame its own picture.
+func TestEncodeKeepsAFrameWhoseWaitTimedOutInFlight(t *testing.T) {
+	for _, codec := range []Codec{H264, H265} {
+		t.Run(codec.String(), func(t *testing.T) {
+			d, ffmpeg := encodingDevice(t, codec)
+			for _, b := range encodingBackends(t, d, codec) {
+				t.Run(b.kind.String(), func(t *testing.T) { testKeepsAFrameWhoseWaitTimedOutInFlight(t, d, ffmpeg, b, codec) })
+			}
+		})
+	}
+}
+
+func testKeepsAFrameWhoseWaitTimedOutInFlight(t *testing.T, d *Device, ffmpeg string, b backend, codec Codec) {
+	cfg := EncoderConfig{Codec: codec, Width: 3840, Height: 2160, FrameRate: 30, KeyInterval: 30, QP: 10}
+	c := openClip(t, d, cfg, b.open)
+	imgs := make([]*image.RGBA, encodeSlots+1)
+	bufs := make([]*Buffer, len(imgs))
+	for i := range imgs {
+		imgs[i], bufs[i] = encodeFrame(cfg.Width, cfg.Height, i), newExportBuffer(t, d, cfg.Width, cfg.Height)
+		bufs[i].fill(t, imgs[i])
+	}
+	at := func(frame int) time.Duration { return time.Duration(frame) * time.Second / 30 }
+	limit, bound := d.waitLimit, time.Millisecond
+	var src []*image.RGBA
+	timedOut := -1
+	for timedOut < 0 || c.frames < timedOut+encodeSlots+1 {
+		if c.frames == 12 {
+			t.Fatalf("no wait of %v for a frame timed out in %d frames of %dx%d at QP %d", bound, c.frames, cfg.Width, cfg.Height, cfg.QP)
+		}
+		buf := bufs[c.frames%len(bufs)]
+		if timedOut < 0 {
+			d.waitLimit = bound
+		}
+		out, err := c.enc.Encode(buf, at(c.frames))
+		d.waitLimit = limit
+		if err != nil {
+			if !errors.Is(err, ErrTimeout) || len(out) != 0 {
+				t.Fatalf("frame %d with a %v wait: %d packets, %v, want ErrTimeout", c.frames, bound, len(out), err)
+			}
+			oldest := at(c.frames - encodeSlots)
+			frameTimedOut := strings.Contains(err.Error(), "the frame at "+oldest.String())
+			if frameTimedOut {
+				timedOut = c.frames
+			}
+			if out, err = c.enc.Encode(buf, at(c.frames)); err != nil {
+				t.Fatalf("frame %d again, waiting %v: %v", c.frames, limit, err)
+			}
+			if frameTimedOut && (len(out) == 0 || out[len(out)-1].PTS != oldest) {
+				t.Fatalf("frame %d again returned %d packets, want the timed-out frame's, at %v, last", c.frames, len(out), oldest)
+			}
+		}
+		c.pkts = append(c.pkts, out...)
+		src = append(src, imgs[c.frames%len(imgs)])
+		c.frames++
+	}
+	checkDecodes(t, ffmpeg, c, src)
 }

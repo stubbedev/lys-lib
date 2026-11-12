@@ -12,13 +12,20 @@ import (
 // consumer closes it and opens a new one, or ends so that a supervisor can.
 var ErrDeviceLost = errors.New("gpu: the Vulkan device is lost")
 
+// ErrTimeout reports work the device had not finished within its wait
+// limit. An Encoder keeps the frame it waited for in flight: a later
+// Encode or Flush waits for it again.
+var ErrTimeout = errors.New("gpu: the device did not finish within the wait limit")
+
 // resultError is a Vulkan result other than VK_SUCCESS as an error.
 type resultError vk.Result
 
-// Error names the results Vulkan names an error by: the lost device,
-// and what a video capability query refuses a profile with.
+// Error names the results Vulkan names an error by: the timeout, the
+// lost device, and what a video capability query refuses a profile with.
 func (r resultError) Error() string {
 	switch vk.Result(r) {
+	case vk.Timeout:
+		return "VK_TIMEOUT"
 	case vk.ErrorDeviceLost:
 		return "VK_ERROR_DEVICE_LOST"
 	case vk.ErrorImageUsageNotSupportedKhr:
@@ -37,8 +44,14 @@ func (r resultError) Error() string {
 	return fmt.Sprintf("VkResult %d", vk.Result(r))
 }
 
-// Is makes VK_ERROR_DEVICE_LOST, wrapped wherever a result became an
-// error, match ErrDeviceLost.
+// Is makes VK_ERROR_DEVICE_LOST and VK_TIMEOUT, wrapped wherever a
+// result became an error, match ErrDeviceLost and ErrTimeout.
 func (r resultError) Is(target error) bool {
-	return target == ErrDeviceLost && vk.Result(r) == vk.ErrorDeviceLost
+	switch target {
+	case ErrDeviceLost:
+		return vk.Result(r) == vk.ErrorDeviceLost
+	case ErrTimeout:
+		return vk.Result(r) == vk.Timeout
+	}
+	return false
 }

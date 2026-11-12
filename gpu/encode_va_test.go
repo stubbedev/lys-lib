@@ -10,6 +10,9 @@ import (
 	"testing"
 	"time"
 
+	"golang.org/x/sys/unix"
+
+	"github.com/stubbedev/lys-lib/dmabuf"
 	"github.com/stubbedev/lys-lib/fourcc"
 	"github.com/stubbedev/lys-lib/internal/va"
 	"github.com/stubbedev/lys-lib/third_party/vk"
@@ -71,14 +74,10 @@ func planesDiffer(pix []byte, w, h int, y, u, v byte) (int, bool) {
 // it reads ours wrong.
 func TestVASurfaceHoldsTheConversion(t *testing.T) {
 	d := exportingDevice(t)
-	vaCodecs := d.vaCodecs()
-	if len(vaCodecs) == 0 {
-		t.Skipf("%s's VA-API driver encodes nothing: %v", d.Name(), d.vaWhy(H264))
-	}
-	for _, codec := range vaCodecs {
+	for _, codec := range vaEncodedCodecs(t, d) {
 		t.Run(codec.String(), func(t *testing.T) {
 			cfg := EncoderConfig{Codec: codec, Width: 320, Height: 240, FrameRate: 30, KeyInterval: 30, QP: 20}
-			c := openClip(t, d, cfg, func(cfg EncoderConfig) (*Encoder, error) { return newEncoderOn(d, cfg, newVABackend) })
+			c := vaClip(t, d, cfg)
 			vb := c.enc.backend.(*vaBackend)
 			if desc, err := vb.dpy.ExportSurface(vb.recon[0]); err != nil {
 				t.Logf("the driver exports no surface: %v", err)
@@ -179,18 +178,14 @@ func TestNV12PicturesExport(t *testing.T) {
 // backend does but the zero-copy import, which this sets apart.
 func TestVAEncodesFromItsOwnSurfaces(t *testing.T) {
 	d := exportingDevice(t)
-	codecs := d.vaCodecs()
-	if len(codecs) == 0 {
-		t.Skipf("%s's VA-API driver encodes nothing: %v", d.Name(), d.vaWhy(H264))
-	}
 	ffmpeg, err := exec.LookPath("ffmpeg")
 	if err != nil {
 		t.Skip("no ffmpeg to decode with")
 	}
-	for _, codec := range codecs {
+	for _, codec := range vaEncodedCodecs(t, d) {
 		t.Run(codec.String(), func(t *testing.T) {
 			cfg := EncoderConfig{Codec: codec, Width: 640, Height: 360, FrameRate: 30, KeyInterval: 15, QP: 20}
-			c := openClip(t, d, cfg, func(cfg EncoderConfig) (*Encoder, error) { return newEncoderOn(d, cfg, newVABackend) })
+			c := vaClip(t, d, cfg)
 			vb := c.enc.backend.(*vaBackend)
 			w, h := vb.coded[0], vb.coded[1]
 			own, err := vb.dpy.CreateSurfaces(va.RTFormatYUV420, w, h, encodeSlots)
@@ -236,6 +231,139 @@ func TestVAEncodesFromItsOwnSurfaces(t *testing.T) {
 				c.frames++
 			}
 			checkDecodes(t, ffmpeg, c, src)
+		})
+	}
+}
+
+func vaClip(t *testing.T, d *Device, cfg EncoderConfig) *clip {
+	t.Helper()
+	return openClip(t, d, cfg, func(cfg EncoderConfig) (*Encoder, error) { return newEncoderOn(d, cfg, newVABackend) })
+}
+
+func vaEncodedCodecs(t *testing.T, d *Device) []Codec {
+	t.Helper()
+	codecs := d.vaCodecs()
+	if len(codecs) == 0 {
+		t.Skipf("%s's VA-API driver encodes nothing: %v", d.Name(), d.vaWhy(H264))
+	}
+	return codecs
+}
+
+type cpuBuffer struct {
+	buf *Buffer
+	fd  int
+	pix []byte
+}
+
+func newCPUBuffer(t *testing.T, d *Device, w, h int) *cpuBuffer {
+	t.Helper()
+	mods, err := d.ExportModifiers(fourcc.XRGB8888)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Contains(mods, fourcc.Linear) {
+		t.Skipf("%s exports no linear XRGB8888 buffer for the CPU to write", d.Name())
+	}
+	buf, err := d.NewBuffer(w, h, fourcc.XRGB8888, []fourcc.Modifier{fourcc.Linear})
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(buf.Close)
+	plane := buf.Dmabuf().Planes[0]
+	pix, err := unix.Mmap(plane.FD, 0, int(plane.Offset)+int(plane.Stride)*h, unix.PROT_READ|unix.PROT_WRITE, unix.MAP_SHARED)
+	if err != nil {
+		t.Fatalf("map the %dx%d linear buffer: %v", w, h, err)
+	}
+	t.Cleanup(func() {
+		if err := unix.Munmap(pix); err != nil {
+			t.Errorf("unmap the %dx%d linear buffer: %v", w, h, err)
+		}
+	})
+	return &cpuBuffer{buf: buf, fd: plane.FD, pix: pix}
+}
+
+func (b *cpuBuffer) put(img *image.RGBA) {
+	plane := b.buf.Dmabuf().Planes[0]
+	r := img.Rect
+	for y := range r.Dy() {
+		row := b.pix[int(plane.Offset)+y*int(plane.Stride):]
+		for x := range r.Dx() {
+			p := img.Pix[y*img.Stride+x*4:]
+			row[x*4], row[x*4+1], row[x*4+2], row[x*4+3] = p[2], p[1], p[0], 0xff
+		}
+	}
+}
+
+func (b *cpuBuffer) write(t *testing.T, img *image.RGBA) {
+	t.Helper()
+	if err := dmabuf.BeginCPUWrite(b.fd); err != nil {
+		t.Fatal(err)
+	}
+	b.put(img)
+	if err := dmabuf.EndCPUWrite(b.fd); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestVAEncodeLeavesItsSourceFreeToRefill(t *testing.T) {
+	d := exportingDevice(t)
+	ffmpeg, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Skip("no ffmpeg to decode with")
+	}
+	for _, codec := range vaEncodedCodecs(t, d) {
+		t.Run(codec.String(), func(t *testing.T) {
+			cfg := EncoderConfig{Codec: codec, Width: 640, Height: 360, FrameRate: 30, KeyInterval: 15, QP: 20}
+			c := vaClip(t, d, cfg)
+			cpu := newCPUBuffer(t, d, cfg.Width, cfg.Height)
+			c.buf = cpu.buf
+			poison := solid(cfg.Width, cfg.Height, color.RGBA{255, 0, 255, 255})
+			src := make([]*image.RGBA, 40)
+			for i := range src {
+				src[i] = encodeFrame(cfg.Width, cfg.Height, i)
+				cpu.write(t, src[i])
+				out, err := c.enc.Encode(c.buf, time.Duration(i)*time.Second/30)
+				if err != nil {
+					t.Fatalf("frame %d: %v", i, err)
+				}
+				if n := len(d.inflight); n != 0 {
+					t.Fatalf("frame %d: %d submissions of the device in flight when Encode returned, want its conversion finished", i, n)
+				}
+				cpu.put(poison)
+				c.pkts = append(c.pkts, out...)
+				c.frames++
+			}
+			checkDecodes(t, ffmpeg, c, src)
+		})
+	}
+}
+
+func TestVAWaitForAnUnfinishedPictureEndsAtTheLimit(t *testing.T) {
+	d := exportingDevice(t)
+	for _, codec := range vaEncodedCodecs(t, d) {
+		t.Run(codec.String(), func(t *testing.T) {
+			cfg := EncoderConfig{Codec: codec, Width: 3840, Height: 2160, FrameRate: 30, KeyInterval: 30, QP: 0}
+			c := vaClip(t, d, cfg)
+			c.buf.fill(t, encodeFrame(cfg.Width, cfg.Height, 0))
+			if _, err := c.enc.Encode(c.buf, 0); err != nil {
+				t.Fatal(err)
+			}
+			limit, bound := d.waitLimit, time.Millisecond
+			d.waitLimit = bound
+			start := time.Now()
+			_, err := c.enc.Flush()
+			took := time.Since(start)
+			d.waitLimit = limit
+			if !errors.Is(err, va.ErrTimeout) {
+				t.Fatalf("a %v wait for a %dx%d picture the driver had just been handed: %v, want va.ErrTimeout", bound, cfg.Width, cfg.Height, err)
+			}
+			if took < bound || took > bound+50*time.Millisecond {
+				t.Errorf("the %v wait took %v", bound, took)
+			}
+			vb := c.enc.backend.(*vaBackend)
+			if err := vb.dpy.SyncSurface(vb.slots[0].surface, limit); err != nil {
+				t.Errorf("the picture the wait gave up on does not finish within %v: %v", limit, err)
+			}
 		})
 	}
 }

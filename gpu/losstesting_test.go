@@ -4,7 +4,6 @@ import (
 	"errors"
 	"image"
 	"image/color"
-	"slices"
 	"testing"
 
 	"github.com/stubbedev/lys-lib/media/demux"
@@ -97,23 +96,24 @@ func TestLoseForTestingFailsADecoder(t *testing.T) {
 	}
 }
 
-// An armed loss reaches an encoder through its device: Encode fails
-// with ErrDeviceLost.
+// An armed loss reaches an encoder through its device, on every
+// backend: Encode fails with ErrDeviceLost.
 func TestLoseForTestingFailsAnEncoder(t *testing.T) {
-	d := exportingDevice(t)
-	if d.video == nil || !slices.Contains(d.video.codecs, H264) {
-		t.Skipf("%s encodes no H.264 on a Vulkan video queue: %v", d.Name(), d.videoWhy[H264])
-	}
-	cfg := EncoderConfig{Codec: H264, Width: 320, Height: 240, FrameRate: 30, KeyInterval: 4, QP: 20}
-	c := openClip(t, d, cfg, func(cfg EncoderConfig) (*Encoder, error) { return newEncoderOn(d, cfg, newVulkanBackend) })
-	c.buf.fill(t, encodeFrame(cfg.Width, cfg.Height, 0))
-	if _, err := c.enc.Encode(c.buf, 0); err != nil {
-		t.Fatal(err)
-	}
-	d.LoseForTesting()
-	for frame := 1; frame <= encodeSlots; frame++ {
-		if _, err := c.enc.Encode(c.buf, 0); !errors.Is(err, ErrDeviceLost) {
-			t.Errorf("Encode %d on the lost device: %v, want ErrDeviceLost", frame, err)
-		}
+	for i, b := range encodingBackends(t, exportingDevice(t), H264) {
+		t.Run(b.kind.String(), func(t *testing.T) {
+			d := exportingDevice(t)
+			cfg := EncoderConfig{Codec: H264, Width: 320, Height: 240, FrameRate: 30, KeyInterval: 4, QP: 20}
+			c := openClip(t, d, cfg, backends(d, H264)[i].open)
+			c.buf.fill(t, encodeFrame(cfg.Width, cfg.Height, 0))
+			if _, err := c.enc.Encode(c.buf, 0); err != nil {
+				t.Fatal(err)
+			}
+			d.LoseForTesting()
+			for frame := 1; frame <= encodeSlots; frame++ {
+				if _, err := c.enc.Encode(c.buf, 0); !errors.Is(err, ErrDeviceLost) {
+					t.Errorf("Encode %d on the lost device: %v, want ErrDeviceLost", frame, err)
+				}
+			}
+		})
 	}
 }
