@@ -182,6 +182,12 @@ func TestBidiRunsAutoDetect(t *testing.T) {
 	if !RTL("hello", DirectionRTL) {
 		t.Error("forced RTL must resolve right to left even for LTR text")
 	}
+	if !RTL("", DirectionRTL) {
+		t.Error("an empty paragraph forced RTL resolved left to right")
+	}
+	if RTL("", DirectionLTR) {
+		t.Error("an empty paragraph forced LTR resolved right to left")
+	}
 	if runs := BidiRuns("", DirectionAuto); len(runs) != 0 {
 		t.Errorf("empty text runs = %v, want none", runs)
 	}

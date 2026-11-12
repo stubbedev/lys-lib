@@ -111,7 +111,7 @@ func resolve(s string, d Direction) resolution {
 // ordered from the shaper, once.
 func resolveUncached(s string, d Direction) resolution {
 	if s == "" {
-		return resolution{}
+		return resolution{rtl: firstStrongRTL(s, d)}
 	}
 	var p tsbidi.Paragraph
 	runs := p.SegmentString(s, d.tsDirection())
