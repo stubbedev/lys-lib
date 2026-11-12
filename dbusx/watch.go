@@ -32,6 +32,39 @@ type lent interface{ closeLent() error }
 // one of its interfaces change.
 var PropertiesChanged = NewSignal[ChangedProperties](PropertiesInterface, "PropertiesChanged")
 
+// ObjectManagerInterface is where an object manager announces the
+// objects below it gaining and losing interfaces (InterfacesAdded,
+// InterfacesRemoved).
+const ObjectManagerInterface = "org.freedesktop.DBus.ObjectManager"
+
+// AddedInterfaces is what InterfacesAdded carries: the object that
+// gained interfaces, and each of them with its properties. A route
+// lends it to its handler: the descriptors in Interfaces are closed
+// once the handler returns, so a handler that keeps one duplicates it.
+type AddedInterfaces struct {
+	Object     dbus.ObjectPath                    `dbus:"object_path"`
+	Interfaces map[string]map[string]dbus.Variant `dbus:"interfaces_and_properties"`
+}
+
+func (a AddedInterfaces) closeLent() error {
+	return dbus.CloseFDs([]any{a.Interfaces})
+}
+
+// RemovedInterfaces is what InterfacesRemoved carries: the object that
+// lost interfaces, and their names.
+type RemovedInterfaces struct {
+	Object     dbus.ObjectPath `dbus:"object_path"`
+	Interfaces []string        `dbus:"interfaces"`
+}
+
+// InterfacesAdded is the signal an object manager sends when an object
+// below it gains interfaces, or appears with them.
+var InterfacesAdded = NewSignal[AddedInterfaces](ObjectManagerInterface, "InterfacesAdded")
+
+// InterfacesRemoved is the signal an object manager sends when an
+// object below it loses interfaces, or disappears with them.
+var InterfacesRemoved = NewSignal[RemovedInterfaces](ObjectManagerInterface, "InterfacesRemoved")
+
 // ErrDisconnected is what Watch.Stop reports when the watch ended
 // because its connection closed.
 var ErrDisconnected = errors.New("the bus connection closed")
@@ -157,8 +190,8 @@ func (f arg0Filter) narrow(match []dbus.MatchOption) []dbus.MatchOption {
 // was sent before the peer answered. An error handle returns is
 // reported as the watch reports a signal it could not decode. The
 // signal may carry arguments after those s declares (Signal.Decode);
-// their descriptors are closed, as are those of a ChangedProperties
-// once handle returns.
+// their descriptors are closed, as are those of a ChangedProperties or
+// an AddedInterfaces once handle returns.
 func On[T any](s Signal[T], path dbus.ObjectPath, handle func(T, dbus.Sequence) error) Route {
 	return on(s, objects{path: path}, func(_ dbus.ObjectPath, v T, sent dbus.Sequence) error {
 		return handle(v, sent)

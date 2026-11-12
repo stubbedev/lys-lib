@@ -153,6 +153,7 @@ func main() {
 | Every name changing owner, or those in a namespace | `OnNameOwnerChanged`, narrowed by `WithArg0` or `WithArg0Namespace` |
 | A name losing its owner: a peer leaving the bus | `OnNameLost` |
 | A signal from every object in a path namespace | `OnUnder` |
+| An object's properties changing, an object manager's objects coming and going | `PropertiesChanged`, `InterfacesAdded`, `InterfacesRemoved` |
 | Every other signal of an interface, to fail on what a contract does not define | an `OnOthers` route, listed last |
 | A signal channel of your own, taken off the connection | `RemoveSignal`: it closes the descriptors of what nobody read |
 | Proving a descriptor sent over the bus was closed by everyone it reached | `dbustest.NewPipe`, `Pipe.RequireEveryCopyClosed` |
@@ -191,7 +192,10 @@ first argument in a namespace, as the match rule's `arg0namespace` says:
 `org.mpris.MediaPlayer2` takes `org.mpris.MediaPlayer2.vlc`, not
 `org.mpris.MediaPlayer2x`. `OnUnder(s, namespace, …)` is `On` for the object at
 `namespace` and every object below it (`path_namespace`), its handler told
-which object sent the signal. A `PropertiesChanged` handler only borrows the
+which object sent the signal. `ObjectManagerInterface`'s `InterfacesAdded`
+(`AddedInterfaces`) and `InterfacesRemoved` (`RemovedInterfaces`) are declared
+beside `PropertiesChanged`, so an object manager's client routes them with `On`.
+A `PropertiesChanged` or `InterfacesAdded` handler only borrows the
 values it is handed: the descriptors among them are closed once it returns,
 whether it read them or not, so a handler that keeps one duplicates it. `OnOwnerChange(name, …)` is the bus's
 announcement that a name changed owner, taken from the bus whoever the watch's
