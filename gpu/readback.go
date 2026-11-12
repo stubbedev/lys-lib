@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"image"
 
+	"github.com/stubbedev/lys-lib/dmabuf"
 	"github.com/stubbedev/lys-lib/intconv"
 	"github.com/stubbedev/lys-lib/third_party/vk"
 )
@@ -71,7 +72,7 @@ func (r *Readback) Copy(src *Target) error {
 		r.copied = false
 	}
 	err := d.submitAsync(func(cb vk.CommandBuffer) {
-		src.acquire(cb)
+		src.acquire(cb, dmabuf.Read)
 		src.s.download(cb, image.Rect(0, 0, r.w, r.h), r.buf, 0)
 		d.hostReadBarrier(cb)
 		src.release(cb)

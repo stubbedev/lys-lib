@@ -10,6 +10,7 @@ import (
 	"time"
 	"unsafe"
 
+	"github.com/stubbedev/lys-lib/dmabuf"
 	"github.com/stubbedev/lys-lib/intconv"
 	"github.com/stubbedev/lys-lib/third_party/vk"
 )
@@ -674,11 +675,15 @@ func (e *Encoder) convert(src *Buffer, origin image.Point, slot int) error {
 		originX: intconv.Must[int32](origin.X), originY: intconv.Must[int32](origin.Y), transform: intconv.Must[int32](e.cfg.Transform),
 	}
 	fenced := d.implicitFences && e.backend.waitsForConversionOnGPU()
-	if err := d.submitAsync(func(cb vk.CommandBuffer) { e.recordConvert(cb, src.e.image, slot) }, submission{signals: fenced}); err != nil {
+	err = d.submitAsync(func(cb vk.CommandBuffer) {
+		d.awaitDmabuf(src.sync, dmabuf.Read)
+		e.recordConvert(cb, src.e.image, slot)
+	}, submission{signals: fenced})
+	if err != nil {
 		return err
 	}
 	e.strayConversion = true
-	return d.fenceDmabuf(src.e.buf.Planes[0].FD, fenced)
+	return d.fenceDmabuf(src.sync, fenced)
 }
 
 // recordConvert records slot's conversion of src, the caller's buffer:

@@ -72,6 +72,9 @@ type timing struct {
 	// points it signals for them (signalTimeline).
 	timelineWaits   []timelineWait
 	timelineSignals []timelineWait
+	// waitErr is why a wait the next submission was to make could not
+	// be set up (awaitDmabuf): that submission fails with it instead.
+	waitErr error
 	// fault is a result a test makes the device's next submission, on
 	// any of its queues, return in place of submitting (LoseForTesting);
 	// VK_SUCCESS, the zero value, for none. faultAfter is how many
@@ -574,7 +577,7 @@ func (d *Device) dropWaits() {
 	for _, s := range d.waits {
 		d.cmds.DestroySemaphore(d.device, s, nil)
 	}
-	d.waits, d.timelineWaits, d.timelineSignals = d.waits[:0], d.timelineWaits[:0], d.timelineSignals[:0]
+	d.waits, d.timelineWaits, d.timelineSignals, d.waitErr = d.waits[:0], d.timelineWaits[:0], d.timelineSignals[:0], nil
 }
 
 // takeFault is the result a test set for the next submission, which it
@@ -614,6 +617,9 @@ func (d *Device) submitResult(call string, r vk.Result) error {
 func (d *Device) LoseForTesting() { d.fault = vk.ErrorDeviceLost }
 
 func (d *Device) submit1(cb vk.CommandBuffer, signal vk.Semaphore, sub submission) error {
+	if d.waitErr != nil {
+		return d.waitErr
+	}
 	if err := d.retireSyncFile(); err != nil {
 		return err
 	}

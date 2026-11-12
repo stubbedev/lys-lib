@@ -8,6 +8,7 @@ import (
 	"unsafe"
 
 	"github.com/stubbedev/lys-lib/debug"
+	"github.com/stubbedev/lys-lib/dmabuf"
 	"github.com/stubbedev/lys-lib/intconv"
 	"github.com/stubbedev/lys-lib/render"
 	"github.com/stubbedev/lys-lib/third_party/typesetting/font"
@@ -488,7 +489,7 @@ func (f *frame) clear() {
 // sharing a surface in one render pass.
 func (f *frame) record(cb vk.CommandBuffer, final bool) {
 	d := f.d
-	f.target.acquire(cb)
+	f.target.acquire(cb, dmabuf.Write)
 	f.carried = f.carried[:0]
 	for _, c := range f.carries {
 		f.recordCarry(cb, c)

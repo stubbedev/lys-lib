@@ -8,6 +8,7 @@ import (
 	"slices"
 	"unsafe"
 
+	"github.com/stubbedev/lys-lib/dmabuf"
 	"github.com/stubbedev/lys-lib/fourcc"
 	"github.com/stubbedev/lys-lib/intconv"
 	"github.com/stubbedev/lys-lib/third_party/vk"
@@ -35,7 +36,8 @@ type Texture struct {
 	planeImages []vk.Image
 	planeViews  [3]vk.ImageView
 	surf        *surface
-	foreign     bool
+	// sync is an imported texture's dmabufs, whose producer writes it.
+	sync implicitSync
 	// nearest marks a texture its driver filters no other way.
 	nearest bool
 	closed  bool
@@ -127,7 +129,7 @@ func (t *Texture) Update(r image.Rectangle, stride int, pix []byte) error {
 	if t.closed {
 		return errors.New("gpu: update of a closed texture")
 	}
-	if t.foreign {
+	if t.foreign() {
 		return errors.New("gpu: an imported texture is written by its producer, not uploaded")
 	}
 	if t.surf != nil {
@@ -287,6 +289,7 @@ func (t *Texture) Close() {
 
 func (t *Texture) release() {
 	d := t.d
+	t.sync.close()
 	for i := range t.sets {
 		t.sets[i].free(d)
 	}
@@ -316,7 +319,13 @@ func (t *Texture) release() {
 	t.memory = nil
 }
 
+// foreign reports a texture imported from its producer.
+func (t *Texture) foreign() bool { return len(t.sync.fds) > 0 }
+
+// acquireForeign records taking an imported texture from its producer,
+// once its producer's writes are done.
 func (t *Texture) acquireForeign(cb vk.CommandBuffer) {
+	t.d.awaitDmabuf(t.sync, dmabuf.Read)
 	t.foreignBarrier(cb, vk.ImageLayoutShaderReadOnlyOptimal, vk.QueueFamilyForeignExt, t.d.family)
 }
 

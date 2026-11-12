@@ -282,7 +282,7 @@ func (d *Device) constantsPipelineOf(ct *compTarget, frag vk.ShaderModule, layou
 // importPlanes samples b through plain images over its planes.
 func (d *Device) importPlanes(b dmabuf.Buffer, l yuvImageLayout, c YCbCr) (*Texture, error) {
 	pf, _ := lookupPixelFormat(b.Format)
-	t := &Texture{d: d, format: b.Format, pf: pf, w: b.Width, h: b.Height, foreign: true, layout: vk.ImageLayoutGeneral}
+	t := &Texture{d: d, format: b.Format, pf: pf, w: b.Width, h: b.Height, layout: vk.ImageLayoutGeneral}
 	if len(b.Planes) != t.pf.planes {
 		return nil, fmt.Errorf("gpu: DRM format %s has %d planes, the dmabuf %d", b.Format, t.pf.planes, len(b.Planes))
 	}
@@ -294,7 +294,6 @@ func (d *Device) importPlanes(b dmabuf.Buffer, l yuvImageLayout, c YCbCr) (*Text
 		t.release()
 		return nil, err
 	}
-	d.textures[t] = struct{}{}
 	return t, nil
 }
 

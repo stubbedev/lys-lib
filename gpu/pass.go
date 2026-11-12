@@ -9,6 +9,7 @@ import (
 	"slices"
 	"unsafe"
 
+	"github.com/stubbedev/lys-lib/dmabuf"
 	"github.com/stubbedev/lys-lib/third_party/vk"
 )
 
@@ -603,7 +604,7 @@ func (p *Pass) submit() error {
 
 func (p *Pass) record(cb vk.CommandBuffer) {
 	d, s, ct := p.d, &p.t.s, p.ct
-	p.t.acquire(cb)
+	p.t.acquire(cb, dmabuf.Write)
 	foreign := d.passForeign[:0]
 	var bounds image.Rectangle
 	for _, r := range p.damage {
@@ -626,7 +627,7 @@ func (p *Pass) record(cb vk.CommandBuffer) {
 			if t == nil {
 				continue
 			}
-			if t.foreign && !slices.Contains(foreign, t) {
+			if t.foreign() && !slices.Contains(foreign, t) {
 				foreign = append(foreign, t)
 				t.acquireForeign(cb)
 				d.passWork.barriers++

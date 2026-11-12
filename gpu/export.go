@@ -297,6 +297,8 @@ func (e *exported) close(d *Device) {
 type Buffer struct {
 	d *Device
 	e exported
+	// sync is the buffer's dmabuf, which its writer fills.
+	sync implicitSync
 	// sampled is the view the encoder reads the buffer through, made
 	// on its first frame.
 	sampled vk.ImageView
@@ -336,7 +338,12 @@ func (d *Device) NewBuffer(width, height int, format fourcc.Format, offered []fo
 	if err != nil {
 		return nil, err
 	}
-	b := &Buffer{d: d, e: e}
+	sync, err := newImplicitSync(e.buf.Planes)
+	if err != nil {
+		e.close(d)
+		return nil, err
+	}
+	b := &Buffer{d: d, e: e, sync: sync}
 	d.buffers[b] = struct{}{}
 	return b, nil
 }
@@ -357,6 +364,7 @@ func (b *Buffer) ReadPixels() (*image.RGBA, error) {
 	w, h := b.e.buf.Width, b.e.buf.Height
 	pf, _ := lookupPixelFormat(b.e.buf.Format)
 	return d.readPixels(image.Rect(0, 0, w, h), pf.vk, pf.opaque, func(cb vk.CommandBuffer, staging *buffer) {
+		d.awaitDmabuf(b.sync, dmabuf.Read)
 		fullBarrier(d, cb, b.e.image, vk.ImageLayoutGeneral, vk.ImageLayoutTransferSrcOptimal, vk.QueueFamilyForeignExt, d.family)
 		region := vk.BufferImageCopy{
 			ImageSubresource: vk.ImageSubresourceLayers{AspectMask: vk.ImageAspectFlags(vk.ImageAspectColorBit), LayerCount: 1},
@@ -394,5 +402,6 @@ func (b *Buffer) Close() {
 		_ = unix.Close(p.FD)
 	}
 	b.e.buf.Planes = nil
+	b.sync.close()
 	d.retire(b)
 }

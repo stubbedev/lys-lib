@@ -196,6 +196,16 @@ Drawing:
   without `sync_file` semaphores; a kernel that attaches none) it waits until
   the passes are done instead. A consumer that takes an explicit fence uses
   `SyncFile`.
+- Every use of another user's dmabuf (a target's, an imported texture's, a
+  `Buffer`'s, a `Linear`'s) waits on the GPU for the fences that user left on
+  it: the submission that uses it waits on a semaphore holding the dmabuf's
+  `DMA_BUF_IOCTL_EXPORT_SYNC_FILE`. A draw or copy into it waits for every
+  reader and writer, a sample or copy out of it for its writers, so a
+  compositor drawing into an encoder's `Buffer` waits for the conversion
+  still reading it. A device without `sync_file` semaphores, or a kernel
+  without the ioctl (before Linux 6.0), polls the dmabuf here instead,
+  within the wait limit. A wait that cannot be set up fails the submission
+  it was for, and the next one runs without it.
 
 Vulkan comes from the patched [vk](/third-party/vk) bindings. Shaders are
 embedded SPIR-V; `just generate` rebuilds them.
@@ -217,7 +227,9 @@ embedded SPIR-V; `just generate` rebuilds them.
 - `dmabuf.Buffer` describes a dmabuf: size, format, modifier, planes. Keep the
   plane fds open while the compositor-side buffer lives; importing does not dup
   them. `BeginCPUWrite`, `EndCPUWrite` and `ImportSyncFile` handle CPU access
-  and implicit-sync fences.
+  and implicit-sync fences; `ExportSyncFile` takes the fences a `Read` or a
+  `Write` of the dmabuf waits for as a `sync_file`, and `Wait` waits for them
+  here.
 - `dmabufwl` builds `zwp_linux_buffer_params_v1` objects (`Params`) and reads
   `zwp_linux_dmabuf_feedback_v1`: the default feedback (`DefaultFeedback`) or a
   surface's (`WatchSurfaceFeedback`), parsed into tranches with target devices

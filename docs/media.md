@@ -87,14 +87,20 @@ func main() {
   compositor's screencopy) waits for, so `Encode` waits for nothing. Where no
   fence tells the writer (NVIDIA's driver, a device without `sync_file`
   semaphores) `Encode` waits for the conversion instead, as it does for the
-  VA-API driver, which takes no semaphore.
+  VA-API driver, which takes no semaphore. A writer drawing with this package
+  (a `Pass` into an `ImportTarget` of the buffer, as lys-wm's screencopy does)
+  waits for that fence on the GPU, and the conversion waits on the GPU for the
+  fence the writer left, so neither hands the buffer over by waiting.
 - A packet collected before a conversion or an encode that then fails comes
   out of the next `Encode` or `Flush`.
 - Every wait is bounded by the device's wait limit, the VA-API driver's for a
   picture too: a hung GPU is an error instead of a frozen caller. A wait that
   runs out is `ErrTimeout`, and the frame stays in flight: its slot is not
   reused until a later `Encode` or `Flush` has waited for it and returned its
-  packet.
+  packet. `Close` waits for the frames the VA-API driver is still encoding
+  within the same limit; past it `Close` returns `ErrTimeout` and leaves the
+  driver's display open with the surfaces and buffers it may still use, leaked
+  rather than destroyed underneath it.
 - An `Encoder` belongs to one goroutine.
 - `NewEncoder` fails with `ErrNoVideoEncoder`, carrying both backends' reasons,
   when neither encodes the codec.

@@ -27,6 +27,8 @@ type Linear struct {
 	w, h   int
 	offset int
 	stride int
+	// sync is the buffer's dmabuf, which its scanout or other users read.
+	sync   implicitSync
 	closed bool
 }
 
@@ -63,6 +65,10 @@ func (d *Device) ImportLinear(b dmabuf.Buffer) (*Linear, error) {
 	}
 	l := &Linear{d: d, format: b.Format, w: b.Width, h: b.Height, offset: int(p.Offset), stride: int(p.Stride)}
 	if err := l.create(p.FD, size); err != nil {
+		l.release()
+		return nil, err
+	}
+	if l.sync, err = newImplicitSync(b.Planes); err != nil {
 		l.release()
 		return nil, err
 	}
@@ -111,6 +117,7 @@ func (l *Linear) Close() {
 
 func (l *Linear) release() {
 	d := l.d
+	l.sync.close()
 	if l.buf != 0 {
 		d.cmds.DestroyBuffer(d.device, l.buf, nil)
 		l.buf = 0
@@ -159,8 +166,9 @@ func (d *Device) CopyToLinear(dst *Linear, src *Target, rects []image.Rectangle)
 		return nil
 	}
 	return d.submitAsync(func(cb vk.CommandBuffer) {
-		src.acquire(cb)
+		src.acquire(cb, dmabuf.Read)
 		src.s.to(cb, vk.ImageLayoutTransferSrcOptimal)
+		d.awaitDmabuf(dst.sync, dmabuf.Write)
 		dst.barrier(cb, vk.QueueFamilyForeignExt, d.family)
 		d.cmds.CmdCopyImageToBuffer(cb, src.s.image, vk.ImageLayoutTransferSrcOptimal, dst.buf, count(copies), &copies[0])
 		runtime.KeepAlive(copies)

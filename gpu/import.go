@@ -163,20 +163,30 @@ func (d *Device) checkImport(b dmabuf.Buffer, pf pixelFormat, use importUse, fea
 	return m.DrmFormatModifierTilingFeatures, nil
 }
 
-func disjointPlanes(planes []dmabuf.Plane) (bool, error) {
-	var first unix.Stat_t
+// distinctDmabufs are the fds of planes that name distinct dmabufs, the
+// first plane's fd for each.
+func distinctDmabufs(planes []dmabuf.Plane) ([]int, error) {
+	type inode struct {
+		dev uint64
+		ino uint64
+	}
+	seen := make([]inode, 0, len(planes))
+	fds := make([]int, 0, len(planes))
 	for i, p := range planes {
 		var st unix.Stat_t
 		if err := unix.Fstat(p.FD, &st); err != nil {
-			return false, fmt.Errorf("gpu: dmabuf plane %d: %w", i, err)
+			return nil, fmt.Errorf("gpu: dmabuf plane %d: %w", i, err)
 		}
-		if i == 0 {
-			first = st
-		} else if st.Dev != first.Dev || st.Ino != first.Ino {
-			return true, nil
+		if id := (inode{st.Dev, st.Ino}); !slices.Contains(seen, id) {
+			seen, fds = append(seen, id), append(fds, p.FD)
 		}
 	}
-	return false, nil
+	return fds, nil
+}
+
+func disjointPlanes(planes []dmabuf.Plane) (bool, error) {
+	fds, err := distinctDmabufs(planes)
+	return len(fds) > 1, err
 }
 
 func (im *imported) create(d *Device, b dmabuf.Buffer, usage vk.ImageUsageFlags, create vk.ImageCreateFlags) error {
@@ -339,8 +349,9 @@ func (d *Device) importMemory(fd int, req vk.MemoryRequirements, ded *vk.MemoryD
 // YUV one as BT.601 limited range; ImportTextureYCbCr takes the buffer's
 // hints), and a modifier
 // of TextureModifiers, as a texture a Pass samples. Its producer
-// writes it; Update refuses it. b's fds stay the caller's: the texture
-// holds the memory itself until Close.
+// writes it; Update refuses it, and a pass that samples it waits on the
+// GPU for the producer's fence on the dmabuf. b's fds stay the caller's:
+// the texture holds the memory, and a dup of each dmabuf, until Close.
 func (d *Device) ImportTexture(b dmabuf.Buffer) (*Texture, error) {
 	return d.ImportTextureYCbCr(b, YCbCr{})
 }
@@ -348,6 +359,19 @@ func (d *Device) ImportTexture(b dmabuf.Buffer) (*Texture, error) {
 // ImportTextureYCbCr is ImportTexture sampling a YUV buffer through c;
 // an RGB buffer ignores c.
 func (d *Device) ImportTextureYCbCr(b dmabuf.Buffer, c YCbCr) (*Texture, error) {
+	t, err := d.importTexture(b, c)
+	if err != nil {
+		return nil, err
+	}
+	if t.sync, err = newImplicitSync(b.Planes); err != nil {
+		t.release()
+		return nil, err
+	}
+	d.textures[t] = struct{}{}
+	return t, nil
+}
+
+func (d *Device) importTexture(b dmabuf.Buffer, c YCbCr) (*Texture, error) {
 	if l, ok := yuvImageLayoutOf(b.Format); ok {
 		if err := d.checkImportable(b); err != nil {
 			return nil, err
@@ -364,7 +388,7 @@ func (d *Device) ImportTextureYCbCr(b dmabuf.Buffer, c YCbCr) (*Texture, error) 
 	if err != nil {
 		return nil, err
 	}
-	t := &Texture{d: d, format: b.Format, pf: im.pf, w: b.Width, h: b.Height, image: im.image, memory: im.memory, foreign: true, layout: vk.ImageLayoutGeneral}
+	t := &Texture{d: d, format: b.Format, pf: im.pf, w: b.Width, h: b.Height, image: im.image, memory: im.memory, layout: vk.ImageLayoutGeneral}
 	if im.pf.ycbcr {
 		if t.ycbcr, err = d.ycbcrKindOf(im.pf, c, features); err != nil {
 			t.release()
@@ -382,24 +406,30 @@ func (d *Device) ImportTextureYCbCr(b dmabuf.Buffer, c YCbCr) (*Texture, error) 
 		t.release()
 		return nil, err
 	}
-	d.textures[t] = struct{}{}
 	return t, nil
 }
 
 // ImportTarget imports b, a dmabuf in one of TextureFormats and a
 // modifier of TargetModifiers (a scanout buffer GBM allocated), as a
 // target a Pass draws into, its contents kept between passes. Like an
-// exported target it is handed back to its consumer after each pass.
-// Its Dmabuf has no planes: b's fds stay the caller's.
+// exported target it is handed back to its consumer after each pass,
+// and a pass waits on the GPU for the fences the buffer's other users
+// left on it. Its Dmabuf has no planes: b's fds stay the caller's.
 func (d *Device) ImportTarget(b dmabuf.Buffer) (*Target, error) {
 	im, _, err := d.importImage(b, targetImport)
 	if err != nil {
+		return nil, err
+	}
+	sync, err := newImplicitSync(b.Planes)
+	if err != nil {
+		im.close(d)
 		return nil, err
 	}
 	t := &Target{
 		s:      surface{d: d, w: b.Width, h: b.Height, vf: im.pf.vk, layout: vk.ImageLayoutGeneral, image: im.image},
 		memory: im.memory,
 		buf:    dmabuf.Buffer{Width: b.Width, Height: b.Height, Format: b.Format, Modifier: b.Modifier},
+		sync:   sync,
 	}
 	d.targets[t] = struct{}{}
 	return t, nil

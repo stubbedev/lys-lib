@@ -24,7 +24,7 @@ func targetBytes(t *testing.T, tg *Target) []byte {
 	}
 	defer staging.close()
 	err = d.submit(func(cb vk.CommandBuffer) {
-		tg.acquire(cb)
+		tg.acquire(cb, dmabuf.Read)
 		tg.s.download(cb, image.Rect(0, 0, tg.s.w, tg.s.h), staging, 0)
 		tg.release(cb)
 	})

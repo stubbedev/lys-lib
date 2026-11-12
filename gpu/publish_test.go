@@ -6,10 +6,10 @@ import (
 	"image/color"
 	"slices"
 	"testing"
-	"unsafe"
 
 	"golang.org/x/sys/unix"
 
+	"github.com/stubbedev/lys-lib/dmabuf"
 	"github.com/stubbedev/lys-lib/drm"
 	"github.com/stubbedev/lys-lib/fourcc"
 	"github.com/stubbedev/lys-lib/render"
@@ -31,15 +31,11 @@ func heavyList(rec *render.Canvas, w, h int, col render.Color) *render.List {
 // on before reading the dmabuf fd: DMA_BUF_IOCTL_EXPORT_SYNC_FILE.
 func dmabufFence(t *testing.T, fd int) int {
 	t.Helper()
-	const exportSyncFile, syncRead = 0xc0086202, 1
-	arg := struct {
-		flags uint32
-		fd    int32
-	}{flags: syncRead, fd: -1}
-	if _, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(fd), exportSyncFile, uintptr(unsafe.Pointer(&arg))); errno != 0 {
-		t.Fatalf("DMA_BUF_IOCTL_EXPORT_SYNC_FILE: %v", errno)
+	fence, err := dmabuf.ExportSyncFile(fd, dmabuf.Read)
+	if err != nil {
+		t.Fatal(err)
 	}
-	return int(arg.fd)
+	return fence
 }
 
 func isCPUDevice(d *Device) bool {

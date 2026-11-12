@@ -21,6 +21,9 @@ type Target struct {
 	s      surface
 	memory []vk.DeviceMemory
 	buf    dmabuf.Buffer
+	// sync is the target's dmabufs, which its consumer reads; an
+	// offscreen target has none.
+	sync implicitSync
 	// held is whether the device holds t, between acquire and release.
 	held bool
 	// offscreen marks a target no consumer imports (NewOffscreen).
@@ -102,7 +105,12 @@ func (d *Device) exportedTarget(width, height int, format fourcc.Format, modifie
 	if err != nil {
 		return nil, err
 	}
-	return &Target{s: surface{d: d, w: width, h: height, vf: vf, layout: vk.ImageLayoutUndefined, image: e.image}, memory: []vk.DeviceMemory{e.memory}, buf: e.buf}, nil
+	sync, err := newImplicitSync(e.buf.Planes)
+	if err != nil {
+		e.close(d)
+		return nil, err
+	}
+	return &Target{s: surface{d: d, w: width, h: height, vf: vf, layout: vk.ImageLayoutUndefined, image: e.image}, memory: []vk.DeviceMemory{e.memory}, buf: e.buf, sync: sync}, nil
 }
 
 // Texture is an offscreen target as a texture a later Pass samples:
@@ -153,16 +161,20 @@ func (t *Target) Close() {
 		_ = syscall.Close(p.FD)
 	}
 	t.buf.Planes = nil
+	t.sync.close()
 	d.retire(t)
 }
 
-// acquire records taking t back from its consumer for drawing; its
-// contents stand, except before its first frame.
-func (t *Target) acquire(cb vk.CommandBuffer) {
+// acquire records taking t back from its consumer for a, once the
+// consumer's uses that a waits for are done: drawing for a Write, a
+// copy out of it for a Read. Its contents stand, except before its first
+// frame.
+func (t *Target) acquire(cb vk.CommandBuffer, a dmabuf.Access) {
 	if t.held {
 		return
 	}
 	t.held = true
+	t.s.d.awaitDmabuf(t.sync, a)
 	if t.offscreen || t.s.layout == vk.ImageLayoutUndefined {
 		return
 	}
@@ -183,7 +195,7 @@ func (t *Target) release(cb vk.CommandBuffer) {
 // consumer.
 func (t *Target) clear(rgba [4]float32) error {
 	return t.s.d.submitAsync(func(cb vk.CommandBuffer) {
-		t.acquire(cb)
+		t.acquire(cb, dmabuf.Write)
 		t.s.to(cb, vk.ImageLayoutTransferDstOptimal)
 		var col vk.ClearColorValue
 		copy(col[:], unsafe.Slice((*byte)(unsafe.Pointer(&rgba[0])), len(col)))
@@ -243,7 +255,7 @@ func (f *frame) recordCarry(cb vk.CommandBuffer, carry Carry) {
 		}
 		if !acquired {
 			acquired = true
-			src.acquire(cb)
+			src.acquire(cb, dmabuf.Read)
 			if src.offscreen {
 				src.s.to(cb, vk.ImageLayoutTransferSrcOptimal)
 				srcLayout = vk.ImageLayoutTransferSrcOptimal
@@ -357,7 +369,7 @@ func (t *Target) ReadRect(r image.Rectangle) (*image.RGBA, error) {
 		return nil, fmt.Errorf("gpu: read back %v of a %v target", r, full.Size())
 	}
 	return t.s.d.readPixels(r, t.s.vf, false, func(cb vk.CommandBuffer, staging *buffer) {
-		t.acquire(cb)
+		t.acquire(cb, dmabuf.Read)
 		t.s.download(cb, r, staging, 0)
 		t.s.d.hostReadBarrier(cb)
 		t.release(cb)
