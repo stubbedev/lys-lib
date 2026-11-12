@@ -349,3 +349,36 @@ func TestExportedObjectsOfATypeKeepTheirReceivers(t *testing.T) {
 		}
 	}
 }
+
+func TestExportServesAnInterfaceOfPropertiesAlone(t *testing.T) {
+	bus := dbustest.Start(t)
+	server, client := bus.Conn(t), bus.Conn(t)
+	unexport, err := dbusx.Export(server, path, dbusx.Interface{
+		Name:       "dev.stubbe.lys.State1",
+		Properties: dbusx.Getters{"LidClosed": func() any { return true }},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer unexport()
+	obj := client.Object(server.Names()[0], path)
+	v, err := obj.GetProperty("dev.stubbe.lys.State1.LidClosed")
+	if err != nil || v.Value() != true {
+		t.Fatalf("LidClosed = %v, %v; want true", v, err)
+	}
+	var xml string
+	if err := obj.Call("org.freedesktop.DBus.Introspectable.Introspect", 0).Store(&xml); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(xml, `<interface name="dev.stubbe.lys.State1">`) {
+		t.Errorf("introspection lacks the interface:\n%s", xml)
+	}
+}
+
+func TestExportRefusesAnEmptyInterface(t *testing.T) {
+	dbustest.Session(t)
+	_, err := dbusx.Export(dbustest.SessionConn(t), "/dev/stubbe/lys/Empty", dbusx.Interface{Name: "dev.stubbe.lys.Empty1"})
+	if err == nil || !strings.Contains(err.Error(), "dev.stubbe.lys.Empty1") {
+		t.Errorf("Export = %v, want an error naming the interface", err)
+	}
+}

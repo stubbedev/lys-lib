@@ -204,10 +204,15 @@ func objectsAt(path dbus.ObjectPath, ifaces []Interface) ([]exported, error) {
 				return nil, fmt.Errorf("export %s: setter for %s, which has no getter", iface.Name, name)
 			}
 		}
+		if iface.Methods == nil && len(iface.Properties) == 0 && len(iface.Signals) == 0 {
+			return nil, fmt.Errorf("export %s at %s: the interface has no methods, properties or signals", iface.Name, path)
+		}
 		props.ifaces[iface.Name] = iface.Properties
 		props.setters[iface.Name] = iface.Setters
 		node.Interfaces = append(node.Interfaces, introspect.Interface{Name: iface.Name, Methods: methodsOf(iface.Methods), Signals: signals})
-		objects = append(objects, exported{iface: iface.Name, methods: iface.Methods})
+		if iface.Methods != nil {
+			objects = append(objects, exported{iface: iface.Name, methods: iface.Methods})
+		}
 	}
 	return append(objects,
 		exported{iface: PropertiesInterface, methods: props},
@@ -323,6 +328,9 @@ var (
 )
 
 func methodsOf(v any) []introspect.Method {
+	if v == nil {
+		return nil
+	}
 	t := reflect.TypeOf(v)
 	introspectedMu.RLock()
 	m, ok := introspectedMethods[t]
