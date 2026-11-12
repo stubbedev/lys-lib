@@ -1,8 +1,12 @@
 package gpu
 
 import (
+	"bytes"
 	"fmt"
 	"image"
+	"time"
+
+	"github.com/stubbedev/lys-lib/media/demux"
 )
 
 // refFrameSlots are the reference frame slots of AV1 and VP9 streams;
@@ -113,3 +117,27 @@ func (r *refSlots) show(v *VideoDecoder, idx uint8) (f *VideoFrame, slot int, co
 	f.rect = p.rect
 	return f, slot, copied, nil
 }
+
+type packetResume struct {
+	data []byte
+	pts  time.Duration
+	done int
+}
+
+func (r *packetResume) at(p demux.Packet) int {
+	done := r.done
+	r.done = 0
+	if done == 0 || p.PTS != r.pts || !bytes.Equal(p.Data, r.data) {
+		return 0
+	}
+	return done
+}
+
+func (r *packetResume) fail(p demux.Packet, done int) {
+	if done == 0 {
+		return
+	}
+	r.data, r.pts, r.done = append(r.data[:0], p.Data...), p.PTS, done
+}
+
+func (r *packetResume) forget() { r.done = 0 }

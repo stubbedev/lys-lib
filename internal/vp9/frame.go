@@ -216,7 +216,8 @@ type Stream struct {
 func (s *Stream) Reset() { *s = Stream{} }
 
 // ParseFrame reads the uncompressed header of b, a frame, into h with
-// the stream's state, which it moves on as decoding the frame does.
+// the stream's state, which it leaves as it was; Update takes the frame
+// into the state once it is decoded.
 func (s *Stream) ParseFrame(h *FrameHeader, b []byte) error {
 	*h = FrameHeader{}
 	r := nal.NewReader(b)
@@ -236,7 +237,6 @@ func (s *Stream) ParseFrame(h *FrameHeader, b []byte) error {
 	if end := h.HeaderBytes + h.CompressedBytes; end >= len(b) {
 		return fmt.Errorf("%w: the %s's headers take %d of its %d bytes, leaving no tiles", ErrSyntax, h.FrameType, end, len(b))
 	}
-	s.update(h)
 	return nil
 }
 
@@ -262,7 +262,7 @@ func (s *Stream) uncompressedHeader(h *FrameHeader, r *nal.Reader) error {
 		if err := syncCodeAt(r); err != nil {
 			return err
 		}
-		if err := s.colorConfig(h, r); err != nil {
+		if err := colorConfig(h, r); err != nil {
 			return err
 		}
 		frameSize(h, r)
@@ -280,12 +280,12 @@ func (s *Stream) uncompressedHeader(h *FrameHeader, r *nal.Reader) error {
 				return err
 			}
 			if h.Profile > 0 {
-				if err := s.colorConfig(h, r); err != nil {
+				if err := colorConfig(h, r); err != nil {
 					return err
 				}
 			} else {
-				s.color.BitDepth, s.color.ColorSpace, s.color.SubsamplingX, s.color.SubsamplingY = 8, CSBT601, true, true
 				h.Color = s.color
+				h.Color.BitDepth, h.Color.ColorSpace, h.Color.SubsamplingX, h.Color.SubsamplingY = 8, CSBT601, true, true
 			}
 			h.RefreshFrameFlags = r.U8(8)
 			frameSize(h, r)
@@ -321,13 +321,14 @@ func (s *Stream) uncompressedHeader(h *FrameHeader, r *nal.Reader) error {
 	}
 	h.FrameContextIdx = r.U8(2)
 	h.SavedContexts = s.saved
+	h.LoopFilter.RefDeltas, h.LoopFilter.ModeDeltas, h.Seg = s.refDeltas, s.modeDeltas, s.seg
 	if h.FrameIsIntra() || h.ErrorResilientMode {
-		s.setupPastIndependence()
+		setupPastIndependence(h)
 		h.ResetContextIdx, h.FrameContextIdx = h.FrameContextIdx, 0
 	}
-	s.loopFilter(h, r)
+	loopFilter(h, r)
 	quantization(h, r)
-	s.segmentation(h, r)
+	segmentation(h, r)
 	tileInfo(h, r)
 	h.CompressedBytes = int(r.U(16))
 	return nil
@@ -340,7 +341,7 @@ func syncCodeAt(r *nal.Reader) error {
 	return nil
 }
 
-func (s *Stream) colorConfig(h *FrameHeader, r *nal.Reader) error {
+func colorConfig(h *FrameHeader, r *nal.Reader) error {
 	c := ColorConfig{BitDepth: 8}
 	if h.Profile >= 2 {
 		c.BitDepth = 10
@@ -365,7 +366,7 @@ func (s *Stream) colorConfig(h *FrameHeader, r *nal.Reader) error {
 	if odd && r.Flag() {
 		return fmt.Errorf("%w: color_config reserved_zero is 1", ErrSyntax)
 	}
-	s.color, h.Color = c, c
+	h.Color = c
 	return nil
 }
 
@@ -402,14 +403,14 @@ func (s *Stream) frameSizeWithRefs(h *FrameHeader, r *nal.Reader) {
 	renderSize(h, r)
 }
 
-// setupPastIndependence resets the loop filter deltas and segmentation
-// features (setup_past_independence).
-func (s *Stream) setupPastIndependence() {
-	s.refDeltas = [MaxRefFrames]int8{1, 0, -1, -1}
-	s.modeDeltas = [2]int8{}
-	s.seg.FeatureEnabled = [MaxSegments][SegLvlMax]bool{}
-	s.seg.FeatureData = [MaxSegments][SegLvlMax]int16{}
-	s.seg.AbsOrDeltaUpdate = false
+// setupPastIndependence resets the frame's loop filter deltas and
+// segmentation features (setup_past_independence).
+func setupPastIndependence(h *FrameHeader) {
+	h.LoopFilter.RefDeltas = [MaxRefFrames]int8{1, 0, -1, -1}
+	h.LoopFilter.ModeDeltas = [2]int8{}
+	h.Seg.FeatureEnabled = [MaxSegments][SegLvlMax]bool{}
+	h.Seg.FeatureData = [MaxSegments][SegLvlMax]int16{}
+	h.Seg.AbsOrDeltaUpdate = false
 }
 
 // su reads su(n): n bits of magnitude, then the sign.
@@ -421,27 +422,26 @@ func su(r *nal.Reader, n int) int8 {
 	return v
 }
 
-func (s *Stream) loopFilter(h *FrameHeader, r *nal.Reader) {
+func loopFilter(h *FrameHeader, r *nal.Reader) {
 	l := &h.LoopFilter
 	l.Level = r.U8(6)
 	l.Sharpness = r.U8(3)
 	if l.DeltaEnabled = r.Flag(); l.DeltaEnabled {
 		if l.DeltaUpdate = r.Flag(); l.DeltaUpdate {
-			for i := range s.refDeltas {
+			for i := range l.RefDeltas {
 				if r.Flag() {
 					l.UpdateRefDelta |= 1 << i
-					s.refDeltas[i] = su(r, 6)
+					l.RefDeltas[i] = su(r, 6)
 				}
 			}
-			for i := range s.modeDeltas {
+			for i := range l.ModeDeltas {
 				if r.Flag() {
 					l.UpdateModeDelta |= 1 << i
-					s.modeDeltas[i] = su(r, 6)
+					l.ModeDeltas[i] = su(r, 6)
 				}
 			}
 		}
 	}
-	l.RefDeltas, l.ModeDeltas = s.refDeltas, s.modeDeltas
 }
 
 func readDeltaQ(r *nal.Reader) int8 {
@@ -472,8 +472,8 @@ func readProb(r *nal.Reader) uint8 {
 	return 255
 }
 
-func (s *Stream) segmentation(h *FrameHeader, r *nal.Reader) {
-	g := &s.seg
+func segmentation(h *FrameHeader, r *nal.Reader) {
+	g := &h.Seg
 	g.UpdateMap, g.TemporalUpdate, g.UpdateData = false, false, false
 	if g.Enabled = r.Flag(); g.Enabled {
 		if g.UpdateMap = r.Flag(); g.UpdateMap {
@@ -505,7 +505,6 @@ func (s *Stream) segmentation(h *FrameHeader, r *nal.Reader) {
 			}
 		}
 	}
-	h.Seg = *g
 }
 
 // tileInfo reads tile_info(), which bounds the tile columns by the
@@ -530,9 +529,19 @@ func tileInfo(h *FrameHeader, r *nal.Reader) {
 	}
 }
 
-// update takes the frame h heads into the slots its refresh_frame_flags
-// name (8.10) and notes it as the frame decoded before the next.
-func (s *Stream) update(h *FrameHeader) {
+// Update takes the frame h heads, decoded, into the stream's state: the
+// slots its refresh_frame_flags name (8.10), its loop filter deltas and
+// segmentation, its colour config when it is intra, the frame contexts
+// it resets and saves, and it as the frame decoded before the next. A
+// frame that shows another changes nothing.
+func (s *Stream) Update(h *FrameHeader) {
+	if h.ShowExistingFrame {
+		return
+	}
+	if h.FrameIsIntra() {
+		s.color = h.Color
+	}
+	s.refDeltas, s.modeDeltas, s.seg = h.LoopFilter.RefDeltas, h.LoopFilter.ModeDeltas, h.Seg
 	ref := refFrame{valid: true, width: h.FrameWidth, height: h.FrameHeight, color: h.Color}
 	for i := range s.ref {
 		if h.RefreshFrameFlags>>i&1 != 0 {

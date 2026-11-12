@@ -222,7 +222,9 @@ func unsupported(err error) error {
 // pictures and waits for the GPU only when that is far behind (Busy).
 // A picture that predicts from pictures before the one decoding
 // started at (after Reset, at a keyframe that is not an IDR) is
-// dropped.
+// dropped. A packet of several pictures that fails partway (every
+// frame held, say) may be given again once that is put right: it
+// decodes as though it had not failed.
 func (v *VideoDecoder) Decode(p demux.Packet) error {
 	if v.closed {
 		return fmt.Errorf("gpu: %s decode of a closed decoder", v.name)

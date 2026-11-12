@@ -287,6 +287,25 @@ func TestDecodeVP9ShowsAFrameAgain(t *testing.T) {
 	}
 }
 
+func TestDecodeVP9RetriesASuperframeWhoseShownFrameFailed(t *testing.T) {
+	d := decodingDevice(t, demux.VP9)
+	cl := ffmpegPasses(t, "a.webm", 192, 128, 1.2, libvpxTwoPass("-b:v", "200k", "-g", "30", "-auto-alt-ref", "1", "-lag-in-frames", "16", "-frame-parallel", "0")...)
+	track, pkts := packets(t, cl.path)
+	hdrs := vp9test.Headers(t, datas(pkts))
+	at := 1 + slices.IndexFunc(hdrs[1:], func(h []vp9.FrameHeader) bool {
+		return len(h) > 1 && !slices.ContainsFunc(h, func(f vp9.FrameHeader) bool { return f.ShowExistingFrame })
+	})
+	if at == 0 {
+		t.Fatal("libvpx coded no superframe of decoded frames after the first packet")
+	}
+	v, err := d.NewVideoDecoder(track)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	checkFrames(t, cl, decodeRetryingTheLastPicture(t, v, pkts, at, len(hdrs[at]), &v.codec.(*vp9Decoder).resume), 0)
+}
+
 // Showing a picture again, copied out of its reference picture into a
 // frame of its own, allocates nothing once the decoder has its frames.
 func TestDecodeVP9ShowingAFrameAgainDoesNotAllocate(t *testing.T) {

@@ -254,10 +254,18 @@ func checkStream(t *testing.T, pkts [][]byte, trace []tracedPacket) ([]FrameHead
 			t.Fatalf("packet %d has %d frames, trace says %d", i, len(fs), len(tr.frames))
 		}
 		for j, f := range fs {
-			var h FrameHeader
+			var h, again FrameHeader
+			before := s
 			if err := s.ParseFrame(&h, f); err != nil {
 				t.Fatalf("packet %d frame %d: %v", i, j, err)
 			}
+			if s != before {
+				t.Fatalf("packet %d frame %d: parsing moved the stream state before Update", i, j)
+			}
+			if err := s.ParseFrame(&again, f); err != nil || again != h {
+				t.Fatalf("packet %d frame %d: parsed again before Update, reads %+v (%v), want %+v", i, j, again, err, h)
+			}
+			s.Update(&h)
 			ft := tr.frames[j]
 			got := syntax(&h)
 			for name, want := range ft.values {

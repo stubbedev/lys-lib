@@ -244,6 +244,46 @@ func takeFrames(t *testing.T, v *VideoDecoder, out []decoded) []decoded {
 	}
 }
 
+func decodeRetryingTheLastPicture(t *testing.T, v *VideoDecoder, pkts []demux.Packet, at, pictures int, resume *packetResume) []decoded {
+	t.Helper()
+	out := decodeSome(t, v, pkts[:at])
+	held := holdFramesBut(t, v, pictures-1)
+	err := v.Decode(pkts[at])
+	if err == nil || !strings.Contains(err.Error(), "frames are held") {
+		t.Fatalf("packet %d of %d pictures, with %d frames free: %v, want its last picture to find every frame held", at, pictures, pictures-1, err)
+	}
+	if resume.done != pictures-1 {
+		t.Fatalf("packet %d failed after %d of its %d pictures, want all but the last: %v", at, resume.done, pictures, err)
+	}
+	for _, f := range held {
+		f.Release()
+	}
+	return append(out, decodeAll(t, v, pkts[at:])...)
+}
+
+func holdFramesBut(t *testing.T, v *VideoDecoder, free int) []*VideoFrame {
+	t.Helper()
+	var held []*VideoFrame
+	for {
+		f, err := v.frame()
+		if err != nil {
+			if !strings.Contains(err.Error(), "frames are held") {
+				t.Fatal(err)
+			}
+			break
+		}
+		f.state = frameHeld
+		held = append(held, f)
+	}
+	if len(held) < free {
+		t.Fatalf("%d frames to hold, fewer than the %d to leave free", len(held), free)
+	}
+	for _, f := range held[:free] {
+		f.Release()
+	}
+	return held[free:]
+}
+
 // readPicture copies f's picture back to the CPU through the graphics
 // queue, which waits for its decode: its luma, then its interleaved
 // chroma, as the frame's format holds its samples.

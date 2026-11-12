@@ -28,6 +28,7 @@ func Headers(t *testing.T, packets [][]byte) [][]vp9.FrameHeader {
 			if err := s.ParseFrame(&out[i][j], f); err != nil {
 				t.Fatalf("packet %d frame %d: %v", i, j, err)
 			}
+			s.Update(&out[i][j])
 		}
 	}
 	return out

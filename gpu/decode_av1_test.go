@@ -338,3 +338,22 @@ func TestDecodeAV1ShowsAFrameAgain(t *testing.T) {
 		})
 	}
 }
+
+func TestDecodeAV1RetriesATemporalUnitWhoseLastFrameFailed(t *testing.T) {
+	d := decodingDevice(t, demux.AV1)
+	cl := ffmpegClip(t, "a.mp4", 192, 128, 1.2, libaom("enable-tpl-model=1", "-g", "30", "-lag-in-frames", "19", "-auto-alt-ref", "1")...)
+	track, pkts := packets(t, cl.path)
+	hdrs := av1Headers(t, track.Config, pkts)
+	at := 1 + slices.IndexFunc(hdrs[1:], func(h []av1.FrameHeader) bool {
+		return len(h) > 1 && !slices.ContainsFunc(h, func(f av1.FrameHeader) bool { return f.ShowExistingFrame })
+	})
+	if at == 0 {
+		t.Fatal("libaom coded no temporal unit of several decoded frames after the first")
+	}
+	v, err := d.NewVideoDecoder(track)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	checkFrames(t, cl, decodeRetryingTheLastPicture(t, v, pkts, at, len(hdrs[at]), &v.codec.(*av1Decoder).resume), 0)
+}

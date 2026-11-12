@@ -29,6 +29,7 @@ type av1Decoder struct {
 	tiles    []av1.Tile
 	offsets  []uint32
 	sizes    []uint32
+	resume   packetResume
 	refSlots
 	// refs are what decoding a picture that references a DPB slot reads
 	// of its picture.
@@ -110,51 +111,73 @@ func (c *av1Decoder) sequence(b []byte) error {
 func (c *av1Decoder) reset() {
 	c.stream.Reset()
 	c.forget()
+	c.resume.forget()
 	c.started, c.frameAt, c.skipping = false, -1, false
 }
 
 // decode reads the packet's OBUs, a temporal unit, and decodes the
 // frames it codes; the one it shows goes to Next.
 func (c *av1Decoder) decode(v *VideoDecoder, p demux.Packet) error {
+	done, err := c.temporalUnit(v, p, c.resume.at(p))
+	if err != nil {
+		c.frameAt, c.skipping = -1, false
+		c.resume.fail(p, done)
+	}
+	return err
+}
+
+func (c *av1Decoder) temporalUnit(v *VideoDecoder, p demux.Packet, from int) (done int, err error) {
 	if !c.started && !p.Key {
-		return nil
+		return 0, nil
 	}
 	walk := av1.NewOBUs(p.Data)
 	for u, ok := walk.Next(); ok; u, ok = walk.Next() {
 		if c.seq != nil && !u.InOperatingPoint(c.stream.Seq.OperatingPointIdc[0]) {
 			continue
 		}
-		var err error
 		switch u.Type {
 		case av1.OBUSequenceHeader:
-			err = c.sequence(u.Payload)
+			if err = c.sequence(u.Payload); err != nil {
+				return done, err
+			}
+			continue
 		case av1.OBUFrameHeader, av1.OBUFrame:
 			if c.frameAt >= 0 && u.Type == av1.OBUFrameHeader {
 				continue
 			}
 			c.skipping = false
+			if done < from {
+				c.skipping = u.Type == av1.OBUFrameHeader
+				done++
+				continue
+			}
 			err = c.frameHeader(v, p, &u)
 		case av1.OBUTileGroup:
 			if c.skipping {
 				continue
 			}
 			if c.frameAt < 0 {
-				return fmt.Errorf("%w: a tile group OBU at byte %d before its frame header", av1.ErrSyntax, u.Offset)
+				return done, fmt.Errorf("%w: a tile group OBU at byte %d before its frame header", av1.ErrSyntax, u.Offset)
 			}
 			err = c.tileGroup(v, p, &u, u.Payload, u.PayloadOffset)
+		default:
+			continue
 		}
 		if err != nil {
-			return err
+			return done, err
+		}
+		if c.frameAt < 0 {
+			done++
 		}
 	}
-	if err := walk.Err(); err != nil {
-		return err
+	if err = walk.Err(); err != nil {
+		return done, err
 	}
 	c.skipping = false
 	if c.frameAt >= 0 {
-		return fmt.Errorf("%w: the temporal unit ends inside a frame, after %d tiles", av1.ErrSyntax, len(c.tiles))
+		return done, fmt.Errorf("%w: the temporal unit ends inside a frame, after %d tiles", av1.ErrSyntax, len(c.tiles))
 	}
-	return nil
+	return done, nil
 }
 
 // frameHeader reads a frame header or frame OBU: it shows an existing

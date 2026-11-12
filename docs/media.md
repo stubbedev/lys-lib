@@ -272,6 +272,14 @@ func main() {
   reference slot and resets every frame context); one that keeps reference
   pictures or frame contexts is refused, as is one naming a reference VP9
   scales to no frame of its size (less than half or more than 16 times it).
+- A VP9 superframe or an AV1 temporal unit whose last frame fails (every
+  frame held, say) keeps the frames before it that decoded: their reference
+  slots, their probabilities (which a VP9 device keeps and cannot take back)
+  and their hidden pictures stay. The same packet given again carries on from
+  the frame that failed, the frames before it not decoded twice; a packet
+  skipped instead leaves them decoded. A frame's header moves the parser's
+  state (`Stream.Update` of `internal/vp9` and of `internal/av1`) only once
+  the frame has decoded, so a frame that fails reads the same again.
 - A frame header that shows a picture shown before (AV1 and VP9
   `show_existing_frame`) gets the picture copied out of its reference picture
   into a frame of its own again, with its film grain; a device with output

@@ -20,6 +20,7 @@ type vp9Decoder struct {
 	started bool
 	hdr     vp9.FrameHeader
 	frames  [vp9.MaxFrames][]byte
+	resume  packetResume
 	refSlots
 
 	profileInfo vk.VideoDecodeVP9ProfileInfoKHR
@@ -52,6 +53,7 @@ func newVP9Decoder([]byte) (decodeCodec, error) {
 func (c *vp9Decoder) reset() {
 	c.stream.Reset()
 	c.forget()
+	c.resume.forget()
 	c.started = false
 }
 
@@ -59,6 +61,7 @@ func (c *vp9Decoder) reset() {
 // the one it shows, and decodes them; the one it shows goes to Next.
 // Decoding starts at a packet marked a keyframe.
 func (c *vp9Decoder) decode(v *VideoDecoder, p demux.Packet) error {
+	from := c.resume.at(p)
 	if !c.started && !p.Key {
 		return nil
 	}
@@ -66,8 +69,9 @@ func (c *vp9Decoder) decode(v *VideoDecoder, p demux.Packet) error {
 	if err != nil {
 		return err
 	}
-	for i, f := range frames {
-		if err := c.frame(v, p, f); err != nil {
+	for i := from; i < len(frames); i++ {
+		if err := c.frame(v, p, frames[i]); err != nil {
+			c.resume.fail(p, i)
 			return fmt.Errorf("frame %d of %d: %w", i, len(frames), err)
 		}
 	}
@@ -148,6 +152,7 @@ func (c *vp9Decoder) frame(v *VideoDecoder, p demux.Packet, b []byte) error {
 	pic.rect = image.Rect(0, 0, h.FrameWidth, h.FrameHeight)
 	frame.rect = pic.rect
 	c.refresh(setup, h.RefreshFrameFlags)
+	c.stream.Update(h)
 	if h.ShowFrame {
 		frame.pts, frame.duration = p.PTS, p.Duration
 		v.queue(frame, 0, false, false)
