@@ -79,11 +79,7 @@ func TestSyncFileSignalsOnceThePassFinishes(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer unix.Close(fd)
-	waitReadable(t, fd)
-	signalled, ok, err := drm.SyncFileSignalTime(fd)
-	if err != nil || !ok {
-		t.Fatalf("the sync_file's signal time: %v, %v", ok, err)
-	}
+	signalled := signalTime(t, fd)
 	if err := d.Finish(); err != nil {
 		t.Fatal(err)
 	}
@@ -161,11 +157,8 @@ func TestWaitSyncFileOrdersAnotherDevicesWork(t *testing.T) {
 		if got := readTarget(t, dst).RGBAAt(0, 0); got != want {
 			t.Errorf("the waiting device sampled %v, want %v", got, want)
 		}
-		signalled, ok, err := drm.SyncFileSignalTime(mine)
+		signalled := signalTime(t, mine)
 		unix.Close(mine)
-		if err != nil || !ok {
-			t.Fatalf("the sync_file's signal time: %v, %v", ok, err)
-		}
 		if done, ok, err := b.FrameDone(); err == nil && ok && done < signalled {
 			t.Errorf("the waiting pass finished at %v, before the fence it waited on signalled at %v", done, signalled)
 		}

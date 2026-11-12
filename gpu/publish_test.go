@@ -16,11 +16,12 @@ import (
 	"github.com/stubbedev/lys-lib/third_party/vk"
 )
 
-// heavyList is a frame that keeps a real GPU busy, ending in col.
-func heavyList(rec *render.Canvas, w, h int, col render.Color) *render.List {
+// heavyList is a frame that keeps a real GPU busy with units rounded
+// rectangles, ending in col.
+func heavyList(rec *render.Canvas, w, h, units int, col render.Color) *render.List {
 	rec.ResetRecorder(w, h, 1, 1)
 	all := render.Rect{W: w, H: h}
-	for i := range 400 {
+	for i := range units {
 		rec.RoundedRect(all, 8, render.RGBA(uint8(i), 0, 0, 255))
 	}
 	rec.Clear(all, col)
@@ -87,6 +88,12 @@ func TestARenderedDmabufCarriesItsFrame(t *testing.T) {
 	}
 	defer dst.Close()
 	rec := render.NewRecorder(size, size, 1, 1)
+	draw := func(units int, col render.Color) {
+		if err := a.Render(heavyList(rec, size, size, units, col), src); err != nil {
+			t.Fatal(err)
+		}
+	}
+	job := newSlowJob(t, a, func(units int) { draw(units, render.RGBA(0, 0, 0, 255)) })
 	pending := 0
 	for frame := range 8 {
 		want := color.RGBA{0, 255, 0, 255}
@@ -94,11 +101,11 @@ func TestARenderedDmabufCarriesItsFrame(t *testing.T) {
 		if frame%2 == 1 {
 			want, col = color.RGBA{0, 0, 255, 255}, render.RGBA(0, 0, 255, 255)
 		}
-		if err := a.Render(heavyList(rec, size, size, col), src); err != nil {
-			t.Fatal(err)
-		}
+		start := monotonic()
+		draw(job.units, col)
 		plane := src.Dmabuf().Planes[0].FD
 		fence := dmabufFence(t, plane)
+		job.endsBy(t, start, fence)
 		signalled, err := drm.SyncFileSignalled(fence)
 		if err != nil {
 			t.Fatal(err)
@@ -194,9 +201,15 @@ func TestAFrameWithoutAFenceIsFinishedWhenRenderReturns(t *testing.T) {
 	}
 	defer tg.Close()
 	rec := render.NewRecorder(64, 64, 1, 1)
-	if err := d.Render(heavyList(rec, 64, 64, render.RGBA(0, 255, 0, 255)), tg); err != nil {
-		t.Fatal(err)
+	draw := func(units int) {
+		if err := d.Render(heavyList(rec, 64, 64, units, render.RGBA(0, 255, 0, 255)), tg); err != nil {
+			t.Fatal(err)
+		}
 	}
+	job := newSlowJob(t, d, draw)
+	start := monotonic()
+	draw(job.units)
+	job.ran(t, start, monotonic())
 	if n := len(d.inflight); n != 0 {
 		t.Errorf("%d submissions in flight when Render returned", n)
 	}
@@ -242,20 +255,11 @@ func TestSyncFilesSignalInTheOrderOfTheirWork(t *testing.T) {
 	if third < 0 {
 		t.Fatalf("%s: SyncFile says all finished, ahead of the fence it waits on", b.Name())
 	}
-	signalAt := func(fd int) (at int64) {
-		t.Helper()
-		waitReadable(t, fd)
-		when, ok, err := drm.SyncFileSignalTime(fd)
-		if err != nil || !ok {
-			t.Fatalf("signal time of %d: %v, %v", fd, ok, err)
-		}
-		return int64(when)
-	}
-	t1, t2, t3 := signalAt(first), signalAt(second), signalAt(third)
+	t1, t2, t3 := signalTime(t, first), signalTime(t, second), signalTime(t, third)
 	if t2 <= t1 {
-		t.Errorf("the newer pass's fence signalled at %d, not after the older's at %d", t2, t1)
+		t.Errorf("the newer pass's fence signalled at %v, not after the older's at %v", t2, t1)
 	}
 	if t3 < t2 {
-		t.Errorf("the waiting device's fence signalled at %d, before the fence it waits on at %d", t3, t2)
+		t.Errorf("the waiting device's fence signalled at %v, before the fence it waits on at %v", t3, t2)
 	}
 }

@@ -54,9 +54,9 @@ func TestARefillWaitsForTheReaderBeforeIt(t *testing.T) {
 		t.Skipf("%s hands buffers back by waiting", a.Name())
 	}
 	b := syncDevice(t)
-	w, h, draws := 3840, 2160, 256
+	w, h := 640, 360
 	if isCPUDevice(a) {
-		w, h, draws = 64, 64, 4
+		w, h = 64, 64
 	}
 	buf, err := a.NewBuffer(w, h, fourcc.XRGB8888, sharedModifiers(t, a, b))
 	if err != nil {
@@ -80,18 +80,23 @@ func TestARefillWaitsForTheReaderBeforeIt(t *testing.T) {
 	defer fill.Close()
 	frame, next := color.RGBA{0, 255, 0, 255}, color.RGBA{255, 0, 255, 255}
 	all := image.Rectangle{Max: image.Pt(w, h)}
-	pending, raced := 0, 0
-	for i := range 8 {
-		clearTarget(t, b, fill, frame)
-		if err := b.Finish(); err != nil {
-			t.Fatal(err)
-		}
+	sample := func(draws int) {
 		runPass(t, a, read, []image.Rectangle{all}, func(p *Pass) {
 			p.Clear(frame)
 			for range draws {
 				p.DrawTexture(tex, FRect{W: float64(w), H: float64(h)}, all, TransformNormal, 0.5, Mask{})
 			}
 		})
+	}
+	job := newSlowJob(t, a, sample)
+	pending, raced := 0, 0
+	for i := range 8 {
+		clearTarget(t, b, fill, frame)
+		if err := b.Finish(); err != nil {
+			t.Fatal(err)
+		}
+		start := monotonic()
+		sample(job.units)
 		if err := a.signalFrame(); err != nil {
 			t.Fatal(err)
 		}
@@ -112,6 +117,7 @@ func TestARefillWaitsForTheReaderBeforeIt(t *testing.T) {
 		if err := a.Finish(); err != nil {
 			t.Fatal(err)
 		}
+		job.ran(t, start, monotonic())
 		if err := b.Finish(); err != nil {
 			t.Fatal(err)
 		}
@@ -134,9 +140,9 @@ func TestARefillWaitsForTheReaderBeforeIt(t *testing.T) {
 // for a while: another user's work on a dmabuf, whose fence it carries.
 func busyFence(t *testing.T, d *Device) int {
 	t.Helper()
-	w, h, draws := 3840, 2160, 256
+	w, h := 3840, 2160
 	if isCPUDevice(d) {
-		w, h, draws = 64, 64, 4
+		w, h = 64, 64
 	}
 	tg, err := d.NewOffscreen(w, h)
 	if err != nil {
@@ -152,12 +158,19 @@ func busyFence(t *testing.T, d *Device) int {
 		t.Fatal(err)
 	}
 	all := image.Rectangle{Max: image.Pt(w, h)}
-	runPass(t, d, tg, []image.Rectangle{all}, func(p *Pass) {
-		for range draws {
-			p.DrawTexture(tex, FRect{W: 1, H: 1}, all, TransformNormal, 0.5, Mask{})
-		}
-	})
-	return syncFile(t, d)
+	busy := func(draws int) {
+		runPass(t, d, tg, []image.Rectangle{all}, func(p *Pass) {
+			for range draws {
+				p.DrawTexture(tex, FRect{W: 1, H: 1}, all, TransformNormal, 0.5, Mask{})
+			}
+		})
+	}
+	job := newSlowJob(t, d, busy)
+	start := monotonic()
+	busy(job.units)
+	fence := syncFile(t, d)
+	job.endsBy(t, start, fence)
+	return fence
 }
 
 // dmabufUse is a way a device takes a dmabuf from its other users: what
@@ -215,7 +228,9 @@ func dmabufUses(t *testing.T, a, b *Device) []dmabufUse {
 	uses := []dmabufUse{
 		{"a pass into a target", tg.Dmabuf().Planes[0].FD, dmabuf.Write, false, func() { clearTarget(t, b, tg, color.RGBA{0, 255, 0, 255}) }},
 		{"a render into a target", tg.Dmabuf().Planes[0].FD, dmabuf.Write, true, func() {
-			if err := b.Render(heavyList(rec, w, h, render.RGBA(0, 255, 0, 255)), tg); err != nil {
+			rec.ResetRecorder(w, h, 1, 1)
+			rec.Clear(render.Rect{W: w, H: h}, render.RGBA(0, 255, 0, 255))
+			if err := b.Render(rec.Recording(), tg); err != nil {
 				t.Fatal(err)
 			}
 		}},
@@ -283,14 +298,7 @@ func TestUsesOfADmabufWaitOnTheGPUForTheFenceOnIt(t *testing.T) {
 			if signalled, err := drm.SyncFileSignalled(fence); err != nil || !signalled {
 				t.Fatalf("the %s finished with the fence on its dmabuf still pending (%v)", u.access, err)
 			}
-			fenceAt, ok, err := drm.SyncFileSignalTime(fence)
-			if err != nil || !ok {
-				t.Fatalf("the fence's signal time: %v, %v", ok, err)
-			}
-			doneAt, ok, err := drm.SyncFileSignalTime(done)
-			if err != nil || !ok {
-				t.Fatalf("the %s's signal time: %v, %v", u.access, ok, err)
-			}
+			fenceAt, doneAt := signalTime(t, fence), signalTime(t, done)
 			if doneAt < fenceAt {
 				t.Errorf("the %s finished at %v, %v before the fence on its dmabuf signalled", u.access, doneAt, fenceAt-doneAt)
 			}
@@ -507,18 +515,26 @@ func TestARefilledSourceEncodesTheFrameItHeld(t *testing.T) {
 			defer fill.Close()
 			c := &clip{t: t, cfg: cfg, enc: enc, buf: buf}
 			src := make([]*image.RGBA, len(colors))
-			publish := func(col color.RGBA) {
-				all := image.Rectangle{Max: fill.Size()}
+			all := image.Rectangle{Max: fill.Size()}
+			draw := func(fills int, col color.RGBA) {
 				runPass(t, writer, fill, []image.Rectangle{all}, func(p *Pass) {
 					p.Clear(color.RGBA{A: 255})
-					for range 256 {
+					for range fills {
 						p.FillRect(all, color.RGBA{A: 128}, Mask{})
 					}
 					p.FillRect(all, color.RGBA{col.R / 255 * 254, col.G / 255 * 254, col.B / 255 * 254, 254}, Mask{})
 				})
+			}
+			job := newSlowJob(t, writer, func(fills int) { draw(fills, colors[0]) })
+			publish := func(col color.RGBA) {
+				start := monotonic()
+				draw(job.units, col)
 				if err := writer.Publish(fill); err != nil {
 					t.Fatal(err)
 				}
+				fence := dmabufFence(t, buf.Dmabuf().Planes[0].FD)
+				defer unix.Close(fence)
+				job.endsBy(t, start, fence)
 			}
 			publish(colors[0])
 			for i, col := range colors {
