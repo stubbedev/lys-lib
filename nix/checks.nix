@@ -14,7 +14,7 @@
           lib.fileset.unions [../flake.nix ../flake.lock ../nix ../docs]
         );
       };
-      vendorHash = "sha256-E2JxFLkKOGz9XFi1ZH0osXE3hgtli/XZOZfspVKqPXQ=";
+      vendorHash = "sha256-i7iCirVSxcf+XdJLEpDQzteZtCgQRM01jxQ2QWrfn+k=";
       buildPhase = ''
         runHook preBuild
         go test -c -o drm.test ./drm
