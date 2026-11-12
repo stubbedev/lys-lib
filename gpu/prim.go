@@ -75,6 +75,13 @@ func shaded(kind uint32, s render.State, flags uint32) prim {
 	return prim{info: [4]uint32{kind, alphaScale(s.Alpha), math.Float32bits(float32(s.Bright)), flags}}
 }
 
+func (p *prim) covers(pp pipe, w, h int) bool {
+	if p.info[0] != kindRect || p.quad[0] > 0 || p.quad[1] > 0 || p.quad[2] < float32(w) || p.quad[3] < float32(h) {
+		return false
+	}
+	return pp == pipeReplace || p.cols[0]>>24 == 255 && (p.info[3]&flagRaw != 0 || p.info[1] == 255)
+}
+
 func quadOf(r render.Rect) [4]float32 {
 	return [4]float32{float32(r.X), float32(r.Y), float32(r.X + r.W), float32(r.Y + r.H)}
 }

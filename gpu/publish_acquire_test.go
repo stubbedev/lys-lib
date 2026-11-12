@@ -467,7 +467,6 @@ func TestPublishFencesAnImportedTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	fence := dmabufFence(t, buf.Dmabuf().Planes[0].FD)
-	defer unix.Close(fence)
 	waitReadable(t, fence)
 	if b.implicitFences {
 		if done := b.finished(); done != len(b.inflight) {
@@ -533,7 +532,6 @@ func TestARefilledSourceEncodesTheFrameItHeld(t *testing.T) {
 					t.Fatal(err)
 				}
 				fence := dmabufFence(t, buf.Dmabuf().Planes[0].FD)
-				defer unix.Close(fence)
 				job.endsBy(t, start, fence)
 			}
 			publish(colors[0])

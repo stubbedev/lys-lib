@@ -6,6 +6,7 @@ import (
 	"image"
 	"image/color"
 	"testing"
+	"time"
 
 	"github.com/stubbedev/lys-lib/fourcc"
 	"github.com/stubbedev/lys-lib/render"
@@ -934,4 +935,132 @@ func TestADrawCoveringNothingIsDropped(t *testing.T) {
 		l.Canvas().FillRect(region, red)
 		cv.Composite(l, region, render.Translate(-200, 0), 1)
 	})
+}
+
+func TestRenderDrawsWhatAFullOpaqueCoverHidesAsTheCPUDoes(t *testing.T) {
+	d := openDevice(t)
+	red, blue, green := render.RGBA(220, 40, 50, 255), render.RGBA(30, 90, 220, 180), render.RGBA(20, 200, 60, 255)
+	shapes := func(cv *render.Canvas, dx int) {
+		cv.FillRect(render.Rect{X: 4 + dx, Y: 4, W: 40, H: 20}, red)
+		cv.RoundedRect(render.Rect{X: 20 + dx, Y: 12, W: 50, H: 30}, 8, blue)
+		cv.Line(2, 50, 90, 60, 3, red)
+	}
+	scenes := []func(cv *render.Canvas){
+		func(cv *render.Canvas) {
+			shapes(cv, 0)
+			cv.Clear(cv.Rect(), green)
+			shapes(cv, 10)
+		},
+		func(cv *render.Canvas) {
+			shapes(cv, 0)
+			cv.FillRect(cv.Rect(), render.RGBA(0, 0, 40, 120))
+		},
+		func(cv *render.Canvas) {
+			shapes(cv, 5)
+			prev := cv.PushAlpha(0.5)
+			cv.FillRect(cv.Rect(), green)
+			cv.PopAlpha(prev)
+		},
+		func(cv *render.Canvas) {
+			shapes(cv, 0)
+			b := cv.PushBrightness(1.3)
+			cv.FillRect(cv.Rect(), green)
+			cv.PopBrightness(b)
+			shapes(cv, 20)
+		},
+		func(cv *render.Canvas) {
+			shapes(cv, 0)
+			cv.Clear(cv.Rect(), 0)
+			cv.FillRect(render.Rect{X: 30, Y: 30, W: 20, H: 20}, blue)
+		},
+		func(cv *render.Canvas) {
+			shapes(cv, 0)
+			area := cv.MapRect(render.Rect{X: 10, Y: 10, W: 50, H: 30})
+			snap := cv.ScratchSnapshot(area)
+			cv.Clear(cv.Rect(), green)
+			cv.DrawLayer(snap, area, render.BlendNormal)
+			snap.Release()
+		},
+		func(cv *render.Canvas) {
+			shapes(cv, 0)
+			clip := cv.PushClip(render.Rect{X: 8, Y: 8, W: 30, H: 30})
+			cv.Clear(cv.Rect(), green)
+			cv.PopClip(clip)
+		},
+		func(cv *render.Canvas) {
+			region := cv.MapRect(render.Rect{X: 6, Y: 6, W: 40, H: 30})
+			l := cv.ScratchLayer(region)
+			l.Canvas().RoundedRect(render.Rect{X: 8, Y: 8, W: 36, H: 26}, 6, red)
+			shapes(cv, 0)
+			cv.Clear(cv.Rect(), green)
+			cv.Composite(l, region, render.Translate(20, 10), 0.9)
+			l.Release()
+		},
+		func(cv *render.Canvas) {
+			shapes(cv, 0)
+			region := cv.MapRect(render.Rect{X: 10, Y: 10, W: 40, H: 30})
+			l := cv.ScratchLayer(region)
+			l.Canvas().FillRect(render.Rect{X: 10, Y: 10, W: 40, H: 30}, blue)
+			cv.DrawLayer(l, region, render.BlendMultiply)
+			l.Release()
+			cv.FillRect(cv.Rect(), green)
+			cv.FillRect(render.Rect{X: 40, Y: 40, W: 30, H: 10}, blue)
+		},
+		func(cv *render.Canvas) {
+			shapes(cv, 15)
+		},
+	}
+	for _, sc := range [][2]int{{1, 1}, {3, 2}} {
+		parity(t, d, 96*sc[0]/sc[1], 72*sc[0]/sc[1], sc[0], sc[1], len(scenes), func(cv *render.Canvas, frame int) {
+			scenes[frame](cv)
+		})
+	}
+}
+
+func TestARecordingEndingInAFullOpaqueClearCostsTheClearAlone(t *testing.T) {
+	d := openDevice(t)
+	size := 2048
+	if isCPUDevice(d) {
+		size = 64
+	}
+	tg := newTarget(t, d, size, size)
+	rec := render.NewRecorder(size, size, 1, 1)
+	all := render.Rect{W: size, H: size}
+	green := render.RGBA(0, 255, 0, 255)
+	record := func(units int, cleared bool) *render.List {
+		rec.ResetRecorder(size, size, 1, 1)
+		for i := range units {
+			rec.RoundedRect(all, 8, render.RGBA(uint8(i), 0, 0, 255))
+		}
+		if cleared {
+			rec.Clear(all, green)
+		}
+		return rec.Recording()
+	}
+	timed := func(l *render.List) time.Duration {
+		t.Helper()
+		if err := d.Finish(); err != nil {
+			t.Fatal(err)
+		}
+		start := monotonic()
+		if err := d.Render(l, tg); err != nil {
+			t.Fatal(err)
+		}
+		if err := d.Finish(); err != nil {
+			t.Fatal(err)
+		}
+		return monotonic() - start
+	}
+	job := newSlowJob(t, d, func(units int) { timed(record(units, false)) })
+	busy := timed(record(job.units, false))
+	job.ran(t, 0, busy)
+	alone := timed(record(0, true))
+	hidden := timed(record(job.units, true))
+	t.Logf("%s at %d²: %d rounded rects %v, a clear alone %v, the rects then the clear %v", d.Name(), size, job.units, busy, alone, hidden)
+	if hidden-alone > (busy-alone)/4 {
+		t.Errorf("%d rounded rects hidden by a full opaque clear cost %v over the clear alone (%v); drawn they cost %v", job.units, hidden-alone, alone, busy)
+	}
+	if got := readTarget(t, tg).RGBAAt(size/2, size/2); got != (color.RGBA{0, 255, 0, 255}) {
+		t.Errorf("the hidden rects then the clear left %v", got)
+	}
 }

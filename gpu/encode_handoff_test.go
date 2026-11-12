@@ -9,8 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"golang.org/x/sys/unix"
-
 	"github.com/stubbedev/lys-lib/drm"
 	"github.com/stubbedev/lys-lib/third_party/vk"
 )
@@ -63,9 +61,6 @@ func TestEncodeFencesItsBuffer(t *testing.T) {
 				waitReadable(t, fence)
 				if signalled, err := drm.SyncFileSignalled(fence); err != nil || !signalled {
 					t.Fatalf("frame %d: the buffer's fence: signalled %v, %v", frame, signalled, err)
-				}
-				if err := unix.Close(fence); err != nil {
-					t.Fatal(err)
 				}
 				if done := d.finished(); done != len(d.inflight) {
 					t.Errorf("frame %d: the buffer's fence signalled with %d of %d submissions finished", frame, done, len(d.inflight))

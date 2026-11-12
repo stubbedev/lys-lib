@@ -106,10 +106,7 @@ func (j slowJob) endsBy(t *testing.T, start time.Duration, fence int) {
 		j.ran(t, start, monotonic())
 		return
 	}
-	fd, err := unix.FcntlInt(uintptr(fence), unix.F_DUPFD_CLOEXEC, 0)
-	if err != nil {
-		t.Fatalf("duplicating the slow job's fence %d: %v", fence, err)
-	}
+	fd := dupFD(t, fence)
 	t.Cleanup(func() {
 		defer unix.Close(fd)
 		j.ran(t, start, signalTime(t, fd))

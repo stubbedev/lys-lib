@@ -17,14 +17,14 @@ import (
 )
 
 // heavyList is a frame that keeps a real GPU busy with units rounded
-// rectangles, ending in col.
+// rectangles in col over a clear in col.
 func heavyList(rec *render.Canvas, w, h, units int, col render.Color) *render.List {
 	rec.ResetRecorder(w, h, 1, 1)
 	all := render.Rect{W: w, H: h}
-	for i := range units {
-		rec.RoundedRect(all, 8, render.RGBA(uint8(i), 0, 0, 255))
-	}
 	rec.Clear(all, col)
+	for range units {
+		rec.RoundedRect(all, 8, col)
+	}
 	return rec.Recording()
 }
 
@@ -36,6 +36,7 @@ func dmabufFence(t *testing.T, fd int) int {
 	if err != nil {
 		t.Fatal(err)
 	}
+	t.Cleanup(func() { _ = unix.Close(fence) })
 	return fence
 }
 
@@ -118,7 +119,7 @@ func TestARenderedDmabufCarriesItsFrame(t *testing.T) {
 			}
 		}
 		waitReadable(t, fence)
-		if err := b.WaitSyncFile(fence); err != nil {
+		if err := b.WaitSyncFile(dupFD(t, fence)); err != nil {
 			t.Fatal(err)
 		}
 		runPass(t, b, dst, []image.Rectangle{{Max: dst.Size()}}, func(p *Pass) {
@@ -236,17 +237,17 @@ func TestSyncFilesSignalInTheOrderOfTheirWork(t *testing.T) {
 	}
 	defer tb.Close()
 	green := color.RGBA{0, 255, 0, 255}
-	heavyPass(t, a, ta, green)
+	job := heavyPassJob(t, a, ta)
+	start1 := monotonic()
+	heavyPass(t, a, ta, job.units, green)
 	first := syncFile(t, a)
-	heavyPass(t, a, ta, green)
+	start2 := monotonic()
+	heavyPass(t, a, ta, job.units, green)
 	second := syncFile(t, a)
 	if first < 0 || second < 0 {
 		t.Skipf("%s exports no pending sync_files: nothing here to observe", a.Name())
 	}
-	mine, err := unix.FcntlInt(uintptr(second), unix.F_DUPFD_CLOEXEC, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	mine := dupFD(t, second)
 	if err := b.WaitSyncFile(mine); err != nil {
 		t.Fatal(err)
 	}
@@ -256,6 +257,8 @@ func TestSyncFilesSignalInTheOrderOfTheirWork(t *testing.T) {
 		t.Fatalf("%s: SyncFile says all finished, ahead of the fence it waits on", b.Name())
 	}
 	t1, t2, t3 := signalTime(t, first), signalTime(t, second), signalTime(t, third)
+	job.ran(t, start1, t1)
+	job.ran(t, start2, t2)
 	if t2 <= t1 {
 		t.Errorf("the newer pass's fence signalled at %v, not after the older's at %v", t2, t1)
 	}

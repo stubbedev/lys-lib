@@ -533,3 +533,36 @@ func TestAPassThatLeavesPixelsUndrawnLoadsTheTarget(t *testing.T) {
 		}
 	}
 }
+
+func TestAPassUnderPartialDamageDrawsNothingAFullOpaqueFillHides(t *testing.T) {
+	d := openDevice(t)
+	tg, err := d.NewOffscreen(16, 16)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tg.Close()
+	red, green, blue := color.RGBA{255, 0, 0, 255}, color.RGBA{0, 255, 0, 255}, color.RGBA{0, 0, 255, 255}
+	runPass(t, d, tg, []image.Rectangle{{Max: tg.Size()}}, func(p *Pass) { p.Clear(red) })
+	damage := image.Rect(0, 0, 8, 8)
+	runPass(t, d, tg, []image.Rectangle{damage}, func(p *Pass) {
+		p.FillRect(image.Rect(0, 0, 6, 6), blue, Mask{})
+		p.FillRect(image.Rect(2, 2, 8, 8), color.RGBA{A: 128}, Mask{})
+		p.FillRect(image.Rectangle{Max: tg.Size()}, green, Mask{})
+		p.FillRect(image.Rect(0, 0, 2, 2), color.RGBA{0, 0, 128, 128}, Mask{})
+	})
+	if err := d.Finish(); err != nil {
+		t.Fatal(err)
+	}
+	if d.passWork.draws != 2 || d.passWork.discards != 0 {
+		t.Errorf("a pass under partial damage recorded %+v, want the hiding fill and the one after it, loading the target", d.passWork)
+	}
+	img := readTarget(t, tg)
+	for _, c := range []struct {
+		at   image.Point
+		want color.RGBA
+	}{{image.Pt(1, 1), color.RGBA{0, 127, 128, 255}}, {image.Pt(4, 4), green}, {image.Pt(12, 12), red}} {
+		if got := img.RGBAAt(c.at.X, c.at.Y); !within(got, c.want, 1) {
+			t.Errorf("pixel %v is %v, want %v", c.at, got, c.want)
+		}
+	}
+}

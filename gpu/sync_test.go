@@ -33,14 +33,30 @@ func syncDevice(t *testing.T) *Device {
 	return d
 }
 
-func heavyPass(t *testing.T, d *Device, tg *Target, last color.RGBA) {
+func heavyPass(t *testing.T, d *Device, tg *Target, units int, last color.RGBA) {
 	t.Helper()
-	runPass(t, d, tg, []image.Rectangle{{Max: tg.Size()}}, func(p *Pass) {
-		for i := range 200 {
-			p.FillRect(image.Rectangle{Max: tg.Size()}, color.RGBA{uint8(i), 0, 0, 255}, Mask{})
+	all := image.Rectangle{Max: tg.Size()}
+	runPass(t, d, tg, []image.Rectangle{all}, func(p *Pass) {
+		p.Clear(color.RGBA{A: 255})
+		for range units {
+			p.FillRect(all, color.RGBA{A: 128}, Mask{})
 		}
 		p.FillRect(image.Rect(0, 0, 4, 4), last, Mask{})
 	})
+}
+
+func heavyPassJob(t *testing.T, d *Device, tg *Target) slowJob {
+	t.Helper()
+	return newSlowJob(t, d, func(units int) { heavyPass(t, d, tg, units, color.RGBA{A: 255}) })
+}
+
+func dupFD(t *testing.T, fd int) int {
+	t.Helper()
+	dup, err := unix.FcntlInt(uintptr(fd), unix.F_DUPFD_CLOEXEC, 0)
+	if err != nil {
+		t.Fatalf("duplicating fd %d: %v", fd, err)
+	}
+	return dup
 }
 
 func waitReadable(t *testing.T, fd int) {
@@ -72,14 +88,16 @@ func TestSyncFileSignalsOnceThePassFinishes(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tg.Close()
+	job := heavyPassJob(t, d, tg)
 	before := monotonic()
-	heavyPass(t, d, tg, color.RGBA{0, 255, 0, 255})
+	heavyPass(t, d, tg, job.units, color.RGBA{0, 255, 0, 255})
 	fd, err := d.SyncFile()
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer unix.Close(fd)
 	signalled := signalTime(t, fd)
+	job.ran(t, before, signalled)
 	if err := d.Finish(); err != nil {
 		t.Fatal(err)
 	}
@@ -138,15 +156,22 @@ func TestWaitSyncFileOrdersAnotherDevicesWork(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer dst.Close()
+	job := heavyPassJob(t, a, src)
+	pending := 0
 	for _, want := range []color.RGBA{{0, 255, 0, 255}, {0, 0, 255, 255}} {
-		heavyPass(t, a, src, want)
+		start := monotonic()
+		heavyPass(t, a, src, job.units, want)
 		fd, err := a.SyncFile()
 		if err != nil {
 			t.Fatal(err)
 		}
-		mine, err := unix.Dup(fd)
+		mine := dupFD(t, fd)
+		signalledEarly, err := drm.SyncFileSignalled(mine)
 		if err != nil {
 			t.Fatal(err)
+		}
+		if !signalledEarly {
+			pending++
 		}
 		if err := b.WaitSyncFile(fd); err != nil {
 			t.Fatal(err)
@@ -159,9 +184,13 @@ func TestWaitSyncFileOrdersAnotherDevicesWork(t *testing.T) {
 		}
 		signalled := signalTime(t, mine)
 		unix.Close(mine)
+		job.ran(t, start, signalled)
 		if done, ok, err := b.FrameDone(); err == nil && ok && done < signalled {
 			t.Errorf("the waiting pass finished at %v, before the fence it waited on signalled at %v", done, signalled)
 		}
+	}
+	if pending == 0 && !isCPUDevice(a) {
+		t.Errorf("%s: no pass's fence was pending when the other device waited on it", a.Name())
 	}
 }
 
@@ -482,10 +511,7 @@ func TestASyncFileCoversWhatCameBeforeIt(t *testing.T) {
 		t.Logf("%s exports no sync_files: waits not checked", d.Name())
 		return
 	}
-	dup, err := unix.FcntlInt(uintptr(wait), unix.F_DUPFD_CLOEXEC, 0)
-	if err != nil {
-		t.Fatal(err)
-	}
+	dup := dupFD(t, wait)
 	clearPass(t, d, tg)
 	before := len(d.inflight)
 	d.waits = append(d.waits, mustSemaphore(t, d, dup))
@@ -548,9 +574,12 @@ func TestASyncFileOfMinusOneMeansAllFinished(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tg.Close()
+	job := heavyPassJob(t, d, tg)
 	for range 8 {
-		heavyPass(t, d, tg, color.RGBA{0, 255, 0, 255})
+		start := monotonic()
+		heavyPass(t, d, tg, job.units, color.RGBA{0, 255, 0, 255})
 		fd := syncFile(t, d)
+		job.endsBy(t, start, fd)
 		if fd < 0 {
 			if got := readTarget(t, tg).RGBAAt(1, 1); got != (color.RGBA{0, 255, 0, 255}) {
 				t.Fatalf("all finished, but the pass drew %v", got)

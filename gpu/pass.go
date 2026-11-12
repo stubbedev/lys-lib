@@ -599,6 +599,7 @@ func (p *Pass) submit() error {
 	if len(p.ops) == 0 || len(p.damage) == 0 {
 		return nil
 	}
+	p.ops = occlude(p.ops, p.hides, func(*passOp) reach { return writesSurface })
 	return d.batchPassCommands(p.record)
 }
 
@@ -611,12 +612,11 @@ func (p *Pass) record(cb vk.CommandBuffer) {
 		bounds = bounds.Union(r)
 	}
 	d.passWork = passWork{}
-	start, pass := p.overwritten(), ct.pass
-	if start >= 0 {
+	ops, pass := p.ops, ct.pass
+	if p.overwritten() {
 		pass = ct.discard
 		d.passWork.discards++
 	}
-	ops := p.ops[max(start, 0):]
 	for i := range ops {
 		op := &ops[i]
 		if !p.touchesDamage(op.dst) {
@@ -717,20 +717,16 @@ func (p *Pass) record(cb vk.CommandBuffer) {
 	d.holdTarget(p.t)
 }
 
-func (p *Pass) overwritten() int {
+func (p *Pass) overwritten() bool {
 	bounds, area := image.Rectangle{Max: p.t.Size()}, 0
 	for _, r := range p.damage {
 		area += r.Dx() * r.Dy()
 	}
-	if area != bounds.Dx()*bounds.Dy() {
-		return -1
-	}
-	for i, op := range slices.Backward(p.ops) {
-		if op.kind == opClear || op.opaque && bounds.In(op.dst) {
-			return i
-		}
-	}
-	return -1
+	return area == bounds.Dx()*bounds.Dy() && p.hides(&p.ops[0])
+}
+
+func (p *Pass) hides(op *passOp) bool {
+	return op.kind == opClear || op.opaque && image.Rectangle{Max: p.t.Size()}.In(op.dst)
 }
 
 func (p *Pass) touchesDamage(dst image.Rectangle) bool {

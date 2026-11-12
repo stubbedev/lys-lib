@@ -6,8 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"golang.org/x/sys/unix"
-
 	"github.com/stubbedev/lys-lib/drm"
 	"github.com/stubbedev/lys-lib/fourcc"
 	"github.com/stubbedev/lys-lib/testbuild"
@@ -60,9 +58,11 @@ func TestPublishAttachesThePassesFence(t *testing.T) {
 	}
 	tg := passTarget(t, d, size)
 	plane := tg.Dmabuf().Planes[0].FD
+	job := heavyPassJob(t, d, tg)
 	waits, pending := d.BlockingWaits(), 0
 	for frame := range 8 {
-		heavyPass(t, d, tg, color.RGBA{0, 255, 0, 255})
+		start := monotonic()
+		heavyPass(t, d, tg, job.units, color.RGBA{0, 255, 0, 255})
 		if err := d.Publish(tg); err != nil {
 			t.Fatal(err)
 		}
@@ -71,6 +71,7 @@ func TestPublishAttachesThePassesFence(t *testing.T) {
 			t.Fatalf("frame %d: Publish left the pass unsubmitted", frame)
 		}
 		fence := dmabufFence(t, plane)
+		job.endsBy(t, start, fence)
 		signalled, err := drm.SyncFileSignalled(fence)
 		if err != nil {
 			t.Fatal(err)
@@ -79,9 +80,6 @@ func TestPublishAttachesThePassesFence(t *testing.T) {
 			pending++
 		}
 		waitReadable(t, fence)
-		if err := unix.Close(fence); err != nil {
-			t.Fatal(err)
-		}
 		if done := d.finished(); done != len(d.inflight) {
 			t.Errorf("frame %d: the dmabuf's fence signalled with %d of %d submissions finished", frame, done, len(d.inflight))
 		}
@@ -102,7 +100,9 @@ func TestPublishAttachesThePassesFence(t *testing.T) {
 func TestPublishCoversPassesAlreadySubmitted(t *testing.T) {
 	d := fencingDevice(t)
 	tg := passTarget(t, d, 64)
-	heavyPass(t, d, tg, color.RGBA{0, 0, 255, 255})
+	job := heavyPassJob(t, d, tg)
+	start := monotonic()
+	heavyPass(t, d, tg, job.units, color.RGBA{0, 0, 255, 255})
 	if err := d.Flush(); err != nil {
 		t.Fatal(err)
 	}
@@ -115,10 +115,15 @@ func TestPublishCoversPassesAlreadySubmitted(t *testing.T) {
 		t.Errorf("Publish after Flush made %d submissions, want the one that signals", got-submitted)
 	}
 	fence := dmabufFence(t, tg.Dmabuf().Planes[0].FD)
-	waitReadable(t, fence)
-	if err := unix.Close(fence); err != nil {
+	job.endsBy(t, start, fence)
+	signalled, err := drm.SyncFileSignalled(fence)
+	if err != nil {
 		t.Fatal(err)
 	}
+	if signalled && !isCPUDevice(d) {
+		t.Errorf("%s: the dmabuf's fence had signalled when Publish returned: nothing here shows it covers the flushed pass", d.Name())
+	}
+	waitReadable(t, fence)
 	if done := d.finished(); done != len(d.inflight) {
 		t.Errorf("the dmabuf's fence signalled with %d of %d submissions finished", done, len(d.inflight))
 	}
@@ -130,10 +135,13 @@ func TestPublishWithoutAFenceFinishesThePass(t *testing.T) {
 	d := exportingDevice(t)
 	d.implicitFences = false
 	tg := passTarget(t, d, 64)
-	heavyPass(t, d, tg, color.RGBA{0, 255, 0, 255})
+	job := heavyPassJob(t, d, tg)
+	start := monotonic()
+	heavyPass(t, d, tg, job.units, color.RGBA{0, 255, 0, 255})
 	if err := d.Publish(tg); err != nil {
 		t.Fatal(err)
 	}
+	job.ran(t, start, monotonic())
 	if n := len(d.inflight); n != 0 || d.batch != 0 {
 		t.Errorf("%d submissions in flight and batch %v when Publish returned", n, d.batch != 0)
 	}

@@ -37,6 +37,7 @@ type step struct {
 	first, count uint32
 	offset       int
 	region       image.Rectangle
+	covers       bool
 }
 
 // upload copies staged bytes into a surface region. A segment's
@@ -267,7 +268,8 @@ func (f *frame) draw2(dst, tex, tex2 *surface, pp pipe, p prim) {
 		return
 	}
 	f.prims = append(f.prims, p)
-	if n := len(f.steps); n > 0 {
+	covers := dst == &f.target.s && p.covers(pp, dst.w, dst.h)
+	if n := len(f.steps); n > 0 && !covers {
 		last := &f.steps[n-1]
 		if last.kind == stepDraw && last.dst == dst && last.pipe == pp && samplesJoin(last.tex, tex) && samplesJoin(last.tex2, tex2) {
 			last.tex, last.tex2 = cmp.Or(last.tex, tex), cmp.Or(last.tex2, tex2)
@@ -276,7 +278,18 @@ func (f *frame) draw2(dst, tex, tex2 *surface, pp pipe, p prim) {
 			return
 		}
 	}
-	f.steps = append(f.steps, step{kind: stepDraw, dst: dst, tex: tex, tex2: tex2, pipe: pp, first: count(f.prims) - 1, count: 1, region: area})
+	f.steps = append(f.steps, step{kind: stepDraw, dst: dst, tex: tex, tex2: tex2, pipe: pp, first: count(f.prims) - 1, count: 1, region: area, covers: covers})
+}
+
+func (f *frame) targetReach(st *step) reach {
+	t := &f.target.s
+	switch {
+	case st.src == t, st.tex == t, st.tex2 == t, st.kind == stepDownload && st.dst == t:
+		return readsSurface
+	case st.dst == t:
+		return writesSurface
+	}
+	return elsewhere
 }
 
 // samplesJoin reports whether draws sampling a and b can share a binding:
@@ -400,6 +413,7 @@ func (f *frame) cpu(region render.Rect, surfaces []*surface, fn func(cvs []*rend
 // to its consumer.
 func (f *frame) flush(final bool) error {
 	d, fb := f.d, f.d.current
+	f.steps = occlude(f.steps, func(st *step) bool { return st.covers }, f.targetReach)
 	var err error
 	if d.readback, err = d.readback.fit(f.downloads); err != nil {
 		return err
