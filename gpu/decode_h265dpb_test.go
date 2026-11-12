@@ -15,10 +15,11 @@ type h265Run struct {
 	state h265State
 }
 
+// h265RunSlots are the DPB slots of an h265Run's pictures.
+const h265RunSlots = 5
+
 func newH265Run(t *testing.T) *h265Run {
-	r := &h265Run{t: t, sps: nal.HEVCSPS{Log2MaxPocLsb: 4}}
-	r.state.slots = 5
-	return r
+	return &h265Run{t: t, sps: nal.HEVCSPS{Log2MaxPocLsb: 4}}
 }
 
 // rps is a slice-coded short-term set of the delta POCs given, all
@@ -34,11 +35,16 @@ func rps(neg, pos []int32) nal.HEVCShortTermRPS {
 
 func (r *h265Run) pic(nalType uint8, lsb uint32, set nal.HEVCShortTermRPS) (h265Pic, error) {
 	h := nal.HEVCSliceHeader{PicOrderCntLsb: lsb, RPS: set, PicOutput: true}
-	p := h265Pic{hdr: &h, sps: &r.sps, nalType: nalType}
-	if err := r.state.begin(&p); err != nil {
+	return r.decode(h265Pic{hdr: &h, sps: &r.sps, nalType: nalType})
+}
+
+// decode decodes p, the state moving on when it does.
+func (r *h265Run) decode(p h265Pic) (h265Pic, error) {
+	next, err := r.state.decoded(&p, h265RunSlots)
+	if err != nil {
 		return p, err
 	}
-	r.state.finish(&p)
+	r.state = next
 	return p, nil
 }
 
@@ -121,11 +127,10 @@ func TestH265LongTermReference(t *testing.T) {
 	r.must(nal.HEVCNALIDRWRAD, 0, nal.HEVCShortTermRPS{})
 	h := nal.HEVCSliceHeader{PicOrderCntLsb: 4, NumLongTermPics: 1, PicOutput: true}
 	h.LongTerm[0] = nal.HEVCLongTerm{PocLsb: 0, UsedByCurrPic: true}
-	p := h265Pic{hdr: &h, sps: &r.sps, nalType: 1}
-	if err := r.state.begin(&p); err != nil {
+	p, err := r.decode(h265Pic{hdr: &h, sps: &r.sps, nalType: 1})
+	if err != nil {
 		t.Fatal(err)
 	}
-	r.state.finish(&p)
 	if p.nLt != 1 || !r.state.refs[p.lt[0]].long || r.state.refs[p.lt[0]].poc != 0 {
 		t.Fatalf("long-term list %v, want picture 0 marked long-term", p.lt[:p.nLt])
 	}
@@ -135,13 +140,53 @@ func TestH265LongTermReference(t *testing.T) {
 		if lsb != 0 {
 			h.LongTerm[0].DeltaPocMsbCycle = 0
 		}
-		p = h265Pic{hdr: &h, sps: &r.sps, nalType: 1}
-		if err := r.state.begin(&p); err != nil {
+		if p, err = r.decode(h265Pic{hdr: &h, sps: &r.sps, nalType: 1}); err != nil {
 			t.Fatalf("picture at LSB %d: %v", lsb, err)
 		}
-		r.state.finish(&p)
 	}
 	if p.poc != 16 || p.nLt != 1 || r.state.refs[p.lt[0]].poc != 0 {
 		t.Errorf("picture %d's long-term list %v, want picture 0 by its whole POC", p.poc, p.lt[:p.nLt])
+	}
+}
+
+// Working out a picture that then fails to decode (every frame held,
+// say) leaves the state as it was: the picture given again works out
+// the same, a CRA picture decoding starts at still drops its RASL
+// pictures, and a picture whose reference picture set names one not
+// decoded gives back the state as it was, none of the pictures it would
+// have dropped or made long-term marked so.
+func TestH265PictureThatFailsLeavesNoTrace(t *testing.T) {
+	r := newH265Run(t)
+	cra := nal.HEVCSliceHeader{PicOrderCntLsb: 8, PicOutput: true}
+	before := r.state
+	first := h265Pic{hdr: &cra, sps: &r.sps, nalType: nal.HEVCNALCRA}
+	if _, err := r.state.decoded(&first, h265RunSlots); err != nil {
+		t.Fatal(err)
+	}
+	if r.state != before {
+		t.Fatalf("a CRA picture worked out and not decoded left the state %+v, want %+v", r.state, before)
+	}
+	again, err := r.decode(h265Pic{hdr: &cra, sps: &r.sps, nalType: nal.HEVCNALCRA})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.poc != first.poc || again.slot != first.slot || !again.noRaslOutput {
+		t.Fatalf("the CRA picture given again: POC %d, slot %d, NoRaslOutputFlag %v, want POC %d, slot %d and the flag, as the first time", again.poc, again.slot, again.noRaslOutput, first.poc, first.slot)
+	}
+	if _, err := r.pic(nal.HEVCNALRASLN, 6, rps([]int32{-4}, []int32{2})); !errors.Is(err, errSkipPicture) {
+		t.Fatalf("a RASL picture of the CRA picture decoding started at, given again: %v, want errSkipPicture", err)
+	}
+	r.must(1, 12, rps([]int32{-4}, nil))
+	r.must(1, 0, rps([]int32{-4}, nil))
+	before = r.state
+	h := nal.HEVCSliceHeader{PicOrderCntLsb: 4, NumLongTermPics: 1, PicOutput: true, RPS: rps([]int32{-3}, nil)}
+	h.LongTerm[0] = nal.HEVCLongTerm{PocLsb: 12, UsedByCurrPic: true}
+	failed := h265Pic{hdr: &h, sps: &r.sps, nalType: 1}
+	got, err := r.state.decoded(&failed, h265RunSlots)
+	if err == nil || errors.Is(err, errSkipPicture) {
+		t.Fatalf("a picture referencing one not decoded: %v, want an error", err)
+	}
+	if got != before || r.state != before {
+		t.Errorf("a picture that failed gave the state %+v and left %+v, want %+v both", got, r.state, before)
 	}
 }

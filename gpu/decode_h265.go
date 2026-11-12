@@ -209,7 +209,10 @@ func (c *h265Decoder) decode(v *VideoDecoder, p demux.Packet) error {
 	return c.picture(v, p)
 }
 
-// picture decodes the packet's slice segments, one picture.
+// picture decodes the packet's slice segments, one picture. The
+// reference state moves on only once the picture is submitted: a
+// picture that fails before (every frame held, say) leaves it as it
+// was, for the packet to decode the same when given again.
 func (c *h265Decoder) picture(v *VideoDecoder, p demux.Packet) error {
 	first := c.slices[0]
 	for _, unit := range c.slices[1:] {
@@ -236,12 +239,12 @@ func (c *h265Decoder) picture(v *VideoDecoder, p demux.Packet) error {
 	if err != nil {
 		return err
 	}
-	c.state.slots = shape.slots
 	pic := h265Pic{hdr: &c.hdr, sps: sps, nalType: nal.HEVCType(first), tid: nal.HEVCTemporalID(first)}
-	if err := c.state.begin(&pic); err != nil {
-		if errors.Is(err, errSkipPicture) {
-			return nil
-		}
+	next, err := c.state.decoded(&pic, shape.slots)
+	if errors.Is(err, errSkipPicture) {
+		return nil
+	}
+	if err != nil {
 		return err
 	}
 	c.active = sps
@@ -281,7 +284,7 @@ func (c *h265Decoder) picture(v *VideoDecoder, p demux.Packet) error {
 			if slices.Contains(c.refSlots[:n], slot) {
 				continue
 			}
-			r := &c.state.refs[slot]
+			r := &next.refs[slot]
 			c.refStd[n] = vk.StdVideoDecodeH265ReferenceInfo{PicOrderCntVal: r.poc}
 			if r.long {
 				c.refStd[n].Flags = vk.StdVideoDecodeH265ReferenceUsedForLongTerm
@@ -295,10 +298,10 @@ func (c *h265Decoder) picture(v *VideoDecoder, p demux.Packet) error {
 	if err := v.submit(&c.req); err != nil {
 		return err
 	}
+	c.state = next
 	frame.pts, frame.duration = p.PTS, p.Duration
 	x0, y0, x1, y1 := sps.CropRect()
 	frame.rect = image.Rect(x0, y0, x1, y1)
-	c.state.finish(&pic)
 	boundary := pic.irap() && pic.noRaslOutput
 	if !pic.output() {
 		if boundary {

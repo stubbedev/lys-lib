@@ -244,7 +244,11 @@ func takeFrames(t *testing.T, v *VideoDecoder, out []decoded) []decoded {
 	}
 }
 
-func decodeRetryingTheLastPicture(t *testing.T, v *VideoDecoder, pkts []demux.Packet, at, pictures int, resume *packetResume) []decoded {
+// decodeRetryingTheLastPicture decodes pkts, the one at at, of
+// pictures pictures, first with a frame free for each but its last,
+// which then fails, and again once every frame is free; done is how
+// many of the failed packet's pictures the decoder counts decoded.
+func decodeRetryingTheLastPicture(t *testing.T, v *VideoDecoder, pkts []demux.Packet, at, pictures int, done func() int) []decoded {
 	t.Helper()
 	out := decodeSome(t, v, pkts[:at])
 	held := holdFramesBut(t, v, pictures-1)
@@ -252,8 +256,8 @@ func decodeRetryingTheLastPicture(t *testing.T, v *VideoDecoder, pkts []demux.Pa
 	if err == nil || !strings.Contains(err.Error(), "frames are held") {
 		t.Fatalf("packet %d of %d pictures, with %d frames free: %v, want its last picture to find every frame held", at, pictures, pictures-1, err)
 	}
-	if resume.done != pictures-1 {
-		t.Fatalf("packet %d failed after %d of its %d pictures, want all but the last: %v", at, resume.done, pictures, err)
+	if n := done(); n != pictures-1 {
+		t.Fatalf("packet %d failed after %d of its %d pictures, want all but the last: %v", at, n, pictures, err)
 	}
 	for _, f := range held {
 		f.Release()
@@ -437,30 +441,44 @@ func TestDecodeH265MatchesFFmpeg(t *testing.T) {
 }
 
 // After a seek, H.265 decoding starts again at a CRA picture, dropping
-// the RASL pictures that lead it and predict from before it.
+// the RASL pictures that lead it and predict from before it, and does
+// so as well when the CRA picture fails (every frame held) and is
+// given again.
 func TestDecodeH265ResetsAtACRA(t *testing.T) {
 	d := decodingDevice(t, demux.H265)
 	cl := ffmpegClip(t, "a.mp4", 160, 144, 3, "-c:v", "libx265", "-x265-params", "log-level=none:keyint=20:min-keyint=20:open-gop=1:bframes=3")
 	track, pkts := packets(t, cl.path)
-	v, err := d.NewVideoDecoder(track)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer v.Close()
-	decodeSome(t, v, pkts[:15])
-	if err := v.Reset(); err != nil {
-		t.Fatal(err)
-	}
 	key := slices.IndexFunc(pkts[1:], func(p demux.Packet) bool { return p.Key }) + 1
 	if key == 0 {
 		t.Fatal("no keyframe after the first")
 	}
 	start := pkts[key].PTS
-	got := decodeAll(t, v, pkts[key:])
-	if len(got) > 0 && got[0].pts < start {
-		t.Errorf("first frame after the reset presents at %v, before the CRA at %v", got[0].pts, start)
+	for _, c := range []struct {
+		name   string
+		decode func(*testing.T, *VideoDecoder, []demux.Packet) []decoded
+	}{
+		{"decoded once", decodeAll},
+		{"given again", func(t *testing.T, v *VideoDecoder, pkts []demux.Packet) []decoded {
+			return decodeRetryingTheLastPicture(t, v, pkts, 0, 1, func() int { return 0 })
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			v, err := d.NewVideoDecoder(track)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer v.Close()
+			decodeSome(t, v, pkts[:15])
+			if err := v.Reset(); err != nil {
+				t.Fatal(err)
+			}
+			got := c.decode(t, v, pkts[key:])
+			if len(got) > 0 && got[0].pts < start {
+				t.Errorf("first frame after the reset presents at %v, before the CRA at %v", got[0].pts, start)
+			}
+			checkFrames(t, cl, got, int(start/(40*time.Millisecond)))
+		})
 	}
-	checkFrames(t, cl, got, int(start/(40*time.Millisecond)))
 }
 
 // After a seek, Reset and the packets from the keyframe decode the

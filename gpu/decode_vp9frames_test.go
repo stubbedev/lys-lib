@@ -303,7 +303,7 @@ func TestDecodeVP9RetriesASuperframeWhoseShownFrameFailed(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer v.Close()
-	checkFrames(t, cl, decodeRetryingTheLastPicture(t, v, pkts, at, len(hdrs[at]), &v.codec.(*vp9Decoder).resume), 0)
+	checkFrames(t, cl, decodeRetryingTheLastPicture(t, v, pkts, at, len(hdrs[at]), func() int { return v.codec.(*vp9Decoder).resume.done }), 0)
 }
 
 // Showing a picture again, copied out of its reference picture into a

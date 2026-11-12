@@ -222,9 +222,9 @@ func unsupported(err error) error {
 // pictures and waits for the GPU only when that is far behind (Busy).
 // A picture that predicts from pictures before the one decoding
 // started at (after Reset, at a keyframe that is not an IDR) is
-// dropped. A packet of several pictures that fails partway (every
-// frame held, say) may be given again once that is put right: it
-// decodes as though it had not failed.
+// dropped. A packet that fails, partway through its pictures or at its
+// only one (every frame held, say), may be given again once that is put
+// right: it decodes as though it had not failed.
 func (v *VideoDecoder) Decode(p demux.Packet) error {
 	if v.closed {
 		return fmt.Errorf("gpu: %s decode of a closed decoder", v.name)
@@ -891,7 +891,9 @@ type decodePicture struct {
 }
 
 // submit records and submits decoding p into its frame, reading the
-// stream buffer stream returned.
+// stream buffer stream returned. The session reset and the DPB's first
+// layout it records are done with only once the submission goes
+// through: a picture that fails records them again.
 func (v *VideoDecoder) submit(p *decodePicture) error {
 	d, c := v.d, &v.cmd
 	s := &v.slots[v.next]
@@ -931,7 +933,6 @@ func (v *VideoDecoder) submit(p *decodePicture) error {
 	if v.reset {
 		c.control = vk.VideoCodingControlInfoKHR{SType: vk.StructureTypeVideoCodingControlInfoKhr, Flags: vk.VideoCodingControlFlagsKHR(vk.VideoCodingControlResetBitKhr)}
 		d.cmds.CmdControlVideoCodingKHR(cb, &c.control)
-		v.reset = false
 	}
 	c.setup = vk.VideoReferenceSlotInfoKHR{SType: vk.StructureTypeVideoReferenceSlotInfoKhr, PNext: (*uintptr)(p.setupInfo), SlotIndex: intconv.Must[int32](p.setup), PPictureResource: &c.res[0]}
 	c.decode = vk.VideoDecodeInfoKHR{
@@ -950,7 +951,11 @@ func (v *VideoDecoder) submit(p *decodePicture) error {
 	d.cmds.CmdEndVideoCodingKHR(cb, &c.end)
 	v.coded[p.setup] = p.coded
 	v.barriersAfter(cb, p)
-	return v.finish(s, p.frame)
+	if err := v.finish(s, p.frame); err != nil {
+		return err
+	}
+	v.reset, v.dpbFresh = false, false
+	return nil
 }
 
 // finish ends the commands of s, the slot of the next decode
@@ -1031,7 +1036,6 @@ func (v *VideoDecoder) barriersBefore(cb vk.CommandBuffer, p *decodePicture) {
 		images[n] = imageBarrier(v.dpb.image, dpbAll, vk.ImageLayoutUndefined, vk.ImageLayoutVideoDecodeDpbKhr)
 		images[n].DstStageMask, images[n].DstAccessMask = coding, readWrite
 		n++
-		v.dpbFresh = false
 	}
 	done := vk.MemoryBarrier2{
 		SType:        vk.StructureTypeMemoryBarrier2,

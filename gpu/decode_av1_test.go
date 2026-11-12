@@ -355,5 +355,5 @@ func TestDecodeAV1RetriesATemporalUnitWhoseLastFrameFailed(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer v.Close()
-	checkFrames(t, cl, decodeRetryingTheLastPicture(t, v, pkts, at, len(hdrs[at]), &v.codec.(*av1Decoder).resume), 0)
+	checkFrames(t, cl, decodeRetryingTheLastPicture(t, v, pkts, at, len(hdrs[at]), func() int { return v.codec.(*av1Decoder).resume.done }), 0)
 }

@@ -280,6 +280,13 @@ func main() {
   skipped instead leaves them decoded. A frame's header moves the parser's
   state (`Stream.Update` of `internal/vp9` and of `internal/av1`) only once
   the frame has decoded, so a frame that fails reads the same again.
+- An H.265 picture moves the decoder's state (the picture order count the
+  next pictures count from, the reference pictures it marks unused or
+  long-term, whether the RASL pictures of the CRA picture decoding started at
+  are dropped) only once its decode is submitted, so a packet that fails
+  before that (every frame held, say) leaves the state as it was and decodes
+  the same given again: a CRA picture decoding starts at after a seek still
+  drops its RASL pictures.
 - A frame header that shows a picture shown before (AV1 and VP9
   `show_existing_frame`) gets the picture copied out of its reference picture
   into a frame of its own again, with its film grain; a device with output

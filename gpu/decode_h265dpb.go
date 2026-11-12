@@ -60,8 +60,7 @@ func (p *h265Pic) output() bool { return p.hdr.PicOutput }
 // h265State is the reference pictures of a stream being decoded, by
 // DPB slot, and the picture order count state.
 type h265State struct {
-	slots int
-	refs  [h265MaxSlots]h265Ref
+	refs [h265MaxSlots]h265Ref
 	// prevTid0 is prevTid0Pic's PicOrderCntVal.
 	prevTid0 int32
 	// started is set once an IRAP picture began decoding; skipRASL
@@ -72,30 +71,34 @@ type h265State struct {
 }
 
 // reset forgets every reference picture: what a seek does.
-func (s *h265State) reset() { *s = h265State{slots: s.slots} }
+func (s *h265State) reset() { *s = h265State{} }
 
-// begin works out p's picture order count (8.3.1), its reference
-// picture set (8.3.2), marking the pictures it leaves out unused, and
-// its DPB slot. It returns errSkipPicture for a picture
-// before the first IRAP picture or a RASL picture of an IRAP picture
-// decoding started at.
-func (s *h265State) begin(p *h265Pic) error {
-	if !s.started && !p.irap() {
-		return errSkipPicture
+// decoded is the state once p has decoded: it works out p's picture
+// order count (8.3.1), its reference picture set (8.3.2), marking the
+// pictures it leaves out unused, and its DPB slot among the first
+// slots, which p then holds as a short-term reference picture. s stays
+// as it was, and is what an error returns, so a picture that fails to
+// decode leaves no trace and works out the same when given again. It
+// returns errSkipPicture for a picture before the first IRAP picture or
+// a RASL picture of an IRAP picture decoding started at.
+func (s h265State) decoded(p *h265Pic, slots int) (h265State, error) {
+	next := s
+	if !next.started && !p.irap() {
+		return s, errSkipPicture
 	}
 	if p.irap() {
-		p.noRaslOutput = !s.started || p.idr() || p.nalType <= nal.HEVCNALBLAWLP+2
-		s.skipRASL = p.noRaslOutput
+		p.noRaslOutput = !next.started || p.idr() || p.nalType <= nal.HEVCNALBLAWLP+2
+		next.skipRASL = p.noRaslOutput
 	}
-	if p.rasl() && s.skipRASL {
-		return errSkipPicture
+	if p.rasl() && next.skipRASL {
+		return s, errSkipPicture
 	}
 	maxLsb := int32(1) << p.sps.Log2MaxPocLsb
 	lsb := intconv.Must[int32](p.hdr.PicOrderCntLsb)
 	var msb int32
 	if !p.irap() || !p.noRaslOutput {
-		prevLsb := s.prevTid0 & (maxLsb - 1)
-		msb = s.prevTid0 - prevLsb
+		prevLsb := next.prevTid0 & (maxLsb - 1)
+		msb = next.prevTid0 - prevLsb
 		switch {
 		case lsb < prevLsb && prevLsb-lsb >= maxLsb/2:
 			msb += maxLsb
@@ -105,19 +108,20 @@ func (s *h265State) begin(p *h265Pic) error {
 	}
 	p.poc = msb + lsb
 	if p.tid == 0 && !p.skipsTid0() {
-		s.prevTid0 = p.poc
+		next.prevTid0 = p.poc
 	}
-	if err := s.referencePictures(p, maxLsb); err != nil {
-		return err
+	if err := next.referencePictures(p, maxLsb); err != nil {
+		return s, err
 	}
-	for i := range s.slots {
-		if !s.refs[i].used {
+	for i := range slots {
+		if !next.refs[i].used {
 			p.slot = i
-			s.started = true
-			return nil
+			next.started = true
+			next.refs[i] = h265Ref{poc: p.poc, used: true}
+			return next, nil
 		}
 	}
-	return fmt.Errorf("gpu: H.265 picture %d finds all %d DPB slots holding reference pictures", p.poc, s.slots)
+	return s, fmt.Errorf("gpu: H.265 picture %d finds all %d DPB slots holding reference pictures", p.poc, slots)
 }
 
 // referencePictures derives p's reference picture set: the slots of its
@@ -212,9 +216,4 @@ func (s *h265State) find(match func(*h265Ref) bool) int {
 		}
 	}
 	return -1
-}
-
-// finish marks p, decoded, a short-term reference picture.
-func (s *h265State) finish(p *h265Pic) {
-	s.refs[p.slot] = h265Ref{poc: p.poc, used: true}
 }
