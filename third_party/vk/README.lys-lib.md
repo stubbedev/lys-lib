@@ -218,7 +218,9 @@ eight bytes long with the layout where the driver reads padding;
 `TestVideoDecodeStructSizes` pins the decode structures' sizes.
 `const_decode_lysui.go`: the core 1.1
 `StructureTypeImageViewUsageCreateInfo`, which the decoder's coding views
-of sampled pictures need.
+of sampled pictures need. The core 1.2
+`StructureTypePhysicalDeviceDriverProperties`, by which the decoder
+knows the driver.
 
 `stdvideo_av1_lysui.go`: the AV1 sequence header, colour config, timing
 info, tile info, quantization, segmentation, loop filter, CDEF, loop

@@ -101,7 +101,7 @@ func datas(pkts []demux.Packet) [][]byte {
 // ffmpeg decodes from the file at path at the frame's own size.
 func checkSized(t *testing.T, path string, got []decoded) {
 	t.Helper()
-	raw := runFFmpeg(t, "-v", "error", "-i", path, "-noautoscale", "-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", rawFormat(nv12Samples), "-")
+	raw := ffmpegRaw(t, path, nv12Samples)
 	for i, g := range got {
 		n := pictureSize(g.size.X, g.size.Y, nv12Samples)
 		if len(raw) < n {

@@ -239,7 +239,10 @@ func main() {
   range extensions). AV1 frames coded at a superres-scaled width are errors
   that say so, as are AV1 inter frames whose size differs from their
   references' (reference scaling) and frames smaller than the device decodes
-  (NVIDIA decodes AV1 from 128x128, H.265 from 144x144).
+  (NVIDIA decodes AV1 from 128x128, H.265 from 144x144). The tests decode
+  ffmpeg's frames on one thread: with frame threads its H.264 decoder (9.0.2)
+  shows a field without its frame's other at some thread counts (9, its
+  default on 8 cores), into a frame it shows twice, and on one thread none.
 - Interlaced H.264 comes out as it is coded, a frame's two fields woven into
   one picture, the top field its even lines: nothing deinterlaces.
   `VideoFrame.FieldOrder` says whether a frame is two fields and which is the
@@ -383,10 +386,17 @@ func main() {
   no decode wrote.
 - Intel's driver (Mesa ANV) offers Vulkan Video decoding only with
   `ANV_DEBUG=video-decode` set (Mesa 26.2.5); without it `DecodeCodecs` is
-  empty there. AV1 frames that keep the segmentation map of their primary
-  reference frame (`segmentation_update_map` 0) decode wrong there: Mesa
-  26.2.5 leaves the segment id read buffer unset (`genX_cmd_video.c`), so
-  they decode with another map than dav1d's.
+  empty there. ANV never gives its AV1 decoder the segment IDs of a frame's
+  primary reference frame: it leaves the segment ID read buffer unset and
+  segment ID stream-in and stream-out off (`genX_cmd_video.c`, Mesa 26.2.5,
+  26.2.6 and main as of November 2026), so a frame that takes them
+  (segmentation enabled with `segmentation_update_map` 0 or
+  `segmentation_temporal_update` 1) decodes with whatever map the hardware
+  holds, right only by chance. On ANV (`VK_DRIVER_ID_INTEL_OPEN_SOURCE_MESA`,
+  whatever its version, since none sets the buffer) the `Decode` that meets
+  such a frame fails with `ErrNoVideoDecoder` saying so, the frames before it
+  decoded, rather than hand out a wrong frame: libaom's variance and cyclic
+  refresh adaptive quantisation (`-aq-mode` 1 and 3) code them.
 - Decoding a frame allocates nothing once the decoder has made its frames.
 - A `VideoDecoder` belongs to its device's goroutine.
 

@@ -2,6 +2,7 @@ package gpu
 
 import (
 	"bytes"
+	"errors"
 	"image"
 	"math/bits"
 	"slices"
@@ -36,19 +37,20 @@ func libaom(params string, args ...string) []string {
 func TestDecodeAV1MatchesFFmpeg(t *testing.T) {
 	d := decodingDevice(t, demux.AV1)
 	for _, c := range []struct {
-		name, file string
-		w, h       int
-		args       []string
+		name, file         string
+		w, h               int
+		args               []string
+		previousSegmentIDs bool
 	}{
-		{"hidden frames, 7 references", "a.mp4", 192, 128, libaom("enable-tpl-model=1", "-g", "30", "-lag-in-frames", "19", "-auto-alt-ref", "1")},
-		{"2x2 tiles, restoration, global motion", "b.mp4", 256, 144, libaom("enable-restoration=1:enable-global-motion=1:tile-columns=1:tile-rows=1", "-g", "25")},
-		{"error resilient, screen content", "c.mp4", 192, 128, libaom("tune-content=screen", "-error-resilience", "1", "-g", "12")},
-		{"cropped 270x150", "d.mp4", 270, 150, libaom("enable-cdef=1", "-g", "20")},
-		{"128x128 superblocks, matroska", "e.mkv", 192, 128, libaom("sb-size=128", "-g", "12")},
-		{"segmentation, segment data of the primary reference", "g.mp4", 192, 128, libaom("", "-cpu-used", "4", "-aq-mode", "1", "-g", "30")},
-		{"realtime, cyclic refresh segmentation", "h.mp4", 192, 128, libaom("", "-usage", "realtime", "-cpu-used", "8", "-aq-mode", "3", "-g", "30")},
-		{"delta q and loop filter deltas", "i.mp4", 192, 128, libaom("deltaq-mode=3:delta-lf-mode=1", "-g", "30")},
-		{"SVT-AV1", "f.mp4", 192, 128, []string{"-c:v", "libsvtav1", "-preset", "10", "-g", "24", "-svtav1-params", "film-grain=0"}},
+		{"hidden frames, 7 references", "a.mp4", 192, 128, libaom("enable-tpl-model=1", "-g", "30", "-lag-in-frames", "19", "-auto-alt-ref", "1"), false},
+		{"2x2 tiles, restoration, global motion", "b.mp4", 256, 144, libaom("enable-restoration=1:enable-global-motion=1:tile-columns=1:tile-rows=1", "-g", "25"), false},
+		{"error resilient, screen content", "c.mp4", 192, 128, libaom("tune-content=screen", "-error-resilience", "1", "-g", "12"), false},
+		{"cropped 270x150", "d.mp4", 270, 150, libaom("enable-cdef=1", "-g", "20"), false},
+		{"128x128 superblocks, matroska", "e.mkv", 192, 128, libaom("sb-size=128", "-g", "12"), false},
+		{"segmentation, segment data of the primary reference", "g.mp4", 192, 128, libaom("", "-cpu-used", "4", "-aq-mode", "1", "-g", "30"), true},
+		{"realtime, cyclic refresh segmentation", "h.mp4", 192, 128, libaom("", "-usage", "realtime", "-cpu-used", "8", "-aq-mode", "3", "-g", "30"), true},
+		{"delta q and loop filter deltas", "i.mp4", 192, 128, libaom("deltaq-mode=3:delta-lf-mode=1", "-g", "30"), false},
+		{"SVT-AV1", "f.mp4", 192, 128, []string{"-c:v", "libsvtav1", "-preset", "10", "-g", "24", "-svtav1-params", "film-grain=0"}, false},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			cl := ffmpegClip(t, c.file, c.w, c.h, 2, c.args...)
@@ -58,9 +60,32 @@ func TestDecodeAV1MatchesFFmpeg(t *testing.T) {
 				t.Fatal(err)
 			}
 			defer v.Close()
+			if c.previousSegmentIDs && !d.decode.givesAV1SegmentIDs() {
+				checkRefusedSegmentIDs(t, cl, v, pkts)
+				return
+			}
 			checkFrames(t, cl, decodeAll(t, v, pkts), 0)
 		})
 	}
+}
+
+func checkRefusedSegmentIDs(t *testing.T, cl stream, v *VideoDecoder, pkts []demux.Packet) {
+	t.Helper()
+	var got []decoded
+	for i, p := range pkts {
+		err := v.Decode(p)
+		got = takeFrames(t, v, got)
+		if err == nil {
+			continue
+		}
+		if !errors.Is(err, ErrNoVideoDecoder) || !strings.Contains(err.Error(), "segment IDs from its primary reference frame") {
+			t.Fatalf("packet %d: %v, want ErrNoVideoDecoder refusing the segment IDs of the primary reference frame", i, err)
+		}
+		cl.frames = cl.frames[:min(len(got), len(cl.frames))]
+		checkFrames(t, cl, got, 0)
+		return
+	}
+	t.Fatalf("%s decoded all %d packets, want a refusal of the first frame taking the segment IDs of its primary reference frame", v.d.name, len(pkts))
 }
 
 // Film grain comes out as ffmpeg (dav1d) synthesizes it, sample for

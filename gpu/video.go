@@ -88,6 +88,7 @@ type decodeQueue struct {
 	// decodes only into its reference pictures, whether it copies them
 	// out itself or leaves that to the graphics queue.
 	transfer bool
+	driver   vk.DriverId
 }
 
 // probeSync2 reports whether p has Vulkan 1.3's synchronization2,
@@ -169,11 +170,23 @@ func (d *Device) probeDecode(p vk.PhysicalDevice, sync2, timelines, ycbcr bool, 
 			continue
 		}
 		if found == nil {
-			found = &decodeQueue{family: family, transfer: queueFlags&vk.QueueFlags(vk.QueueTransferBit) != 0}
+			found = &decodeQueue{family: family, transfer: queueFlags&vk.QueueFlags(vk.QueueTransferBit) != 0, driver: d.probeDriver(p)}
 		}
 		found.codecs = append(found.codecs, c.codec)
 	}
 	return found, why
+}
+
+func (q *decodeQueue) givesAV1SegmentIDs() bool {
+	return q.driver != vk.DriverIdIntelOpenSourceMesa
+}
+
+func (d *Device) probeDriver(p vk.PhysicalDevice) vk.DriverId {
+	driver := vk.PhysicalDeviceDriverProperties{SType: vk.StructureTypePhysicalDeviceDriverProperties}
+	props := vk.PhysicalDeviceProperties2{SType: vk.StructureTypePhysicalDeviceProperties2, PNext: (*uintptr)(unsafe.Pointer(&driver))}
+	d.cmds.GetPhysicalDeviceProperties2(p, &props)
+	runtime.KeepAlive(&driver)
+	return driver.DriverID
 }
 
 // probeVideoFamily finds the first of p's queue families with flag

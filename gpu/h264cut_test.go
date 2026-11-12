@@ -480,16 +480,7 @@ func (c *h264Cut) packets(apart bool) []demux.Packet {
 // it is not to conceal anything in: an error fails the test.
 func (c *h264Cut) reference(w, h int) stream {
 	c.t.Helper()
-	raw := runFFmpeg(c.t, "-v", "error", "-xerror", "-err_detect", "explode", "-i", c.annexB(), "-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", rawFormat(nv12Samples), "-")
-	size := pictureSize(w, h, nv12Samples)
-	if len(raw)%size != 0 || len(raw) == 0 {
-		c.t.Fatalf("ffmpeg decoded %d bytes of %dx%d frames", len(raw), w, h)
-	}
-	s := stream{w: w, h: h}
-	for ; len(raw) > 0; raw = raw[size:] {
-		s.frames = append(s.frames, raw[:size])
-	}
-	return s
+	return ffmpegDecoded(c.t, c.annexB(), w, h, nv12Samples, "-xerror", "-err_detect", "explode")
 }
 
 // fieldPairs cuts src's pictures in as fields, two that follow each

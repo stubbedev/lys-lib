@@ -233,6 +233,9 @@ func (c *av1Decoder) picture(v *VideoDecoder, p demux.Packet, data []byte) error
 	if h.UseSuperres {
 		return fmt.Errorf("%w: the %s at order hint %d is coded at a superres-scaled width, which the decoder does not upscale", ErrNoVideoDecoder, h.FrameType, h.OrderHint)
 	}
+	if readsPreviousSegmentIDs(&h.Seg) && !v.d.decode.givesAV1SegmentIDs() {
+		return fmt.Errorf("%w: the %s at order hint %d takes its segment IDs from its primary reference frame's (segmentation_update_map %d, segmentation_temporal_update %d), which Mesa's ANV driver never gives %s's decoder: it leaves the AV1 segment ID read buffer unset", ErrNoVideoDecoder, h.FrameType, h.OrderHint, b2u8(h.Seg.UpdateMap), b2u8(h.Seg.TemporalUpdate), v.d.name)
+	}
 	shape, err := c.shape()
 	if err != nil {
 		return err
@@ -305,6 +308,10 @@ func (c *av1Decoder) picture(v *VideoDecoder, p demux.Packet, data []byte) error
 		c.keep(setup, frame, h.ShowableFrame)
 	}
 	return nil
+}
+
+func readsPreviousSegmentIDs(s *av1.Segmentation) bool {
+	return s.Enabled && (!s.UpdateMap || s.TemporalUpdate)
 }
 
 // grain is the film grain of the frame c.hdr heads.

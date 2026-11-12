@@ -127,10 +127,10 @@ func encodeClip(t *testing.T, name string, w, h int, secs float64, format videoS
 }
 
 // ffmpegDecoded is the w x h stream at path with the frames ffmpeg
-// decodes from it as format.
-func ffmpegDecoded(t *testing.T, path string, w, h int, format videoSamples) stream {
+// decodes from it as format, given the decoder flags.
+func ffmpegDecoded(t *testing.T, path string, w, h int, format videoSamples, flags ...string) stream {
 	t.Helper()
-	raw := runFFmpeg(t, "-v", "error", "-i", path, "-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", rawFormat(format), "-")
+	raw := ffmpegRaw(t, path, format, flags...)
 	size := pictureSize(w, h, format)
 	if len(raw)%size != 0 || len(raw) == 0 {
 		t.Fatalf("ffmpeg decoded %d bytes of %dx%d %s frames", len(raw), w, h, format)
@@ -149,6 +149,12 @@ func ffmpegDecoded(t *testing.T, path string, w, h int, format videoSamples) str
 func runFFmpeg(t *testing.T, args ...string) []byte {
 	t.Helper()
 	return runCommand(t, "ffmpeg", args...)
+}
+
+func ffmpegRaw(t *testing.T, path string, format videoSamples, flags ...string) []byte {
+	t.Helper()
+	args := append([]string{"-v", "error", "-threads", "1"}, flags...)
+	return runFFmpeg(t, append(args, "-i", path, "-noautoscale", "-fps_mode", "passthrough", "-f", "rawvideo", "-pix_fmt", rawFormat(format), "-")...)
 }
 
 // runCommand runs name, one of ffmpeg's programs, with args, and
