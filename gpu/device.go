@@ -65,7 +65,8 @@ type Device struct {
 	// maxDim is the largest image side the device makes.
 	maxDim int
 	// exports is whether the device renders into dmabufs.
-	exports bool
+	exports     bool
+	importTypes uint32
 	// renderNode is the device's DRM render node, "" when the driver
 	// does not name it (VK_EXT_physical_device_drm).
 	renderNode string
@@ -426,7 +427,10 @@ func (d *Device) proveExport() error {
 	if err != nil {
 		return fmt.Errorf("%s cannot export a dmabuf: %w", d.name, err)
 	}
-	e.close(d)
+	defer e.close(d)
+	if err := d.learnImportTypes(e.buf); err != nil {
+		return fmt.Errorf("%s cannot import the dmabuf it exported: %w", d.name, err)
+	}
 	return nil
 }
 

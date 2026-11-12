@@ -190,6 +190,29 @@ func disjointPlanes(planes []dmabuf.Plane) (bool, error) {
 }
 
 func (im *imported) create(d *Device, b dmabuf.Buffer, usage vk.ImageUsageFlags, create vk.ImageCreateFlags) error {
+	if err := im.createImage(d, b, usage, create); err != nil {
+		return err
+	}
+	if create != 0 {
+		return im.bindPlanes(d, b)
+	}
+	var req vk.MemoryRequirements
+	d.cmds.GetImageMemoryRequirements(d.device, im.image, &req)
+	if err := d.checkSharedPlanes(im.image, b, req); err != nil {
+		return err
+	}
+	mem, err := d.importMemory(b.Planes[0].FD, req, &vk.MemoryDedicatedAllocateInfo{Image: im.image})
+	if err != nil {
+		return err
+	}
+	im.memory = append(im.memory, mem)
+	if r := d.cmds.BindImageMemory(d.device, im.image, mem, 0); r != vk.Success {
+		return fmt.Errorf("gpu: vkBindImageMemory (import): %w", resultError(r))
+	}
+	return nil
+}
+
+func (im *imported) createImage(d *Device, b dmabuf.Buffer, usage vk.ImageUsageFlags, create vk.ImageCreateFlags) error {
 	layouts := make([]vk.SubresourceLayout, len(b.Planes))
 	for i, p := range b.Planes {
 		layouts[i] = vk.SubresourceLayout{Offset: vk.DeviceSize(p.Offset), RowPitch: vk.DeviceSize(p.Stride)}
@@ -215,23 +238,26 @@ func (im *imported) create(d *Device, b dmabuf.Buffer, usage vk.ImageUsageFlags,
 	if r != vk.Success {
 		return fmt.Errorf("gpu: vkCreateImage importing a %dx%d %s dmabuf in modifier %s: %w", b.Width, b.Height, b.Format, b.Modifier, resultError(r))
 	}
-	if create == 0 {
-		var req vk.MemoryRequirements
-		d.cmds.GetImageMemoryRequirements(d.device, im.image, &req)
-		if err := d.checkSharedPlanes(im.image, b, req); err != nil {
-			return err
-		}
-		mem, err := d.importMemory(b.Planes[0].FD, req, &vk.MemoryDedicatedAllocateInfo{Image: im.image})
-		if err != nil {
-			return err
-		}
-		im.memory = append(im.memory, mem)
-		if r := d.cmds.BindImageMemory(d.device, im.image, mem, 0); r != vk.Success {
-			return fmt.Errorf("gpu: vkBindImageMemory (import): %w", resultError(r))
-		}
-		return nil
+	return nil
+}
+
+func (d *Device) learnImportTypes(b dmabuf.Buffer) error {
+	pf, err := d.importFormatOf(b.Format, textureImport)
+	if err != nil {
+		return err
 	}
-	return im.bindPlanes(d, b)
+	im := imported{pf: pf}
+	defer im.close(d)
+	if err := im.createImage(d, b, textureImport.usage, 0); err != nil {
+		return err
+	}
+	var req vk.MemoryRequirements
+	d.cmds.GetImageMemoryRequirements(d.device, im.image, &req)
+	if req.MemoryTypeBits == 0 {
+		return fmt.Errorf("%w: %s binds an imported %s dmabuf in modifier %s to none", errNoMemoryType, d.name, b.Format, b.Modifier)
+	}
+	d.importTypes = req.MemoryTypeBits
+	return nil
 }
 
 func (im *imported) bindPlanes(d *Device, b dmabuf.Buffer) error {
@@ -317,9 +343,9 @@ func (d *Device) importMemory(fd int, req vk.MemoryRequirements, ded *vk.MemoryD
 	if r := d.cmds.GetMemoryFdPropertiesKHR(d.device, vk.ExternalMemoryHandleTypeDmaBufBitExt, intconv.Must[int32](fd), &props); r != vk.Success {
 		return 0, fmt.Errorf("gpu: vkGetMemoryFdPropertiesKHR on dmabuf %d: %w", fd, resultError(r))
 	}
-	types := req.MemoryTypeBits & props.MemoryTypeBits
+	types := req.MemoryTypeBits & props.MemoryTypeBits & d.importTypes
 	if types == 0 {
-		return 0, fmt.Errorf("%w: the image binds %#x, dmabuf %d %#x", errNoMemoryType, req.MemoryTypeBits, fd, props.MemoryTypeBits)
+		return 0, fmt.Errorf("%w: the resource binds %#x, dmabuf %d %#x, imports %#x", errNoMemoryType, req.MemoryTypeBits, fd, props.MemoryTypeBits, d.importTypes)
 	}
 	dup, err := unix.FcntlInt(uintptr(fd), unix.F_DUPFD_CLOEXEC, 0)
 	if err != nil {
