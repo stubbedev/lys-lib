@@ -6,6 +6,7 @@ import (
 	"io"
 	"slices"
 	"strings"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/unix"
@@ -27,15 +28,16 @@ type vaEncoders struct {
 }
 
 // vaProfile is how the driver encodes a codec: the VA profile and
-// entrypoint, the rate control mode, whether it takes our slice
-// headers packed, whether P frames go as B slices predicting
-// from the same picture in both lists (a driver that codes no P
-// slices), and the H.265 features and block sizes it reports
-// (AttribNotSupported where it does not).
+// entrypoint, the rate control mode, the finest constant QP it
+// quantises at, whether it takes our slice headers packed, whether P
+// frames go as B slices predicting from the same picture in both
+// lists (a driver that codes no P slices), and the H.265 features and
+// block sizes it reports (AttribNotSupported where it does not).
 type vaProfile struct {
 	profile, entrypoint int32
 	stdProfile          vk.StdVideoH264ProfileIdc
 	rc                  uint32
+	minQP               int
 	packedSlice         bool
 	gpb                 bool
 	hevcFeatures        uint32
@@ -62,6 +64,28 @@ func vaCodecProfiles(c Codec) []vaCodecProfile {
 		return vaH265Profiles
 	}
 	return nil
+}
+
+// vaMinQPs are the finest constant QPs drivers quantise a codec at,
+// which VA-API has no attribute for, by the start of the driver's
+// vendor string. iHD's VDEnc quantises H.265 at QP 10 at least (its
+// HEVC VDENC_CMD2 minQp) while its PAK codes the slice at the QP the
+// parameters give, so a finer QP decodes at the wrong scale.
+var vaMinQPs = []struct {
+	vendor string
+	codec  Codec
+	qp     int
+}{{"Intel iHD driver", H265, 10}}
+
+// vaMinQP is the finest constant QP the driver vendor names quantises
+// c at.
+func vaMinQP(vendor string, c Codec) int {
+	for _, m := range vaMinQPs {
+		if m.codec == c && strings.HasPrefix(vendor, m.vendor) {
+			return m.qp
+		}
+	}
+	return 0
 }
 
 // vaRateControls are the rate control modes the encoder codes at, best
@@ -136,6 +160,7 @@ func probeVAProfile(dpy *va.Display, c Codec) (vaProfile, error) {
 				continue
 			}
 			p.stdProfile = prof.std
+			p.minQP = vaMinQP(dpy.Vendor(), c)
 			return p, nil
 		}
 	}
@@ -253,12 +278,14 @@ type vaFrame struct {
 }
 
 // vaSlot is a frame in flight on the driver: the picture its
-// conversion is copied into, the surface the driver reads it as, and
-// the coded buffer it encodes into.
+// conversion is copied into, the surface the driver reads it as, the
+// coded buffer it encodes into, and whether the driver has been handed
+// it and not yet been waited for.
 type vaSlot struct {
-	picture exported
-	surface uint32
-	coded   uint32
+	picture  exported
+	surface  uint32
+	coded    uint32
+	encoding bool
 }
 
 // newVABackend makes the driver's encode configuration, context and
@@ -270,8 +297,7 @@ func newVABackend(d *Device, cfg EncoderConfig) (*vaBackend, error) {
 	}
 	for _, step := range []func() error{vb.createConfig, vb.layout, vb.createContext, vb.createSlots} {
 		if err := step(); err != nil {
-			vb.close()
-			return nil, err
+			return nil, errors.Join(err, vb.close())
 		}
 	}
 	return vb, nil
@@ -311,7 +337,8 @@ func vaCodedSize(cfg EncoderConfig, unit, minW, minH int) [2]int {
 }
 
 // layout lays out the stream within the sizes the configuration takes:
-// the coded size, the rate and the codec's parameters.
+// the coded size, the rate and the codec's parameters, which code at
+// the configured QP or the driver's finest, whichever is coarser.
 func (vb *vaBackend) layout() error {
 	minW, minH, maxW, maxH, err := vb.dpy.SurfaceSizes(vb.config)
 	if err != nil {
@@ -319,18 +346,18 @@ func (vb *vaBackend) layout() error {
 	}
 	cqp := vb.prof.rc == va.RCCQP
 	vb.bitrate = uint32(min(desktopBitrate(vb.cfg), 1<<32-1))
-	initQP := 26
+	qp := 26
 	if cqp {
-		initQP = vb.cfg.QP
+		qp = max(vb.cfg.QP, vb.prof.minQP)
 	}
 	switch vb.cfg.Codec {
 	case H264:
 		vb.coded = vaCodedSize(vb.cfg, 16, minW, minH)
-		vb.codec, err = newH264VA(vb.cfg, vb.coded, vb.prof, initQP, vb.bitrate)
+		vb.codec, err = newH264VA(vb.cfg, vb.coded, vb.prof, qp, vb.bitrate)
 	case H265:
 		blocks := vaHEVCBlocks(vb.prof.hevcBlocks)
 		vb.coded = vaCodedSize(vb.cfg, 1<<blocks.minCB, minW, minH)
-		vb.codec, err = newHEVCVA(vb.cfg, vb.coded, blocks, vb.prof, cqp, initQP, vb.bitrate)
+		vb.codec, err = newHEVCVA(vb.cfg, vb.coded, blocks, vb.prof, cqp, qp, vb.bitrate)
 	}
 	if err != nil {
 		return err
@@ -505,6 +532,7 @@ func (vb *vaBackend) render(slot, frame, sinceIDR int, idrs uint16) error {
 	if err := vb.add(slice); err != nil {
 		return err
 	}
+	s.encoding = true
 	if err := vb.dpy.Encode(vb.context, s.surface, f.bufs); err != nil {
 		return fmt.Errorf("gpu: encode frame %d: %w", frame, err)
 	}
@@ -565,11 +593,7 @@ func (vb *vaBackend) rateControl() error {
 // driver repeats at an IDR, which ParameterSets gives.
 func (vb *vaBackend) collect(slot int) ([]byte, error) {
 	s, f := &vb.slots[slot], &vb.frame
-	err := vb.dpy.SyncSurface(s.surface, vb.d.waitLimit)
-	if errors.Is(err, va.ErrTimeout) {
-		return nil, fmt.Errorf("%w: %w", ErrTimeout, err)
-	}
-	if err != nil {
+	if err := vb.wait(s, vb.d.waitLimit); err != nil {
 		return nil, err
 	}
 	data, err := vb.dpy.ReadCoded(f.coded[:0], s.coded)
@@ -591,19 +615,57 @@ func (vb *vaBackend) collect(slot int) ([]byte, error) {
 // slice does.
 const vaStartCodeRoom = 16
 
-func (vb *vaBackend) close() {
+// wait waits for s's picture, limit at most: ErrTimeout while the
+// driver is still encoding it, which keeps it in flight.
+func (vb *vaBackend) wait(s *vaSlot, limit time.Duration) error {
+	err := vb.dpy.SyncSurface(s.surface, limit)
+	if errors.Is(err, va.ErrTimeout) {
+		return fmt.Errorf("%w: %w", ErrTimeout, err)
+	}
+	s.encoding = false
+	return err
+}
+
+// finish waits for every picture the driver has, the device's wait
+// limit at most in all.
+func (vb *vaBackend) finish() error {
+	deadline := time.Now().Add(vb.d.waitLimit)
+	var errs []error
 	for i := range vb.slots {
 		s := &vb.slots[i]
+		if !s.encoding {
+			continue
+		}
+		if err := vb.wait(s, time.Until(deadline)); err != nil {
+			errs = append(errs, fmt.Errorf("gpu: the picture of encoder slot %d: %w", i, err))
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// close waits for the pictures the driver has (finish) and releases
+// the backend. While the driver may still be encoding one, everything
+// on the display stays, the display open, and the error says so: the
+// surfaces, buffers and context it is using leak rather than being
+// destroyed underneath it.
+func (vb *vaBackend) close() error {
+	err := vb.finish()
+	for i := range vb.slots {
+		vb.slots[i].picture.close(vb.d)
+	}
+	if slices.ContainsFunc(vb.slots[:], func(s vaSlot) bool { return s.encoding }) {
+		return fmt.Errorf("%w; the VA-API display stays open with the surfaces and buffers the driver may still use", err)
+	}
+	if vb.dpy == nil {
+		return err
+	}
+	for _, s := range vb.slots {
 		if s.coded != va.InvalidID {
 			vb.dpy.DestroyBuffer(s.coded)
 		}
 		if s.surface != va.InvalidID {
 			vb.dpy.DestroySurfaces([]uint32{s.surface})
 		}
-		s.picture.close(vb.d)
-	}
-	if vb.dpy == nil {
-		return
 	}
 	if vb.context != va.InvalidID {
 		vb.dpy.DestroyContext(vb.context)
@@ -613,6 +675,7 @@ func (vb *vaBackend) close() {
 		vb.dpy.DestroyConfig(vb.config)
 	}
 	vb.dpy.Close()
+	return err
 }
 
 // h264VA is H.264's part of a VA encoder.

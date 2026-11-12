@@ -53,7 +53,8 @@ type EncoderConfig struct {
 	// Height are the frame's, turned: a 90 or 270 degree transform
 	// swaps the source region's.
 	Transform Transform
-	// QP is the constant quantiser, 0 (best) to 51. A device without
+	// QP is the constant quantiser, 0 (best) to 51, coded at the
+	// encoder's finest where that is coarser. A device without
 	// constant-QP coding runs its own rate control at a bitrate
 	// matching QP 20 on desktop content instead.
 	QP int
@@ -250,7 +251,10 @@ type encodeBackend interface {
 	collect(slot int) ([]byte, error)
 	// parameterSets are the stream's parameter set NAL units.
 	parameterSets() [][]byte
-	close()
+	// close waits for the frames the backend encodes apart from the
+	// device, the device's wait limit at most, and releases it, keeping
+	// what a frame it gave up on may still use.
+	close() error
 }
 
 // NewEncoder makes an encoder for cfg on the device's Vulkan video
@@ -280,8 +284,7 @@ func newEncoderOn[B encodeBackend](d *Device, cfg EncoderConfig, newBackend func
 	e := &Encoder{d: d, cfg: cfg, backend: backend, coded: backend.codedSize()}
 	for _, step := range []func() error{e.createPlanes, e.createPipeline} {
 		if err := step(); err != nil {
-			e.Close()
-			return nil, err
+			return nil, errors.Join(err, e.Close())
 		}
 	}
 	return e, nil
@@ -704,16 +707,20 @@ func (e *Encoder) recordConvert(cb vk.CommandBuffer, src vk.Image, slot int) {
 }
 
 // Close waits for the frames in flight, dropping their packets, and
-// releases the encoder; closing it again does nothing.
-func (e *Encoder) Close() {
+// releases the encoder; closing it again does nothing. A frame the
+// VA-API driver has not finished within the device's wait limit is
+// ErrTimeout, and what the driver may still be using of it is left
+// allocated rather than released underneath it.
+func (e *Encoder) Close() error {
 	if e.closed {
-		return
+		return nil
 	}
 	e.closed = true
 	d := e.d
 	d.cmds.DeviceWaitIdle(d.device)
+	var err error
 	if e.backend != nil {
-		e.backend.close()
+		err = e.backend.close()
 	}
 	if e.overlay != nil {
 		e.overlay.close()
@@ -742,4 +749,5 @@ func (e *Encoder) Close() {
 	if e.setLayout != 0 {
 		d.cmds.DestroyDescriptorSetLayout(d.device, e.setLayout, nil)
 	}
+	return err
 }

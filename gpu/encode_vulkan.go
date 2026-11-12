@@ -88,8 +88,7 @@ func newVulkanBackend(d *Device, cfg EncoderConfig) (*vulkanBackend, error) {
 	steps := []func() error{vb.pickProfile, vb.createSession, vb.createParameters, vb.createImages, vb.createBuffers, vb.createCommands}
 	for _, step := range steps {
 		if err := step(); err != nil {
-			vb.close()
-			return nil, err
+			return nil, errors.Join(err, vb.close())
 		}
 	}
 	return vb, nil
@@ -166,7 +165,7 @@ func (vb *vulkanBackend) collect(slot int) ([]byte, error) {
 	return slices.Clone(vb.bitstream.mapped[start : start+n]), nil
 }
 
-func (vb *vulkanBackend) close() {
+func (vb *vulkanBackend) close() error { //nolint:unparam // encodeBackend's: the encoder's device idle wait has finished the video queue's frames
 	d := vb.d
 	for i := range vb.slots {
 		s := &vb.slots[i]
@@ -195,6 +194,7 @@ func (vb *vulkanBackend) close() {
 		d.cmds.DestroyVideoSessionKHR(d.device, vb.session, nil)
 	}
 	d.freeMemory(vb.sessionMem)
+	return nil
 }
 
 // dpbSlots are the reference pictures: the one being reconstructed and

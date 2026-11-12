@@ -74,7 +74,7 @@ func main() {
 | `KeyInterval` | Frames between keyframes |
 | `Source` | Region of the buffer to read; zero reads all of it |
 | `Transform` | The captured output's `wl_output` transform, undone by the encoder |
-| `QP` | Constant quantiser, 0 (best) to 51. Devices without constant-QP coding use a bitrate matching QP 20 on desktop content |
+| `QP` | Constant quantiser, 0 (best) to 51, coded at the encoder's finest where it is finer (Intel's iHD VA-API driver quantises H.265 at 10 at least, and the stream says so). Devices without constant-QP coding use a bitrate matching QP 20 on desktop content |
 
 - The source is a `Buffer`; pass `frame.Dmabuf()` to [`capture`](/wayland#capture)
   to fill it.

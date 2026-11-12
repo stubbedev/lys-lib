@@ -149,8 +149,16 @@ func openClip(t *testing.T, d *Device, cfg EncoderConfig, open func(EncoderConfi
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(enc.Close)
+	t.Cleanup(func() { closeEncoder(t, enc) })
 	return &clip{t: t, cfg: cfg, enc: enc, buf: buf}
+}
+
+// closeEncoder closes e, failing t when it reports an error.
+func closeEncoder(t *testing.T, e *Encoder) {
+	t.Helper()
+	if err := e.Close(); err != nil {
+		t.Errorf("close the encoder: %v", err)
+	}
 }
 
 // newExportBuffer is a w x h XRGB8888 Buffer of d, closed with the test.
@@ -367,7 +375,7 @@ func TestEncoderBackend(t *testing.T) {
 					t.Fatal(err)
 				}
 				got := e.Backend()
-				e.Close()
+				closeEncoder(t, e)
 				if got != b.kind {
 					t.Errorf("an encoder made on %v says %v", b.kind, got)
 				}
@@ -376,7 +384,7 @@ func TestEncoderBackend(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer e.Close()
+			defer closeEncoder(t, e)
 			if want := bs[0].kind; e.Backend() != want {
 				t.Errorf("NewEncoder on %s chose %v, want %v", d.Name(), e.Backend(), want)
 			}
@@ -527,7 +535,7 @@ func TestEncoderOverlayRefuses(t *testing.T) {
 	if err := c.enc.SetOverlay(img, image.Rect(-8, -8, 8, 8)); err != nil {
 		t.Errorf("an overlay over the frame's corner: %v", err)
 	}
-	c.enc.Close()
+	closeEncoder(t, c.enc)
 	if err := c.enc.SetOverlay(img, image.Rect(0, 0, 8, 8)); err == nil {
 		t.Error("SetOverlay on a closed encoder succeeded")
 	}
@@ -662,7 +670,7 @@ func TestEncoderSourceAndTransform(t *testing.T) {
 					draw.Draw(img, r.Add(cfg.Source.Min), image.NewUniform(q), image.Point{}, draw.Src)
 				}
 				c := &clip{t: t, cfg: cfg, enc: enc, buf: buf}
-				t.Cleanup(enc.Close)
+				t.Cleanup(func() { closeEncoder(t, enc) })
 				c.frame(img)
 				c.frame(nil)
 				frame := c.decode(ffmpeg)[1]

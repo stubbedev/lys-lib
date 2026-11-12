@@ -6,6 +6,7 @@ import (
 	"image/color"
 	"os/exec"
 	"slices"
+	"strconv"
 	"syscall"
 	"testing"
 	"time"
@@ -363,6 +364,73 @@ func TestVAWaitForAnUnfinishedPictureEndsAtTheLimit(t *testing.T) {
 			vb := c.enc.backend.(*vaBackend)
 			if err := vb.dpy.SyncSurface(vb.slots[0].surface, limit); err != nil {
 				t.Errorf("the picture the wait gave up on does not finish within %v: %v", limit, err)
+			}
+		})
+	}
+}
+
+// A clip asked for at a QP finer than the driver quantises at (iHD's
+// H.265 below 10) decodes as close to the source as any: the stream
+// states the QP the driver coded at, not the one asked for, which
+// dequantises every residual at the wrong scale.
+func TestVAEncodesAtLowQP(t *testing.T) {
+	d := exportingDevice(t)
+	ffmpeg, err := exec.LookPath("ffmpeg")
+	if err != nil {
+		t.Skip("no ffmpeg to decode with")
+	}
+	for _, codec := range vaEncodedCodecs(t, d) {
+		for _, qp := range []int{0, 4, 8} {
+			t.Run(codec.String()+"/QP"+strconv.Itoa(qp), func(t *testing.T) {
+				testDecodes(t, ffmpeg, vaClip(t, d, EncoderConfig{Codec: codec, Width: 640, Height: 360, FrameRate: 30, KeyInterval: 15, QP: qp}))
+			})
+		}
+	}
+}
+
+// Close waits for the picture the driver is still encoding: right
+// after Encode hands it a 4K frame, Close returns once the driver has
+// finished it, and with a millisecond to wait Close reports ErrTimeout
+// at the limit and leaves the display open with the surface the driver
+// encodes from, which the driver then finishes.
+func TestVACloseWaitsForThePictureInFlight(t *testing.T) {
+	d := exportingDevice(t)
+	for _, codec := range vaEncodedCodecs(t, d) {
+		t.Run(codec.String(), func(t *testing.T) {
+			cfg := EncoderConfig{Codec: codec, Width: 3840, Height: 2160, FrameRate: 30, KeyInterval: 30, QP: 0}
+			buf := newExportBuffer(t, d, cfg.Width, cfg.Height)
+			buf.fill(t, encodeFrame(cfg.Width, cfg.Height, 0))
+			encoding := func() *Encoder {
+				t.Helper()
+				e, err := newEncoderOn(d, cfg, newVABackend)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err := e.Encode(buf, 0); err != nil {
+					t.Fatal(err)
+				}
+				return e
+			}
+			if err := encoding().Close(); err != nil {
+				t.Errorf("Close right after Encode of a %dx%d frame: %v", cfg.Width, cfg.Height, err)
+			}
+			e := encoding()
+			vb := e.backend.(*vaBackend)
+			limit, bound := d.waitLimit, time.Millisecond
+			d.waitLimit = bound
+			start := time.Now()
+			err := e.Close()
+			took := time.Since(start)
+			d.waitLimit = limit
+			if !errors.Is(err, ErrTimeout) {
+				t.Fatalf("a %v Close of a %dx%d picture the driver had just been handed: %v, want ErrTimeout", bound, cfg.Width, cfg.Height, err)
+			}
+			t.Cleanup(vb.dpy.Close)
+			if took < bound || took > bound+50*time.Millisecond {
+				t.Errorf("the %v wait took %v", bound, took)
+			}
+			if err := vb.dpy.SyncSurface(vb.slots[0].surface, limit); err != nil {
+				t.Errorf("the picture the Close gave up on does not finish within %v on the display it left open: %v", limit, err)
 			}
 		})
 	}
