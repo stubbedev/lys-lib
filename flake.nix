@@ -3,6 +3,11 @@
 
   inputs = {
     nixpkgs.url = "github:NixOS/nixpkgs/nixos-unstable";
+    # A second, newer Mesa that `just gpu-host` also runs against, so a
+    # driver release breaks a gate before it reaches a desktop. Locked on
+    # its own: `nix flake update nixpkgs-mesa` moves it to nixos-unstable's
+    # head without moving the rest of the shell.
+    nixpkgs-mesa.url = "github:NixOS/nixpkgs/nixos-unstable";
     lys-ci.url = "github:stubbedev/lys-ci";
     flake-parts = {
       url = "github:hercules-ci/flake-parts";
@@ -29,7 +34,7 @@
         formatter = pkgs.alejandra;
       };
       # The GPU driver environment for the lys family's dev shells:
-      # gpuDriverEnv pkgs is { libraries; shellHook; }.
+      # gpuDriverEnv pkgs is { libraries; shellHook; driverEnv; }.
       flake.lib.gpuDriverEnv = import ./nix/gpu-drivers.nix;
     };
 }

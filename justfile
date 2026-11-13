@@ -87,23 +87,34 @@ gpu:
 # capture tests against a headless sway rendering on the same GPU. For
 # AMD and Intel machines, which CI's lavapipe cannot stand in for:
 # lavapipe has no video encoder and no compositor-side dmabuf import.
+# It runs twice: on the shell's drivers, then on the newer Mesa of
+# $LYS_GPU_HOST_MESA (nixpkgs-mesa in flake.nix), so a driver release
+# fails here before it reaches a desktop.
 gpu-host:
     #!/usr/bin/env bash
     set -uo pipefail
-    if ! out=$(LYS_TEST_GPU=host go test -count=1 -run '^TestDeviceCloseClosesTargets$' ./gpu 2>&1); then
-        printf '%s\n' "$out" | grep -E 'GPU device|vkCreate|Vulkan' | head -n 3
-        echo "gpu-host: Vulkan opens no device that exports dmabufs here (VK_DRIVER_FILES=${VK_DRIVER_FILES:-unset})."
-        echo "Off NixOS the dev shell points the loader at nixpkgs' Mesa (AMD, Intel); NVIDIA's driver needs nixGL."
-        exit 1
-    fi
+    run() (
+        echo "gpu-host: on $1 (VK_DRIVER_FILES=${VK_DRIVER_FILES:-unset})"
+        if ! out=$(LYS_TEST_GPU=host go test -count=1 -run '^TestDeviceCloseClosesTargets$' ./gpu 2>&1); then
+            printf '%s\n' "$out" | grep -E 'GPU device|vkCreate|Vulkan' | head -n 3
+            echo "gpu-host: Vulkan opens no device that exports dmabufs on $1."
+            echo "Off NixOS the dev shell points the loader at nixpkgs' Mesa (AMD, Intel); NVIDIA's driver needs nixGL."
+            exit 1
+        fi
+        rc=0
+        LYS_TEST_GPU=host go test -count=1 -v ./gpu/... 2>&1 | grep -vE '^=== (RUN|PAUSE|CONT)' || rc=1
+        dir=$(mktemp -d /tmp/lys-lib-gpu-host.XXXXXX)
+        LYS_TEST_WLR_RENDERER=vulkan just test-env "$dir" || exit 1
+        trap 'just test-env-stop "$dir"' EXIT INT TERM
+        . "$dir/client.env"
+        export WAYLAND_DISPLAY DBUS_SESSION_BUS_ADDRESS XDG_RUNTIME_DIR="$dir" LYS_TEST_HEADLESS=1
+        go test -count=1 -v -run Dmabuf ./capture 2>&1 | grep -vE '^=== (RUN|PAUSE|CONT)' || rc=1
+        exit $rc
+    )
     rc=0
-    LYS_TEST_GPU=host go test -count=1 -v ./gpu/... 2>&1 | grep -vE '^=== (RUN|PAUSE|CONT)' || rc=1
-    dir=$(mktemp -d /tmp/lys-lib-gpu-host.XXXXXX)
-    LYS_TEST_WLR_RENDERER=vulkan just test-env "$dir" || exit 1
-    trap 'just test-env-stop "$dir"' EXIT INT TERM
-    . "$dir/client.env"
-    export WAYLAND_DISPLAY DBUS_SESSION_BUS_ADDRESS XDG_RUNTIME_DIR="$dir" LYS_TEST_HEADLESS=1
-    go test -count=1 -v -run Dmabuf ./capture 2>&1 | grep -vE '^=== (RUN|PAUSE|CONT)' || rc=1
+    run "the shell's drivers" || rc=1
+    eval "$(lys-gpu-driver-env "$LYS_GPU_HOST_MESA")"
+    run "$LYS_GPU_HOST_MESA" || rc=1
     exit $rc
 
 # Run a recipe in a container that sees only the dev shell's store paths,

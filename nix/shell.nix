@@ -18,6 +18,7 @@
             # Development tools
             pkgs.golangci-lint # `just lint`, and `just fmt` through its gofumpt + gci formatters; config in .golangci.yml
             pkgs.just # task runner
+            gpuDrivers.driverEnv # lys-gpu-driver-env, for `just gpu-host`
           ]
           # Headless test compositor: sway on WLR_BACKENDS=headless gives
           # the capture and virtual input tests a private Wayland session
@@ -106,6 +107,9 @@
         # at nixpkgs' drivers for the GPUs present (nix/gpu-drivers.nix,
         # which the lys family's other shells take from this flake).
         inherit (gpuDrivers) shellHook;
+        # The Mesa `just gpu-host` runs against after the shell's own:
+        # nixpkgs-mesa's, locked apart from the shell (flake.nix).
+        LYS_GPU_HOST_MESA = "${inputs.nixpkgs-mesa.legacyPackages.${pkgs.stdenv.hostPlatform.system}.mesa}";
       });
   };
 }
