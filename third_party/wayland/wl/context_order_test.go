@@ -38,7 +38,9 @@ func TestNewIdsReachTheWireInOrder(t *testing.T) {
 			}
 		}()
 	}
+	flushed := make(chan struct{})
 	go func() {
+		defer close(flushed)
 		wg.Wait()
 		for {
 			pending, err := ctx.Flush()
@@ -67,6 +69,7 @@ func TestNewIdsReachTheWireInOrder(t *testing.T) {
 		}
 		want++
 	}
+	<-flushed
 }
 
 // A nil object argument goes out as id 0 instead of panicking with the
