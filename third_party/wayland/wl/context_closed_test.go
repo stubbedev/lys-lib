@@ -135,3 +135,28 @@ func TestReadingEventsWhileAnotherGoroutineClosesFailsAsClosed(t *testing.T) {
 		t.Fatalf("a read on a closed context returned %v, want %v", err, ErrContextClosed)
 	}
 }
+
+func TestAContextWithoutAConnectionFailsEveryCallWithoutPanicking(t *testing.T) {
+	ctx := &Context{}
+	source := &DataSource{}
+	source.SetContext(ctx)
+	if err := source.Destroy(); !errors.Is(err, ErrContextConnNil) || errors.Is(err, ErrContextClosed) {
+		t.Errorf("a request returned %v, want %v", err, ErrContextConnNil)
+	}
+	if _, err := ctx.ReadReady(); !errors.Is(err, ErrContextConnNil) {
+		t.Errorf("ReadReady returned %v, want %v", err, ErrContextConnNil)
+	}
+	for name, call := range map[string]func() error{
+		"WaitReadable":    ctx.WaitReadable,
+		"WaitWritable":    ctx.WaitWritable,
+		"SetReadDeadline": func() error { return ctx.SetReadDeadline(time.Now()) },
+		"Run":             ctx.Run,
+	} {
+		if err := call(); !errors.Is(err, ErrContextConnNil) {
+			t.Errorf("%s returned %v, want %v", name, err, ErrContextConnNil)
+		}
+	}
+	if err := ctx.Close(); err != nil {
+		t.Errorf("closing a context without a connection: %v", err)
+	}
+}

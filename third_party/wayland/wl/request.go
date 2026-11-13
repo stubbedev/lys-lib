@@ -75,6 +75,9 @@ func (ctx *Context) SendRequest(proxy Proxy, opcode uint32, args ...interface{})
 }
 
 func (ctx *Context) sendLocked(proxy Proxy, opcode uint32, args []interface{}) error {
+	if ctx.conn == nil {
+		return ErrContextConnNil
+	}
 	if ctx.sendErr != nil {
 		return ctx.sendErr
 	}
@@ -279,6 +282,9 @@ func (ctx *Context) SetBuffered(buffered bool) {
 // WaitWritable blocks until the socket may take more requests or is closed;
 // a wakeup with no room is possible.
 func (ctx *Context) WaitWritable() error {
+	if err := ctx.unusable(); err != nil {
+		return err
+	}
 	err := ctx.sock.raw.Write(func(fd uintptr) bool {
 		ready := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLOUT}}
 		n, err := unix.Poll(ready, 0)

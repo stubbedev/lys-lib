@@ -376,6 +376,9 @@ func (ctx *Context) run(cb *Callback) (err error) {
 // read: a loop parked in Run wakes for its own timer without a request to the
 // compositor. A zero t clears it. Safe from any goroutine.
 func (ctx *Context) SetReadDeadline(t time.Time) error {
+	if err := ctx.unusable(); err != nil {
+		return err
+	}
 	if err := ctx.setReadDeadline(t); err != nil {
 		return fmt.Errorf("wl: set the read deadline: %w", ctx.closedOr(err))
 	}
@@ -385,6 +388,19 @@ func (ctx *Context) SetReadDeadline(t time.Time) error {
 // ErrContextClosed is what every request, read and wait on a closed
 // context fails with.
 var ErrContextClosed = fmt.Errorf("wl: the context is closed: %w", ErrContextConnNil)
+
+// unusable is ErrContextConnNil for a context that never had a
+// connection and ErrContextClosed for one Close ended. conn is set once,
+// before the context is shared, so reading it needs no lock.
+func (ctx *Context) unusable() error {
+	if ctx.conn == nil {
+		return ErrContextConnNil
+	}
+	if ctx.closed.Load() {
+		return ErrContextClosed
+	}
+	return nil
+}
 
 // closedOr is err, marked ErrContextClosed once the context is closed: a
 // call Close cuts short fails as one made after it. Close marks the
@@ -413,7 +429,7 @@ func (ctx *Context) Close() (err error) {
 	ctx.out = nil
 	ctx.sendMu.Unlock()
 	ctx.mu.Lock()
-	if !ctx.closed.Swap(true) {
+	if !ctx.closed.Swap(true) && ctx.conn != nil {
 		err = errors.Join(ctx.closeSocket(), ctx.conn.Close())
 	}
 	ctx.objects = nil

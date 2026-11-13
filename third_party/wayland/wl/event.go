@@ -54,8 +54,8 @@ func controlLen() int { return os.CmsgSpace(libwaylandMaxFDsOut * 4) }
 var eventPool = sync.Pool{New: func() any { return new(Event) }}
 
 func (ctx *Context) readEvent() (*Event, error) {
-	if ctx.closed.Load() {
-		return nil, ErrContextClosed
+	if err := ctx.unusable(); err != nil {
+		return nil, err
 	}
 	header, err := ctx.fill(headerSize)
 	if errors.Is(err, stdos.ErrDeadlineExceeded) {
@@ -120,8 +120,8 @@ func (ctx *Context) Buffered() bool {
 // blocking, and reports whether it did; Buffered then says whether the
 // read completed an event. A peer that hung up reads as io.EOF.
 func (ctx *Context) ReadReady() (bool, error) {
-	if ctx.closed.Load() {
-		return false, ErrContextClosed
+	if err := ctx.unusable(); err != nil {
+		return false, err
 	}
 	ctx.flushBeforeRead()
 	if ctx.pollFn == nil {
@@ -149,6 +149,9 @@ func (ctx *Context) ReadReady() (bool, error) {
 // have been called once. Close on another goroutine wakes it with
 // ErrContextClosed.
 func (ctx *Context) WaitReadable() error {
+	if err := ctx.unusable(); err != nil {
+		return err
+	}
 	ctx.flushBeforeRead()
 	polled := false
 	err := ctx.sock.raw.Read(func(uintptr) bool {
