@@ -41,6 +41,9 @@ const (
 
 var errMissingCategory = errors.New("no such category")
 
+// ErrNoLocale is the error a source gives for a locale it does not hold.
+var ErrNoLocale = errors.New("glibclocale: no locale")
+
 // Source is where locale data is read from: a locale-archive, and
 // directories holding a directory per locale.
 type Source struct {
@@ -102,6 +105,21 @@ func (s Source) List() ([]string, error) {
 	}
 	slices.Sort(names)
 	return slices.Compact(names), nil
+}
+
+// Installed reports what glibc's newlocale(LC_CTYPE_MASK, name) would:
+// whether the source holds name's LC_CTYPE. C and POSIX are always
+// installed. A locale that is there but unreadable, or lacks an
+// LC_CTYPE, is an error.
+func (s Source) Installed(name string) (bool, error) {
+	_, err := load(s, name, lcCtype, func([]byte) (struct{}, error) { return struct{}{}, nil }, struct{}{})
+	switch {
+	case errors.Is(err, ErrNoLocale):
+		return false, nil
+	case err != nil:
+		return false, err
+	}
+	return true, nil
 }
 
 // Numeric reads the LC_NUMERIC of the locale name.
@@ -187,9 +205,9 @@ func load[T any](s Source, name string, c category, parse func([]byte) (T, error
 		searched = append(searched, dir)
 	}
 	if len(searched) == 0 {
-		return zero, fmt.Errorf("glibclocale: no locale %q: the source has no archive or directories", name)
+		return zero, fmt.Errorf("%w %q: the source has no archive or directories", ErrNoLocale, name)
 	}
-	return zero, fmt.Errorf("glibclocale: no locale %q in %s", name, strings.Join(searched, ", "))
+	return zero, fmt.Errorf("%w %q in %s", ErrNoLocale, name, strings.Join(searched, ", "))
 }
 
 func withArchive(path string, use func(archive) error) error {

@@ -9,6 +9,7 @@ import (
 type category uint32
 
 const (
+	lcCtype          category = 0
 	lcNumeric        category = 1
 	lcTime           category = 2
 	lcMonetary       category = 4
@@ -18,6 +19,8 @@ const (
 
 func (c category) String() string {
 	switch c {
+	case lcCtype:
+		return "LC_CTYPE"
 	case lcNumeric:
 		return "LC_NUMERIC"
 	case lcTime:

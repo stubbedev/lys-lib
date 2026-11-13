@@ -88,7 +88,12 @@ func (c *Context) localeComposePath(dir, locale string) string {
 	}
 	resolved := resolveLocaleFile(dir, "compose.dir", locale, true)
 	if resolved == "" {
-		if !localeInstalled(c.getenv, locale) {
+		installed, err := c.localeInstalled(locale)
+		if err != nil {
+			c.log(LogError, 0, invalidComposeLocale, "No Compose file for locale \"%s\": %v\n", locale, err)
+			return ""
+		}
+		if !installed {
 			c.log(LogError, 0, invalidComposeLocale, "No Compose file for locale \"%s\": locale is either invalid or not installed\n", locale)
 			return ""
 		}

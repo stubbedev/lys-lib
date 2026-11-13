@@ -373,12 +373,36 @@ func TestLocaleInstalledCheck(t *testing.T) {
 		return ""
 	}
 	for locale, want := range map[string]bool{"C": true, "POSIX": true, "xx_YY.UTF-8": true, "xx_YY.utf8": true, "zz_ZZ.UTF-8": false} {
-		if got := localeInstalled(getenv, locale); got != want {
-			t.Errorf("localeInstalled(%q) = %v, want %v", locale, got, want)
+		if got, err := localeInstalled(installedLocales, getenv, locale); err != nil || got != want {
+			t.Errorf("localeInstalled(%q) = %v, %v; want %v", locale, got, err, want)
 		}
 	}
-	if n := localeNames("de_DE.8859-1@euro"); !slices.Contains(n, "de_DE.88591@euro") && !slices.Contains(n, "de_DE.iso88591@euro") {
-		t.Errorf("normalized %v", n)
+	if got, err := localeInstalled(everyLocale, getenv, "zz_ZZ.UTF-8"); err != nil || !got {
+		t.Errorf("under musl an unknown locale is installed = %v, %v; want true, as musl's newlocale accepts every name", got, err)
+	}
+}
+
+func TestTheLocaleRuleIsTheRunningProcesssLibc(t *testing.T) {
+	for interp, want := range map[string]localeRule{
+		"/lib/ld-musl-x86_64.so.1":                    everyLocale,
+		"/lib/ld-musl-aarch64.so.1":                   everyLocale,
+		"/lib64/ld-linux-x86-64.so.2":                 installedLocales,
+		"/nix/store/x-glibc/lib/ld-linux-x86-64.so.2": installedLocales,
+		"": installedLocales,
+	} {
+		if got := localeRuleOf(interp); got != want {
+			t.Errorf("localeRuleOf(%q) = %v, want %v", interp, got, want)
+		}
+	}
+	interp, err := programInterpreter(selfExe)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rule, err := processLocaleRule(); err != nil || rule != localeRuleOf(interp) {
+		t.Fatalf("the process's rule is %v, %v; want %v from its interpreter %q, whatever loaders the host has on disk", rule, err, localeRuleOf(interp), interp)
+	}
+	if _, err := programInterpreter(filepath.Join(t.TempDir(), "missing")); err == nil || !strings.Contains(err.Error(), "missing") {
+		t.Errorf("a program that is not there: %v", err)
 	}
 }
 

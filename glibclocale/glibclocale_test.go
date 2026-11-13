@@ -383,3 +383,37 @@ func parseAll(data []byte) {
 		_, _ = tm.Format("%c %x %X %r %Ey %OH %Oy", at)
 	}
 }
+
+func TestInstalledIsWhatNewlocaleWouldFind(t *testing.T) {
+	f := fixtures(t)
+	dir := f.dirs.dirs[0]
+	if err := os.WriteFile(filepath.Join(dir, "en_US.utf8", "LC_CTYPE"), nil, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	missing := filepath.Join(t.TempDir(), "missing")
+	for _, c := range []struct {
+		src  Source
+		name string
+		want bool
+	}{
+		{f.dirs, "en_US.UTF-8", true},
+		{f.dirs, "en_US.utf8", true},
+		{f.dirs, "C", true},
+		{f.dirs, "POSIX", true},
+		{f.dirs, "zz_ZZ.UTF-8", false},
+		{f.archive, "de_DE.UTF-8", true},
+		{f.archive, "zz_ZZ.UTF-8", false},
+		{NewSource(filepath.Join(missing, "locale-archive"), missing), "en_US.UTF-8", false},
+	} {
+		got, err := c.src.Installed(c.name)
+		if err != nil || got != c.want {
+			t.Errorf("Installed(%q) in %+v = %t, %v; want %t", c.name, c.src, got, err, c.want)
+		}
+	}
+	if _, err := f.dirs.Installed("de_DE.UTF-8"); err == nil || !strings.Contains(err.Error(), "has no LC_CTYPE") {
+		t.Errorf("a locale directory without LC_CTYPE: %v", err)
+	}
+	if _, err := f.dirs.Installed("../en_US.utf8"); err == nil || !strings.Contains(err.Error(), "not a locale name") {
+		t.Errorf("a path as a locale name: %v", err)
+	}
+}
