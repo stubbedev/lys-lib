@@ -387,7 +387,13 @@ func (ctx *Context) SetReadDeadline(t time.Time) error {
 
 // ErrContextClosed is what every request, read and wait on a closed
 // context fails with.
-var ErrContextClosed = fmt.Errorf("wl: the context is closed: %w", ErrContextConnNil)
+var ErrContextClosed error = closedError{}
+
+type closedError struct{}
+
+func (closedError) Error() string { return "wl: the context is closed: " + ErrContextConnNil.Error() }
+
+func (closedError) Unwrap() error { return ErrContextConnNil }
 
 // unusable is ErrContextConnNil for a context that never had a
 // connection and ErrContextClosed for one Close ended. conn is set once,
