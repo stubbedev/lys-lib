@@ -13,9 +13,6 @@ import (
 	"github.com/stubbedev/lys-lib/third_party/wayland/os"
 )
 
-// ErrContextSendRequestNotPossible is raised in case sending wl request could not be done
-var ErrContextSendRequestNotPossible = errors.New("no write request means")
-
 // ErrContextSendRequestUnix is raised in case sending wl request fails
 var ErrContextSendRequestUnix = errors.New("unable to send request using unix")
 
@@ -78,9 +75,6 @@ func (ctx *Context) SendRequest(proxy Proxy, opcode uint32, args ...interface{})
 }
 
 func (ctx *Context) sendLocked(proxy Proxy, opcode uint32, args []interface{}) error {
-	if ctx.conn == nil {
-		return ErrContextSendRequestNotPossible
-	}
 	if ctx.sendErr != nil {
 		return ctx.sendErr
 	}

@@ -21,7 +21,7 @@ func (ctx *Context) retire(p Proxy) {
 	t := reflect.TypeOf(r)
 	ctx.mu.Lock()
 	switch {
-	case ctx.objects == nil:
+	case ctx.closed:
 	case ctx.free == nil:
 		ctx.free = map[reflect.Type][]Reusable{t: {r}}
 	default:

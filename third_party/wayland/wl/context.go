@@ -2,6 +2,7 @@ package wl
 
 import (
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"os"
@@ -30,6 +31,7 @@ type Context struct {
 	pollFn    func(fd uintptr)
 	pollFds   [1]unix.PollFd
 	pollErr   error
+	closed    bool
 
 	// The compositor requires client-allocated ids to arrive in the order
 	// they were allocated: libwayland's wl_map rejects a new id that is
@@ -104,11 +106,14 @@ func (ctx *Context) smallerUnsentLocked(id ProxyId) bool {
 
 func (ctx *Context) RegisterMapped(proxy Proxy, num uint32) {
 	ctx.mu.Lock()
+	defer ctx.mu.Unlock()
 	proxy.SetId(ProxyId(num))
 	proxy.SetContext(ctx)
+	if ctx.closed {
+		return
+	}
 	ctx.objects[ProxyId(num)] = proxy
 	delete(ctx.zombies, ProxyId(num))
-	ctx.mu.Unlock()
 }
 
 // Register registers a proxy in the map of all Context objects (proxies)
@@ -133,6 +138,9 @@ func (ctx *Context) Register(proxy Proxy) {
 	if c, ok := proxy.(*Registry); ok {
 		SetUserData(c, &ctx)
 	}
+	if ctx.closed {
+		return
+	}
 	ctx.objects[ctx.currentId] = proxy
 	delete(ctx.zombies, ctx.currentId)
 	// The display is the one client-side proxy the compositor already
@@ -150,11 +158,13 @@ func (ctx *Context) Register(proxy Proxy) {
 // are ignored and their fds closed instead of reaching another object's event.
 func (ctx *Context) Unregister(id ProxyId) {
 	ctx.mu.Lock()
-	if ctx.zombies == nil {
-		ctx.zombies = make(map[ProxyId]Proxy)
+	if !ctx.closed {
+		if ctx.zombies == nil {
+			ctx.zombies = make(map[ProxyId]Proxy)
+		}
+		ctx.zombies[id] = ctx.objects[id]
+		delete(ctx.objects, id)
 	}
-	ctx.zombies[id] = ctx.objects[id]
-	delete(ctx.objects, id)
 	ctx.mu.Unlock()
 	ctx.forgetUnsent(id)
 }
@@ -370,13 +380,20 @@ func (ctx *Context) SetReadDeadline(t time.Time) error {
 	return ctx.setReadDeadline(t)
 }
 
-// Close (Context Close) closes Wayland connection
+// ErrContextClosed is what every request on a closed context fails with.
+var ErrContextClosed = fmt.Errorf("wl: request on a closed context: %w", ErrContextConnNil)
+
+// Close (Context Close) closes Wayland connection. A proxy made on the
+// context afterwards is not tracked, and every request fails with
+// ErrContextClosed, or with the error that ended writing before.
 func (ctx *Context) Close() (err error) {
 	if ctx == nil {
 		return
 	}
 	ctx.sendMu.Lock()
-	ctx.closeSentFDs()
+	if ctx.sendErr == nil {
+		ctx.failSendLocked(ErrContextClosed)
+	}
 	ctx.out = nil
 	ctx.sendMu.Unlock()
 	ctx.mu.Lock()
@@ -384,14 +401,7 @@ func (ctx *Context) Close() (err error) {
 		err = errors.Join(ctx.closeSocket(), ctx.conn.Close())
 		ctx.conn = nil
 	}
-	/*
-		for i, v := range ctx.objects {
-			print("close-time garbage: ")
-			print(i)
-			print(": ")
-			println(reflect.TypeOf(v).String())
-		}
-	*/
+	ctx.closed = true
 	ctx.objects = nil
 	ctx.zombies = nil
 	ctx.free = nil
