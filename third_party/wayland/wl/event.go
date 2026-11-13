@@ -54,8 +54,8 @@ func controlLen() int { return os.CmsgSpace(libwaylandMaxFDsOut * 4) }
 var eventPool = sync.Pool{New: func() any { return new(Event) }}
 
 func (ctx *Context) readEvent() (*Event, error) {
-	if ctx.conn == nil {
-		return nil, ErrContextConnNil
+	if ctx.closed.Load() {
+		return nil, ErrContextClosed
 	}
 	header, err := ctx.fill(headerSize)
 	if errors.Is(err, stdos.ErrDeadlineExceeded) {
@@ -120,19 +120,15 @@ func (ctx *Context) Buffered() bool {
 // blocking, and reports whether it did; Buffered then says whether the
 // read completed an event. A peer that hung up reads as io.EOF.
 func (ctx *Context) ReadReady() (bool, error) {
-	if ctx.conn == nil {
-		return false, ErrContextConnNil
+	if ctx.closed.Load() {
+		return false, ErrContextClosed
 	}
 	ctx.flushBeforeRead()
-	raw, err := ctx.rawConn()
-	if err != nil {
-		return false, err
-	}
 	if ctx.pollFn == nil {
 		ctx.pollFn = ctx.pollReadable
 	}
-	if err := raw.Control(ctx.pollFn); err != nil {
-		return false, fmt.Errorf("wl: readiness poll: %w", err)
+	if err := ctx.sock.raw.Control(ctx.pollFn); err != nil {
+		return false, fmt.Errorf("wl: readiness poll: %w", ctx.closedOr(err))
 	}
 	if ctx.pollErr != nil {
 		return false, fmt.Errorf("wl: readiness poll: %w", ctx.pollErr)
@@ -150,21 +146,18 @@ func (ctx *Context) ReadReady() (bool, error) {
 // wakeup with nothing to read is possible. It is the one call that may
 // run alongside the context's others, so a caller can wait for events
 // without holding the lock that serializes them, and needs ReadReady to
-// have been called once.
+// have been called once. Close on another goroutine wakes it with
+// ErrContextClosed.
 func (ctx *Context) WaitReadable() error {
 	ctx.flushBeforeRead()
-	raw, err := ctx.rawConn()
-	if err != nil {
-		return err
-	}
 	polled := false
-	err = raw.Read(func(uintptr) bool {
+	err := ctx.sock.raw.Read(func(uintptr) bool {
 		done := polled
 		polled = true
 		return done
 	})
 	if err != nil {
-		return fmt.Errorf("wl: wait for the socket: %w", err)
+		return fmt.Errorf("wl: wait for the socket: %w", ctx.closedOr(err))
 	}
 	return nil
 }
@@ -212,7 +205,7 @@ func (ctx *Context) queueFDs(control []byte) error {
 		if err != nil {
 			return combinedError{ErrUnableToParseUnixRights, err}
 		}
-		if ctx.conn != nil {
+		if !ctx.closed.Load() {
 			ctx.fds = append(ctx.fds, fds...)
 			continue
 		}

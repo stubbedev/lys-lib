@@ -279,17 +279,13 @@ func (ctx *Context) SetBuffered(buffered bool) {
 // WaitWritable blocks until the socket may take more requests or is closed;
 // a wakeup with no room is possible.
 func (ctx *Context) WaitWritable() error {
-	raw, err := ctx.rawConn()
-	if err != nil {
-		return err
-	}
-	err = raw.Write(func(fd uintptr) bool {
+	err := ctx.sock.raw.Write(func(fd uintptr) bool {
 		ready := []unix.PollFd{{Fd: int32(fd), Events: unix.POLLOUT}}
 		n, err := unix.Poll(ready, 0)
 		return err != nil || n > 0
 	})
 	if err != nil {
-		return fmt.Errorf("wl: wait for room in the socket: %w", err)
+		return fmt.Errorf("wl: wait for room in the socket: %w", ctx.closedOr(err))
 	}
 	return nil
 }

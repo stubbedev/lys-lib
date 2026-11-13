@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -18,7 +19,10 @@ import (
 
 // Context wraps the wayland connection together with the map of all Context objects (proxies)
 type Context struct {
-	mu        sync.RWMutex
+	mu sync.RWMutex
+	// conn and sock are set once, by newContext, and never change, so
+	// every goroutine reaches them without a lock; closed says whether
+	// Close has closed them.
 	conn      *net.UnixConn
 	currentId ProxyId
 	objects   map[ProxyId]Proxy
@@ -31,7 +35,7 @@ type Context struct {
 	pollFn    func(fd uintptr)
 	pollFds   [1]unix.PollFd
 	pollErr   error
-	closed    bool
+	closed    atomic.Bool
 
 	// The compositor requires client-allocated ids to arrive in the order
 	// they were allocated: libwayland's wl_map rejects a new id that is
@@ -109,7 +113,7 @@ func (ctx *Context) RegisterMapped(proxy Proxy, num uint32) {
 	defer ctx.mu.Unlock()
 	proxy.SetId(ProxyId(num))
 	proxy.SetContext(ctx)
-	if ctx.closed {
+	if ctx.closed.Load() {
 		return
 	}
 	ctx.objects[ProxyId(num)] = proxy
@@ -138,7 +142,7 @@ func (ctx *Context) Register(proxy Proxy) {
 	if c, ok := proxy.(*Registry); ok {
 		SetUserData(c, &ctx)
 	}
-	if ctx.closed {
+	if ctx.closed.Load() {
 		return
 	}
 	ctx.objects[ctx.currentId] = proxy
@@ -158,7 +162,7 @@ func (ctx *Context) Register(proxy Proxy) {
 // are ignored and their fds closed instead of reaching another object's event.
 func (ctx *Context) Unregister(id ProxyId) {
 	ctx.mu.Lock()
-	if !ctx.closed {
+	if !ctx.closed.Load() {
 		if ctx.zombies == nil {
 			ctx.zombies = make(map[ProxyId]Proxy)
 		}
@@ -372,20 +376,32 @@ func (ctx *Context) run(cb *Callback) (err error) {
 // read: a loop parked in Run wakes for its own timer without a request to the
 // compositor. A zero t clears it. Safe from any goroutine.
 func (ctx *Context) SetReadDeadline(t time.Time) error {
-	ctx.mu.RLock()
-	defer ctx.mu.RUnlock()
-	if ctx.conn == nil {
-		return ErrContextConnNil
+	if err := ctx.setReadDeadline(t); err != nil {
+		return fmt.Errorf("wl: set the read deadline: %w", ctx.closedOr(err))
 	}
-	return ctx.setReadDeadline(t)
+	return nil
 }
 
-// ErrContextClosed is what every request on a closed context fails with.
-var ErrContextClosed = fmt.Errorf("wl: request on a closed context: %w", ErrContextConnNil)
+// ErrContextClosed is what every request, read and wait on a closed
+// context fails with.
+var ErrContextClosed = fmt.Errorf("wl: the context is closed: %w", ErrContextConnNil)
+
+// closedOr is err, marked ErrContextClosed once the context is closed: a
+// call Close cuts short fails as one made after it. Close marks the
+// context before it closes the socket, so an error the closed socket
+// caused always finds the mark.
+func (ctx *Context) closedOr(err error) error {
+	if err == nil || !ctx.closed.Load() {
+		return err
+	}
+	return fmt.Errorf("%w: %w", ErrContextClosed, err)
+}
 
 // Close (Context Close) closes Wayland connection. A proxy made on the
 // context afterwards is not tracked, and every request fails with
-// ErrContextClosed, or with the error that ended writing before.
+// ErrContextClosed, or with the error that ended writing before. Every
+// read and wait fails with ErrContextClosed, one blocked on another
+// goroutine included.
 func (ctx *Context) Close() (err error) {
 	if ctx == nil {
 		return
@@ -397,11 +413,9 @@ func (ctx *Context) Close() (err error) {
 	ctx.out = nil
 	ctx.sendMu.Unlock()
 	ctx.mu.Lock()
-	if ctx.conn != nil {
+	if !ctx.closed.Swap(true) {
 		err = errors.Join(ctx.closeSocket(), ctx.conn.Close())
-		ctx.conn = nil
 	}
-	ctx.closed = true
 	ctx.objects = nil
 	ctx.zombies = nil
 	ctx.free = nil

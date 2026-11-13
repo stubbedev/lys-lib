@@ -61,13 +61,6 @@ func (ctx *Context) openSocket() error {
 	return nil
 }
 
-func (ctx *Context) rawConn() (syscall.RawConn, error) {
-	if ctx.conn == nil {
-		return nil, ErrContextConnNil
-	}
-	return ctx.sock.raw, nil
-}
-
 func (ctx *Context) setReadDeadline(t time.Time) error { return ctx.sock.file.SetReadDeadline(t) }
 
 func (ctx *Context) closeSocket() error { return ctx.sock.file.Close() }
@@ -97,12 +90,8 @@ func (ctx *Context) sendOnce(fd uintptr) {
 // socketSend makes one non-blocking try at writing out and outOOB: how many
 // bytes went, the fds with the first of them. A full socket takes none.
 func (ctx *Context) socketSend() (int, error) {
-	raw, err := ctx.rawConn()
-	if err != nil {
-		return 0, err
-	}
-	if err := raw.Control(ctx.sock.sendFn); err != nil {
-		return 0, fmt.Errorf("wl: sendmsg of %d bytes: %w", len(ctx.out), err)
+	if err := ctx.sock.raw.Control(ctx.sock.sendFn); err != nil {
+		return 0, fmt.Errorf("wl: sendmsg of %d bytes: %w", len(ctx.out), ctx.closedOr(err))
 	}
 	if errors.Is(ctx.sock.sendErr, unix.EAGAIN) {
 		return 0, nil
@@ -134,17 +123,13 @@ func (ctx *Context) recvOnce(fd uintptr) bool {
 // socketRecv reads into b and control, waiting in Go's poller under the read
 // deadline, without the address net.UnixConn's ReadMsgUnix allocates.
 func (ctx *Context) socketRecv(b, control []byte) (n, oobn, flags int, err error) {
-	raw, err := ctx.rawConn()
-	if err != nil {
-		return 0, 0, 0, err
-	}
 	s := &ctx.sock
 	s.recvHdr = unix.Msghdr{Iov: &s.recvIov, Iovlen: 1, Control: unsafe.SliceData(control)}
 	s.recvHdr.SetControllen(len(control))
 	s.recvIov.Base = unsafe.SliceData(b)
 	s.recvIov.SetLen(len(b))
-	if err := raw.Read(s.recvFn); err != nil {
-		return 0, 0, 0, err
+	if err := s.raw.Read(s.recvFn); err != nil {
+		return 0, 0, 0, ctx.closedOr(err)
 	}
 	if s.recvErr != nil {
 		return 0, 0, 0, s.recvErr
