@@ -396,51 +396,146 @@ func TestDecodeH264FieldsResetAtAKeyframe(t *testing.T) {
 // held fails, leaving the decoder as it was before the packet: retried
 // once the frames are released, it decodes as though it had not failed,
 // and so do the packets after it, though its first field had decoded.
+// That holds where a PPS sent between the fields replaces the one of
+// its ID the first field decodes with: retried, the first field decodes
+// with the PPS before the packet again, not the one its second field
+// sent.
 func TestDecodeH264RetriesAPacketWhoseSecondFieldFailed(t *testing.T) {
 	d := decodingDevice(t, demux.H264)
-	cut := fieldCuts[0].cut(t)
-	pkts := cut.packets(false)
-	v, err := d.NewVideoDecoder(cut.track())
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer v.Close()
-	var (
-		out  []decoded
-		held []*VideoFrame
-	)
-	failed := -1
-	for i := 0; i < len(pkts); i++ {
-		err := v.Decode(pkts[i])
-		if err == nil {
-			if failed >= 0 {
-				out = takeFrames(t, v, out)
-				continue
+	for _, c := range []struct {
+		name string
+		cut  func(t *testing.T) *h264Cut
+	}{
+		{fieldCuts[0].name, fieldCuts[0].cut},
+		{"a PPS sent before each second field alone", func(t *testing.T) *h264Cut {
+			src := pFields(t, 0.8, 3)
+			cut := newH264Cut(t, fieldSPS(t, src.sps, false), src.pps)
+			const qp = 3
+			sets := [2][]byte{src.pps, ppsWithQP(t, src.pps, qp)}
+			for i := 0; i+1 < len(src.pics); i += 2 {
+				k := i / 2 % 2
+				cut.picture(cutPicture{src: src, index: i, fields: h264Top, ref: true, qp: int32(k) * qp})
+				cut.picture(cutPicture{src: src, index: i + 1, fields: h264Bottom, second: true, ref: true, pps: sets[1-k], qp: int32(1-k) * qp})
 			}
-			for f := v.Next(); f != nil; f = v.Next() {
-				held = append(held, f)
+			return cut
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			cut := c.cut(t)
+			pkts := cut.packets(false)
+			v, err := d.NewVideoDecoder(cut.track())
+			if err != nil {
+				t.Fatal(err)
 			}
-			continue
-		}
-		if failed >= 0 || !strings.Contains(err.Error(), "frames are held") {
-			t.Fatalf("packet %d: %v", i, err)
-		}
-		if part := v.codec.(*h264Decoder).part; part != 2 {
-			t.Fatalf("packet %d failed at its picture %d, want its second field: %v", i, part, err)
-		}
-		failed = i
-		for _, f := range held {
-			out = append(out, decoded{f.PTS(), f.Size(), readPicture(t, f)})
-			f.Release()
-		}
-		held = nil
-		i--
+			defer v.Close()
+			var (
+				out  []decoded
+				held []*VideoFrame
+			)
+			failed := -1
+			for i := 0; i < len(pkts); i++ {
+				err := v.Decode(pkts[i])
+				if err == nil {
+					if failed >= 0 {
+						out = takeFrames(t, v, out)
+						continue
+					}
+					for f := v.Next(); f != nil; f = v.Next() {
+						held = append(held, f)
+					}
+					continue
+				}
+				if failed >= 0 || !strings.Contains(err.Error(), "frames are held") {
+					t.Fatalf("packet %d: %v", i, err)
+				}
+				if part := v.codec.(*h264Decoder).part; part != 2 {
+					t.Fatalf("packet %d failed at its picture %d, want its second field: %v", i, part, err)
+				}
+				failed = i
+				for _, f := range held {
+					out = append(out, decoded{f.PTS(), f.Size(), readPicture(t, f)})
+					f.Release()
+				}
+				held = nil
+				i--
+			}
+			if failed < 0 {
+				t.Fatalf("holding every frame, all %d packets decoded", len(pkts))
+			}
+			v.Flush()
+			checkFrames(t, cut.reference(fieldsW, fieldsH), takeFrames(t, v, out), 0)
+		})
 	}
-	if failed < 0 {
-		t.Fatalf("holding every frame, all %d packets decoded", len(pkts))
+}
+
+// lengthPrefixed is units, each after its length in four bytes, as a
+// packet holds them.
+func lengthPrefixed(units ...[]byte) []byte {
+	var out []byte
+	for _, u := range units {
+		out = append(out, byte(len(u)>>24), byte(len(u)>>16), byte(len(u)>>8), byte(len(u)))
+		out = append(out, u...)
 	}
-	v.Flush()
-	checkFrames(t, cut.reference(fieldsW, fieldsH), takeFrames(t, v, out), 0)
+	return out
+}
+
+// A packet that holds more than a frame or the two fields of one, or a
+// parameter set that does not parse after its pictures, fails before
+// any of its pictures decodes: no frame of it comes out, and the
+// packets it was made of, given after it, decode as though it had never
+// been given.
+func TestDecodeH264RefusesAMalformedPacketBeforeDecodingIt(t *testing.T) {
+	d := decodingDevice(t, demux.H264)
+	joined := func(pkts []demux.Packet, extra ...[]byte) demux.Packet {
+		p := pkts[0]
+		p.Data = nil
+		for _, q := range pkts {
+			p.Data = append(p.Data, q.Data...)
+		}
+		p.Data = append(p.Data, lengthPrefixed(extra...)...)
+		return p
+	}
+	frames := func(t *testing.T) (demux.Track, []demux.Packet, stream) {
+		cl := ffmpegClip(t, "a.mp4", fieldsW, fieldsH, 1, "-c:v", "libx264", "-bf", "0", "-x264-params", "keyint=250")
+		track, pkts := packets(t, cl.path)
+		return track, pkts, cl
+	}
+	fields := func(t *testing.T) (demux.Track, []demux.Packet, stream) {
+		cut := fieldCuts[0].cut(t)
+		return cut.track(), cut.packets(true), cut.reference(fieldsW, fieldsH)
+	}
+	for _, c := range []struct {
+		name   string
+		stream func(t *testing.T) (demux.Track, []demux.Packet, stream)
+		at, n  int
+		extra  [][]byte
+		want   string
+	}{
+		{"two frames", frames, 3, 2, nil, "a frame and another picture"},
+		{"a frame's two fields and another", fields, 4, 3, nil, "3 pictures"},
+		{"a frame and a PPS that does not parse", frames, 3, 1, [][]byte{{0x68}}, "parameter set of 1 bytes"},
+		{"a frame's two fields and a PPS that does not parse", fields, 4, 2, [][]byte{{0x68}}, "parameter set of 1 bytes"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			track, pkts, ref := c.stream(t)
+			v, err := d.NewVideoDecoder(track)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer v.Close()
+			out := decodeSome(t, v, pkts[:c.at])
+			err = v.Decode(joined(pkts[c.at:c.at+c.n], c.extra...))
+			if !errors.Is(err, nal.ErrH264) || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("the joined packet: %v, want nal.ErrH264 saying %q", err, c.want)
+			}
+			if f := v.Next(); f != nil {
+				t.Fatalf("the packet that failed completed the frame at %v", f.PTS())
+			}
+			out = append(out, decodeSome(t, v, pkts[c.at:])...)
+			v.Flush()
+			checkFrames(t, ref, takeFrames(t, v, out), 0)
+		})
+	}
 }
 
 // Decoding fields, handing their frames out and releasing them

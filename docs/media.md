@@ -267,8 +267,11 @@ func main() {
   shown, as ffmpeg shows none. Reference marking is by field (8.2.5): the
   sliding window, and memory management control operations that name single
   fields. A packet of both fields whose second fails (every frame held, say)
-  leaves the reference state as it was before the packet, its first field
-  forgotten, so the packet decodes again from its start.
+  leaves the reference state and the parameter sets as they were before the
+  packet, its first field forgotten, so the packet decodes again from its
+  start. A packet is read whole before any of it decodes, so one that is
+  malformed (a frame and another picture, a third picture, a parameter set
+  that does not parse) fails before it shows anything.
 - Of interlaced H.264 the decoder refuses, saying what: a sequence of fields
   on a device with output pictures apart from its reference pictures (the
   fields meet in the reference picture before the frame is copied out, the one

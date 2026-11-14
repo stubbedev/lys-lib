@@ -19,11 +19,16 @@ import (
 // coded with.
 type h264Decoder struct {
 	lengthSize int
-	sps        [32]*nal.H264SPS
-	pps        [256]*nal.H264PPS
-	spsRaw     [32][]byte
-	spsLevel   [32]vk.StdVideoH264LevelIdc
-	ppsRaw     [256][]byte
+	sets       h264Sets
+	// setsBefore are the parameter sets before the first the packet
+	// sends took its place, once setsKept is set: what a packet that
+	// fails returns to.
+	setsBefore h264Sets
+	setsKept   bool
+	// staged is the SPS table the packet's PPSs are read against while
+	// split reads ahead of the decode, the packet's SPSs taking their
+	// places as they come.
+	staged [32]*nal.H264SPS
 	// paramsChanged marks parameter sets the session parameters lack.
 	paramsChanged bool
 	active        *nal.H264SPS
@@ -36,11 +41,12 @@ type h264Decoder struct {
 	hdr    nal.H264SliceHeader
 	other  nal.H264SliceHeader
 	rbsp   []byte
-	// slices are the slices read of the packet's part-th picture; whole
-	// is whether the picture before it in the packet is a frame.
-	slices []h264Slice
-	part   int
-	whole  bool
+	// units are the packet's NAL units as split reads them; pictures
+	// how many pictures they make, and part the index of the one being
+	// decoded, one past it once it began.
+	units    []h264Unit
+	pictures int
+	part     int
 	// fieldPTS and fieldDuration are the packet's of a frame's first
 	// field, for the frame its second field completes.
 	fieldPTS, fieldDuration time.Duration
@@ -100,13 +106,15 @@ func newH264Decoder(config []byte) (decodeCodec, error) {
 				return nil, fmt.Errorf("avcC ends inside a parameter set: %w", demux.ErrMalformed)
 			}
 			size := int(b[0])<<8 | int(b[1])
-			if err := c.parameterSet(b[2 : 2+size]); err != nil {
+			u, err := c.parseSet(b[2:2+size], &c.sets.sps)
+			if err != nil {
 				return nil, fmt.Errorf("avcC: %w", err)
 			}
+			c.install(&u)
 			b = b[2+size:]
 		}
 	}
-	for _, s := range c.sps {
+	for _, s := range c.sets.sps {
 		if s != nil {
 			return c, nil
 		}
@@ -114,48 +122,74 @@ func newH264Decoder(config []byte) (decodeCodec, error) {
 	return nil, fmt.Errorf("avcC holds no SPS: %w", demux.ErrMalformed)
 }
 
-// parameterSet keeps unit, an SPS or PPS, when it differs from the one
-// of its ID there is.
-func (c *h264Decoder) parameterSet(unit []byte) error {
+// h264Sets are the parameter sets a stream has sent, by ID, each with
+// its NAL unit and an SPS with its level.
+type h264Sets struct {
+	sps      [32]*nal.H264SPS
+	pps      [256]*nal.H264PPS
+	spsRaw   [32][]byte
+	spsLevel [32]vk.StdVideoH264LevelIdc
+	ppsRaw   [256][]byte
+}
+
+// h264Unit is a NAL unit of the packet being decoded as split reads it:
+// a parameter set, sps or pps, parsed, or a slice, which starts a
+// picture when start, and is an I or SI slice when intra.
+type h264Unit struct {
+	unit  []byte
+	sps   *nal.H264SPS
+	level vk.StdVideoH264LevelIdc
+	pps   *nal.H264PPS
+	start bool
+	intra bool
+}
+
+func (u *h264Unit) slice() bool { return u.sps == nil && u.pps == nil }
+
+// parseSet reads unit, an SPS or PPS, a PPS against the SPSs of sps.
+func (c *h264Decoder) parseSet(unit []byte, sps *[32]*nal.H264SPS) (h264Unit, error) {
 	if len(unit) < 2 {
-		return fmt.Errorf("%w parameter set of %d bytes", nal.ErrH264, len(unit))
+		return h264Unit{}, fmt.Errorf("%w parameter set of %d bytes", nal.ErrH264, len(unit))
 	}
 	c.rbsp = nal.Unescape(c.rbsp[:0], unit[1:])
 	switch nal.H264Type(unit) {
 	case nal.H264NALSPS:
 		s := &nal.H264SPS{}
 		if err := s.Parse(c.rbsp); err != nil {
-			return err
-		}
-		if bytes.Equal(c.spsRaw[s.ID], unit) {
-			return nil
+			return h264Unit{}, err
 		}
 		level, err := h264LevelOf(s)
 		if err != nil {
-			return err
+			return h264Unit{}, err
 		}
-		c.sps[s.ID], c.spsRaw[s.ID], c.spsLevel[s.ID] = s, bytes.Clone(unit), level
+		return h264Unit{unit: unit, sps: s, level: level}, nil
 	case nal.H264NALPPS:
 		p := &nal.H264PPS{}
-		if err := p.Parse(c.rbsp, &c.sps); err != nil {
-			return err
+		if err := p.Parse(c.rbsp, sps); err != nil {
+			return h264Unit{}, err
 		}
-		if bytes.Equal(c.ppsRaw[p.ID], unit) {
-			return nil
-		}
-		c.pps[p.ID], c.ppsRaw[p.ID] = p, bytes.Clone(unit)
-	default:
-		return fmt.Errorf("%w NAL unit type %d is no parameter set", nal.ErrH264, nal.H264Type(unit))
+		return h264Unit{unit: unit, pps: p}, nil
 	}
-	c.paramsChanged = true
-	return nil
+	return h264Unit{}, fmt.Errorf("%w NAL unit type %d is no parameter set", nal.ErrH264, nal.H264Type(unit))
 }
 
-// h264Slice is a slice of the picture being read: its NAL unit, and of
-// a slice after the picture's first, whether it is an I or SI slice.
-type h264Slice struct {
-	unit  []byte
-	intra bool
+// install keeps u, a parameter set split read, when it differs from
+// the one of its ID there is.
+func (c *h264Decoder) install(u *h264Unit) {
+	t := &c.sets
+	switch {
+	case u.sps != nil:
+		if bytes.Equal(t.spsRaw[u.sps.ID], u.unit) {
+			return
+		}
+		t.sps[u.sps.ID], t.spsRaw[u.sps.ID], t.spsLevel[u.sps.ID] = u.sps, bytes.Clone(u.unit), u.level
+	default:
+		if bytes.Equal(t.ppsRaw[u.pps.ID], u.unit) {
+			return
+		}
+		t.pps[u.pps.ID], t.ppsRaw[u.pps.ID] = u.pps, bytes.Clone(u.unit)
+	}
+	c.paramsChanged = true
 }
 
 // h264Intra reports whether the slice h heads is an I or SI slice.
@@ -166,24 +200,43 @@ func h264Intra(h *nal.H264SliceHeader) bool {
 // decode reads the packet's NAL units, length-prefixed, and decodes the
 // pictures its slices make: a frame, a field, or a frame's two fields,
 // each with the parameter sets that come before it, which a stream may
-// change between the two fields. A packet that fails leaves the
-// reference state as it was before its first picture, so the packet
-// decodes again from its start: a frame's first field decoded before
-// its second failed is forgotten, its slot free again. The frames a gap
-// in frame_num before the packet infers stay, each a picture complete
-// in its own right that may have taken the slot of a reference frame it
-// slid out.
+// change between the two fields. Everything that can be read of the
+// packet without decoding (its framing, its parameter sets, how many
+// pictures it holds) is read before any picture decodes, so a packet
+// that fails does so before its last picture is submitted. A packet
+// that fails leaves the reference state and the parameter sets as they
+// were before it, so the packet decodes again from its start: a
+// frame's first field decoded before its second failed is forgotten,
+// its slot free again. The frames a gap in frame_num before the packet
+// infers stay, each a picture complete in its own right that may have
+// taken the slot of a reference frame it slid out.
 func (c *h264Decoder) decode(v *VideoDecoder, p demux.Packet) error {
-	c.slices, c.part, c.kept = c.slices[:0], 0, false
-	err := c.pictures(v, p)
-	if err != nil && c.kept {
+	if err := c.split(p); err != nil {
+		return err
+	}
+	c.part, c.kept, c.setsKept = 0, false, false
+	err := c.decodeUnits(v, p)
+	if err == nil {
+		return nil
+	}
+	if c.kept {
 		c.state = c.before
+	}
+	if c.setsKept {
+		c.sets, c.paramsChanged = c.setsBefore, true
 	}
 	return err
 }
 
-// pictures decodes the pictures of p, one at a time.
-func (c *h264Decoder) pictures(v *VideoDecoder, p demux.Packet) error {
+// split reads p's NAL units into c.units, changing nothing the decode
+// keeps: the parameter sets parsed, each PPS against the SPSs before
+// it, and the slices marked where each picture starts, at a slice of
+// first_mb_in_slice 0 or one after a parameter set. It refuses a
+// packet of more than two pictures.
+func (c *h264Decoder) split(p demux.Packet) error {
+	c.units, c.pictures = c.units[:0], 0
+	staged := false
+	after := true
 	for data := p.Data; len(data) > 0; {
 		if len(data) < c.lengthSize {
 			return fmt.Errorf("%d bytes left for a %d-byte NAL unit length: %w", len(data), c.lengthSize, demux.ErrMalformed)
@@ -203,30 +256,56 @@ func (c *h264Decoder) pictures(v *VideoDecoder, p demux.Packet) error {
 		}
 		switch nal.H264Type(unit) {
 		case nal.H264NALSPS, nal.H264NALPPS:
-			if err := c.picture(v, p); err != nil {
+			if !staged {
+				c.staged, staged = c.sets.sps, true
+			}
+			u, err := c.parseSet(unit, &c.staged)
+			if err != nil {
 				return err
 			}
-			if err := c.parameterSet(unit); err != nil {
-				return err
+			if u.sps != nil {
+				c.staged[u.sps.ID] = u.sps
 			}
+			c.units, after = append(c.units, u), true
 		case nal.H264NALSlice, nal.H264NALIDR:
-			s := h264Slice{unit: unit}
-			if len(c.slices) > 0 {
-				c.rbsp = nal.Unescape(c.rbsp[:0], unit[1:min(len(unit), 17)])
-				if err := c.other.ParseType(c.rbsp); err != nil {
-					return err
-				}
-				if c.other.FirstMbInSlice == 0 {
-					if err := c.picture(v, p); err != nil {
-						return err
-					}
-				}
-				s.intra = h264Intra(&c.other)
+			c.rbsp = nal.Unescape(c.rbsp[:0], unit[1:min(len(unit), 17)])
+			if err := c.other.ParseType(c.rbsp); err != nil {
+				return err
 			}
-			c.slices = append(c.slices, s)
+			u := h264Unit{unit: unit, start: after || c.other.FirstMbInSlice == 0, intra: h264Intra(&c.other)}
+			c.pictures += b2i(u.start)
+			c.units, after = append(c.units, u), false
 		}
 	}
-	return c.picture(v, p)
+	if c.pictures > 2 {
+		return fmt.Errorf("%w: the packet holds %d pictures, more than a frame or the two fields of one", nal.ErrH264, c.pictures)
+	}
+	return nil
+}
+
+// decodeUnits decodes the pictures of the units split read, one at a
+// time, keeping each parameter set where it comes.
+func (c *h264Decoder) decodeUnits(v *VideoDecoder, p demux.Packet) error {
+	for i := 0; i < len(c.units); {
+		u := &c.units[i]
+		if !u.slice() {
+			if !c.setsKept {
+				c.setsBefore, c.setsKept = c.sets, true
+			}
+			c.install(u)
+			i++
+			continue
+		}
+		j := i + 1
+		for j < len(c.units) && c.units[j].slice() && !c.units[j].start {
+			j++
+		}
+		if err := c.picture(v, p, c.units[i:j]); err != nil {
+			return err
+		}
+		i = j
+	}
+	return nil
 }
 
 // header reads the slice header of unit into h, unescaping only as much
@@ -234,42 +313,37 @@ func (c *h264Decoder) pictures(v *VideoDecoder, p demux.Packet) error {
 func (c *h264Decoder) header(h *nal.H264SliceHeader, unit []byte) error {
 	end := min(len(unit), 1+sliceHeaderBytes)
 	c.rbsp = nal.Unescape(c.rbsp[:0], unit[1:end])
-	err := h.Parse(c.rbsp, unit[0], &c.pps, &c.sps)
+	err := h.Parse(c.rbsp, unit[0], &c.sets.pps, &c.sets.sps)
 	if err != nil && end < len(unit) {
 		c.rbsp = nal.Unescape(c.rbsp[:0], unit[1:])
-		err = h.Parse(c.rbsp, unit[0], &c.pps, &c.sps)
+		err = h.Parse(c.rbsp, unit[0], &c.sets.pps, &c.sets.sps)
 	}
 	return err
 }
 
-// picture decodes the slices read, if any: one picture, the packet's
-// next. A packet holds one picture, or the two fields of a frame. A
-// frame, or the second field of one, completes a frame for Next; a
-// first field waits in its DPB slot for the second, and comes out with
-// it, their lines woven. A field whose frame's other field does not
-// follow is decoded for the pictures that predict from it and never
-// shown.
-func (c *h264Decoder) picture(v *VideoDecoder, p demux.Packet) error {
-	if len(c.slices) == 0 {
-		return nil
-	}
-	slices, part := c.slices, c.part
-	c.slices, c.part = c.slices[:0], c.part+1
+// picture decodes slices, the packet's next picture. A packet holds
+// one picture, or the two fields of a frame. A frame, or the second
+// field of one, completes a frame for Next; a first field waits in its
+// DPB slot for the second, and comes out with it, their lines woven. A
+// field whose frame's other field does not follow is decoded for the
+// pictures that predict from it and never shown.
+func (c *h264Decoder) picture(v *VideoDecoder, p demux.Packet, slices []h264Unit) error {
+	part := c.part
+	c.part++
 	first := slices[0].unit
 	if err := c.header(&c.hdr, first); err != nil {
 		return err
 	}
-	sps := c.sps[c.pps[c.hdr.PPSID].SPSID]
+	sps := c.sets.sps[c.sets.pps[c.hdr.PPSID].SPSID]
 	if err := h264Decodes(sps); err != nil {
 		return err
 	}
-	pic := h264Pic{hdr: &c.hdr, sps: sps, idr: nal.H264Type(first) == nal.H264NALIDR, ref: nal.H264RefIdc(first) != 0, intra: h264Intra(&c.hdr), fields: h264FieldsOf(&c.hdr)}
-	if part > 1 || part == 1 && (c.whole || pic.fields == h264Frame) {
-		return fmt.Errorf("%w: the packet holds more pictures than a frame or the two fields of one", nal.ErrH264)
+	pic := h264Pic{hdr: &c.hdr, sps: sps, idr: nal.H264Type(first) == nal.H264NALIDR, ref: nal.H264RefIdc(first) != 0, intra: true, fields: h264FieldsOf(&c.hdr)}
+	if pic.fields == h264Frame && c.pictures > 1 {
+		return fmt.Errorf("%w: the packet holds a frame and another picture, more than a frame or the two fields of one", nal.ErrH264)
 	}
-	c.whole = pic.fields == h264Frame
-	total := len(startCode) + len(first)
-	for _, s := range slices[1:] {
+	total := 0
+	for _, s := range slices {
 		pic.intra = pic.intra && s.intra
 		total += len(startCode) + len(s.unit)
 	}
@@ -474,15 +548,15 @@ func (c *h264Decoder) inferGap(v *VideoDecoder, sps *nal.H264SPS, shape decodeSh
 // skipPPS is the PPS the skip slices of sps's gap frames name: one the
 // parameter sets hold under an ID the stream leaves unused.
 func (c *h264Decoder) skipPPS(sps *nal.H264SPS) (*nal.H264PPS, error) {
-	if p := c.gapPPS; p != nil && c.pps[p.ID] == p && p.SPSID == sps.ID {
+	if p := c.gapPPS; p != nil && c.sets.pps[p.ID] == p && p.SPSID == sps.ID {
 		return p, nil
 	}
-	for id := len(c.pps) - 1; id >= 0; id-- {
-		if c.pps[id] != nil {
+	for id := len(c.sets.pps) - 1; id >= 0; id-- {
+		if c.sets.pps[id] != nil {
 			continue
 		}
 		p := nal.H264SkipPPS(uint8(id), sps.ID)
-		c.gapPPS, c.pps[id], c.paramsChanged = &p, &p, true
+		c.gapPPS, c.sets.pps[id], c.paramsChanged = &p, &p, true
 		return &p, nil
 	}
 	return nil, fmt.Errorf("%w: the stream uses every PPS ID, leaving none for the skip slices of the frames a gap in frame_num infers: %w", nal.ErrH264, nal.ErrUnsupported)
@@ -507,7 +581,7 @@ func (c *h264Decoder) fill(pic *h264Pic) {
 		flagBit{pic.fields == h264Bottom, vk.StdVideoDecodeH264PictureBottomField},
 		flagBit{pic.second, vk.StdVideoDecodeH264PictureComplementaryFieldPair},
 	)
-	pps := c.pps[h.PPSID]
+	pps := c.sets.pps[h.PPSID]
 	c.pic = vk.StdVideoDecodeH264PictureInfo{
 		Flags: flags, SeqParameterSetID: pps.SPSID, PicParameterSetID: pps.ID,
 		FrameNum: uint16(h.FrameNum & 0xffff), IdrPicID: h.IDRPicID, PicOrderCnt: pic.poc,
@@ -683,7 +757,7 @@ func (c *h264Decoder) caps() unsafe.Pointer {
 }
 
 func (c *h264Decoder) checkCaps() error {
-	level := c.spsLevel[c.active.ID]
+	level := c.sets.spsLevel[c.active.ID]
 	if level > c.capsInfo.MaxLevelIdc {
 		return fmt.Errorf("H.264 level %d.%d is past the device's (StdVideo level %d)", c.active.LevelIdc/10, c.active.LevelIdc%10, c.capsInfo.MaxLevelIdc)
 	}
@@ -697,14 +771,14 @@ func (c *h264Decoder) reset() { c.state.reset() }
 func (c *h264Decoder) parameters() unsafe.Pointer {
 	c.stdSPS, c.stdVUI, c.stdSPSLists = c.stdSPS[:0], c.stdVUI[:0], c.stdSPSLists[:0]
 	c.stdPPS, c.stdPPSLists = c.stdPPS[:0], c.stdPPSLists[:0]
-	for _, s := range c.sps {
+	for _, s := range c.sets.sps {
 		if s == nil {
 			continue
 		}
 		c.stdVUI = append(c.stdVUI, h264StdVUI(&s.VUI))
 		c.stdSPSLists = append(c.stdSPSLists, h264StdLists(&s.Scaling, 0xff))
 	}
-	for _, p := range c.pps {
+	for _, p := range c.sets.pps {
 		if p == nil {
 			continue
 		}
@@ -715,15 +789,15 @@ func (c *h264Decoder) parameters() unsafe.Pointer {
 		c.stdPPSLists = append(c.stdPPSLists, h264StdLists(&p.Scaling, mask))
 	}
 	i := 0
-	for _, s := range c.sps {
+	for _, s := range c.sets.sps {
 		if s == nil {
 			continue
 		}
-		c.stdSPS = append(c.stdSPS, h264StdSPS(s, c.spsLevel[s.ID], &c.stdVUI[i], &c.stdSPSLists[i]))
+		c.stdSPS = append(c.stdSPS, h264StdSPS(s, c.sets.spsLevel[s.ID], &c.stdVUI[i], &c.stdSPSLists[i]))
 		i++
 	}
 	i = 0
-	for _, p := range c.pps {
+	for _, p := range c.sets.pps {
 		if p == nil {
 			continue
 		}
