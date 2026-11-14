@@ -450,13 +450,12 @@ func (v *VideoDecoder) pickProfile() error {
 	}
 	c, s := &v.caps.video, v.shape
 	output, ok := outputOf(v.caps.decode.Flags, d.decode.transfer)
+	fit := v.decodesAt(s.coded)
 	switch {
 	case !ok:
 		return fmt.Errorf("%w: %s decodes %s neither into output pictures apart from its reference pictures nor into them (capability flags %#x)", ErrNoVideoDecoder, d.name, v.name, v.caps.decode.Flags)
-	case s.coded[0] > int(c.MaxCodedExtent.Width) || s.coded[1] > int(c.MaxCodedExtent.Height):
-		return fmt.Errorf("%w: %s decodes %s up to %dx%d, not %dx%d", ErrNoVideoDecoder, d.name, v.name, c.MaxCodedExtent.Width, c.MaxCodedExtent.Height, s.coded[0], s.coded[1])
-	case s.coded[0] < int(c.MinCodedExtent.Width) || s.coded[1] < int(c.MinCodedExtent.Height):
-		return fmt.Errorf("%w: %s decodes %s from %dx%d, not %dx%d", ErrNoVideoDecoder, d.name, v.name, c.MinCodedExtent.Width, c.MinCodedExtent.Height, s.coded[0], s.coded[1])
+	case fit != nil:
+		return fit
 	case s.slots > int(c.MaxDpbSlots) || !s.fields && s.refs > int(c.MaxActiveReferencePictures):
 		return fmt.Errorf("%w: %s decodes %s with %d DPB slots and %d references, not %d and %d", ErrNoVideoDecoder, d.name, v.name, c.MaxDpbSlots, c.MaxActiveReferencePictures, s.slots, s.refs)
 	}
@@ -486,6 +485,20 @@ func (v *VideoDecoder) pickProfile() error {
 	}
 	v.sampling, err = v.pickSampling()
 	return err
+}
+
+// decodesAt refuses coded, the size of a session or of a picture in
+// it, where the profile's capabilities do not reach it: past the
+// largest or short of the smallest coded extent.
+func (v *VideoDecoder) decodesAt(coded [2]int) error {
+	c := &v.caps.video
+	switch {
+	case coded[0] > int(c.MaxCodedExtent.Width) || coded[1] > int(c.MaxCodedExtent.Height):
+		return fmt.Errorf("%w: %s decodes %s up to %dx%d, not %dx%d", ErrNoVideoDecoder, v.d.name, v.name, c.MaxCodedExtent.Width, c.MaxCodedExtent.Height, coded[0], coded[1])
+	case coded[0] < int(c.MinCodedExtent.Width) || coded[1] < int(c.MinCodedExtent.Height):
+		return fmt.Errorf("%w: %s decodes %s from %dx%d, not %dx%d", ErrNoVideoDecoder, v.d.name, v.name, c.MinCodedExtent.Width, c.MinCodedExtent.Height, coded[0], coded[1])
+	}
+	return nil
 }
 
 type frameSampling uint8
@@ -998,6 +1011,9 @@ type decodePicture struct {
 // layout it records are done with only once the submission goes
 // through: a picture that fails records them again.
 func (v *VideoDecoder) submit(p *decodePicture) error {
+	if err := v.decodesAt(p.coded); err != nil {
+		return err
+	}
 	d, c := v.d, &v.cmd
 	s := &v.slots[v.next]
 	cb := s.cb

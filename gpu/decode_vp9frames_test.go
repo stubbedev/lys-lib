@@ -98,8 +98,18 @@ func datas(pkts []demux.Packet) [][]byte {
 }
 
 // checkSized compares frames of sizes that change, each with the frame
-// ffmpeg decodes from the file at path at the frame's own size.
+// ffmpeg decodes from the file at path at the frame's own size: all of
+// ffmpeg's frames.
 func checkSized(t *testing.T, path string, got []decoded) {
+	t.Helper()
+	if rest := checkSizedPrefix(t, path, got); rest != 0 {
+		t.Errorf("ffmpeg decoded %d bytes more than the %d frames", rest, len(got))
+	}
+}
+
+// checkSizedPrefix is checkSized for got, the first of ffmpeg's frames:
+// it returns how many bytes of ffmpeg's frames follow them.
+func checkSizedPrefix(t *testing.T, path string, got []decoded) int {
 	t.Helper()
 	raw := ffmpegRaw(t, path, nv12Samples)
 	for i, g := range got {
@@ -115,9 +125,7 @@ func checkSized(t *testing.T, path string, got []decoded) {
 		}
 		raw = raw[n:]
 	}
-	if len(raw) != 0 {
-		t.Errorf("ffmpeg decoded %d bytes more than the %d frames", len(raw), len(got))
-	}
+	return len(raw)
 }
 
 // sizeRuns are the sizes of got's frames, each run of one size once.

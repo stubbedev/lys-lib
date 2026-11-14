@@ -242,10 +242,11 @@ func main() {
   from references of another size, intra-only frames; libvpx streams in
   WebM and MP4), and, where the device decodes them (NVIDIA does), 12-bit
   H.265 and VP9 profile 2 and 4:4:4 H.265 at 8, 10 and 12 bits (the format
-  range extensions). AV1 frames coded at a superres-scaled width are errors
-  that say so, as are AV1 inter frames whose size differs from their
-  references' (reference scaling) and frames smaller than the device decodes
-  (NVIDIA decodes AV1 from 128x128, H.265 from 144x144). The tests decode
+  range extensions). AV1 frames of other sizes than their references decode,
+  as do superres key frames and the frames predicted from them; superres
+  frames that predict from references are errors that say so (NVIDIA's Vulkan
+  driver decodes them otherwise than dav1d), as are frames smaller than the
+  device decodes (NVIDIA decodes AV1 from 128x128, H.265 from 144x144). The tests decode
   ffmpeg's frames on one thread: with frame threads its H.264 decoder (9.0.2)
   shows a field without its frame's other at some thread counts (9, its
   default on 8 cores), into a frame it shows twice, and on one thread none.

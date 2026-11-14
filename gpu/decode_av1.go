@@ -230,8 +230,8 @@ func (c *av1Decoder) tileGroup(v *VideoDecoder, p demux.Packet, u *av1.OBU, b []
 // its tiles at c.tiles.
 func (c *av1Decoder) picture(v *VideoDecoder, p demux.Packet, data []byte) error {
 	h := &c.hdr
-	if h.UseSuperres {
-		return fmt.Errorf("%w: the %s at order hint %d is coded at a superres-scaled width, which the decoder does not upscale", ErrNoVideoDecoder, h.FrameType, h.OrderHint)
+	if h.UseSuperres && !h.FrameIsIntra {
+		return fmt.Errorf("%w: the %s at order hint %d is coded at a superres-scaled width and predicts from reference frames, which is verified on no device: NVIDIA's Vulkan driver decodes such frames otherwise than dav1d, as ffmpeg's Vulkan decoder does on it, though NVDEC decodes them as dav1d does", ErrNoVideoDecoder, h.FrameType, h.OrderHint)
 	}
 	if readsPreviousSegmentIDs(&h.Seg) && !v.d.decode.givesAV1SegmentIDs() {
 		return fmt.Errorf("%w: the %s at order hint %d takes its segment IDs from its primary reference frame's (segmentation_update_map %d, segmentation_temporal_update %d), which Mesa's ANV driver never gives %s's decoder: it leaves the AV1 segment ID read buffer unset", ErrNoVideoDecoder, h.FrameType, h.OrderHint, b2u8(h.Seg.UpdateMap), b2u8(h.Seg.TemporalUpdate), v.d.name)
@@ -241,7 +241,7 @@ func (c *av1Decoder) picture(v *VideoDecoder, p demux.Packet, data []byte) error
 		return err
 	}
 	if v.session != 0 && shape != v.shape && h.FrameType != av1.KeyFrame {
-		return fmt.Errorf("%w: the %s at order hint %d is %dx%d, its references %dx%d, which needs reference scaling the decoder does not do", ErrNoVideoDecoder, h.FrameType, h.OrderHint, shape.coded[0], shape.coded[1], v.shape.coded[0], v.shape.coded[1])
+		return fmt.Errorf("%w: the %s at order hint %d follows a sequence header that changes the stream's format or largest size, where a key frame must", av1.ErrSyntax, h.FrameType, h.OrderHint)
 	}
 	if v.session == 0 || shape != v.shape {
 		c.forget()
@@ -269,7 +269,7 @@ func (c *av1Decoder) picture(v *VideoDecoder, p demux.Packet, data []byte) error
 	}
 	copy(buf, data)
 	c.fill(setup)
-	c.req = decodePicture{frame: frame, coded: v.shape.coded, bytes: len(data), info: unsafe.Pointer(&c.picInfo), setup: setup, setupInfo: unsafe.Pointer(&c.setupInfo)}
+	c.req = decodePicture{frame: frame, coded: [2]int{h.UpscaledWidth, h.FrameHeight}, bytes: len(data), info: unsafe.Pointer(&c.picInfo), setup: setup, setupInfo: unsafe.Pointer(&c.setupInfo)}
 	n := 0
 	if !h.FrameIsIntra {
 		for i, idx := range h.RefFrameIdx {
@@ -317,7 +317,7 @@ func readsPreviousSegmentIDs(s *av1.Segmentation) bool {
 // grain is the film grain of the frame c.hdr heads.
 func (c *av1Decoder) grain() grainFrame {
 	h, col := &c.hdr, &c.stream.Seq.Color
-	return grainFrame{params: &h.FilmGrain, w: h.FrameWidth, h: h.FrameHeight, bits: col.BitDepth, identity: col.MatrixCoefficients == 0}
+	return grainFrame{params: &h.FilmGrain, w: h.UpscaledWidth, h: h.FrameHeight, bits: col.BitDepth, identity: col.MatrixCoefficients == 0}
 }
 
 // showExisting shows the frame c.hdr names, decoded before; a key frame
@@ -349,8 +349,11 @@ func (c *av1Decoder) rect() image.Rectangle {
 	return image.Rect(0, 0, min(h.RenderWidth, h.UpscaledWidth), min(h.RenderHeight, h.FrameHeight))
 }
 
-// shape is the session the frame decodes in; it notes whether the
-// profile asks the device for film grain.
+// shape is the session the frames of the sequence decode in, made for
+// its largest frames: a frame of another size, its own or scaled by
+// superres, decodes in it at its size, predicting from references of
+// theirs, which the device scales. It notes whether the profile asks
+// the device for film grain.
 func (c *av1Decoder) shape() (decodeShape, error) {
 	q := &c.stream.Seq
 	col := &q.Color
@@ -363,7 +366,7 @@ func (c *av1Decoder) shape() (decodeShape, error) {
 	if q.Profile != 0 {
 		unverified = "decoding AV1 beyond Main (the High and Professional profiles: 4:4:4, 4:2:2 and 12 bits)"
 	}
-	signal := videoSignal{typed: true, fullRange: col.ColorRange, described: col.ColorDescriptionPresent, matrix: col.MatrixCoefficients, lines: c.hdr.FrameHeight}
+	signal := videoSignal{typed: true, fullRange: col.ColorRange, described: col.ColorDescriptionPresent, matrix: col.MatrixCoefficients, lines: q.MaxFrameHeight}
 	switch col.ChromaSamplePosition {
 	case av1.ChromaSamplePositionUnknown:
 	case av1.ChromaSamplePositionVertical:
@@ -379,7 +382,7 @@ func (c *av1Decoder) shape() (decodeShape, error) {
 	}
 	c.filmGrain = q.FilmGrainPresent
 	return decodeShape{
-		profile: int(q.Profile), coded: [2]int{c.hdr.FrameWidth, c.hdr.FrameHeight},
+		profile: int(q.Profile), coded: [2]int{q.MaxFrameWidth, q.MaxFrameHeight},
 		slots: refSlotPictures, refs: av1.RefsPerFrame, hidden: av1.NumRefFrames, samples: samples, ycbcr: ycbcr, unverified: unverified,
 	}, nil
 }

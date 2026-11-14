@@ -3,8 +3,10 @@ package gpu
 import (
 	"bytes"
 	"errors"
+	"fmt"
 	"image"
 	"math/bits"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -452,4 +454,102 @@ func TestDecodeAV1RetriesATemporalUnitWhoseLastFrameFailed(t *testing.T) {
 	}
 	defer v.Close()
 	checkFrames(t, cl, decodeRetryingTheLastPicture(t, v, pkts, at, len(hdrs[at]), func() int { return v.codec.(*av1Decoder).resume.done }), 0)
+}
+
+// svtScaled is the test pattern at w x h coded by SVT-AV1 with params,
+// whose frames are of sizes ffmpeg would scale to one were they decoded
+// back as a clip is.
+func svtScaled(t *testing.T, w, h int, params string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "a.mkv")
+	src := fmt.Sprintf("testsrc2=size=%dx%d:rate=25:duration=2", w, h)
+	runFFmpeg(t, "-v", "error", "-y", "-f", "lavfi", "-i", src, "-pix_fmt", "yuv420p", "-c:v", "libsvtav1", "-preset", "10", "-g", "30", "-svtav1-params", "film-grain=0:"+params, path)
+	return path
+}
+
+// Frames SVT-AV1 codes at other sizes than the sequence's largest,
+// which predict from references of another size, and key frames coded
+// narrower and upscaled by superres, which frames predict from, decode
+// bit for bit as ffmpeg (dav1d) decodes them, each at its own size: the
+// device scales the references and upscales the frames. A frame that
+// predicts from references and is upscaled by superres is refused,
+// saying so, after the frames before it decode right.
+func TestDecodeAV1ScalesFramesAndReferences(t *testing.T) {
+	d := decodingDevice(t, demux.AV1)
+	const superresKeys = "superres-mode=1:superres-denom=8:superres-kf-denom=16"
+	for _, c := range []struct {
+		name                       string
+		params                     string
+		resized, superres, refused bool
+	}{
+		{"frames of random sizes", "resize-mode=2", true, false, false},
+		{"superres key frames", superresKeys, false, true, false},
+		{"superres key frames among frames of random sizes", "resize-mode=2:" + superresKeys, true, true, false},
+		{"superres frames predicting from references", "superres-mode=2", false, true, true},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			path := svtScaled(t, 512, 288, c.params)
+			track, pkts := packets(t, path)
+			v, err := d.NewVideoDecoder(track)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer v.Close()
+			var got []decoded
+			superres, refused := false, false
+			for i, p := range pkts {
+				err := v.Decode(p)
+				got = takeFrames(t, v, got)
+				if err != nil {
+					if !c.refused || !errors.Is(err, ErrNoVideoDecoder) || !strings.Contains(err.Error(), "superres-scaled width and predicts from reference frames") {
+						t.Fatalf("packet %d: %v", i, err)
+					}
+					superres, refused = true, true
+					break
+				}
+				superres = superres || v.codec.(*av1Decoder).hdr.UseSuperres
+			}
+			if !refused {
+				v.Flush()
+				got = takeFrames(t, v, got)
+			}
+			if refused != c.refused || superres != c.superres || len(sizeRuns(got)) > 1 != c.resized || len(got) == 0 {
+				t.Fatalf("refused %v, superres %v, frames of sizes %v; want refused %v, superres %v, several sizes %v", refused, superres, sizeRuns(got), c.refused, c.superres, c.resized)
+			}
+			if refused {
+				checkSizedPrefix(t, path, got)
+				return
+			}
+			checkSized(t, path, got)
+		})
+	}
+}
+
+// A frame smaller than the least coded extent the device decodes is
+// refused, saying both sizes, after the frames before it decode right.
+func TestDecodeAV1RefusesAFrameSmallerThanTheDeviceDecodes(t *testing.T) {
+	d := decodingDevice(t, demux.AV1)
+	path := svtScaled(t, 256, 144, "resize-mode=2")
+	track, pkts := packets(t, path)
+	v, err := d.NewVideoDecoder(track)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer v.Close()
+	var got []decoded
+	for i, p := range pkts {
+		err := v.Decode(p)
+		got = takeFrames(t, v, got)
+		if err == nil {
+			continue
+		}
+		least := v.caps.video.MinCodedExtent
+		want := fmt.Sprintf("decodes AV1 from %dx%d, not ", least.Width, least.Height)
+		if !errors.Is(err, ErrNoVideoDecoder) || !strings.Contains(err.Error(), want) {
+			t.Fatalf("packet %d: %v, want ErrNoVideoDecoder saying %q", i, err, want)
+		}
+		checkSizedPrefix(t, path, got)
+		return
+	}
+	t.Skipf("%s decodes every frame, the least %v", d.Name(), slices.MinFunc(got, func(a, b decoded) int { return a.size.X*a.size.Y - b.size.X*b.size.Y }).size)
 }
