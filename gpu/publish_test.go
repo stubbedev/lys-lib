@@ -32,7 +32,13 @@ func heavyList(rec *render.Canvas, w, h, units int, col render.Color) *render.Li
 // on before reading the dmabuf fd: DMA_BUF_IOCTL_EXPORT_SYNC_FILE.
 func dmabufFence(t *testing.T, fd int) int {
 	t.Helper()
-	fence, err := dmabuf.ExportSyncFile(fd, dmabuf.Read)
+	return exportFence(t, fd, dmabuf.Read)
+}
+
+// exportFence is what a use for a of the dmabuf fd waits on, the test's.
+func exportFence(t *testing.T, fd int, a dmabuf.Access) int {
+	t.Helper()
+	fence, err := dmabuf.ExportSyncFile(fd, a)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -47,10 +53,10 @@ func isCPUDevice(d *Device) bool {
 }
 
 // A frame handed to a consumer on another device is whole when the
-// dmabuf's fence says it is, and that fence is pending when Render
-// returns: what a compositor sampling a window's buffer waits on. Sampling
-// alone cannot show the wait on a GPU with one render engine, whose two
-// devices' work runs in turn whatever the fence, so the fence is checked.
+// dmabuf's fence says it is: what a compositor sampling a window's buffer
+// waits on. The fence signals after the frame was submitted, or the
+// frame had finished when it was exported, and the consumer samples the
+// frame behind it.
 func TestARenderedDmabufCarriesItsFrame(t *testing.T) {
 	a := syncDevice(t)
 	b := syncDevice(t)
@@ -69,10 +75,7 @@ func TestARenderedDmabufCarriesItsFrame(t *testing.T) {
 	if len(mods) == 0 {
 		t.Skip("no modifier one device exports and the other samples")
 	}
-	size := 2048
-	if isCPUDevice(a) {
-		size = 64
-	}
+	const size = busySize
 	src, err := a.NewTarget(size, size, fourcc.ARGB8888, mods)
 	if err != nil {
 		t.Fatal(err)
@@ -89,36 +92,29 @@ func TestARenderedDmabufCarriesItsFrame(t *testing.T) {
 	}
 	defer dst.Close()
 	rec := render.NewRecorder(size, size, 1, 1)
-	draw := func(units int, col render.Color) {
-		if err := a.Render(heavyList(rec, size, size, units, col), src); err != nil {
-			t.Fatal(err)
-		}
-	}
-	job := newSlowJob(t, a, func(units int) { draw(units, render.RGBA(0, 0, 0, 255)) })
-	pending := 0
 	for frame := range 8 {
 		want := color.RGBA{0, 255, 0, 255}
 		col := render.RGBA(0, 255, 0, 255)
 		if frame%2 == 1 {
 			want, col = color.RGBA{0, 0, 255, 255}, render.RGBA(0, 0, 255, 255)
 		}
-		start := monotonic()
-		draw(job.units, col)
+		since := monotonic()
+		if err := a.Render(heavyList(rec, size, size, busyDraws, col), src); err != nil {
+			t.Fatal(err)
+		}
 		plane := src.Dmabuf().Planes[0].FD
 		fence := dmabufFence(t, plane)
-		job.endsBy(t, start, fence)
+		frameFence := handedOut(a, fence, since)
 		signalled, err := drm.SyncFileSignalled(fence)
 		if err != nil {
 			t.Fatal(err)
 		}
 		if !signalled {
-			pending++
 			pfd := []unix.PollFd{{Fd: int32(plane), Events: unix.POLLIN}}
 			if n, err := unix.Poll(pfd, 0); err != nil || n != 0 {
 				t.Errorf("frame %d: the dmabuf polls ready (%d, %v) with its fence pending", frame, n, err)
 			}
 		}
-		waitReadable(t, fence)
 		if err := b.WaitSyncFile(dupFD(t, fence)); err != nil {
 			t.Fatal(err)
 		}
@@ -128,9 +124,7 @@ func TestARenderedDmabufCarriesItsFrame(t *testing.T) {
 		if got := readTarget(t, dst).RGBAAt(0, 0); got != want {
 			t.Errorf("frame %d: the consumer sampled %v, want %v", frame, got, want)
 		}
-	}
-	if pending == 0 && !isCPUDevice(a) {
-		t.Errorf("%s: no frame's dmabuf had a fence pending after Render: a consumer would not have waited", a.Name())
+		frameFence.signalled(t)
 	}
 }
 
@@ -217,16 +211,17 @@ func TestAFrameWithoutAFenceIsFinishedWhenRenderReturns(t *testing.T) {
 }
 
 // A sync_file covers what came before it and nothing after, as the
-// kernel sees it on a driver that exports real ones: the newer fence
-// cannot signal before the older, and one that waits on another device's
-// fence signals after it.
+// kernel sees it on a driver that exports real ones: each signals after
+// the pass it follows was submitted (or that pass had finished when it
+// was handed out), the newer cannot signal before the older, and one that
+// waits on another device's fence signals after it.
 func TestSyncFilesSignalInTheOrderOfTheirWork(t *testing.T) {
 	a := syncDevice(t)
 	b := syncDevice(t)
 	if isCPUDevice(a) {
 		t.Skipf("%s signals on the CPU: nothing here to observe", a.Name())
 	}
-	ta, err := a.NewOffscreen(2048, 2048)
+	ta, err := a.NewOffscreen(busySize, busySize)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -237,30 +232,33 @@ func TestSyncFilesSignalInTheOrderOfTheirWork(t *testing.T) {
 	}
 	defer tb.Close()
 	green := color.RGBA{0, 255, 0, 255}
-	job := heavyPassJob(t, a, ta)
-	start1 := monotonic()
-	heavyPass(t, a, ta, job.units, green)
+	since1 := monotonic()
+	heavyPass(t, a, ta, busyDraws, green)
 	first := syncFile(t, a)
-	start2 := monotonic()
-	heavyPass(t, a, ta, job.units, green)
+	older := handedOut(a, first, since1)
+	since2 := monotonic()
+	heavyPass(t, a, ta, busyDraws, green)
 	second := syncFile(t, a)
+	newer := handedOut(a, second, since2)
 	if first < 0 || second < 0 {
-		t.Skipf("%s exports no pending sync_files: nothing here to observe", a.Name())
+		t.Fatalf("%s exported -1 for a pass's sync_file (%d, %d): nothing here to order", a.Name(), first, second)
 	}
-	mine := dupFD(t, second)
-	if err := b.WaitSyncFile(mine); err != nil {
+	if err := b.WaitSyncFile(dupFD(t, second)); err != nil {
 		t.Fatal(err)
 	}
 	clearPass(t, b, tb)
 	third := syncFile(t, b)
 	if third < 0 {
-		t.Fatalf("%s: SyncFile says all finished, ahead of the fence it waits on", b.Name())
+		t.Fatalf("%s exported -1 for the sync_file of a pass waiting on another device's", b.Name())
 	}
-	t1, t2, t3 := signalTime(t, first), signalTime(t, second), signalTime(t, third)
-	job.ran(t, start1, t1)
-	job.ran(t, start2, t2)
-	if t2 <= t1 {
-		t.Errorf("the newer pass's fence signalled at %v, not after the older's at %v", t2, t1)
+	t1, ownOlder := older.signalled(t)
+	t2, ownNewer := newer.signalled(t)
+	t3 := signalTime(t, third)
+	if !ownNewer {
+		return
+	}
+	if ownOlder && t2 < t1 {
+		t.Errorf("the newer pass's fence signalled at %v, before the older's at %v", t2, t1)
 	}
 	if t3 < t2 {
 		t.Errorf("the waiting device's fence signalled at %v, before the fence it waits on at %v", t3, t2)

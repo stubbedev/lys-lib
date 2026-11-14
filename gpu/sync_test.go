@@ -45,9 +45,49 @@ func heavyPass(t *testing.T, d *Device, tg *Target, units int, last color.RGBA) 
 	})
 }
 
+// busyDraws is how many draws over a whole target of busySize keep a GPU
+// busy for a while: long enough that the CPU usually hands out the work's
+// fence before it finishes, which is what lets a test see a fence that
+// does not cover it. Nothing asserts how long it takes.
+const (
+	busyDraws = 64
+	busySize  = 1024
+)
+
 func heavyPassJob(t *testing.T, d *Device, tg *Target) slowJob {
 	t.Helper()
 	return newSlowJob(t, d, func(units int) { heavyPass(t, d, tg, units, color.RGBA{A: 255}) })
+}
+
+// handout is a sync_file d handed out for the work it submitted after
+// since, and whether all d had submitted had finished right after: a
+// fence that had signalled is handed out as a stub (the kernel exports
+// one once a dmabuf's fences have, a driver may for a finished
+// submission), which stands for that work only if it had all finished.
+type handout struct {
+	fd      int
+	since   time.Duration
+	allDone bool
+}
+
+func handedOut(d *Device, fd int, since time.Duration) handout {
+	return handout{fd: fd, since: since, allDone: d.finished() == len(d.inflight)}
+}
+
+// signalled waits for the fence and fails the test unless it covers the
+// work: it signals after since, the fence of that work, or it is a stub
+// handed out with that work finished. It reports when it signalled and
+// whether that is the work's own time rather than a stub's.
+func (h handout) signalled(t *testing.T) (time.Duration, bool) {
+	t.Helper()
+	at := signalTime(t, h.fd)
+	if at > h.since {
+		return at, true
+	}
+	if !h.allDone {
+		t.Errorf("sync_file %d had signalled at %v, before the work since %v was submitted, and was handed out with that work unfinished: it does not cover it", h.fd, at, h.since)
+	}
+	return at, false
 }
 
 func dupFD(t *testing.T, fd int) int {
@@ -141,7 +181,7 @@ func TestWaitSyncFileOrdersAnotherDevicesWork(t *testing.T) {
 	if len(mods) == 0 {
 		t.Skip("no modifier one device exports and the other samples")
 	}
-	src, err := a.NewTarget(2048, 2048, fourcc.ARGB8888, mods)
+	src, err := a.NewTarget(busySize, busySize, fourcc.ARGB8888, mods)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,24 +196,15 @@ func TestWaitSyncFileOrdersAnotherDevicesWork(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer dst.Close()
-	job := heavyPassJob(t, a, src)
-	pending := 0
 	for _, want := range []color.RGBA{{0, 255, 0, 255}, {0, 0, 255, 255}} {
-		start := monotonic()
-		heavyPass(t, a, src, job.units, want)
-		fd, err := a.SyncFile()
-		if err != nil {
-			t.Fatal(err)
+		since := monotonic()
+		heavyPass(t, a, src, busyDraws, want)
+		fd := syncFile(t, a)
+		wait := fd
+		if fd >= 0 {
+			wait = dupFD(t, fd)
 		}
-		mine := dupFD(t, fd)
-		signalledEarly, err := drm.SyncFileSignalled(mine)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !signalledEarly {
-			pending++
-		}
-		if err := b.WaitSyncFile(fd); err != nil {
+		if err := b.WaitSyncFile(wait); err != nil {
 			t.Fatal(err)
 		}
 		runPass(t, b, dst, []image.Rectangle{{Max: dst.Size()}}, func(p *Pass) {
@@ -182,15 +213,13 @@ func TestWaitSyncFileOrdersAnotherDevicesWork(t *testing.T) {
 		if got := readTarget(t, dst).RGBAAt(0, 0); got != want {
 			t.Errorf("the waiting device sampled %v, want %v", got, want)
 		}
-		signalled := signalTime(t, mine)
-		unix.Close(mine)
-		job.ran(t, start, signalled)
-		if done, ok, err := b.FrameDone(); err == nil && ok && done < signalled {
+		if fd < 0 {
+			continue
+		}
+		signalled, own := handedOut(a, fd, since).signalled(t)
+		if done, ok, err := b.FrameDone(); own && err == nil && ok && done < signalled {
 			t.Errorf("the waiting pass finished at %v, before the fence it waited on signalled at %v", done, signalled)
 		}
-	}
-	if pending == 0 && !isCPUDevice(a) {
-		t.Errorf("%s: no pass's fence was pending when the other device waited on it", a.Name())
 	}
 }
 

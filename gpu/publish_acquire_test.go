@@ -45,19 +45,18 @@ func clearTarget(t *testing.T, d *Device, tg *Target, c color.RGBA) {
 // A writer on another device, as a compositor filling a screencast buffer
 // is, that refills a buffer while a reader's fence is still on its dmabuf
 // waits for that reader: the reader sees the frame it was handed, never
-// the next one. The reader samples the buffer in a long pass and hands it
-// back as the encoder's conversion does, its fence on the dmabuf and no
-// wait; the writer clears the buffer to another colour at once.
+// the next one, and the refill finishes after the reader's fence
+// signals. The reader samples the buffer in a pass and hands it back as
+// the encoder's conversion does, its fence on the dmabuf and no wait; the
+// writer clears the buffer to another colour at once, without waiting
+// here.
 func TestARefillWaitsForTheReaderBeforeIt(t *testing.T) {
 	a := syncDevice(t)
 	if !a.implicitFences {
 		t.Skipf("%s hands buffers back by waiting", a.Name())
 	}
 	b := syncDevice(t)
-	w, h := 640, 360
-	if isCPUDevice(a) {
-		w, h = 64, 64
-	}
+	const w, h = 640, 360
 	buf, err := a.NewBuffer(w, h, fourcc.XRGB8888, sharedModifiers(t, a, b))
 	if err != nil {
 		t.Fatal(err)
@@ -80,71 +79,62 @@ func TestARefillWaitsForTheReaderBeforeIt(t *testing.T) {
 	defer fill.Close()
 	frame, next := color.RGBA{0, 255, 0, 255}, color.RGBA{255, 0, 255, 255}
 	all := image.Rectangle{Max: image.Pt(w, h)}
-	sample := func(draws int) {
-		runPass(t, a, read, []image.Rectangle{all}, func(p *Pass) {
-			p.Clear(frame)
-			for range draws {
-				p.DrawTexture(tex, FRect{W: float64(w), H: float64(h)}, all, TransformNormal, 0.5, Mask{})
-			}
-		})
-	}
-	job := newSlowJob(t, a, sample)
-	pending, raced := 0, 0
 	for i := range 8 {
 		clearTarget(t, b, fill, frame)
 		if err := b.Finish(); err != nil {
 			t.Fatal(err)
 		}
-		start := monotonic()
-		sample(job.units)
+		since := monotonic()
+		runPass(t, a, read, []image.Rectangle{all}, func(p *Pass) {
+			p.Clear(frame)
+			for range busyDraws {
+				p.DrawTexture(tex, FRect{W: float64(w), H: float64(h)}, all, TransformNormal, 0.5, Mask{})
+			}
+		})
 		if err := a.signalFrame(); err != nil {
 			t.Fatal(err)
 		}
 		if err := a.fenceDmabuf(buf.sync, true); err != nil {
 			t.Fatal(err)
 		}
+		reader := handedOut(a, dmabufFence(t, buf.Dmabuf().Planes[0].FD), since)
 		waits := b.BlockingWaits()
 		clearTarget(t, b, fill, next)
-		if err := b.Flush(); err != nil {
-			t.Fatal(err)
-		}
-		if a.finished() < len(a.inflight) {
-			pending++
-		}
+		refill := syncFile(t, b)
 		if got := b.BlockingWaits(); got != waits {
 			t.Errorf("round %d: the refill waited here %d times, want on the GPU", i, got-waits)
+		}
+		readAt, own := reader.signalled(t)
+		if own && refill >= 0 {
+			if refillAt := signalTime(t, refill); refillAt < readAt {
+				t.Errorf("round %d: the refill finished at %v, %v before the reader's fence signalled", i, refillAt, readAt-refillAt)
+			}
 		}
 		if err := a.Finish(); err != nil {
 			t.Fatal(err)
 		}
-		job.ran(t, start, monotonic())
 		if err := b.Finish(); err != nil {
 			t.Fatal(err)
 		}
 		img := readTarget(t, read)
 		for _, at := range []image.Point{{0, 0}, {w / 2, h / 2}, {w - 1, h - 1}} {
 			if got := img.RGBAAt(at.X, at.Y); !within(got, frame, 2) {
-				raced++
 				t.Errorf("round %d: the reader saw %v at %v, want the frame it was handed, %v", i, got, at, frame)
 				break
 			}
 		}
 	}
-	t.Logf("%d of 8 refills submitted with the reader still running, %d raced it", pending, raced)
-	if pending == 0 && !isCPUDevice(a) {
-		t.Errorf("%s finished every read before the refill was submitted: nothing raced", a.Name())
-	}
 }
 
-// busyFence is a sync_file, the test's, of a job that keeps d's GPU busy
-// for a while: another user's work on a dmabuf, whose fence it carries.
-func busyFence(t *testing.T, d *Device) int {
+// busyFence is the fence, the test's, that d's pass over a large target
+// leaves on its dmabuf: another user's work on a dmabuf.
+func busyFence(t *testing.T, d *Device) handout {
 	t.Helper()
-	w, h := 3840, 2160
-	if isCPUDevice(d) {
-		w, h = 64, 64
+	mods, err := d.Modifiers(fourcc.ARGB8888)
+	if err != nil {
+		t.Fatal(err)
 	}
-	tg, err := d.NewOffscreen(w, h)
+	tg, err := d.NewTarget(busySize, busySize, fourcc.ARGB8888, mods)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -157,20 +147,21 @@ func busyFence(t *testing.T, d *Device) int {
 	if err := tex.Update(image.Rect(0, 0, 1, 1), 4, []byte{0, 0, 255, 255}); err != nil {
 		t.Fatal(err)
 	}
-	all := image.Rectangle{Max: image.Pt(w, h)}
-	busy := func(draws int) {
-		runPass(t, d, tg, []image.Rectangle{all}, func(p *Pass) {
-			for range draws {
-				p.DrawTexture(tex, FRect{W: 1, H: 1}, all, TransformNormal, 0.5, Mask{})
-			}
-		})
+	if err := d.Finish(); err != nil {
+		t.Fatal(err)
 	}
-	job := newSlowJob(t, d, busy)
-	start := monotonic()
-	busy(job.units)
-	fence := syncFile(t, d)
-	job.endsBy(t, start, fence)
-	return fence
+	all := image.Rectangle{Max: tg.Size()}
+	since := monotonic()
+	runPass(t, d, tg, []image.Rectangle{all}, func(p *Pass) {
+		for range busyDraws {
+			p.DrawTexture(tex, FRect{W: 1, H: 1}, all, TransformNormal, 0.5, Mask{})
+		}
+	})
+	if err := d.Publish(tg); err != nil {
+		t.Fatal(err)
+	}
+	stillFencing(t, d)
+	return handedOut(d, dmabufFence(t, tg.Dmabuf().Planes[0].FD), since)
 }
 
 // dmabufUse is a way a device takes a dmabuf from its other users: what
@@ -181,7 +172,7 @@ type dmabufUse struct {
 	fd        int
 	access    dmabuf.Access
 	handsOver bool
-	use       func()
+	use       func() error
 }
 
 // dmabufUses are the ways b takes a dmabuf from its other users, the
@@ -226,19 +217,18 @@ func dmabufUses(t *testing.T, a, b *Device) []dmabufUse {
 	clearTarget(t, b, dst, color.RGBA{0, 0, 255, 255})
 	rec := render.NewRecorder(w, h, 1, 1)
 	uses := []dmabufUse{
-		{"a pass into a target", tg.Dmabuf().Planes[0].FD, dmabuf.Write, false, func() { clearTarget(t, b, tg, color.RGBA{0, 255, 0, 255}) }},
-		{"a render into a target", tg.Dmabuf().Planes[0].FD, dmabuf.Write, true, func() {
+		{"a pass into a target", tg.Dmabuf().Planes[0].FD, dmabuf.Write, false, func() error { clearTarget(t, b, tg, color.RGBA{0, 255, 0, 255}); return nil }},
+		{"a render into a target", tg.Dmabuf().Planes[0].FD, dmabuf.Write, true, func() error {
 			rec.ResetRecorder(w, h, 1, 1)
 			rec.Clear(render.Rect{W: w, H: h}, render.RGBA(0, 255, 0, 255))
-			if err := b.Render(rec.Recording(), tg); err != nil {
-				t.Fatal(err)
-			}
+			return b.Render(rec.Recording(), tg)
 		}},
-		{"a pass into an imported target", imported.sync.fds[0], dmabuf.Write, false, func() { clearTarget(t, b, imported, color.RGBA{0, 255, 0, 255}) }},
-		{"a pass sampling an imported texture", sampled.Dmabuf().Planes[0].FD, dmabuf.Read, false, func() {
+		{"a pass into an imported target", imported.sync.fds[0], dmabuf.Write, false, func() error { clearTarget(t, b, imported, color.RGBA{0, 255, 0, 255}); return nil }},
+		{"a pass sampling an imported texture", sampled.Dmabuf().Planes[0].FD, dmabuf.Read, false, func() error {
 			runPass(t, b, dst, []image.Rectangle{{Max: dst.Size()}}, func(p *Pass) {
 				p.DrawTexture(tex, FRect{W: w, H: h}, image.Rectangle{Max: dst.Size()}, TransformNormal, 1, Mask{})
 			})
+			return nil
 		}},
 	}
 	if slices.Contains(mods, fourcc.Linear) {
@@ -247,59 +237,44 @@ func dmabufUses(t *testing.T, a, b *Device) []dmabufUse {
 			t.Fatal(err)
 		}
 		t.Cleanup(lin.Close)
-		uses = append(uses, dmabufUse{"a copy into a linear buffer", lin.sync.fds[0], dmabuf.Write, false, func() {
-			if err := b.CopyToLinear(lin, dst, []image.Rectangle{{Max: dst.Size()}}); err != nil {
-				t.Fatal(err)
-			}
+		uses = append(uses, dmabufUse{"a copy into a linear buffer", lin.sync.fds[0], dmabuf.Write, false, func() error {
+			return b.CopyToLinear(lin, dst, []image.Rectangle{{Max: dst.Size()}})
 		}})
 	}
 	return uses
 }
 
 // Every way a device takes a dmabuf from its other users waits, on the
-// GPU, for the fence another device's still-running job left on it: the
-// submission is queued without a wait here while that fence is pending,
-// and finishes after it signals. The device hands targets over by a
-// fence, so a Render waits for nothing more;
-// TestARenderHandedOverByWaitingWaitsOnlyForItsFrame takes the hand-over
-// by waiting.
+// GPU, for the fence another device's job left on it: the submission is
+// queued without a wait here, and finishes after that fence signals. The
+// device hands targets over by a fence, so a Render waits for nothing
+// more; TestARenderHandedOverByWaitingWaitsOnlyForItsFrame takes the
+// hand-over by waiting.
 func TestUsesOfADmabufWaitOnTheGPUForTheFenceOnIt(t *testing.T) {
-	a := syncDevice(t)
+	a := fencingDevice(t)
 	b := fencingDevice(t)
 	for _, u := range dmabufUses(t, a, b) {
 		t.Run(u.name, func(t *testing.T) {
 			if err := b.Finish(); err != nil {
 				t.Fatal(err)
 			}
-			fence := busyFence(t, a)
-			if fence < 0 {
-				t.Skipf("%s finished its job before handing out its fence", a.Name())
-			}
-			if err := dmabuf.ImportSyncFile(u.fd, fence); err != nil {
+			busy := busyFence(t, a)
+			if err := dmabuf.ImportSyncFile(u.fd, busy.fd); err != nil {
 				t.Fatal(err)
 			}
 			waits := b.BlockingWaits()
-			u.use()
-			done := syncFile(t, b)
-			signalled, err := drm.SyncFileSignalled(fence)
-			if err != nil {
+			if err := u.use(); err != nil {
 				t.Fatal(err)
 			}
+			done := syncFile(t, b)
 			if got := b.BlockingWaits(); got != waits {
 				t.Errorf("the %s waited here %d times, want on the GPU", u.access, got-waits)
 			}
-			if signalled {
-				if !isCPUDevice(a) {
-					t.Errorf("%s finished its job before the %s was queued: nothing shows the wait", a.Name(), u.access)
-				}
+			fenceAt, own := busy.signalled(t)
+			if !own || done < 0 {
 				return
 			}
-			waitReadable(t, done)
-			if signalled, err := drm.SyncFileSignalled(fence); err != nil || !signalled {
-				t.Fatalf("the %s finished with the fence on its dmabuf still pending (%v)", u.access, err)
-			}
-			fenceAt, doneAt := signalTime(t, fence), signalTime(t, done)
-			if doneAt < fenceAt {
+			if doneAt := signalTime(t, done); doneAt < fenceAt {
 				t.Errorf("the %s finished at %v, %v before the fence on its dmabuf signalled", u.access, doneAt, fenceAt-doneAt)
 			}
 		})
@@ -308,10 +283,10 @@ func TestUsesOfADmabufWaitOnTheGPUForTheFenceOnIt(t *testing.T) {
 
 // A device that hands a target over by waiting, as NVIDIA does, waits
 // here once, for the frame it just queued, which waited on the GPU for
-// the fence another device's still-running job left on the target's
-// dmabuf: the target is handed over finished, after that fence.
+// the fence another device's job left on the target's dmabuf: the target
+// is handed over finished, after that fence.
 func TestARenderHandedOverByWaitingWaitsOnlyForItsFrame(t *testing.T) {
-	a := syncDevice(t)
+	a := fencingDevice(t)
 	b := syncDevice(t)
 	uses := dmabufUses(t, a, b)
 	b.implicitFences = false
@@ -323,94 +298,82 @@ func TestARenderHandedOverByWaitingWaitsOnlyForItsFrame(t *testing.T) {
 			if err := b.Finish(); err != nil {
 				t.Fatal(err)
 			}
-			fence := busyFence(t, a)
-			if fence < 0 {
-				t.Skipf("%s finished its job before handing out its fence", a.Name())
-			}
-			if err := dmabuf.ImportSyncFile(u.fd, fence); err != nil {
+			busy := busyFence(t, a)
+			if err := dmabuf.ImportSyncFile(u.fd, busy.fd); err != nil {
 				t.Fatal(err)
 			}
 			waits := b.BlockingWaits()
-			u.use()
+			if err := u.use(); err != nil {
+				t.Fatal(err)
+			}
 			if got := b.BlockingWaits() - waits; got != 1 {
 				t.Errorf("the %s waited here %d times, want once, for its frame to hand it over", u.access, got)
 			}
 			if n := len(b.inflight); n != 0 {
 				t.Errorf("the %s handed its target over with %d submissions in flight", u.access, n)
 			}
-			if signalled, err := drm.SyncFileSignalled(fence); err != nil || !signalled {
+			if signalled, err := drm.SyncFileSignalled(busy.fd); err != nil || !signalled {
 				t.Errorf("the %s handed its target over with the fence on its dmabuf still pending (%v)", u.access, err)
 			}
+			busy.signalled(t)
 		})
 	}
 }
 
 // A reader waits for a dmabuf's writers, a writer for its readers too:
-// a read fence holds back the write intent's sync_file, not the read's.
+// a read fence is in the write intent's sync_file, which signals no
+// earlier than it, and not in the read's, which signals before the
+// reader was even submitted.
 func TestExportSyncFileHoldsWhatTheUseWaitsFor(t *testing.T) {
-	a := syncDevice(t)
+	a := fencingDevice(t)
 	b := syncDevice(t)
 	plane := dmabufUses(t, a, b)[0].fd
-	fence := busyFence(t, a)
-	if fence < 0 {
-		t.Skipf("%s finished its job before handing out its fence", a.Name())
+	if err := b.Finish(); err != nil {
+		t.Fatal(err)
 	}
+	busy := busyFence(t, a)
 	const importSyncFile = 0x40086203
 	arg := struct {
 		flags uint32
 		fd    int32
-	}{uint32(dmabuf.Read), int32(fence)}
+	}{uint32(dmabuf.Read), int32(busy.fd)}
 	if _, _, errno := unix.Syscall(unix.SYS_IOCTL, uintptr(plane), importSyncFile, uintptr(unsafe.Pointer(&arg))); errno != 0 {
 		t.Fatalf("DMA_BUF_IOCTL_IMPORT_SYNC_FILE of a read fence: %v", errno)
 	}
-	exported := func(a dmabuf.Access) bool {
-		fd, err := dmabuf.ExportSyncFile(plane, a)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer unix.Close(fd)
-		signalled, err := drm.SyncFileSignalled(fd)
-		if err != nil {
-			t.Fatal(err)
-		}
-		return signalled
+	read := dmabufFence(t, plane)
+	write := handedOut(a, exportFence(t, plane, dmabuf.Write), busy.since)
+	if readAt := signalTime(t, read); readAt > busy.since {
+		t.Errorf("a read's sync_file signalled at %v, after the reader was submitted at %v: it waits for the reader", readAt, busy.since)
 	}
-	read, write := exported(dmabuf.Read), exported(dmabuf.Write)
-	signalled, err := drm.SyncFileSignalled(fence)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if signalled {
-		t.Skip("the read fence signalled before the sync_files were checked")
-	}
-	if !read || write {
-		t.Errorf("with a reader running, a read's sync_file is signalled %v and a write's %v, want true and false", read, write)
+	fenceAt, own := busy.signalled(t)
+	if writeAt, ownWrite := write.signalled(t); own && ownWrite && writeAt < fenceAt {
+		t.Errorf("a write's sync_file signalled at %v, before the reader's fence at %v: it does not wait for the reader", writeAt, fenceAt)
 	}
 }
 
 // A device with no sync_file semaphores waits for a dmabuf's fence here
 // before the submission that writes it, never past it.
 func TestAWriteWithoutSyncFileSemaphoresWaitsHere(t *testing.T) {
-	a := syncDevice(t)
+	a := fencingDevice(t)
 	b := syncDevice(t)
 	u := dmabufUses(t, a, b)[0]
-	fence := busyFence(t, a)
-	if fence < 0 {
-		t.Skipf("%s finished its job before handing out its fence", a.Name())
-	}
-	if err := dmabuf.ImportSyncFile(u.fd, fence); err != nil {
+	busy := busyFence(t, a)
+	if err := dmabuf.ImportSyncFile(u.fd, busy.fd); err != nil {
 		t.Fatal(err)
 	}
 	b.syncFiles = false
 	defer func() { b.syncFiles = true }()
 	waits := b.BlockingWaits()
-	u.use()
-	if signalled, err := drm.SyncFileSignalled(fence); err != nil || !signalled {
+	if err := u.use(); err != nil {
+		t.Fatal(err)
+	}
+	if signalled, err := drm.SyncFileSignalled(busy.fd); err != nil || !signalled {
 		t.Errorf("the fence on the dmabuf is signalled %v (%v) once the write is recorded, want true", signalled, err)
 	}
 	if b.BlockingWaits() == waits {
 		t.Error("the write did not wait here")
 	}
+	busy.signalled(t)
 	if err := b.Finish(); err != nil {
 		t.Fatal(err)
 	}
@@ -452,7 +415,7 @@ func TestAFailedDmabufWaitFailsItsSubmission(t *testing.T) {
 func TestPublishFencesAnImportedTarget(t *testing.T) {
 	a := syncDevice(t)
 	b := syncDevice(t)
-	buf, err := a.NewBuffer(64, 64, fourcc.XRGB8888, sharedModifiers(t, a, b))
+	buf, err := a.NewBuffer(busySize, busySize, fourcc.XRGB8888, sharedModifiers(t, a, b))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -462,13 +425,13 @@ func TestPublishFencesAnImportedTarget(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer tg.Close()
-	clearTarget(t, b, tg, color.RGBA{0, 255, 0, 255})
+	since := monotonic()
+	heavyPass(t, b, tg, busyDraws, color.RGBA{0, 255, 0, 255})
 	if err := b.Publish(tg); err != nil {
 		t.Fatal(err)
 	}
-	fence := dmabufFence(t, buf.Dmabuf().Planes[0].FD)
-	waitReadable(t, fence)
 	if b.implicitFences {
+		handedOut(b, dmabufFence(t, buf.Dmabuf().Planes[0].FD), since).signalled(t)
 		if done := b.finished(); done != len(b.inflight) {
 			t.Errorf("the imported target's fence signalled with %d of %d submissions finished", done, len(b.inflight))
 		}

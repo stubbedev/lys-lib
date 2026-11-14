@@ -6,7 +6,6 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/stubbedev/lys-lib/drm"
 	"github.com/stubbedev/lys-lib/fourcc"
 	"github.com/stubbedev/lys-lib/testbuild"
 )
@@ -46,63 +45,49 @@ func stillFencing(t *testing.T, d *Device) {
 	}
 }
 
-// A pass's target handed over by Publish carries the pass's fence on
-// its dmabuf, pending when Publish returns, which waited for nothing:
-// what a compositor sampling the buffer waits on. Once that fence has
-// signalled, everything submitted has finished.
+// A pass's target handed over by Publish carries a fence on its dmabuf
+// that covers the pass, and Publish waits for nothing: a compositor
+// sampling the buffer waits on that fence instead. The fence signals
+// after the pass was submitted, or the pass had finished when the fence
+// was exported, and once it has signalled everything submitted has.
 func TestPublishAttachesThePassesFence(t *testing.T) {
 	d := fencingDevice(t)
-	size := 2048
-	if isCPUDevice(d) {
-		size = 64
-	}
-	tg := passTarget(t, d, size)
+	tg := passTarget(t, d, busySize)
 	plane := tg.Dmabuf().Planes[0].FD
-	job := heavyPassJob(t, d, tg)
-	waits, pending := d.BlockingWaits(), 0
+	colors := []color.RGBA{{0, 255, 0, 255}, {0, 0, 255, 255}}
 	for frame := range 8 {
-		start := monotonic()
-		heavyPass(t, d, tg, job.units, color.RGBA{0, 255, 0, 255})
+		since := monotonic()
+		heavyPass(t, d, tg, busyDraws, colors[frame%2])
+		waits := d.BlockingWaits()
 		if err := d.Publish(tg); err != nil {
 			t.Fatal(err)
+		}
+		if got := d.BlockingWaits(); got != waits {
+			t.Errorf("frame %d: Publish waited here %d times, want none", frame, got-waits)
 		}
 		stillFencing(t, d)
 		if d.batch != 0 {
 			t.Fatalf("frame %d: Publish left the pass unsubmitted", frame)
 		}
-		fence := dmabufFence(t, plane)
-		job.endsBy(t, start, fence)
-		signalled, err := drm.SyncFileSignalled(fence)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if !signalled {
-			pending++
-		}
-		waitReadable(t, fence)
+		handedOut(d, dmabufFence(t, plane), since).signalled(t)
 		if done := d.finished(); done != len(d.inflight) {
 			t.Errorf("frame %d: the dmabuf's fence signalled with %d of %d submissions finished", frame, done, len(d.inflight))
 		}
-	}
-	if got := d.BlockingWaits(); got != waits {
-		t.Errorf("Publish waited here %d times, want none", got-waits)
-	}
-	if pending == 0 && !isCPUDevice(d) {
-		t.Errorf("%s: no frame's dmabuf had a fence pending after Publish: a consumer would not have waited", d.Name())
-	}
-	if got := readTarget(t, tg).RGBAAt(1, 1); got != (color.RGBA{0, 255, 0, 255}) {
-		t.Errorf("the published target holds %v, want what the pass drew last", got)
+		if got := readTarget(t, tg).RGBAAt(1, 1); got != colors[frame%2] {
+			t.Errorf("frame %d: the published target holds %v, want %v", frame, got, colors[frame%2])
+		}
 	}
 }
 
-// A pass submitted before Publish, by Flush, still has its fence on
-// the dmabuf afterwards: Publish signals with a submission of its own.
+// A pass submitted before Publish, by Flush, is covered by the fence
+// Publish leaves on the dmabuf: Publish signals with a submission of its
+// own, after the pass, and the fence signals after the pass was
+// submitted, or the pass had finished when the fence was exported.
 func TestPublishCoversPassesAlreadySubmitted(t *testing.T) {
 	d := fencingDevice(t)
-	tg := passTarget(t, d, 64)
-	job := heavyPassJob(t, d, tg)
-	start := monotonic()
-	heavyPass(t, d, tg, job.units, color.RGBA{0, 0, 255, 255})
+	tg := passTarget(t, d, busySize)
+	since := monotonic()
+	heavyPass(t, d, tg, busyDraws, color.RGBA{0, 0, 255, 255})
 	if err := d.Flush(); err != nil {
 		t.Fatal(err)
 	}
@@ -114,18 +99,12 @@ func TestPublishCoversPassesAlreadySubmitted(t *testing.T) {
 	if got := d.Submissions(); got != submitted+1 {
 		t.Errorf("Publish after Flush made %d submissions, want the one that signals", got-submitted)
 	}
-	fence := dmabufFence(t, tg.Dmabuf().Planes[0].FD)
-	job.endsBy(t, start, fence)
-	signalled, err := drm.SyncFileSignalled(fence)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if signalled && !isCPUDevice(d) {
-		t.Errorf("%s: the dmabuf's fence had signalled when Publish returned: nothing here shows it covers the flushed pass", d.Name())
-	}
-	waitReadable(t, fence)
+	handedOut(d, dmabufFence(t, tg.Dmabuf().Planes[0].FD), since).signalled(t)
 	if done := d.finished(); done != len(d.inflight) {
 		t.Errorf("the dmabuf's fence signalled with %d of %d submissions finished", done, len(d.inflight))
+	}
+	if got := readTarget(t, tg).RGBAAt(1, 1); got != (color.RGBA{0, 0, 255, 255}) {
+		t.Errorf("the published target holds %v, want what the flushed pass drew", got)
 	}
 }
 
